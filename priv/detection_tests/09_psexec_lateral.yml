@@ -1,0 +1,19 @@
+test_case:
+  name: "PsExec Lateral Movement"
+  description: "Tests detection of PsExec usage for lateral movement"
+  rule: "lateral_movement/psexec_usage.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\PSEXESVC.exe"
+        cmdline: "C:\\Windows\\PSEXESVC.exe"
+        parent_path: "C:\\Windows\\System32\\services.exe"
+        user: "NT AUTHORITY\\SYSTEM"
+        pid: 4892
+        ppid: 628
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1021.002"]
+  tags: ["lateral_movement", "psexec", "positive"]

@@ -1,0 +1,195 @@
+<div class="auth-page auth-page--register">
+  <div class="auth-shell">
+    <section class="auth-intel-panel" aria-label="Tamandua Sentinel onboarding overview">
+      <div class="auth-panel-top">
+        <div class="auth-brand-lockup">
+          <img src="/images/logo.png" alt="Tamandua Sentinel" class="auth-brand-mark" />
+          <div>
+            <p class="auth-brand-name">Tamandua</p>
+            <p class="auth-brand-mode">SENTINEL CLOUD</p>
+          </div>
+        </div>
+        <span class="auth-status-chip">alpha - proof layer ready</span>
+      </div>
+
+      <div class="auth-intel-copy">
+        <p class="auth-kicker">CREATE - TENANT WORKSPACE</p>
+        <h1>Start a private EDR workspace with public security proofs.</h1>
+        <p>
+          Register the operator account, create the tenant, then enroll endpoints with mTLS.
+          Tamandua can publish only redacted attestations for public audit and ecosystem intel.
+        </p>
+      </div>
+
+      <div class="auth-context-strip">
+        <span>DEFAULT TIER</span>
+        <strong>10 agents - trial workspace</strong>
+        <em>self-hosted ready - wallet optional</em>
+      </div>
+
+      <div class="auth-onboarding-steps" aria-label="Registration flow">
+        <div>
+          <span>1</span>
+          <strong>Create tenant</strong>
+          <em>Organization, owner and audit scope.</em>
+        </div>
+        <div>
+          <span>2</span>
+          <strong>Link wallet</strong>
+          <em>Optional hunter and bounty identity.</em>
+        </div>
+        <div>
+          <span>3</span>
+          <strong>Enroll agents</strong>
+          <em>mTLS identity and health proofs.</em>
+        </div>
+      </div>
+
+      <div class="auth-proof-log" aria-label="Proof types preview">
+        <div class="auth-proof-heading">
+          <span>SUPPORTED PROOFS</span>
+          <strong>privacy-safe by design</strong>
+        </div>
+        <div class="auth-proof-row">
+          <span>HEALTH</span>
+          <strong>PROOF_OF_HEALTH</strong>
+          <em>clean endpoint posture</em>
+          <code>hash only</code>
+        </div>
+        <div class="auth-proof-row">
+          <span>INCIDENT</span>
+          <strong>PROOF_OF_INCIDENT</strong>
+          <em>IOC count - MITRE - severity</em>
+          <code>redacted</code>
+        </div>
+        <div class="auth-proof-row">
+          <span>FIXED</span>
+          <strong>PROOF_OF_REMEDIATION</strong>
+          <em>response evidence</em>
+          <code>verified</code>
+        </div>
+      </div>
+
+      <p class="auth-assurance">
+        Wallet sign-up does not replace tenant controls; it adds a verifiable Web3 identity for
+        submissions, public audit and future bounties.
+      </p>
+    </section>
+
+    <main class="auth-card" aria-label="Create account form">
+      <div class="auth-header">
+        <div class="auth-console-tag">TENANT ONBOARDING</div>
+        <h2 class="auth-title">
+          Create your <span>Sentinel</span> workspace
+        </h2>
+        <p class="auth-subtitle">
+          Start with email, then optionally bind a Solana wallet.
+        </p>
+      </div>
+
+      <div class="wallet-auth" data-wallet-auth="register">
+        <div class="wallet-auth-divider">
+          <span>Optional wallet link</span>
+        </div>
+        <div class="wallet-grid">
+          <button type="button" class="wallet-button" data-wallet-provider="phantom">Phantom</button>
+          <button type="button" class="wallet-button" data-wallet-provider="backpack">Backpack</button>
+          <button type="button" class="wallet-button" data-wallet-provider="solflare">Solflare</button>
+          <button type="button" class="wallet-button" data-wallet-provider="metamask">MetaMask</button>
+        </div>
+        <p class="wallet-status" data-wallet-status></p>
+      </div>
+
+      <.form for={@changeset} action={~p"/register"} method="post" class="auth-form" id="register-form">
+        <%= if @error_message do %>
+          <div class="error-message">
+            <p class="text-sm"><%= @error_message %></p>
+          </div>
+        <% end %>
+
+        <input type="hidden" name="wallet_address" data-wallet-field="wallet_address" />
+        <input type="hidden" name="wallet_provider" data-wallet-field="wallet_provider" />
+        <input type="hidden" name="wallet_message" data-wallet-field="wallet_message" />
+        <input type="hidden" name="wallet_signature" data-wallet-field="wallet_signature" />
+
+        <div class="auth-fields">
+          <div>
+            <label for="name" class="auth-label">Full name</label>
+            <input
+              id="name"
+              name="user[name]"
+              type="text"
+              autocomplete="name"
+              required
+              class="input-field"
+              placeholder="Jane Operator"
+            />
+          </div>
+
+          <div>
+            <label for="organization_name" class="auth-label">Organization</label>
+            <input
+              id="organization_name"
+              name="user[organization_name]"
+              type="text"
+              autocomplete="organization"
+              required
+              class="input-field"
+              placeholder="Acme Custody"
+            />
+          </div>
+
+          <div>
+            <label for="email" class="auth-label">Operator email</label>
+            <input
+              id="email"
+              name="user[email]"
+              type="email"
+              autocomplete="email"
+              required
+              class="input-field"
+              placeholder="operator@company.com"
+            />
+          </div>
+
+          <div>
+            <label for="password" class="auth-label">Password</label>
+            <input
+              id="password"
+              name="user[password]"
+              type="password"
+              autocomplete="new-password"
+              required
+              class="input-field"
+              placeholder="Create a password"
+            />
+          </div>
+
+          <div>
+            <label for="password_confirmation" class="auth-label">Confirm password</label>
+            <input
+              id="password_confirmation"
+              name="user[password_confirmation]"
+              type="password"
+              autocomplete="new-password"
+              required
+              class="input-field"
+              placeholder="Confirm your password"
+            />
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary w-full">
+          Create workspace
+        </button>
+
+        <div class="auth-footer">
+          <span class="auth-muted">Already have an account?</span>
+          <a href={~p"/login"} class="auth-link">
+            Sign in
+          </a>
+        </div>
+      </.form>
+    </main>
+  </div>
+</div>

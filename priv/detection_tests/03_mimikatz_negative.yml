@@ -1,0 +1,17 @@
+test_case:
+  name: "Mimikatz Detection - Negative Test"
+  description: "Ensures legitimate processes don't trigger Mimikatz detection"
+  rule: "credential_access/mimikatz_patterns.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\notepad.exe"
+        cmdline: "notepad.exe document.txt"
+        parent_path: "C:\\Windows\\explorer.exe"
+        user: "WORKSTATION\\user"
+        pid: 3256
+        ppid: 1892
+  expected: no_match
+  tags: ["credential_access", "mimikatz", "negative"]

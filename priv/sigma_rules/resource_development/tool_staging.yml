@@ -1,0 +1,415 @@
+title: Offensive Tool Download Detection
+id: c3d4e5f6-0003-resdev-0001-000000000001
+status: stable
+description: Detects download of known offensive security tools
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1588/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_download:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\curl.exe'
+            - '\wget.exe'
+            - '\certutil.exe'
+            - '\bitsadmin.exe'
+        CommandLine|contains:
+            - 'mimikatz'
+            - 'lazagne'
+            - 'rubeus'
+            - 'sharphound'
+            - 'bloodhound'
+            - 'covenant'
+            - 'cobalt'
+            - 'empire'
+            - 'meterpreter'
+            - 'powersploit'
+            - 'nishang'
+            - 'powercat'
+            - 'powerup'
+            - 'invoke-obfuscation'
+            - 'chisel'
+            - 'ligolo'
+            - 'sliver'
+            - 'havoc'
+            - 'brute-ratel'
+    condition: selection_download
+falsepositives:
+    - Security researchers
+    - Penetration testing activities
+    - Security tool evaluation
+level: critical
+tags:
+    - attack.resource_development
+    - attack.t1588.002
+    - attack.command_and_control
+    - attack.t1105
+
+---
+title: GitHub Raw Content Download of Offensive Tool
+id: c3d4e5f6-0003-resdev-0002-000000000002
+status: stable
+description: Detects download from GitHub raw content of potentially malicious tools
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1588/002/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_github_raw:
+        DestinationHostname|contains:
+            - 'raw.githubusercontent.com'
+            - 'gist.githubusercontent.com'
+    timeframe: 5m
+    condition: selection_github_raw | count() by SourceIp > 5
+falsepositives:
+    - Developers downloading dependencies
+    - Legitimate automation scripts
+level: low
+tags:
+    - attack.resource_development
+    - attack.t1588.002
+    - attack.command_and_control
+    - attack.t1105
+
+---
+title: Malware Sample Download Indicators
+id: c3d4e5f6-0003-resdev-0003-000000000003
+status: stable
+description: Detects potential download of malware from known malware hosting services
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1588/001/
+logsource:
+    category: dns_query
+    product: any
+detection:
+    selection_malware_hosting:
+        query|contains:
+            - 'anonfiles'
+            - 'file.io'
+            - 'transfer.sh'
+            - 'gofile.io'
+            - 'pixeldrain'
+            - 'sendspace'
+            - 'mediafire'
+            - 'zippyshare'
+            - 'mega.nz'
+            - 'wetransfer'
+            - 'uploadfiles'
+    condition: selection_malware_hosting
+falsepositives:
+    - Legitimate file sharing
+    - Personal file transfers
+level: low
+tags:
+    - attack.resource_development
+    - attack.t1588.001
+    - attack.command_and_control
+    - attack.t1105
+
+---
+title: Offensive Tool Execution Detection
+id: c3d4e5f6-0003-resdev-0004-000000000004
+status: stable
+description: Detects execution of known offensive security tools
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1588/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tool_names:
+        Image|endswith:
+            - '\mimikatz.exe'
+            - '\lazagne.exe'
+            - '\rubeus.exe'
+            - '\sharphound.exe'
+            - '\seatbelt.exe'
+            - '\certify.exe'
+            - '\safetykatz.exe'
+            - '\sharpview.exe'
+            - '\sharpdpapi.exe'
+            - '\sharpwmi.exe'
+            - '\sharpcradle.exe'
+            - '\inveigh.exe'
+            - '\responder.exe'
+    selection_tool_cmdline:
+        CommandLine|contains:
+            - 'sekurlsa::logonpasswords'
+            - 'lsadump::dcsync'
+            - 'kerberos::golden'
+            - 'privilege::debug'
+            - 'token::elevate'
+            - 'Invoke-Mimikatz'
+            - 'Invoke-Rubeus'
+            - 'Invoke-BloodHound'
+            - 'Invoke-Kerberoast'
+            - 'Invoke-Shellcode'
+            - 'Invoke-ReflectivePEInjection'
+    condition: selection_tool_names or selection_tool_cmdline
+falsepositives:
+    - Penetration testing
+    - Red team exercises
+    - Security assessments
+level: critical
+tags:
+    - attack.resource_development
+    - attack.t1588.002
+    - attack.credential_access
+    - attack.t1003
+
+---
+title: Cobalt Strike Beacon Staging Indicators
+id: c3d4e5f6-0003-resdev-0005-000000000005
+status: stable
+description: Detects potential Cobalt Strike beacon staging or execution
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1608/001/
+    - https://attack.mitre.org/software/S0154/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_rundll_pattern:
+        Image|endswith: '\rundll32.exe'
+        CommandLine|re: '.*\\.dll,\s*(Start|Entry|DllMain|Run|Execute).*'
+    selection_powershell_encoded:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - '-enc'
+            - '-encodedcommand'
+            - 'FromBase64String'
+        CommandLine|re: '.*[A-Za-z0-9+/=]{100,}.*'
+    selection_spawn_pattern:
+        ParentImage|endswith:
+            - '\rundll32.exe'
+            - '\dllhost.exe'
+            - '\regsvr32.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+    condition: selection_rundll_pattern or selection_powershell_encoded or selection_spawn_pattern
+falsepositives:
+    - Legitimate encoded PowerShell scripts
+    - Software installations using rundll32
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1608.001
+    - attack.execution
+    - attack.t1059.001
+    - attack.defense_evasion
+    - attack.t1218.011
+
+---
+title: Exploit Kit Staging Detection
+id: c3d4e5f6-0003-resdev-0006-000000000006
+status: stable
+description: Detects potential exploit kit staging or payload delivery
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1588/005/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_browser_spawn:
+        ParentImage|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\iexplore.exe'
+        Image|endswith:
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\powershell.exe'
+            - '\cmd.exe'
+            - '\regsvr32.exe'
+            - '\rundll32.exe'
+            - '\certutil.exe'
+    selection_java_spawn:
+        ParentImage|endswith:
+            - '\java.exe'
+            - '\javaw.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+    selection_flash_spawn:
+        ParentImage|contains: 'Flash'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+    condition: selection_browser_spawn or selection_java_spawn or selection_flash_spawn
+falsepositives:
+    - Legitimate browser extensions with native messaging
+    - Java-based applications
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1588.005
+    - attack.initial_access
+    - attack.t1189
+    - attack.execution
+    - attack.t1203
+
+---
+title: Rogue SSL/TLS Certificate Installation
+id: c3d4e5f6-0003-resdev-0007-000000000007
+status: stable
+description: Detects installation of potentially rogue certificates to certificate stores
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1608/003/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_certutil_add:
+        Image|endswith: '\certutil.exe'
+        CommandLine|contains:
+            - '-addstore'
+            - '-add'
+            - 'root'
+            - 'trustedpublisher'
+            - 'ca'
+    selection_powershell_cert:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Import-Certificate'
+            - 'X509Store'
+            - 'Cert:\\LocalMachine\\Root'
+            - 'Cert:\\LocalMachine\\CA'
+            - 'Cert:\\LocalMachine\\TrustedPublisher'
+    condition: selection_certutil_add or selection_powershell_cert
+falsepositives:
+    - Legitimate software installation
+    - IT certificate management
+    - Enterprise PKI operations
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1608.003
+    - attack.defense_evasion
+    - attack.t1553.004
+
+---
+title: Tool Staging in Temporary Directories
+id: c3d4e5f6-0003-resdev-0008-000000000008
+status: stable
+description: Detects executable files written to temp directories with suspicious names
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1608/002/
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_temp_exe:
+        TargetFilename|contains:
+            - '\Temp\'
+            - '\tmp\'
+            - '\AppData\Local\Temp\'
+            - '\Windows\Temp\'
+        TargetFilename|endswith:
+            - '.exe'
+            - '.dll'
+            - '.ps1'
+            - '.bat'
+            - '.vbs'
+            - '.hta'
+    selection_suspicious_names:
+        TargetFilename|contains:
+            - 'payload'
+            - 'beacon'
+            - 'shell'
+            - 'implant'
+            - 'backdoor'
+            - 'agent'
+            - 'loader'
+            - 'dropper'
+            - 'inject'
+            - 'exploit'
+    condition: selection_temp_exe and selection_suspicious_names
+falsepositives:
+    - Security testing
+    - Legitimate software with unfortunate naming
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1608.002
+    - attack.execution
+    - attack.t1204
+
+---
+title: PowerShell Cradle Techniques
+id: c3d4e5f6-0003-resdev-0009-000000000009
+status: stable
+description: Detects PowerShell download cradles commonly used to stage tools
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1608/001/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_powershell:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+    selection_cradle_patterns:
+        CommandLine|contains:
+            - 'DownloadString'
+            - 'DownloadFile'
+            - 'DownloadData'
+            - 'Net.WebClient'
+            - 'Invoke-WebRequest'
+            - 'Invoke-RestMethod'
+            - 'Start-BitsTransfer'
+            - 'iex'
+            - 'Invoke-Expression'
+            - '.Download'
+            - 'IWR'
+            - 'curl '
+            - 'wget '
+    selection_execution_pattern:
+        CommandLine|contains:
+            - '| iex'
+            - '|iex'
+            - '); iex'
+            - ');iex'
+            - "| Invoke-Expression"
+            - "|Invoke-Expression"
+    condition: selection_powershell and (selection_cradle_patterns and selection_execution_pattern)
+falsepositives:
+    - Legitimate automation scripts
+    - Package managers (chocolatey, etc.)
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1608.001
+    - attack.execution
+    - attack.t1059.001
+    - attack.command_and_control
+    - attack.t1105

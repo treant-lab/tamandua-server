@@ -1,0 +1,1586 @@
+# Web3/Solana Supply Chain Attack Detection Rules
+# Covers: NPM supply chain, IDE extension malware, blockchain-based C2,
+# wallet drainer indicators, and Solana-specific threats
+
+# =============================================================================
+# SECTION 1: NPM/Package Supply Chain Attacks
+# =============================================================================
+
+title: NPM Preinstall/Postinstall Hook Executing Shell Commands
+id: web3-sc-npm-001-0001
+status: stable
+description: |
+  Detects npm install scripts (preinstall/postinstall hooks) spawning shell processes
+  with suspicious arguments. Malicious npm packages abuse lifecycle scripts to execute
+  arbitrary code during installation. Common in Web3 supply chain attacks targeting
+  Solana developers.
+references:
+  - https://attack.mitre.org/techniques/T1195/001/
+  - https://blog.phylum.io/npm-supply-chain-attack-targets-solana-developers
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1195.001
+  - attack.execution
+  - attack.t1059
+  - web3
+  - solana
+  - supply_chain
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_npm_parent:
+    ParentImage|endswith:
+      - '\node.exe'
+      - '\npm.cmd'
+      - '\npm.exe'
+    ParentCommandLine|contains:
+      - 'preinstall'
+      - 'postinstall'
+      - 'install'
+      - 'prepare'
+      - 'prepublish'
+  selection_shell_child:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_suspicious_args:
+    CommandLine|contains:
+      - '-enc'
+      - '-encoded'
+      - '-WindowStyle Hidden'
+      - '-w hidden'
+      - '-nop'
+      - 'bypass'
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'Invoke-Expression'
+      - 'IEX'
+      - 'FromBase64'
+      - 'http://'
+      - 'curl '
+      - 'certutil'
+      - 'bitsadmin'
+  condition: selection_npm_parent and selection_shell_child and selection_suspicious_args
+falsepositives:
+  - Legitimate build scripts
+  - Package postinstall configurations
+level: high
+
+---
+title: NPM Preinstall/Postinstall Hook Executing Shell Commands (Linux)
+id: web3-sc-npm-001-0002
+status: stable
+description: |
+  Detects npm install scripts spawning shell processes with suspicious arguments on Linux.
+  Targets Solana/Web3 developer environments where npm is commonly used.
+references:
+  - https://attack.mitre.org/techniques/T1195/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1195.001
+  - attack.execution
+  - attack.t1059
+  - web3
+  - supply_chain
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection_npm_parent:
+    ParentImage|endswith:
+      - '/node'
+      - '/npm'
+      - '/npx'
+    ParentCommandLine|contains:
+      - 'preinstall'
+      - 'postinstall'
+      - 'install'
+      - 'prepare'
+  selection_shell_child:
+    Image|endswith:
+      - '/sh'
+      - '/bash'
+      - '/zsh'
+      - '/dash'
+  selection_suspicious_args:
+    CommandLine|contains:
+      - 'curl '
+      - 'wget '
+      - 'base64 -d'
+      - 'eval '
+      - '| sh'
+      - '| bash'
+      - '/dev/tcp/'
+      - 'nc -e'
+      - 'python -c'
+      - 'perl -e'
+  condition: selection_npm_parent and selection_shell_child and selection_suspicious_args
+falsepositives:
+  - Legitimate build scripts
+level: high
+
+---
+title: Solana Package Typosquatting Detection
+id: web3-sc-npm-002-0001
+status: stable
+description: |
+  Detects installation of npm packages with names similar to legitimate Solana ecosystem
+  packages. Typosquatting attacks target developers by registering packages with similar
+  names to @solana/web3.js, @solana/spl-token, @project-serum/anchor, etc.
+references:
+  - https://attack.mitre.org/techniques/T1195/001/
+  - https://socket.dev/npm/package/typosquatting
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1195.001
+  - web3
+  - solana
+  - supply_chain
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_npm:
+    Image|endswith:
+      - '\npm.cmd'
+      - '\npm.exe'
+      - '/npm'
+      - '\node.exe'
+      - '/node'
+    CommandLine|contains: 'install'
+  selection_typosquat:
+    CommandLine|contains:
+      # Solana typosquats
+      - 'solana-web3'
+      - '@solanna/'
+      - '@so1ana/'
+      - '@soIana/'
+      - 'solanaweb3'
+      - 'solana_web3'
+      - 'web3-solana'
+      - 'spl-tokens'
+      - 'spltoken'
+      - '@spl-token/'
+      # Anchor typosquats
+      - '@anchor-lang/'
+      - 'anchor-project'
+      - '@proj-serum/'
+      - '@project_serum/'
+      # Metaplex typosquats
+      - '@metapIex/'
+      - 'metaplex-js'
+      - '@meta-plex/'
+      # Phantom typosquats
+      - 'phantom-connect'
+      - '@phantom-wallet/'
+      - 'phantom-adapter'
+  filter_legitimate:
+    CommandLine|contains:
+      - '@solana/web3.js'
+      - '@solana/spl-token'
+      - '@project-serum/anchor'
+      - '@coral-xyz/anchor'
+      - '@metaplex-foundation/'
+      - '@solana/wallet-adapter'
+  condition: selection_npm and selection_typosquat and not filter_legitimate
+falsepositives:
+  - Very low - typosquatted packages are almost always malicious
+level: critical
+
+---
+title: Network Connection During NPM Package Install
+id: web3-sc-npm-003-0001
+status: stable
+description: |
+  Detects unexpected network connections during npm package installation to non-standard
+  destinations. Legitimate packages should only connect to npm registry and CDNs.
+references:
+  - https://attack.mitre.org/techniques/T1195/001/
+  - https://attack.mitre.org/techniques/T1071/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1195.001
+  - attack.command_and_control
+  - attack.t1071.001
+  - web3
+  - supply_chain
+logsource:
+  category: network_connection
+  product: any
+detection:
+  selection_npm_process:
+    Image|endswith:
+      - '\node.exe'
+      - '/node'
+    ParentCommandLine|contains:
+      - 'npm install'
+      - 'npm i '
+      - 'yarn add'
+      - 'pnpm add'
+  filter_trusted:
+    DestinationHostname|endswith:
+      - 'npmjs.org'
+      - 'npmjs.com'
+      - 'yarnpkg.com'
+      - 'unpkg.com'
+      - 'jsdelivr.net'
+      - 'github.com'
+      - 'githubusercontent.com'
+      - 'cloudflare.com'
+      - 'cloudflare-ipfs.com'
+  selection_suspicious_tld:
+    DestinationHostname|endswith:
+      - '.xyz'
+      - '.tk'
+      - '.ml'
+      - '.ga'
+      - '.cf'
+      - '.top'
+      - '.work'
+      - '.click'
+      - '.link'
+      - '.ru'
+  condition: selection_npm_process and (not filter_trusted or selection_suspicious_tld)
+falsepositives:
+  - Packages with legitimate external dependencies
+  - Private npm registries
+level: high
+
+---
+title: Node.js Process Spawning PowerShell with Suspicious Arguments
+id: web3-sc-npm-004-0001
+status: stable
+description: |
+  Detects Node.js processes spawning PowerShell with encoded commands, download cradles,
+  or other suspicious arguments. Common in supply chain attacks targeting Web3 developers.
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1195/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.initial_access
+  - attack.t1195.001
+  - web3
+  - supply_chain
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_node_parent:
+    ParentImage|endswith:
+      - '\node.exe'
+      - '\npm.cmd'
+      - '\npx.cmd'
+      - '\yarn.cmd'
+      - '\pnpm.cmd'
+  selection_powershell:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_suspicious:
+    CommandLine|contains:
+      - '-enc '
+      - '-EncodedCommand'
+      - '-e '
+      - 'FromBase64String'
+      - 'Invoke-WebRequest'
+      - 'Invoke-RestMethod'
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'Net.WebClient'
+      - 'Start-BitsTransfer'
+      - '-WindowStyle Hidden'
+      - '-w h'
+      - 'bypass'
+      - 'unrestricted'
+      - 'IEX'
+      - 'Invoke-Expression'
+  condition: selection_node_parent and selection_powershell and selection_suspicious
+falsepositives:
+  - Legitimate build tools using PowerShell
+level: critical
+
+---
+title: Node.js Spawning CMD with Download Commands
+id: web3-sc-npm-004-0002
+status: stable
+description: |
+  Detects Node.js spawning cmd.exe with certutil, bitsadmin, or curl download commands.
+  Commonly used in supply chain attacks to download second-stage payloads.
+references:
+  - https://attack.mitre.org/techniques/T1105/
+  - https://attack.mitre.org/techniques/T1195/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1105
+  - attack.initial_access
+  - attack.t1195.001
+  - web3
+  - supply_chain
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_node_parent:
+    ParentImage|endswith:
+      - '\node.exe'
+      - '\npm.cmd'
+  selection_cmd:
+    Image|endswith: '\cmd.exe'
+  selection_download:
+    CommandLine|contains:
+      - 'certutil -urlcache'
+      - 'certutil -decode'
+      - 'certutil -decodehex'
+      - 'bitsadmin /transfer'
+      - 'curl -o'
+      - 'curl -O'
+      - 'curl --output'
+      - 'wget '
+      - 'Invoke-WebRequest'
+  condition: selection_node_parent and selection_cmd and selection_download
+falsepositives:
+  - Build scripts downloading legitimate resources
+level: high
+
+# =============================================================================
+# SECTION 2: IDE Extension Malware
+# =============================================================================
+
+---
+title: VS Code Extension Accessing Browser Data
+id: web3-sc-ide-001-0001
+status: stable
+description: |
+  Detects VS Code or Cursor extension processes accessing browser local storage,
+  cookies, or credential files. Malicious extensions steal browser-stored crypto
+  wallet data and authentication tokens.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+  - https://attack.mitre.org/techniques/T1176/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+  - attack.persistence
+  - attack.t1176
+  - web3
+  - ide_malware
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_vscode_process:
+    Image|contains:
+      - '\Code.exe'
+      - '\Cursor.exe'
+      - '\code-tunnel'
+      - '\extensions\'
+    Image|endswith:
+      - '\node.exe'
+  selection_browser_data:
+    TargetFilename|contains:
+      - '\Google\Chrome\User Data\'
+      - '\Microsoft\Edge\User Data\'
+      - '\BraveSoftware\Brave-Browser\User Data\'
+      - '\Mozilla\Firefox\Profiles\'
+      - 'Local Storage\leveldb'
+      - '\Cookies'
+      - '\Login Data'
+      - '\Web Data'
+      - 'IndexedDB'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\brave.exe'
+      - '\firefox.exe'
+  condition: selection_vscode_process and selection_browser_data and not filter_browser
+falsepositives:
+  - Browser debugging extensions
+level: critical
+
+---
+title: VS Code Extension Making External Network Requests
+id: web3-sc-ide-002-0001
+status: stable
+description: |
+  Detects VS Code extension host making network connections to suspicious destinations.
+  Malicious extensions exfiltrate stolen credentials and wallet data to attacker servers.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+  - https://attack.mitre.org/techniques/T1176/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - attack.persistence
+  - attack.t1176
+  - web3
+  - ide_malware
+logsource:
+  category: network_connection
+  product: any
+detection:
+  selection_vscode:
+    Image|contains:
+      - '\Code.exe'
+      - '\Cursor.exe'
+      - 'extensionHost'
+      - '\extensions\'
+  selection_suspicious_dest:
+    DestinationHostname|endswith:
+      - '.xyz'
+      - '.tk'
+      - '.top'
+      - '.work'
+      - '.click'
+      - '.fun'
+      - '.ru'
+      - '.cn'
+    DestinationHostname|contains:
+      - 'pastebin'
+      - 'hastebin'
+      - 'ghostbin'
+      - 'rentry'
+      - 'transfer.sh'
+      - 'file.io'
+      - 'webhook.site'
+      - 'pipedream'
+      - 'requestbin'
+  filter_legitimate:
+    DestinationHostname|endswith:
+      - 'microsoft.com'
+      - 'visualstudio.com'
+      - 'vscode-cdn.net'
+      - 'github.com'
+      - 'githubusercontent.com'
+      - 'npmjs.org'
+  condition: selection_vscode and selection_suspicious_dest and not filter_legitimate
+falsepositives:
+  - Extensions with legitimate external integrations
+level: high
+
+---
+title: VS Code Extension Reading Wallet Files
+id: web3-sc-ide-003-0001
+status: stable
+description: |
+  Detects VS Code or Cursor extensions accessing cryptocurrency wallet files including
+  Solana keypairs, MetaMask vault data, Phantom wallet storage, and hardware wallet
+  configurations.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+  - https://attack.mitre.org/techniques/T1176/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - attack.persistence
+  - attack.t1176
+  - web3
+  - solana
+  - ide_malware
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_vscode:
+    Image|contains:
+      - '\Code.exe'
+      - '\Cursor.exe'
+      - '\extensions\'
+      - 'extensionHost'
+  selection_wallet_files:
+    TargetFilename|contains:
+      # Solana wallet paths
+      - '\.config\solana\'
+      - '\solana\id.json'
+      - '\solana\devnet.json'
+      - '\solana\mainnet'
+      - '\solana-wallet'
+      - 'keypair.json'
+      # Browser extension wallets
+      - '\Local Extension Settings\nkbihfbeogaeaoehlefnkodbefgpgknn'  # MetaMask
+      - '\Local Extension Settings\bfnaelmomeimhlpmgjnjophhpkkoljpa'  # Phantom
+      - '\Local Extension Settings\bhhhlbepdkbapadjdnnojkbgioiodbic'  # Solflare
+      - '\Local Extension Settings\aflkmfhebedbjioipglgcbcmnbpgliof'  # Backpack
+      # Desktop wallets
+      - '\Exodus\exodus.wallet'
+      - '\Atomic\Local Storage'
+      - '\Ledger Live'
+      - '\Trezor'
+  condition: selection_vscode and selection_wallet_files
+falsepositives:
+  - Legitimate Solana development extensions
+  - Wallet management extensions
+level: critical
+
+---
+title: VS Code Extension Reading Wallet Files (Linux)
+id: web3-sc-ide-003-0002
+status: stable
+description: |
+  Detects VS Code extensions accessing cryptocurrency wallet files on Linux systems.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+  - solana
+  - ide_malware
+logsource:
+  category: file_event
+  product: linux
+detection:
+  selection_vscode:
+    Image|contains:
+      - '/code'
+      - '/cursor'
+      - '/extensions/'
+      - 'extensionHost'
+  selection_wallet_files:
+    TargetFilename|contains:
+      - '/.config/solana/'
+      - '/solana/id.json'
+      - '/solana/keypair'
+      - '/.solana/'
+      - '/.config/phantom/'
+      - '/.config/backpack/'
+      - '/.config/solflare/'
+      - '/.exodus/'
+      - '/.atomic/'
+      - '/.config/Exodus/'
+  condition: selection_vscode and selection_wallet_files
+falsepositives:
+  - Legitimate Solana development extensions
+level: critical
+
+# =============================================================================
+# SECTION 3: Blockchain-Based C2 (GlassWorm/EtherHiding)
+# =============================================================================
+
+---
+title: Process Making Solana RPC Calls for Memo Data
+id: web3-sc-c2-001-0001
+status: stable
+description: |
+  Detects processes making Solana RPC calls to read memo transactions. GlassWorm-style
+  malware uses blockchain memo fields to store encoded C2 commands and exfiltration
+  endpoints, making detection difficult as blockchain data is immutable and public.
+references:
+  - https://attack.mitre.org/techniques/T1102/
+  - https://research.checkpoint.com/2023/etheriding-blockchain-based-c2/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1102
+  - attack.t1071.001
+  - web3
+  - solana
+  - blockchain_c2
+logsource:
+  category: network_connection
+  product: any
+detection:
+  selection_rpc_endpoints:
+    DestinationHostname|contains:
+      - 'api.mainnet-beta.solana.com'
+      - 'api.devnet.solana.com'
+      - 'api.testnet.solana.com'
+      - 'solana-mainnet.g.alchemy.com'
+      - 'solana.getblock.io'
+      - 'rpc.ankr.com/solana'
+      - 'solana-api.projectserum.com'
+      - 'ssc-dao.genesysgo.net'
+      - 'helius-rpc.com'
+      - 'quicknode.com'
+  filter_legitimate:
+    Image|endswith:
+      - '\solana.exe'
+      - '/solana'
+      - '\anchor.exe'
+      - '/anchor'
+      - '\node.exe'
+      - '/node'
+      - '\Code.exe'
+      - '\chrome.exe'
+      - '\brave.exe'
+  selection_suspicious_process:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\rundll32.exe'
+      - '\regsvr32.exe'
+      - '\mshta.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '/sh'
+      - '/bash'
+      - '/python'
+      - '/python3'
+  condition: selection_rpc_endpoints and selection_suspicious_process
+falsepositives:
+  - Solana CLI tools
+  - Development scripts
+level: high
+
+---
+title: BSC/ETH Contract Data Read for Encoded Payloads
+id: web3-sc-c2-002-0001
+status: stable
+description: |
+  Detects processes making calls to BSC or Ethereum RPC endpoints to read smart contract
+  data. EtherHiding malware stores encoded C2 payloads in smart contract storage slots
+  or transaction input data.
+references:
+  - https://attack.mitre.org/techniques/T1102/
+  - https://research.checkpoint.com/2023/etheriding-blockchain-based-c2/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1102
+  - web3
+  - blockchain_c2
+logsource:
+  category: network_connection
+  product: any
+detection:
+  selection_eth_rpc:
+    DestinationHostname|contains:
+      - 'mainnet.infura.io'
+      - 'eth-mainnet.g.alchemy.com'
+      - 'cloudflare-eth.com'
+      - 'rpc.ankr.com/eth'
+      - 'api.etherscan.io'
+      # BSC endpoints
+      - 'bsc-dataseed'
+      - 'rpc.ankr.com/bsc'
+      - 'api.bscscan.com'
+      - 'binance.org'
+      # Polygon
+      - 'polygon-rpc.com'
+      - 'rpc.ankr.com/polygon'
+  selection_suspicious_process:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\mshta.exe'
+      - '\wscript.exe'
+      - '\rundll32.exe'
+      - '/sh'
+      - '/bash'
+    Image|contains:
+      - '\Temp\'
+      - '\tmp\'
+      - '/tmp/'
+      - '\AppData\Local\Temp'
+  condition: selection_eth_rpc and selection_suspicious_process
+falsepositives:
+  - Cryptocurrency applications
+  - Web3 development tools
+level: high
+
+---
+title: Process Decoding Base64/Hex from Blockchain Data
+id: web3-sc-c2-003-0001
+status: stable
+description: |
+  Detects processes that recently connected to blockchain RPC endpoints and then
+  execute base64/hex decoding operations. This pattern indicates blockchain-based
+  C2 payload retrieval and decoding.
+references:
+  - https://attack.mitre.org/techniques/T1140/
+  - https://attack.mitre.org/techniques/T1102/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1140
+  - attack.command_and_control
+  - attack.t1102
+  - web3
+  - blockchain_c2
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_decode:
+    CommandLine|contains:
+      - 'FromBase64String'
+      - '[Convert]::FromBase64'
+      - 'base64 -d'
+      - 'base64 --decode'
+      - 'certutil -decode'
+      - 'hex2bin'
+      - 'Buffer.from'
+      - 'atob('
+      - '.toString("hex")'
+      - 'unhexlify'
+  selection_blockchain_context:
+    CommandLine|contains:
+      - 'solana'
+      - 'web3'
+      - 'eth_call'
+      - 'getTransaction'
+      - 'getAccountInfo'
+      - 'getProgramAccounts'
+      - 'memo'
+      - 'contract'
+      - '0x'
+      - 'mainnet'
+  condition: selection_decode and selection_blockchain_context
+falsepositives:
+  - Blockchain development tools
+  - Transaction analysis scripts
+level: medium
+
+---
+title: Curl/Wget to Blockchain RPC with Data Extraction
+id: web3-sc-c2-003-0002
+status: stable
+description: |
+  Detects curl or wget commands making JSON-RPC calls to blockchain endpoints,
+  potentially retrieving C2 instructions stored on-chain.
+references:
+  - https://attack.mitre.org/techniques/T1102/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1102
+  - web3
+  - blockchain_c2
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_curl_wget:
+    Image|endswith:
+      - '\curl.exe'
+      - '/curl'
+      - '\wget.exe'
+      - '/wget'
+  selection_rpc_call:
+    CommandLine|contains:
+      - 'solana.com'
+      - 'infura.io'
+      - 'alchemy.com'
+      - 'ankr.com'
+      - 'quicknode.com'
+      - 'getblock.io'
+  selection_rpc_methods:
+    CommandLine|contains:
+      - 'getTransaction'
+      - 'getAccountInfo'
+      - 'eth_call'
+      - 'eth_getCode'
+      - 'eth_getStorageAt'
+      - 'getProgramAccounts'
+  condition: selection_curl_wget and selection_rpc_call and selection_rpc_methods
+falsepositives:
+  - Blockchain development scripts
+  - Monitoring tools
+level: medium
+
+# =============================================================================
+# SECTION 4: Wallet Drainer Indicators
+# =============================================================================
+
+---
+title: Suspicious dApp Connection Request Pattern
+id: web3-sc-drainer-001-0001
+status: stable
+description: |
+  Detects browser processes with command-line arguments indicating suspicious dApp
+  connection patterns. Wallet drainers often use URL parameters or deep links to
+  trigger malicious connect requests.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+  - https://scamsniffer.io/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1204.001
+  - web3
+  - wallet_drainer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\brave.exe'
+      - '\firefox.exe'
+  selection_suspicious_url:
+    CommandLine|contains:
+      - 'connect?'
+      - 'approve?'
+      - 'permit?'
+      - 'sign?'
+      - 'transfer?'
+      - 'setApprovalForAll'
+      - 'increaseAllowance'
+      - 'permit2'
+      - 'drainer'
+      - 'claim-airdrop'
+      - 'free-mint'
+      - 'claim-reward'
+  selection_suspicious_tld:
+    CommandLine|contains:
+      - '.xyz/'
+      - '.tk/'
+      - '.ml/'
+      - '.fun/'
+      - '-airdrop.'
+      - '-claim.'
+      - '-mint.'
+  condition: selection_browser and (selection_suspicious_url or selection_suspicious_tld)
+falsepositives:
+  - Legitimate dApp interactions
+level: medium
+
+---
+title: Programmatic Transaction Signing Without UI
+id: web3-sc-drainer-002-0001
+status: stable
+description: |
+  Detects processes that appear to be signing transactions programmatically without
+  user wallet UI interaction. May indicate automated drainer or compromised wallet.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+  - wallet_drainer
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_signing:
+    CommandLine|contains:
+      - 'signTransaction'
+      - 'signMessage'
+      - 'signAllTransactions'
+      - 'sendTransaction'
+      - 'eth_sign'
+      - 'personal_sign'
+      - 'eth_signTypedData'
+      - 'solana.sendTransaction'
+  selection_non_interactive:
+    CommandLine|contains:
+      - '--headless'
+      - '-headless'
+      - 'puppeteer'
+      - 'playwright'
+      - 'selenium'
+      - '--no-sandbox'
+      - 'phantom.connect'
+      - 'window.solana'
+  condition: selection_signing and selection_non_interactive
+falsepositives:
+  - Automated trading bots
+  - Testing frameworks
+level: high
+
+---
+title: Bulk Approval Transaction Pattern
+id: web3-sc-drainer-003-0001
+status: stable
+description: |
+  Detects command-line patterns indicating bulk approval transactions being prepared
+  or executed. Drainers often request unlimited approvals for multiple tokens.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.execution
+  - attack.t1204.001
+  - web3
+  - wallet_drainer
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_approval:
+    CommandLine|contains:
+      - 'approve('
+      - 'setApprovalForAll'
+      - 'increaseAllowance'
+      - 'permit('
+      - 'permitBatch'
+      - 'approve2'
+  selection_unlimited:
+    CommandLine|contains:
+      - 'ffffffff'
+      - 'MAX_UINT'
+      - 'MaxUint256'
+      - 'unlimited'
+      - '115792089237316195423570985008687907853269984665640564039457584007913129639935'
+  condition: selection_approval and selection_unlimited
+falsepositives:
+  - DeFi applications requesting approvals
+  - DEX interactions
+level: high
+
+---
+title: Wallet Drainer Domain Resolution
+id: web3-sc-drainer-004-0001
+status: stable
+description: |
+  Detects DNS queries or connections to known wallet drainer infrastructure domains
+  and suspicious patterns commonly used by drainer kits.
+references:
+  - https://attack.mitre.org/techniques/T1071/004/
+  - https://scamsniffer.io/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1071.004
+  - web3
+  - wallet_drainer
+logsource:
+  category: dns_query
+  product: any
+detection:
+  selection_drainer_patterns:
+    QueryName|contains:
+      - 'drainer'
+      - 'seaport-js'
+      - 'permit2-js'
+      - 'web3-api'
+      - 'wallet-connect-api'
+      - 'nft-claim'
+      - 'airdrop-claim'
+      - 'token-approve'
+      - 'gasless-permit'
+  selection_suspicious_subdomains:
+    QueryName|startswith:
+      - 'api-'
+      - 'rpc-'
+      - 'wc-'
+      - 'connect-'
+    QueryName|endswith:
+      - '-api.xyz'
+      - '-rpc.top'
+      - '-wc.click'
+  condition: selection_drainer_patterns or selection_suspicious_subdomains
+falsepositives:
+  - Legitimate Web3 services
+level: medium
+
+# =============================================================================
+# SECTION 5: Solana-Specific Threats
+# =============================================================================
+
+---
+title: Unauthorized Solana Keypair File Access
+id: web3-sc-sol-001-0001
+status: stable
+description: |
+  Detects unauthorized processes accessing Solana keypair JSON files. These files
+  contain private keys that provide full control over associated wallets.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+  - solana
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_keypair:
+    TargetFilename|endswith:
+      - '\id.json'
+      - '\devnet.json'
+      - '\testnet.json'
+      - '\mainnet-beta.json'
+      - '-keypair.json'
+      - '_keypair.json'
+    TargetFilename|contains:
+      - '\solana\'
+      - '\.config\solana'
+      - '\solana-wallet'
+  filter_legitimate:
+    Image|endswith:
+      - '\solana.exe'
+      - '\anchor.exe'
+      - '\cargo.exe'
+      - '\node.exe'
+      - '\Code.exe'
+      - '\solana-keygen.exe'
+  filter_cli_tools:
+    Image|contains:
+      - '\solana-'
+      - '\spl-token'
+      - '\anchor-'
+  condition: selection_keypair and not (filter_legitimate or filter_cli_tools)
+falsepositives:
+  - Solana development tools
+  - Backup utilities
+level: critical
+
+---
+title: Unauthorized Solana Keypair File Access (Linux)
+id: web3-sc-sol-001-0002
+status: stable
+description: |
+  Detects unauthorized processes accessing Solana keypair files on Linux systems.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+  - solana
+logsource:
+  category: file_event
+  product: linux
+detection:
+  selection_keypair:
+    TargetFilename|contains:
+      - '/.config/solana/'
+      - '/.solana/'
+      - '/solana/id.json'
+      - '/solana/devnet.json'
+      - '/solana/testnet.json'
+      - '/solana/mainnet'
+      - '-keypair.json'
+  filter_legitimate:
+    Image|endswith:
+      - '/solana'
+      - '/anchor'
+      - '/cargo'
+      - '/node'
+      - '/code'
+      - '/solana-keygen'
+  condition: selection_keypair and not filter_legitimate
+falsepositives:
+  - Solana development tools
+level: critical
+
+---
+title: Solana RPC Endpoint Manipulation
+id: web3-sc-sol-002-0001
+status: stable
+description: |
+  Detects modification of Solana CLI configuration to point to malicious RPC endpoints.
+  Attackers redirect RPC calls to capture private keys or manipulate transaction data.
+references:
+  - https://attack.mitre.org/techniques/T1565/002/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.impact
+  - attack.t1565.002
+  - web3
+  - solana
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_config:
+    Image|endswith:
+      - '\solana.exe'
+      - '/solana'
+    CommandLine|contains:
+      - 'config set'
+      - '--url'
+      - '-u '
+  filter_trusted_rpc:
+    CommandLine|contains:
+      - 'api.mainnet-beta.solana.com'
+      - 'api.devnet.solana.com'
+      - 'api.testnet.solana.com'
+      - 'localhost'
+      - '127.0.0.1'
+      - 'helius-rpc.com'
+      - 'alchemy.com'
+      - 'quicknode.com'
+      - 'ankr.com'
+      - 'genesysgo.net'
+  selection_suspicious:
+    CommandLine|contains:
+      - '.xyz'
+      - '.tk'
+      - '.top'
+      - '.click'
+      - 'ngrok'
+      - 'localtunnel'
+      - 'serveo'
+  condition: selection_config and (not filter_trusted_rpc or selection_suspicious)
+falsepositives:
+  - Custom RPC endpoint configuration
+  - Private validator nodes
+level: high
+
+---
+title: Solana Config File Modification
+id: web3-sc-sol-002-0002
+status: stable
+description: |
+  Detects direct modification of Solana CLI config file which stores RPC endpoint
+  and keypair path configuration.
+references:
+  - https://attack.mitre.org/techniques/T1565/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.impact
+  - attack.t1565.001
+  - web3
+  - solana
+logsource:
+  category: file_event
+  product: any
+detection:
+  selection_config_file:
+    TargetFilename|endswith:
+      - '\.config\solana\cli\config.yml'
+      - '/.config/solana/cli/config.yml'
+  filter_solana_cli:
+    Image|endswith:
+      - '\solana.exe'
+      - '/solana'
+  condition: selection_config_file and not filter_solana_cli
+falsepositives:
+  - Manual configuration editing
+level: medium
+
+---
+title: Durable Nonce Account Creation Abuse
+id: web3-sc-sol-003-0001
+status: stable
+description: |
+  Detects creation of durable nonce accounts which can be abused for replay attacks
+  or delayed transaction execution. Attackers may create nonce accounts to execute
+  pre-signed transactions at arbitrary future times.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+  - https://docs.solana.com/implemented-proposals/durable-tx-nonces
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.execution
+  - attack.t1204.001
+  - web3
+  - solana
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_nonce:
+    CommandLine|contains:
+      - 'create-nonce-account'
+      - 'nonce-account'
+      - 'advance-nonce-account'
+      - 'NonceAccount'
+      - 'durable-nonce'
+      - 'SystemProgram.nonceInitialize'
+      - 'SystemProgram.nonceAdvance'
+  filter_known_tools:
+    Image|endswith:
+      - '\solana.exe'
+      - '/solana'
+    ParentImage|endswith:
+      - '\Code.exe'
+      - '\Terminal.exe'
+      - '\WindowsTerminal.exe'
+      - '/code'
+      - '/bash'
+      - '/zsh'
+  condition: selection_nonce and not filter_known_tools
+falsepositives:
+  - Legitimate durable nonce usage for offline signing
+  - Multi-sig implementations
+level: medium
+
+---
+title: Solana Program Deployment from Suspicious Location
+id: web3-sc-sol-004-0001
+status: stable
+description: |
+  Detects Solana program deployments initiated from temporary directories or
+  suspicious locations that may indicate malicious program deployment.
+references:
+  - https://attack.mitre.org/techniques/T1195/002/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1195.002
+  - web3
+  - solana
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_deploy:
+    CommandLine|contains:
+      - 'program deploy'
+      - 'solana deploy'
+      - 'anchor deploy'
+      - 'BPFLoaderUpgradeab1e'
+  selection_suspicious_path:
+    CommandLine|contains:
+      - '\Temp\'
+      - '\tmp\'
+      - '/tmp/'
+      - '\Downloads\'
+      - '/Downloads/'
+      - '\AppData\Local\Temp'
+      - '\.cache\'
+  condition: selection_deploy and selection_suspicious_path
+falsepositives:
+  - Development workflows using temp directories
+level: medium
+
+---
+title: Suspicious Solana Airdrop Claims
+id: web3-sc-sol-005-0001
+status: stable
+description: |
+  Detects patterns associated with fake Solana airdrop claim operations which may
+  be phishing attempts or wallet drainer entry points.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1204.001
+  - web3
+  - solana
+  - wallet_drainer
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_airdrop:
+    CommandLine|contains:
+      - 'claim-airdrop'
+      - 'claimAirdrop'
+      - 'airdropClaim'
+      - 'merkle-claim'
+      - 'claim-tokens'
+      - 'free-sol'
+      - 'freesol'
+  selection_suspicious:
+    CommandLine|contains:
+      - '--keypair'
+      - '-k '
+      - 'signTransaction'
+      - 'http://'
+      - '.xyz'
+      - '.tk'
+  condition: selection_airdrop and selection_suspicious
+falsepositives:
+  - Legitimate airdrop claims from verified sources
+level: medium
+
+---
+title: Anchor IDL Tampering
+id: web3-sc-sol-006-0001
+status: stable
+description: |
+  Detects modification of Anchor IDL (Interface Definition Language) files outside
+  of normal build processes. Tampered IDLs can cause clients to interact incorrectly
+  with programs, potentially leading to fund theft.
+references:
+  - https://attack.mitre.org/techniques/T1565/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.impact
+  - attack.t1565.001
+  - web3
+  - solana
+logsource:
+  category: file_event
+  product: any
+detection:
+  selection_idl:
+    TargetFilename|endswith:
+      - '.json'
+    TargetFilename|contains:
+      - '/target/idl/'
+      - '\target\idl\'
+      - '/idl/'
+      - '\idl\'
+  filter_build:
+    Image|endswith:
+      - '\anchor.exe'
+      - '/anchor'
+      - '\cargo.exe'
+      - '/cargo'
+      - '\rustc.exe'
+      - '/rustc'
+  condition: selection_idl and not filter_build
+falsepositives:
+  - Manual IDL editing
+  - IDL generation tools
+level: low
+
+---
+title: Solana Token Account Sweep Detection
+id: web3-sc-sol-007-0001
+status: stable
+description: |
+  Detects command patterns indicating automated sweeping of SPL token accounts,
+  a common drainer technique to extract all tokens from compromised wallets.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - web3
+  - solana
+  - wallet_drainer
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_sweep:
+    CommandLine|contains:
+      - 'getTokenAccountsByOwner'
+      - 'getParsedTokenAccountsByOwner'
+      - 'transferChecked'
+      - 'closeAccount'
+      - 'spl-token transfer'
+      - 'spl-token close'
+  selection_bulk:
+    CommandLine|contains:
+      - '--all'
+      - 'forEach'
+      - 'Promise.all'
+      - 'batch'
+      - 'sweep'
+  condition: selection_sweep and selection_bulk
+falsepositives:
+  - Portfolio management tools
+  - Wallet migration scripts
+level: medium
+
+---
+title: Phantom/Solflare Browser Extension IPC Interception
+id: web3-sc-sol-008-0001
+status: stable
+description: |
+  Detects potential interception of browser extension IPC (Inter-Process Communication)
+  channels used by Solana wallet extensions. Malicious extensions may intercept
+  wallet signing requests.
+references:
+  - https://attack.mitre.org/techniques/T1557/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1557
+  - web3
+  - solana
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_extension_paths:
+    CommandLine|contains:
+      - 'chrome-extension://bfnaelmomeimhlpmgjnjophhpkkoljpa'  # Phantom
+      - 'chrome-extension://bhhhlbepdkbapadjdnnojkbgioiodbic'  # Solflare
+      - 'chrome-extension://aflkmfhebedbjioipglgcbcmnbpgliof'  # Backpack
+      - 'chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn'  # MetaMask
+  selection_injection:
+    CommandLine|contains:
+      - 'postMessage'
+      - 'addEventListener'
+      - 'dispatchEvent'
+      - 'window.solana'
+      - 'window.phantom'
+      - 'window.backpack'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\brave.exe'
+      - '\msedge.exe'
+  condition: selection_extension_paths and selection_injection and not filter_browser
+falsepositives:
+  - Web development testing
+  - Browser automation tools
+level: high
+
+# =============================================================================
+# SECTION 6: Cross-Platform Web3 Threats
+# =============================================================================
+
+---
+title: Seed Phrase Extraction Attempt
+id: web3-sc-cross-001-0001
+status: stable
+description: |
+  Detects processes with command-line arguments containing patterns associated with
+  mnemonic seed phrase extraction or manipulation.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+logsource:
+  category: process_creation
+  product: any
+detection:
+  selection_mnemonic:
+    CommandLine|contains:
+      - 'mnemonic'
+      - 'seed phrase'
+      - 'seedphrase'
+      - 'recovery phrase'
+      - 'bip39'
+      - 'bip44'
+      - 'derivation path'
+      - 'm/44'
+      - "m/44'/501'"
+      - "m/44'/60'"
+  selection_extraction:
+    CommandLine|contains:
+      - 'extract'
+      - 'dump'
+      - 'export'
+      - 'backup'
+      - 'recover'
+      - 'decrypt'
+  condition: selection_mnemonic and selection_extraction
+falsepositives:
+  - Legitimate wallet backup operations
+  - Development testing
+level: high
+
+---
+title: Private Key Exfiltration via Network
+id: web3-sc-cross-002-0001
+status: stable
+description: |
+  Detects network traffic patterns associated with private key or wallet credential
+  exfiltration to external servers.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - web3
+logsource:
+  category: network_connection
+  product: any
+detection:
+  selection_suspicious_process:
+    Image|contains:
+      - '\Temp\'
+      - '/tmp/'
+      - '\Downloads\'
+      - '\AppData\Local\'
+  selection_exfil_dest:
+    DestinationPort:
+      - 80
+      - 443
+      - 8080
+      - 8443
+    DestinationHostname|contains:
+      - 'webhook'
+      - 'discord'
+      - 'telegram'
+      - '.ngrok.'
+      - 'requestbin'
+      - 'pipedream'
+      - 'webhook.site'
+  condition: selection_suspicious_process and selection_exfil_dest
+falsepositives:
+  - Legitimate webhook integrations
+level: medium
+
+---
+title: Crypto Wallet Process Memory Access
+id: web3-sc-cross-003-0001
+status: stable
+description: |
+  Detects processes attempting to access memory of cryptocurrency wallet applications.
+  Attackers may dump wallet process memory to extract decrypted private keys.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+  - web3
+logsource:
+  category: process_access
+  product: windows
+detection:
+  selection_wallet_target:
+    TargetImage|endswith:
+      - '\Exodus.exe'
+      - '\Atomic.exe'
+      - '\Ledger Live.exe'
+      - '\electrum.exe'
+      - '\Bitcoin-Qt.exe'
+      - '\solana-keygen.exe'
+  selection_access:
+    GrantedAccess:
+      - '0x1010'  # PROCESS_VM_READ | PROCESS_QUERY_INFORMATION
+      - '0x1410'
+      - '0x1F0FFF'  # PROCESS_ALL_ACCESS
+      - '0x1FFFFF'
+  filter_av:
+    SourceImage|contains:
+      - '\Windows Defender\'
+      - '\ESET\'
+      - '\Kaspersky\'
+      - '\Malwarebytes\'
+  condition: selection_wallet_target and selection_access and not filter_av
+falsepositives:
+  - Security software
+  - System diagnostic tools
+level: critical

@@ -1,0 +1,22 @@
+test_case:
+  name: "Mimikatz Command-Line Detection - Positive Test"
+  description: "Tests detection of Mimikatz sekurlsa::logonpasswords command"
+  rule: "credential_access/mimikatz_patterns.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Tools\\mimikatz.exe"
+        cmdline: "mimikatz.exe sekurlsa::logonpasswords"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        parent_cmdline: "cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 4532
+        ppid: 2048
+        integrity_level: "High"
+        is_elevated: true
+  expected: match
+  expected_severity: critical
+  expected_mitre: ["T1003.001"]
+  tags: ["credential_access", "mimikatz", "positive"]

@@ -1,0 +1,19 @@
+test_case:
+  name: "Registry Run Key Modification"
+  description: "Tests detection of persistence via Run key modification"
+  rule: "persistence/registry_run_keys.yml"
+  rule_type: sigma
+  events:
+    - type: registry_set
+      os_type: windows
+      data:
+        key_path: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Malware"
+        value_name: "Malware"
+        value_data: "C:\\Users\\Public\\malware.exe"
+        value_type: "REG_SZ"
+        process_path: "C:\\Users\\Public\\dropper.exe"
+        process_pid: 2468
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1547.001"]
+  tags: ["persistence", "registry", "positive"]

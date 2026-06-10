@@ -1,0 +1,510 @@
+name: NIST CSF
+full_name: NIST Cybersecurity Framework
+version: "2.0"
+description: Framework for managing and reducing cybersecurity risk
+url: https://www.nist.gov/cyberframework
+
+functions:
+  - Identify
+  - Protect
+  - Detect
+  - Respond
+  - Recover
+
+implementation_tiers:
+  - Tier 1: Partial
+  - Tier 2: Risk Informed
+  - Tier 3: Repeatable
+  - Tier 4: Adaptive
+
+controls:
+  # IDENTIFY Function
+  - id: nist-id.am-1
+    control_id: ID.AM-1
+    title: Physical devices and systems inventory
+    description: Physical devices and systems within the organization are inventoried
+    category: identify
+    subcategory: asset_management
+    severity: high
+    automated: true
+    evidence_types:
+      - asset_inventory
+      - discovery_scans
+      - cmdb_exports
+    validation_query: asset_inventory_current
+    remediation_steps:
+      - Deploy asset discovery tools
+      - Maintain current inventory database
+      - Conduct regular inventory audits
+
+  - id: nist-id.am-2
+    control_id: ID.AM-2
+    title: Software platforms and applications inventory
+    description: Software platforms and applications are inventoried
+    category: identify
+    subcategory: asset_management
+    severity: high
+    automated: true
+    evidence_types:
+      - software_inventory
+      - license_tracking
+      - application_catalog
+    validation_query: software_inventory_current
+    remediation_steps:
+      - Implement software asset management
+      - Track all installed software
+      - Monitor for unauthorized applications
+
+  - id: nist-id.ra-1
+    control_id: ID.RA-1
+    title: Asset vulnerabilities identified and documented
+    description: Asset vulnerabilities are identified and documented
+    category: identify
+    subcategory: risk_assessment
+    severity: critical
+    automated: true
+    evidence_types:
+      - vulnerability_scans
+      - assessment_reports
+      - risk_register
+    validation_query: vulnerabilities_identified
+    remediation_steps:
+      - Conduct regular vulnerability assessments
+      - Document identified vulnerabilities
+      - Maintain risk register
+
+  - id: nist-id.ra-3
+    control_id: ID.RA-3
+    title: Threats identified and documented
+    description: Threats, both internal and external, are identified and documented
+    category: identify
+    subcategory: risk_assessment
+    severity: high
+    automated: true
+    evidence_types:
+      - threat_intelligence
+      - threat_models
+      - risk_assessments
+    validation_query: threats_documented
+    remediation_steps:
+      - Conduct threat modeling
+      - Subscribe to threat intelligence feeds
+      - Document threat landscape
+
+  - id: nist-id.ra-5
+    control_id: ID.RA-5
+    title: Threats, vulnerabilities, and impacts prioritized
+    description: Threats, vulnerabilities, likelihoods, and impacts used to determine risk
+    category: identify
+    subcategory: risk_assessment
+    severity: critical
+    automated: true
+    evidence_types:
+      - risk_assessments
+      - prioritization_matrix
+      - remediation_plans
+    validation_query: risks_prioritized
+    remediation_steps:
+      - Implement risk scoring methodology
+      - Prioritize based on impact and likelihood
+      - Develop remediation roadmap
+
+  # PROTECT Function
+  - id: nist-pr.ac-1
+    control_id: PR.AC-1
+    title: Identities and credentials managed
+    description: Identities and credentials are issued, managed, verified, revoked, and audited
+    category: protect
+    subcategory: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - identity_management
+      - credential_lifecycle
+      - audit_logs
+    validation_query: identity_management_implemented
+    remediation_steps:
+      - Deploy identity management system
+      - Implement credential lifecycle management
+      - Audit identity changes
+
+  - id: nist-pr.ac-3
+    control_id: PR.AC-3
+    title: Remote access managed
+    description: Remote access is managed
+    category: protect
+    subcategory: access_control
+    severity: high
+    automated: true
+    evidence_types:
+      - vpn_configs
+      - remote_access_logs
+      - mfa_enforcement
+    validation_query: remote_access_managed
+    remediation_steps:
+      - Implement VPN or zero-trust access
+      - Enforce MFA for remote access
+      - Monitor remote sessions
+
+  - id: nist-pr.ac-4
+    control_id: PR.AC-4
+    title: Access permissions and authorizations managed
+    description: Access permissions and authorizations are managed
+    category: protect
+    subcategory: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - rbac_configs
+      - access_reviews
+      - permission_reports
+    validation_query: access_managed
+    remediation_steps:
+      - Implement role-based access control
+      - Conduct quarterly access reviews
+      - Remove unnecessary permissions
+
+  - id: nist-pr.ac-7
+    control_id: PR.AC-7
+    title: Users, devices, and assets authenticated
+    description: Users, devices, and other assets are authenticated
+    category: protect
+    subcategory: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - authentication_configs
+      - device_certificates
+      - authentication_logs
+    validation_query: authentication_enforced
+    remediation_steps:
+      - Implement strong authentication
+      - Deploy device certificates
+      - Monitor authentication attempts
+
+  - id: nist-pr.ds-1
+    control_id: PR.DS-1
+    title: Data-at-rest protected
+    description: Data-at-rest is protected
+    category: protect
+    subcategory: data_security
+    severity: critical
+    automated: true
+    evidence_types:
+      - encryption_status
+      - disk_encryption
+      - database_encryption
+    validation_query: data_at_rest_encrypted
+    remediation_steps:
+      - Enable full disk encryption
+      - Encrypt databases
+      - Manage encryption keys securely
+
+  - id: nist-pr.ds-2
+    control_id: PR.DS-2
+    title: Data-in-transit protected
+    description: Data-in-transit is protected
+    category: protect
+    subcategory: data_security
+    severity: critical
+    automated: true
+    evidence_types:
+      - tls_configs
+      - vpn_encryption
+      - network_security
+    validation_query: data_in_transit_encrypted
+    remediation_steps:
+      - Enforce TLS 1.2 or higher
+      - Encrypt all network communications
+      - Disable insecure protocols
+
+  - id: nist-pr.ds-5
+    control_id: PR.DS-5
+    title: Protections against data leaks implemented
+    description: Protections against data leaks are implemented
+    category: protect
+    subcategory: data_security
+    severity: high
+    automated: true
+    evidence_types:
+      - dlp_configs
+      - dlp_incidents
+      - monitoring_logs
+    validation_query: dlp_implemented
+    remediation_steps:
+      - Deploy DLP solution
+      - Define data classification
+      - Monitor for data exfiltration
+
+  - id: nist-pr.ip-1
+    control_id: PR.IP-1
+    title: Baseline configuration created and maintained
+    description: A baseline configuration of information technology/industrial control systems is created and maintained
+    category: protect
+    subcategory: information_protection
+    severity: high
+    automated: true
+    evidence_types:
+      - baseline_configs
+      - compliance_scans
+      - deviation_reports
+    validation_query: baselines_maintained
+    remediation_steps:
+      - Define security baselines
+      - Implement configuration management
+      - Monitor configuration drift
+
+  - id: nist-pr.pt-1
+    control_id: PR.PT-1
+    title: Audit/log records determined and documented
+    description: Audit/log records are determined, documented, implemented, and reviewed
+    category: protect
+    subcategory: protective_technology
+    severity: high
+    automated: true
+    evidence_types:
+      - logging_policies
+      - log_configs
+      - log_reviews
+    validation_query: logging_implemented
+    remediation_steps:
+      - Define logging requirements
+      - Implement comprehensive logging
+      - Review logs regularly
+
+  # DETECT Function
+  - id: nist-de.ae-1
+    control_id: DE.AE-1
+    title: Network baseline established
+    description: A baseline of network operations and expected data flows is established and managed
+    category: detect
+    subcategory: anomalies_events
+    severity: high
+    automated: true
+    evidence_types:
+      - network_baselines
+      - traffic_patterns
+      - anomaly_reports
+    validation_query: network_baseline_established
+    remediation_steps:
+      - Establish network traffic baselines
+      - Monitor for deviations
+      - Update baselines regularly
+
+  - id: nist-de.ae-2
+    control_id: DE.AE-2
+    title: Detected events analyzed
+    description: Detected events are analyzed to understand attack targets and methods
+    category: detect
+    subcategory: anomalies_events
+    severity: critical
+    automated: true
+    evidence_types:
+      - event_analysis
+      - incident_reports
+      - attack_patterns
+    validation_query: events_analyzed
+    remediation_steps:
+      - Implement SIEM/EDR
+      - Analyze security events
+      - Document attack patterns
+
+  - id: nist-de.cm-1
+    control_id: DE.CM-1
+    title: Network monitored
+    description: The network is monitored to detect potential cybersecurity events
+    category: detect
+    subcategory: continuous_monitoring
+    severity: critical
+    automated: true
+    evidence_types:
+      - network_monitoring
+      - ids_ips_logs
+      - detection_rules
+    validation_query: network_monitored
+    remediation_steps:
+      - Deploy network monitoring tools
+      - Configure IDS/IPS
+      - Monitor continuously
+
+  - id: nist-de.cm-4
+    control_id: DE.CM-4
+    title: Malicious code detected
+    description: Malicious code is detected
+    category: detect
+    subcategory: continuous_monitoring
+    severity: critical
+    automated: true
+    evidence_types:
+      - av_logs
+      - edr_detections
+      - malware_analysis
+    validation_query: malware_detection_enabled
+    remediation_steps:
+      - Deploy EDR solution
+      - Enable real-time malware detection
+      - Analyze detected malware
+
+  - id: nist-de.cm-7
+    control_id: DE.CM-7
+    title: Unauthorized personnel, connections, devices, and software detected
+    description: Unauthorized personnel, connections, devices, and software are detected
+    category: detect
+    subcategory: continuous_monitoring
+    severity: high
+    automated: true
+    evidence_types:
+      - access_logs
+      - network_discovery
+      - software_inventory
+    validation_query: unauthorized_activity_detected
+    remediation_steps:
+      - Monitor for unauthorized access
+      - Detect rogue devices
+      - Identify unauthorized software
+
+  # RESPOND Function
+  - id: nist-rs.an-1
+    control_id: RS.AN-1
+    title: Notifications received investigated
+    description: Notifications from detection systems are investigated
+    category: respond
+    subcategory: analysis
+    severity: critical
+    automated: true
+    evidence_types:
+      - investigation_logs
+      - alert_triage
+      - analyst_notes
+    validation_query: notifications_investigated
+    remediation_steps:
+      - Establish alert triage process
+      - Investigate all critical alerts
+      - Document investigation findings
+
+  - id: nist-rs.an-3
+    control_id: RS.AN-3
+    title: Forensics performed
+    description: Forensics are performed
+    category: respond
+    subcategory: analysis
+    severity: high
+    automated: false
+    evidence_types:
+      - forensic_reports
+      - evidence_collection
+      - chain_of_custody
+    validation_query: null
+    remediation_steps:
+      - Develop forensic capabilities
+      - Preserve evidence properly
+      - Maintain chain of custody
+
+  - id: nist-rs.co-2
+    control_id: RS.CO-2
+    title: Incidents reported
+    description: Incidents are reported consistent with established criteria
+    category: respond
+    subcategory: communications
+    severity: high
+    automated: true
+    evidence_types:
+      - incident_reports
+      - escalation_logs
+      - notification_records
+    validation_query: incidents_reported
+    remediation_steps:
+      - Define incident reporting criteria
+      - Implement reporting workflow
+      - Track all incident reports
+
+  - id: nist-rs.mi-1
+    control_id: RS.MI-1
+    title: Incidents contained
+    description: Incidents are contained
+    category: respond
+    subcategory: mitigation
+    severity: critical
+    automated: true
+    evidence_types:
+      - containment_actions
+      - isolation_logs
+      - response_timeline
+    validation_query: incidents_contained
+    remediation_steps:
+      - Implement automated containment
+      - Isolate affected systems
+      - Prevent lateral movement
+
+  - id: nist-rs.mi-2
+    control_id: RS.MI-2
+    title: Incidents mitigated
+    description: Incidents are mitigated
+    category: respond
+    subcategory: mitigation
+    severity: critical
+    automated: true
+    evidence_types:
+      - mitigation_actions
+      - remediation_logs
+      - verification_reports
+    validation_query: incidents_mitigated
+    remediation_steps:
+      - Execute response playbooks
+      - Remediate vulnerabilities
+      - Verify mitigation effectiveness
+
+  # RECOVER Function
+  - id: nist-rc.rp-1
+    control_id: RC.RP-1
+    title: Recovery plan executed
+    description: Recovery plan is executed during or after a cybersecurity incident
+    category: recover
+    subcategory: recovery_planning
+    severity: high
+    automated: false
+    evidence_types:
+      - recovery_plans
+      - execution_logs
+      - recovery_reports
+    validation_query: null
+    remediation_steps:
+      - Develop recovery plans
+      - Test recovery procedures
+      - Document recovery execution
+
+  - id: nist-rc.im-1
+    control_id: RC.IM-1
+    title: Recovery plans incorporate lessons learned
+    description: Recovery plans incorporate lessons learned
+    category: recover
+    subcategory: improvements
+    severity: medium
+    automated: false
+    evidence_types:
+      - lessons_learned
+      - plan_updates
+      - improvement_tracking
+    validation_query: null
+    remediation_steps:
+      - Conduct post-incident reviews
+      - Document lessons learned
+      - Update recovery plans
+
+  - id: nist-rc.im-2
+    control_id: RC.IM-2
+    title: Recovery strategies updated
+    description: Recovery strategies are updated
+    category: recover
+    subcategory: improvements
+    severity: medium
+    automated: false
+    evidence_types:
+      - strategy_reviews
+      - update_records
+      - testing_results
+    validation_query: null
+    remediation_steps:
+      - Review recovery strategies annually
+      - Update based on new threats
+      - Test updated strategies

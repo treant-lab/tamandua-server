@@ -1,0 +1,71 @@
+name: Lateral Movement Detection (Basic)
+description: |
+  Basic workflow for detecting lateral movement using PsExec, WMI, and SMB.
+  Suitable for analysts new to threat hunting.
+category: lateral_movement
+
+metadata:
+  mitre_techniques:
+    - T1021
+    - T1021.001
+    - T1021.002
+  mitre_tactics:
+    - lateral-movement
+  difficulty: easy
+  expected_duration_minutes: 20
+  version: 1.0
+  author: Tamandua Security Team
+
+steps:
+  - type: query
+    name: Find Remote Execution Tools
+    description: Search for common remote execution tools (PsExec, WMI, WinRM)
+    query_template: |
+      event_type:process_create AND (
+        name:(psexec.exe OR wmic.exe OR winrs.exe OR wsmprovhost.exe)
+      )
+    expected_results: Remote execution attempts
+    next_actions:
+      found: 1
+      not_found: 4
+
+  - type: manual_review
+    name: Review Findings
+    description: Review the remote execution attempts found
+    review_checklist:
+      - Are these from known admin workstations?
+      - Is the timing consistent with scheduled maintenance?
+      - Are the user accounts authorized for remote admin?
+      - Are there multiple attempts from the same source?
+
+  - type: decision
+    name: Classify Activity
+    description: Determine if the activity is legitimate or suspicious
+    decision_criteria:
+      - User has remote admin privileges
+      - Source is known admin workstation
+      - Timing is during business hours
+      - Activity matches change tickets
+    next_actions:
+      legitimate: 4
+      suspicious: 3
+
+  - type: collect_evidence
+    name: Gather Supporting Evidence
+    description: Collect related authentication and network events
+    evidence_queries:
+      - parent_process_chain
+      - network_connections_same_timeframe
+      - authentication_events
+
+  - type: create_alert
+    name: Generate Alert
+    description: Create alert for suspicious lateral movement
+    alert_config:
+      severity: high
+      title: Suspicious Lateral Movement Detected
+      recommended_actions:
+        - Investigate source host for compromise
+        - Review account activity for signs of credential theft
+        - Check for additional lateral movement attempts
+        - Consider isolating affected hosts

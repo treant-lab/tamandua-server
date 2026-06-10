@@ -1,0 +1,22 @@
+{
+  "coverage_options": {
+    "minimum_coverage": 85,
+    "treat_no_relevant_lines_as_covered": true,
+    "output_dir": "cover/",
+    "template_path": null
+  },
+  "terminal_options": {
+    "file_column_width": 40
+  },
+  "skip_files": [
+    "test/",
+    "deps/",
+    "_build/",
+    "priv/repo/migrations/",
+    "lib/tamandua_server_web/gettext.ex",
+    "lib/tamandua_server_web/telemetry.ex",
+    "lib/tamandua_server/application.ex",
+    "lib/tamandua_server/release.ex"
+  ],
+  "custom_stop_words": []
+}

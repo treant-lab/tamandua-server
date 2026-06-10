@@ -1,0 +1,784 @@
+# GCP CIS Benchmark v2.0.0 - Security Policies
+# Based on Center for Internet Security Google Cloud Platform Foundation Benchmark
+
+policies:
+  # ============================================================================
+  # Section 1 - Identity and Access Management
+  # ============================================================================
+
+  - id: gcp-iam-001
+    name: Service account has user-managed keys
+    description: Avoid user-managed service account keys. Use workload identity or attached service accounts.
+    provider: gcp
+    resource_type: gcp_service_account
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 1.4
+      - NIST 800-53 IA-5
+    condition:
+      field: metadata.has_user_managed_keys
+      operator: is_true
+    recommendation: Avoid user-managed keys. Use workload identity or attached service accounts.
+    remediation:
+      gcloud: |
+        # List and delete user-managed keys
+        gcloud iam service-accounts keys list --iam-account <sa-email>
+        gcloud iam service-accounts keys delete <key-id> --iam-account <sa-email>
+
+  - id: gcp-iam-002
+    name: Service account has owner role
+    description: Service accounts should not have the Owner role on the project.
+    provider: gcp
+    resource_type: gcp_iam_policy
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS GCP 1.5
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.service_account_has_owner
+      operator: is_true
+    recommendation: Remove Owner role from service accounts. Use specific roles instead.
+    remediation:
+      gcloud: |
+        gcloud projects remove-iam-policy-binding <project-id> \
+          --member="serviceAccount:<sa-email>" \
+          --role="roles/owner"
+
+  - id: gcp-iam-003
+    name: Primitive roles in use
+    description: Avoid using primitive roles (Owner, Editor, Viewer). Use predefined or custom roles.
+    provider: gcp
+    resource_type: gcp_iam_policy
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 1.6
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.has_primitive_roles
+      operator: is_true
+    recommendation: Replace primitive roles with predefined or custom roles following least privilege.
+    remediation:
+      gcloud: |
+        # Remove primitive role
+        gcloud projects remove-iam-policy-binding <project-id> \
+          --member="user:<email>" \
+          --role="roles/editor"
+        # Add specific role
+        gcloud projects add-iam-policy-binding <project-id> \
+          --member="user:<email>" \
+          --role="roles/compute.viewer"
+
+  - id: gcp-iam-004
+    name: Service account key older than 90 days
+    description: Service account keys should be rotated regularly.
+    provider: gcp
+    resource_type: gcp_service_account
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 1.7
+      - PCI DSS 8.2.4
+      - NIST 800-53 IA-5
+    condition:
+      field: metadata.oldest_key_age_days
+      operator: greater_than
+      value: 90
+    recommendation: Rotate service account keys regularly.
+    remediation:
+      gcloud: |
+        # Create new key
+        gcloud iam service-accounts keys create new-key.json --iam-account <sa-email>
+        # Delete old key
+        gcloud iam service-accounts keys delete <old-key-id> --iam-account <sa-email>
+
+  # ============================================================================
+  # Section 2 - Logging and Monitoring
+  # ============================================================================
+
+  - id: gcp-logging-001
+    name: Data access audit logs not enabled
+    description: Enable Data Access audit logs for all services.
+    provider: gcp
+    resource_type: gcp_audit_log
+    severity: high
+    category: logging_monitoring
+    compliance:
+      - CIS GCP 2.1
+      - PCI DSS 10.2
+      - NIST 800-53 AU-2
+    condition:
+      field: metadata.data_access_logs_enabled
+      operator: is_false
+    recommendation: Enable DATA_READ and DATA_WRITE audit logs for all services.
+    remediation:
+      gcloud: |
+        # Enable audit logs via IAM policy
+        gcloud projects get-iam-policy <project-id> --format=yaml > policy.yaml
+        # Edit policy.yaml to add auditConfigs
+        # Apply updated policy
+        gcloud projects set-iam-policy <project-id> policy.yaml
+
+  - id: gcp-logging-002
+    name: Log sinks not configured
+    description: Log sinks should be configured for log export to Cloud Storage or BigQuery.
+    provider: gcp
+    resource_type: gcp_project
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS GCP 2.2
+      - NIST 800-53 AU-6
+    condition:
+      field: metadata.has_log_sinks
+      operator: is_false
+    recommendation: Configure log sinks to export logs to Cloud Storage or BigQuery.
+    remediation:
+      gcloud: |
+        gcloud logging sinks create <sink-name> \
+          storage.googleapis.com/<bucket-name> \
+          --log-filter="severity>=INFO"
+
+  - id: gcp-logging-003
+    name: Log retention period not configured
+    description: Cloud Logging retention should be configured based on compliance requirements.
+    provider: gcp
+    resource_type: gcp_logging_bucket
+    severity: low
+    category: logging_monitoring
+    compliance:
+      - CIS GCP 2.3
+      - PCI DSS 10.7
+      - NIST 800-53 AU-11
+    condition:
+      or:
+        - field: metadata.retention_days
+          operator: is_nil
+        - field: metadata.retention_days
+          operator: less_than
+          value: 365
+    recommendation: Configure appropriate log retention period based on compliance requirements.
+    remediation:
+      gcloud: |
+        gcloud logging buckets update _Default \
+          --location=global \
+          --retention-days=365
+
+  # ============================================================================
+  # Section 3 - Networking
+  # ============================================================================
+
+  - id: gcp-vpc-001
+    name: Default VPC network in use
+    description: Delete the default VPC network and create custom VPCs with appropriate firewall rules.
+    provider: gcp
+    resource_type: gcp_vpc_network
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS GCP 3.1
+      - NIST 800-53 CM-2
+    condition:
+      field: name
+      operator: equals
+      value: default
+    recommendation: Delete the default network and create custom VPCs with appropriate firewall rules.
+    remediation:
+      gcloud: |
+        # Delete default network (after removing resources)
+        gcloud compute networks delete default
+        # Create custom VPC
+        gcloud compute networks create <network-name> --subnet-mode=custom
+
+  - id: gcp-firewall-001
+    name: Firewall allows unrestricted SSH
+    description: Firewall rules should not allow unrestricted SSH access from the internet.
+    provider: gcp
+    resource_type: gcp_firewall_rule
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS GCP 3.6
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_ssh
+      operator: is_true
+    recommendation: Restrict SSH access to specific IP ranges or use Cloud IAP.
+    remediation:
+      terraform: |
+        resource "google_compute_firewall" "allow_ssh" {
+          name    = "allow-ssh"
+          network = google_compute_network.vpc.name
+
+          allow {
+            protocol = "tcp"
+            ports    = ["22"]
+          }
+
+          source_ranges = ["10.0.0.0/8"]  # Internal only
+        }
+      gcloud: |
+        gcloud compute firewall-rules update <rule-name> \
+          --source-ranges="10.0.0.0/8"
+
+  - id: gcp-firewall-002
+    name: Firewall allows unrestricted RDP
+    description: Firewall rules should not allow unrestricted RDP access from the internet.
+    provider: gcp
+    resource_type: gcp_firewall_rule
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS GCP 3.7
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_rdp
+      operator: is_true
+    recommendation: Restrict RDP access to specific IP ranges or use Cloud IAP.
+    remediation:
+      gcloud: |
+        gcloud compute firewall-rules update <rule-name> \
+          --source-ranges="10.0.0.0/8"
+
+  - id: gcp-firewall-003
+    name: Firewall allows all inbound traffic
+    description: Firewall rules should not allow all inbound traffic from the internet.
+    provider: gcp
+    resource_type: gcp_firewall_rule
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS GCP 3.6
+      - PCI DSS 1.2.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_all_inbound
+      operator: is_true
+    recommendation: Remove the rule or restrict to specific ports and source ranges.
+    remediation:
+      gcloud: |
+        gcloud compute firewall-rules delete <rule-name>
+
+  # ============================================================================
+  # Section 4 - Compute Engine
+  # ============================================================================
+
+  - id: gcp-compute-001
+    name: Instance uses default service account
+    description: Compute instances should not use the default Compute Engine service account.
+    provider: gcp
+    resource_type: gcp_compute_instance
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 4.1
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.uses_default_service_account
+      operator: is_true
+    recommendation: Create a custom service account with minimal required permissions.
+    remediation:
+      terraform: |
+        resource "google_compute_instance" "example" {
+          name         = "example-instance"
+          machine_type = "e2-medium"
+
+          service_account {
+            email  = google_service_account.custom.email
+            scopes = ["cloud-platform"]
+          }
+        }
+
+  - id: gcp-compute-002
+    name: Instance has full API access scope
+    description: Compute instances should not use the cloud-platform scope.
+    provider: gcp
+    resource_type: gcp_compute_instance
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS GCP 4.2
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.has_full_api_access
+      operator: is_true
+    recommendation: Use specific scopes instead of cloud-platform for principle of least privilege.
+    remediation:
+      terraform: |
+        resource "google_compute_instance" "example" {
+          name         = "example-instance"
+
+          service_account {
+            email  = google_service_account.custom.email
+            scopes = [
+              "https://www.googleapis.com/auth/compute.readonly",
+              "https://www.googleapis.com/auth/devstorage.read_only"
+            ]
+          }
+        }
+
+  - id: gcp-compute-003
+    name: Instance disks not using CMEK
+    description: Compute instance disks should use Customer-Managed Encryption Keys.
+    provider: gcp
+    resource_type: gcp_compute_instance
+    severity: low
+    category: data_protection
+    compliance:
+      - CIS GCP 4.7
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.uses_cmek
+      operator: is_false
+    recommendation: Consider using Customer-Managed Encryption Keys for sensitive workloads.
+    remediation:
+      terraform: |
+        resource "google_compute_disk" "example" {
+          name = "example-disk"
+          disk_encryption_key {
+            kms_key_self_link = google_kms_crypto_key.example.id
+          }
+        }
+
+  - id: gcp-compute-004
+    name: Shielded VM not enabled
+    description: Compute instances should have Shielded VM features enabled.
+    provider: gcp
+    resource_type: gcp_compute_instance
+    severity: medium
+    category: compute_security
+    compliance:
+      - CIS GCP 4.8
+      - NIST 800-53 SI-7
+    condition:
+      or:
+        - field: metadata.shielded_instance_config
+          operator: is_nil
+        - field: metadata.shielded_instance_config.enableSecureBoot
+          operator: is_false
+    recommendation: Enable Shielded VM features including Secure Boot.
+    remediation:
+      terraform: |
+        resource "google_compute_instance" "example" {
+          name = "example-instance"
+
+          shielded_instance_config {
+            enable_secure_boot          = true
+            enable_vtpm                 = true
+            enable_integrity_monitoring = true
+          }
+        }
+
+  - id: gcp-compute-005
+    name: Instance has external IP
+    description: Compute instances should not have external IP addresses unless necessary.
+    provider: gcp
+    resource_type: gcp_compute_instance
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS GCP 4.9
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.has_external_ip
+      operator: is_true
+    recommendation: Remove external IP and use Cloud NAT for outbound traffic or Cloud IAP for SSH.
+    remediation:
+      gcloud: |
+        # Remove external IP
+        gcloud compute instances delete-access-config <instance-name> \
+          --zone=<zone> \
+          --access-config-name="External NAT"
+
+  # ============================================================================
+  # Section 5 - Cloud Storage
+  # ============================================================================
+
+  - id: gcp-storage-001
+    name: Storage bucket is publicly accessible
+    description: Cloud Storage buckets should not allow public access.
+    provider: gcp
+    resource_type: gcp_storage_bucket
+    severity: critical
+    category: data_protection
+    compliance:
+      - CIS GCP 5.1
+      - PCI DSS 7.1
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.is_public
+      operator: is_true
+    recommendation: Remove public access and enable uniform bucket-level access.
+    remediation:
+      gcloud: |
+        # Remove allUsers and allAuthenticatedUsers from IAM
+        gsutil iam ch -d allUsers gs://<bucket-name>
+        gsutil iam ch -d allAuthenticatedUsers gs://<bucket-name>
+
+  - id: gcp-storage-002
+    name: Uniform bucket-level access not enabled
+    description: Enable uniform bucket-level access for consistent IAM policies.
+    provider: gcp
+    resource_type: gcp_storage_bucket
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 5.2
+      - NIST 800-53 AC-3
+    condition:
+      or:
+        - field: metadata.iam_configuration
+          operator: is_nil
+        - field: metadata.iam_configuration.uniformBucketLevelAccess.enabled
+          operator: is_false
+    recommendation: Enable uniform bucket-level access for consistent IAM policies.
+    remediation:
+      gcloud: |
+        gsutil uniformbucketlevelaccess set on gs://<bucket-name>
+
+  - id: gcp-storage-003
+    name: Storage bucket versioning disabled
+    description: Enable versioning to protect against accidental deletion.
+    provider: gcp
+    resource_type: gcp_storage_bucket
+    severity: medium
+    category: data_protection
+    compliance:
+      - GCP Best Practices
+      - NIST 800-53 CP-9
+    condition:
+      or:
+        - field: metadata.versioning
+          operator: is_nil
+        - field: metadata.versioning.enabled
+          operator: is_false
+    recommendation: Enable versioning to protect against accidental deletion.
+    remediation:
+      gcloud: |
+        gsutil versioning set on gs://<bucket-name>
+
+  - id: gcp-storage-004
+    name: Storage bucket access logging disabled
+    description: Enable access logging to track bucket access.
+    provider: gcp
+    resource_type: gcp_storage_bucket
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS GCP 5.3
+      - PCI DSS 10.2
+      - NIST 800-53 AU-2
+    condition:
+      field: metadata.logging
+      operator: is_nil
+    recommendation: Enable access logging to track bucket access.
+    remediation:
+      gcloud: |
+        gsutil logging set on -b gs://<log-bucket> gs://<bucket-name>
+
+  # ============================================================================
+  # Section 6 - Cloud SQL
+  # ============================================================================
+
+  - id: gcp-sql-001
+    name: Cloud SQL does not require SSL
+    description: Cloud SQL instances should require SSL connections.
+    provider: gcp
+    resource_type: gcp_sql_instance
+    severity: high
+    category: network_security
+    compliance:
+      - CIS GCP 6.1
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.ip_configuration.requireSsl
+      operator: is_false
+    recommendation: Enable 'Require SSL' for all connections.
+    remediation:
+      gcloud: |
+        gcloud sql instances patch <instance-name> --require-ssl
+
+  - id: gcp-sql-002
+    name: Cloud SQL accessible from any IP
+    description: Cloud SQL should not allow connections from 0.0.0.0/0.
+    provider: gcp
+    resource_type: gcp_sql_instance
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS GCP 6.5
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_all_ips
+      operator: is_true
+    recommendation: Restrict authorized networks to specific IP ranges.
+    remediation:
+      gcloud: |
+        gcloud sql instances patch <instance-name> \
+          --authorized-networks="10.0.0.0/8"
+
+  - id: gcp-sql-003
+    name: Cloud SQL has public IP
+    description: Cloud SQL instances should use private IP only.
+    provider: gcp
+    resource_type: gcp_sql_instance
+    severity: high
+    category: network_security
+    compliance:
+      - CIS GCP 6.6
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.ip_configuration.ipv4Enabled
+      operator: is_true
+    recommendation: Disable public IP and use Private IP with Private Service Access.
+    remediation:
+      gcloud: |
+        gcloud sql instances patch <instance-name> --no-assign-ip
+
+  - id: gcp-sql-004
+    name: Cloud SQL automated backups disabled
+    description: Cloud SQL instances should have automated backups enabled.
+    provider: gcp
+    resource_type: gcp_sql_instance
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS GCP 6.7
+      - PCI DSS 10.7
+      - NIST 800-53 CP-9
+    condition:
+      or:
+        - field: metadata.backup_configuration
+          operator: is_nil
+        - field: metadata.backup_configuration.enabled
+          operator: is_false
+    recommendation: Enable automated backups for data protection.
+    remediation:
+      gcloud: |
+        gcloud sql instances patch <instance-name> \
+          --backup-start-time="03:00"
+
+  # ============================================================================
+  # Section 7 - GKE
+  # ============================================================================
+
+  - id: gcp-gke-001
+    name: GKE legacy ABAC enabled
+    description: GKE clusters should not have legacy ABAC enabled.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS GCP 7.3
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.legacy_abac
+      operator: is_true
+    recommendation: Disable legacy ABAC and use RBAC instead.
+    remediation:
+      gcloud: |
+        gcloud container clusters update <cluster-name> \
+          --no-enable-legacy-authorization
+
+  - id: gcp-gke-002
+    name: GKE uses client certificate auth
+    description: GKE clusters should not use client certificate authentication.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 7.10
+      - NIST 800-53 IA-2
+    condition:
+      field: metadata.has_client_certificate
+      operator: is_true
+    recommendation: Disable client certificate authentication and use Google Cloud IAM.
+    remediation:
+      gcloud: |
+        # Note: Cannot be changed on existing clusters
+        # Create new cluster without client certificate
+        gcloud container clusters create <cluster-name> \
+          --no-issue-client-certificate
+
+  - id: gcp-gke-003
+    name: GKE network policy disabled
+    description: GKE clusters should have network policy enabled.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS GCP 7.11
+      - NIST 800-53 AC-4
+    condition:
+      or:
+        - field: metadata.network_policy
+          operator: is_nil
+        - field: metadata.network_policy.enabled
+          operator: is_false
+    recommendation: Enable network policy for pod-level network segmentation.
+    remediation:
+      gcloud: |
+        gcloud container clusters update <cluster-name> \
+          --enable-network-policy
+
+  - id: gcp-gke-004
+    name: GKE not using private nodes
+    description: GKE clusters should use private nodes.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS GCP 7.15
+      - NIST 800-53 AC-4
+    condition:
+      or:
+        - field: metadata.private_cluster_config
+          operator: is_nil
+        - field: metadata.private_cluster_config.enablePrivateNodes
+          operator: is_false
+    recommendation: Enable private nodes to remove external IP addresses from nodes.
+    remediation:
+      gcloud: |
+        # Note: Cannot be changed on existing clusters
+        gcloud container clusters create <cluster-name> \
+          --enable-private-nodes \
+          --master-ipv4-cidr=172.16.0.0/28
+
+  - id: gcp-gke-005
+    name: GKE workload identity disabled
+    description: GKE clusters should have workload identity enabled.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS GCP 7.17
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.workload_identity
+      operator: is_nil
+    recommendation: Enable workload identity for secure access to Google Cloud APIs.
+    remediation:
+      gcloud: |
+        gcloud container clusters update <cluster-name> \
+          --workload-pool=<project-id>.svc.id.goog
+
+  - id: gcp-gke-006
+    name: GKE shielded nodes disabled
+    description: GKE clusters should have shielded nodes enabled.
+    provider: gcp
+    resource_type: gcp_gke_cluster
+    severity: medium
+    category: compute_security
+    compliance:
+      - CIS GCP 7.18
+      - NIST 800-53 SI-7
+    condition:
+      or:
+        - field: metadata.shielded_nodes
+          operator: is_nil
+        - field: metadata.shielded_nodes.enabled
+          operator: is_false
+    recommendation: Enable shielded nodes for enhanced node security.
+    remediation:
+      gcloud: |
+        gcloud container clusters update <cluster-name> \
+          --enable-shielded-nodes
+
+  # ============================================================================
+  # Section 8 - BigQuery
+  # ============================================================================
+
+  - id: gcp-bq-001
+    name: BigQuery dataset publicly accessible
+    description: BigQuery datasets should not be publicly accessible.
+    provider: gcp
+    resource_type: gcp_bigquery_dataset
+    severity: critical
+    category: data_protection
+    compliance:
+      - CIS GCP 7.1
+      - PCI DSS 7.1
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.is_public
+      operator: is_true
+    recommendation: Remove public access from BigQuery datasets.
+    remediation:
+      gcloud: |
+        # Remove allUsers and allAuthenticatedUsers from dataset IAM
+        bq update --dataset <project-id>:<dataset> --default_table_expiration 0
+
+  - id: gcp-bq-002
+    name: BigQuery dataset not using CMEK
+    description: BigQuery datasets should use Customer-Managed Encryption Keys.
+    provider: gcp
+    resource_type: gcp_bigquery_dataset
+    severity: low
+    category: data_protection
+    compliance:
+      - CIS GCP 7.2
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.default_encryption_configuration
+      operator: is_nil
+    recommendation: Configure CMEK for BigQuery datasets containing sensitive data.
+    remediation:
+      terraform: |
+        resource "google_bigquery_dataset" "example" {
+          dataset_id = "example_dataset"
+
+          default_encryption_configuration {
+            kms_key_name = google_kms_crypto_key.example.id
+          }
+        }
+
+  # ============================================================================
+  # Section 9 - KMS
+  # ============================================================================
+
+  - id: gcp-kms-001
+    name: KMS key rotation period exceeds 90 days
+    description: KMS keys should be rotated at least every 90 days.
+    provider: gcp
+    resource_type: gcp_kms_crypto_key
+    severity: medium
+    category: encryption
+    compliance:
+      - CIS GCP 1.10
+      - PCI DSS 3.5.2
+      - NIST 800-53 SC-12
+    condition:
+      or:
+        - field: metadata.rotation_period
+          operator: is_nil
+        - field: metadata.rotation_period_days
+          operator: greater_than
+          value: 90
+    recommendation: Configure automatic key rotation with a period of 90 days or less.
+    remediation:
+      terraform: |
+        resource "google_kms_crypto_key" "example" {
+          name            = "example-key"
+          key_ring        = google_kms_key_ring.example.id
+          rotation_period = "7776000s"  # 90 days
+        }
+      gcloud: |
+        gcloud kms keys update <key-name> \
+          --keyring=<keyring> \
+          --location=<location> \
+          --rotation-period=90d \
+          --next-rotation-time=<datetime>

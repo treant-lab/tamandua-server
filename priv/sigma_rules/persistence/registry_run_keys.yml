@@ -1,0 +1,91 @@
+title: Suspicious Registry Run Key Modification
+id: pe01a001-rrun-0001-0001-000000000001
+status: stable
+description: |
+  Detects modification of registry Run/RunOnce keys for persistence. Adversaries
+  add entries to these keys to execute malware during user logon. This rule
+  filters out known legitimate software installers to reduce false positives.
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.t1547.001
+logsource:
+  category: registry_set
+  product: windows
+detection:
+  selection:
+    TargetObject|contains:
+      - '\CurrentVersion\Run\'
+      - '\CurrentVersion\RunOnce\'
+      - '\CurrentVersion\RunServices\'
+      - '\CurrentVersion\RunServicesOnce\'
+      - '\Policies\Explorer\Run\'
+  filter_installers:
+    Image|endswith:
+      - '\msiexec.exe'
+      - '\setup.exe'
+      - '\installer.exe'
+      - '\Update.exe'
+  filter_system:
+    Image|startswith:
+      - 'C:\Windows\System32\'
+      - 'C:\Program Files\'
+      - 'C:\Program Files (x86)\'
+  filter_av:
+    Image|contains:
+      - '\Windows Defender\'
+      - '\MsMpEng.exe'
+  condition: selection and not (filter_installers or filter_system or filter_av)
+falsepositives:
+  - Legitimate software installation via custom installers
+  - Enterprise software management agents
+level: medium
+
+---
+title: Registry Run Key Set via Command Line
+id: pe01a002-rrun-0001-0002-000000000002
+status: stable
+description: |
+  Detects direct manipulation of Run keys via reg.exe or PowerShell commands.
+  This is more suspicious than programmatic modification because legitimate
+  software typically uses installer APIs rather than command-line tools.
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.t1547.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_reg:
+    Image|endswith: '\reg.exe'
+    CommandLine|contains: 'add'
+    CommandLine|contains:
+      - '\CurrentVersion\Run'
+      - '\Policies\Explorer\Run'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Set-ItemProperty'
+      - 'New-ItemProperty'
+    CommandLine|contains:
+      - '\CurrentVersion\Run'
+      - 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+  filter_admin:
+    ParentImage|endswith:
+      - '\msiexec.exe'
+      - '\setup.exe'
+  condition: (selection_reg or selection_ps) and not filter_admin
+falsepositives:
+  - System administrators manually configuring startup programs
+level: high

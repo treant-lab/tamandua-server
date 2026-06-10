@@ -1,0 +1,270 @@
+title: Shadow Copy Deletion via Vssadmin
+id: 06ce06ee-cdef-6012-3456-678901234567
+status: experimental
+description: Detects shadow copy deletion typical of ransomware
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1490/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\vssadmin.exe'
+        CommandLine|contains:
+            - 'delete shadows'
+            - 'resize shadowstorage'
+    condition: selection
+falsepositives:
+    - Legitimate backup maintenance
+level: critical
+tags:
+    - attack.impact
+    - attack.t1490
+
+---
+title: Shadow Copy Deletion via WMIC
+id: 17df17ff-def0-7123-4567-789012345678
+status: experimental
+description: Detects shadow copy deletion via WMIC
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains:
+            - 'shadowcopy delete'
+            - 'shadowcopy where'
+    condition: selection
+falsepositives:
+    - Legitimate backup maintenance
+level: critical
+tags:
+    - attack.impact
+    - attack.t1490
+
+---
+title: BCDEdit Boot Configuration Tampering
+id: 28e028aa-ef01-8234-5678-890123456789
+status: experimental
+description: Detects BCDEdit abuse to disable recovery
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\bcdedit.exe'
+        CommandLine|contains:
+            - 'recoveryenabled no'
+            - 'bootstatuspolicy ignoreallfailures'
+            - 'safeboot'
+    condition: selection
+falsepositives:
+    - Legitimate system configuration
+level: critical
+tags:
+    - attack.impact
+    - attack.t1490
+
+---
+title: Windows Backup Catalog Deletion
+id: 39f139bb-f012-9345-6789-901234567890
+status: experimental
+description: Detects Windows backup catalog deletion
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\wbadmin.exe'
+        CommandLine|contains:
+            - 'delete catalog'
+            - 'delete systemstatebackup'
+    condition: selection
+falsepositives:
+    - Legitimate backup maintenance
+level: critical
+tags:
+    - attack.impact
+    - attack.t1490
+
+---
+title: Data Encryption for Impact
+id: 4a024acc-0123-a456-789a-012345678901
+status: experimental
+description: Detects mass file encryption patterns
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection:
+        TargetFilename|endswith:
+            - '.encrypted'
+            - '.locked'
+            - '.crypt'
+            - '.crypto'
+            - '.enc'
+            - '.crypted'
+            - '.pay'
+            - '.ransom'
+    condition: selection
+falsepositives:
+    - Legitimate encryption software
+level: critical
+tags:
+    - attack.impact
+    - attack.t1486
+
+---
+title: Ransomware Note Creation
+id: 5b135bdd-1234-b567-89ab-123456789012
+status: experimental
+description: Detects ransomware note file creation
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection:
+        TargetFilename|contains:
+            - 'README'
+            - 'DECRYPT'
+            - 'RECOVER'
+            - 'RESTORE'
+            - 'HOW_TO'
+            - 'HELP_'
+            - '_HELP'
+        TargetFilename|endswith:
+            - '.txt'
+            - '.html'
+            - '.hta'
+    filter:
+        TargetFilename|contains:
+            - '\Program Files'
+            - '\Windows'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate documentation
+level: high
+tags:
+    - attack.impact
+    - attack.t1486
+
+---
+title: Service Stop via Net
+id: 6c246cee-2345-c678-9abc-234567890123
+status: experimental
+description: Detects stopping of critical services
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+        CommandLine|contains: 'stop'
+    filter:
+        CommandLine|contains:
+            - 'spooler'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate service management
+level: medium
+tags:
+    - attack.impact
+    - attack.t1489
+
+---
+title: System Shutdown or Reboot
+id: 7d357dff-3456-d789-abcd-345678901234
+status: experimental
+description: Detects system shutdown/reboot commands
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\shutdown.exe'
+        CommandLine|contains:
+            - '/r'
+            - '/s'
+            - '/f'
+    condition: selection
+falsepositives:
+    - Legitimate system maintenance
+level: medium
+tags:
+    - attack.impact
+    - attack.t1529
+
+---
+title: Disk Wiper Indicators
+id: 8e468eaa-4567-e89a-bcde-456789012345
+status: experimental
+description: Detects potential disk wiping activity
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_format:
+        Image|endswith: '\format.exe'
+        CommandLine|contains: '/y'
+    selection_diskpart:
+        Image|endswith: '\diskpart.exe'
+        CommandLine|contains:
+            - 'clean'
+            - 'delete'
+    selection_cipher:
+        Image|endswith: '\cipher.exe'
+        CommandLine|contains: '/w:'
+    condition: selection_format or selection_diskpart or selection_cipher
+falsepositives:
+    - Legitimate disk management
+level: high
+tags:
+    - attack.impact
+    - attack.t1561
+
+---
+title: Account Lockout via Net User
+id: 9f579fbb-5678-f9ab-cdef-567890123456
+status: experimental
+description: Detects account lockout attempts
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+        CommandLine|contains|all:
+            - 'user'
+            - '/active:no'
+    condition: selection
+falsepositives:
+    - Legitimate account management
+level: medium
+tags:
+    - attack.impact
+    - attack.t1531

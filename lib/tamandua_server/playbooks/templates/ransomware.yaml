@@ -1,0 +1,37 @@
+name: "Ransomware Auto-Response"
+description: "Automated response to ransomware detection with immediate containment"
+
+trigger:
+  detection_type: "ransomware"
+  confidence: 0.9
+  severity: "high"
+
+actions:
+  - action: "kill_process"
+    kill_process:
+      force: true
+
+  - action: "quarantine_file"
+    quarantine_file:
+      delete_after: false
+
+  - action: "isolate_host"
+    isolate_host: {}
+
+  - action: "collect_forensics"
+    collect_forensics:
+      memory_dump: true
+      process_list: true
+      network_connections: true
+      event_logs: true
+
+  - action: "create_ticket"
+    create_ticket:
+      title: "CRITICAL: Ransomware Detected and Contained"
+      severity: "critical"
+      priority: "P1"
+
+  - action: "send_notification"
+    send_notification:
+      channel: "slack"
+      message: "CRITICAL ALERT: Ransomware detected and automatically contained. Immediate analyst review required."

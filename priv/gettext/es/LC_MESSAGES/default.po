@@ -1,0 +1,577 @@
+## Spanish translations for Tamandua EDR
+msgid ""
+msgstr ""
+"Language: es\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+## Navigation
+msgid "Home"
+msgstr "Inicio"
+
+msgid "Alerts"
+msgstr "Alertas"
+
+msgid "Agents"
+msgstr "Agentes"
+
+msgid "Dashboard"
+msgstr "Panel de Control"
+
+msgid "Detections"
+msgstr "Detecciones"
+
+msgid "Investigations"
+msgstr "Investigaciones"
+
+msgid "Settings"
+msgstr "Configuración"
+
+msgid "Reports"
+msgstr "Informes"
+
+msgid "Admin"
+msgstr "Administración"
+
+msgid "Users"
+msgstr "Usuarios"
+
+msgid "Organizations"
+msgstr "Organizaciones"
+
+msgid "Threat Intelligence"
+msgstr "Inteligencia de Amenazas"
+
+msgid "Compliance"
+msgstr "Cumplimiento"
+
+msgid "Playbooks"
+msgstr "Libros de Jugadas"
+
+## Alert Status
+msgid "New"
+msgstr "Nueva"
+
+msgid "Investigating"
+msgstr "Investigando"
+
+msgid "Resolved"
+msgstr "Resuelta"
+
+msgid "False Positive"
+msgstr "Falso Positivo"
+
+msgid "Escalated"
+msgstr "Escalada"
+
+msgid "Acknowledged"
+msgstr "Reconocida"
+
+## Severity Levels
+msgid "Critical"
+msgstr "Crítica"
+
+msgid "High"
+msgstr "Alta"
+
+msgid "Medium"
+msgstr "Media"
+
+msgid "Low"
+msgstr "Baja"
+
+msgid "Info"
+msgstr "Información"
+
+## Common Actions
+msgid "Save"
+msgstr "Guardar"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "Delete"
+msgstr "Eliminar"
+
+msgid "Edit"
+msgstr "Editar"
+
+msgid "Create"
+msgstr "Crear"
+
+msgid "Update"
+msgstr "Actualizar"
+
+msgid "Export"
+msgstr "Exportar"
+
+msgid "Import"
+msgstr "Importar"
+
+msgid "Download"
+msgstr "Descargar"
+
+msgid "Upload"
+msgstr "Subir"
+
+msgid "Search"
+msgstr "Buscar"
+
+msgid "Filter"
+msgstr "Filtrar"
+
+msgid "Clear"
+msgstr "Limpiar"
+
+msgid "Apply"
+msgstr "Aplicar"
+
+msgid "Close"
+msgstr "Cerrar"
+
+msgid "Submit"
+msgstr "Enviar"
+
+msgid "Refresh"
+msgstr "Actualizar"
+
+msgid "Back"
+msgstr "Atrás"
+
+msgid "Next"
+msgstr "Siguiente"
+
+msgid "Previous"
+msgstr "Anterior"
+
+msgid "View"
+msgstr "Ver"
+
+msgid "Details"
+msgstr "Detalles"
+
+## Alert Management
+msgid "Alert Details"
+msgstr "Detalles de la Alerta"
+
+msgid "Alert ID"
+msgstr "ID de Alerta"
+
+msgid "Created At"
+msgstr "Creada el"
+
+msgid "Updated At"
+msgstr "Actualizada el"
+
+msgid "Assigned To"
+msgstr "Asignada a"
+
+msgid "Status"
+msgstr "Estado"
+
+msgid "Severity"
+msgstr "Severidad"
+
+msgid "Description"
+msgstr "Descripción"
+
+msgid "Title"
+msgstr "Título"
+
+msgid "Source"
+msgstr "Origen"
+
+msgid "Tags"
+msgstr "Etiquetas"
+
+msgid "Comments"
+msgstr "Comentarios"
+
+msgid "Add Comment"
+msgstr "Añadir Comentario"
+
+msgid "Assign"
+msgstr "Asignar"
+
+msgid "Change Status"
+msgstr "Cambiar Estado"
+
+msgid "Escalate"
+msgstr "Escalar"
+
+msgid "Mark as False Positive"
+msgstr "Marcar como Falso Positivo"
+
+msgid "Take Action"
+msgstr "Tomar Acción"
+
+msgid "Isolate Endpoint"
+msgstr "Aislar Endpoint"
+
+msgid "Kill Process"
+msgstr "Terminar Proceso"
+
+msgid "Quarantine File"
+msgstr "Poner en Cuarentena"
+
+## Agent Management
+msgid "Agent Status"
+msgstr "Estado del Agente"
+
+msgid "Online"
+msgstr "En Línea"
+
+msgid "Offline"
+msgstr "Fuera de Línea"
+
+msgid "Degraded"
+msgstr "Degradado"
+
+msgid "Hostname"
+msgstr "Nombre de Host"
+
+msgid "IP Address"
+msgstr "Dirección IP"
+
+msgid "OS Type"
+msgstr "Tipo de SO"
+
+msgid "OS Version"
+msgstr "Versión de SO"
+
+msgid "Agent Version"
+msgstr "Versión del Agente"
+
+msgid "Last Seen"
+msgstr "Visto por Última Vez"
+
+msgid "Installed At"
+msgstr "Instalado el"
+
+msgid "CPU Usage"
+msgstr "Uso de CPU"
+
+msgid "Memory Usage"
+msgstr "Uso de Memoria"
+
+msgid "Disk Usage"
+msgstr "Uso de Disco"
+
+msgid "Network Status"
+msgstr "Estado de Red"
+
+## Filters & Search
+msgid "Advanced Filters"
+msgstr "Filtros Avanzados"
+
+msgid "Save Filter"
+msgstr "Guardar Filtro"
+
+msgid "Load Filter"
+msgstr "Cargar Filtro"
+
+msgid "Clear Filters"
+msgstr "Limpiar Filtros"
+
+msgid "Saved Searches"
+msgstr "Búsquedas Guardadas"
+
+msgid "Search Name"
+msgstr "Nombre de Búsqueda"
+
+msgid "Share with organization"
+msgstr "Compartir con la organización"
+
+msgid "Filter Name"
+msgstr "Nombre del Filtro"
+
+msgid "Add Condition"
+msgstr "Añadir Condición"
+
+msgid "Add Group"
+msgstr "Añadir Grupo"
+
+msgid "Remove"
+msgstr "Eliminar"
+
+msgid "AND"
+msgstr "Y"
+
+msgid "OR"
+msgstr "O"
+
+msgid "Field"
+msgstr "Campo"
+
+msgid "Operator"
+msgstr "Operador"
+
+msgid "Value"
+msgstr "Valor"
+
+## Pagination
+msgid "Showing %{start} to %{end} of %{total} results"
+msgstr "Mostrando %{start} a %{end} de %{total} resultados"
+
+msgid "Page %{page} of %{total}"
+msgstr "Página %{page} de %{total}"
+
+## Time & Date
+msgid "Today"
+msgstr "Hoy"
+
+msgid "Yesterday"
+msgstr "Ayer"
+
+msgid "Last 7 days"
+msgstr "Últimos 7 días"
+
+msgid "Last 30 days"
+msgstr "Últimos 30 días"
+
+msgid "Last 90 days"
+msgstr "Últimos 90 días"
+
+msgid "Custom Range"
+msgstr "Rango Personalizado"
+
+msgid "Start Date"
+msgstr "Fecha de Inicio"
+
+msgid "End Date"
+msgstr "Fecha de Fin"
+
+msgid "Time"
+msgstr "Hora"
+
+msgid "Date"
+msgstr "Fecha"
+
+msgid "Timezone"
+msgstr "Zona Horaria"
+
+## User Settings
+msgid "Profile"
+msgstr "Perfil"
+
+msgid "Account Settings"
+msgstr "Configuración de Cuenta"
+
+msgid "Security"
+msgstr "Seguridad"
+
+msgid "Preferences"
+msgstr "Preferencias"
+
+msgid "Language"
+msgstr "Idioma"
+
+msgid "Email"
+msgstr "Correo Electrónico"
+
+msgid "Name"
+msgstr "Nombre"
+
+msgid "Password"
+msgstr "Contraseña"
+
+msgid "Change Password"
+msgstr "Cambiar Contraseña"
+
+msgid "Current Password"
+msgstr "Contraseña Actual"
+
+msgid "New Password"
+msgstr "Nueva Contraseña"
+
+msgid "Confirm Password"
+msgstr "Confirmar Contraseña"
+
+msgid "Two-Factor Authentication"
+msgstr "Autenticación de Dos Factores"
+
+msgid "Enable 2FA"
+msgstr "Activar 2FA"
+
+msgid "Disable 2FA"
+msgstr "Desactivar 2FA"
+
+## Notifications
+msgid "Notifications"
+msgstr "Notificaciones"
+
+msgid "No new notifications"
+msgstr "No hay notificaciones nuevas"
+
+msgid "Mark all as read"
+msgstr "Marcar todas como leídas"
+
+msgid "View all notifications"
+msgstr "Ver todas las notificaciones"
+
+## Errors
+msgid "Error"
+msgstr "Error"
+
+msgid "Warning"
+msgstr "Advertencia"
+
+msgid "Success"
+msgstr "Éxito"
+
+msgid "Information"
+msgstr "Información"
+
+msgid "An error occurred"
+msgstr "Ocurrió un error"
+
+msgid "Not found"
+msgstr "No encontrado"
+
+msgid "Unauthorized"
+msgstr "No autorizado"
+
+msgid "Forbidden"
+msgstr "Prohibido"
+
+msgid "Invalid input"
+msgstr "Entrada inválida"
+
+msgid "Required field"
+msgstr "Campo requerido"
+
+msgid "Invalid email"
+msgstr "Correo inválido"
+
+msgid "Password too short"
+msgstr "Contraseña demasiado corta"
+
+msgid "Passwords do not match"
+msgstr "Las contraseñas no coinciden"
+
+## Success Messages
+msgid "Saved successfully"
+msgstr "Guardado exitosamente"
+
+msgid "Updated successfully"
+msgstr "Actualizado exitosamente"
+
+msgid "Deleted successfully"
+msgstr "Eliminado exitosamente"
+
+msgid "Created successfully"
+msgstr "Creado exitosamente"
+
+msgid "Changes saved"
+msgstr "Cambios guardados"
+
+## Detection Rules
+msgid "Detection Rules"
+msgstr "Reglas de Detección"
+
+msgid "YARA Rules"
+msgstr "Reglas YARA"
+
+msgid "Sigma Rules"
+msgstr "Reglas Sigma"
+
+msgid "IOC Lists"
+msgstr "Listas de IOC"
+
+msgid "Rule Name"
+msgstr "Nombre de la Regla"
+
+msgid "Rule Type"
+msgstr "Tipo de Regla"
+
+msgid "Enabled"
+msgstr "Habilitada"
+
+msgid "Disabled"
+msgstr "Deshabilitada"
+
+msgid "Enable"
+msgstr "Habilitar"
+
+msgid "Disable"
+msgstr "Deshabilitar"
+
+## Threat Intelligence
+msgid "Threat Actors"
+msgstr "Actores de Amenaza"
+
+msgid "Indicators of Compromise"
+msgstr "Indicadores de Compromiso"
+
+msgid "Threat Feeds"
+msgstr "Fuentes de Amenazas"
+
+msgid "MITRE ATT&CK"
+msgstr "MITRE ATT&CK"
+
+msgid "Tactics"
+msgstr "Tácticas"
+
+msgid "Techniques"
+msgstr "Técnicas"
+
+msgid "Procedures"
+msgstr "Procedimientos"
+
+## Compliance
+msgid "Compliance Frameworks"
+msgstr "Marcos de Cumplimiento"
+
+msgid "Audit Logs"
+msgstr "Registros de Auditoría"
+
+msgid "Policy Violations"
+msgstr "Violaciones de Política"
+
+msgid "Remediation Tasks"
+msgstr "Tareas de Remediación"
+
+## Statistics
+msgid "Total Alerts"
+msgstr "Total de Alertas"
+
+msgid "Open Alerts"
+msgstr "Alertas Abiertas"
+
+msgid "Critical Alerts"
+msgstr "Alertas Críticas"
+
+msgid "Active Agents"
+msgstr "Agentes Activos"
+
+msgid "Offline Agents"
+msgstr "Agentes Desconectados"
+
+msgid "Detection Rate"
+msgstr "Tasa de Detección"
+
+msgid "Mean Time to Detect"
+msgstr "Tiempo Medio de Detección"
+
+msgid "Mean Time to Respond"
+msgstr "Tiempo Medio de Respuesta"
+
+## Plurals
+msgid "One alert"
+msgid_plural "%{count} alerts"
+msgstr[0] "Una alerta"
+msgstr[1] "%{count} alertas"
+
+msgid "One agent"
+msgid_plural "%{count} agents"
+msgstr[0] "Un agente"
+msgstr[1] "%{count} agentes"
+
+msgid "One user"
+msgid_plural "%{count} users"
+msgstr[0] "Un usuario"
+msgstr[1] "%{count} usuarios"
+
+msgid "One detection"
+msgid_plural "%{count} detections"
+msgstr[0] "Una detección"
+msgstr[1] "%{count} detecciones"

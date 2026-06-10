@@ -1,0 +1,107 @@
+title: NTDS.dit Extraction via Ntdsutil
+id: ca03a001-ntds-0003-0001-000000000001
+status: stable
+description: |
+  Detects use of ntdsutil.exe to create an IFM (Install From Media) snapshot,
+  which copies the NTDS.dit database containing all Active Directory password
+  hashes. This is a standard technique for offline domain credential extraction.
+references:
+  - https://attack.mitre.org/techniques/T1003/003/
+  - https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/cc753343(v=ws.11)
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\ntdsutil.exe'
+    CommandLine|contains:
+      - 'ifm'
+      - 'create full'
+      - 'ac i ntds'
+      - 'activate instance ntds'
+  filter_legit:
+    ParentImage|endswith: '\dcpromo.exe'
+  condition: selection and not filter_legit
+falsepositives:
+  - Legitimate domain controller promotion (dcpromo)
+  - Authorized AD backup procedures
+level: critical
+
+---
+title: NTDS.dit Copy via Volume Shadow Copy
+id: ca03a002-ntds-0003-0002-000000000002
+status: stable
+description: |
+  Detects creation of volume shadow copies followed by access to NTDS.dit.
+  Adversaries use vssadmin or diskshadow to create shadow copies and then
+  copy the NTDS.dit file from the shadow volume.
+references:
+  - https://attack.mitre.org/techniques/T1003/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_vssadmin:
+    Image|endswith: '\vssadmin.exe'
+    CommandLine|contains: 'create shadow'
+  selection_diskshadow:
+    Image|endswith: '\diskshadow.exe'
+  selection_copy_ntds:
+    CommandLine|contains:
+      - 'ntds.dit'
+      - 'NTDS.DIT'
+  filter_backup:
+    ParentImage|endswith:
+      - '\wbengine.exe'
+      - '\vssvc.exe'
+  condition: (selection_vssadmin or selection_diskshadow or selection_copy_ntds) and not filter_backup
+falsepositives:
+  - Legitimate Active Directory backup operations
+  - Volume shadow copy management by backup software
+level: critical
+
+---
+title: NTDS.dit Access via Esentutl
+id: ca03a003-ntds-0003-0003-000000000003
+status: stable
+description: |
+  Detects use of esentutl.exe to copy or repair the NTDS.dit database file.
+  Esentutl is the built-in ESE database utility and can copy locked database
+  files, making it a stealthy alternative to shadow copy methods.
+references:
+  - https://attack.mitre.org/techniques/T1003/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\esentutl.exe'
+    CommandLine|contains:
+      - 'ntds'
+      - 'NTDS'
+  filter_system:
+    ParentImage|endswith:
+      - '\lsass.exe'
+      - '\ntdsutil.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Authorized AD database maintenance
+level: high

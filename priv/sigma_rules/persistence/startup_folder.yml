@@ -1,0 +1,49 @@
+title: Suspicious File Created in Startup Folder
+id: pe04a001-strt-0004-0001-000000000001
+status: stable
+description: |
+  Detects file creation in Windows Startup folders. Files placed in these
+  directories execute automatically when the user logs on. Attackers use this
+  for simple persistence by dropping executables, scripts, or shortcut (.lnk)
+  files that launch malicious payloads.
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.t1547.001
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Start Menu\Programs\Startup\'
+      - '\Programs\Startup\'
+      - '\Start Menu\Programs\StartUp\'
+    TargetFilename|endswith:
+      - '.exe'
+      - '.bat'
+      - '.cmd'
+      - '.vbs'
+      - '.js'
+      - '.wsf'
+      - '.lnk'
+      - '.hta'
+      - '.ps1'
+      - '.scr'
+      - '.pif'
+  filter_known:
+    Image|endswith:
+      - '\msiexec.exe'
+      - '\explorer.exe'
+    Image|startswith:
+      - 'C:\Program Files\'
+      - 'C:\Program Files (x86)\'
+  condition: selection and not filter_known
+falsepositives:
+  - Legitimate software installation creating startup shortcuts
+  - User-created shortcuts for applications
+level: high

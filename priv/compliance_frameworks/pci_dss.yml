@@ -1,0 +1,580 @@
+name: PCI DSS
+full_name: Payment Card Industry Data Security Standard
+version: "4.0"
+description: Information security standard for organizations that handle credit cards
+url: https://www.pcisecuritystandards.org/
+
+requirements:
+  - "Requirement 1: Install and Maintain Network Security Controls"
+  - "Requirement 2: Apply Secure Configurations to All System Components"
+  - "Requirement 3: Protect Stored Account Data"
+  - "Requirement 4: Protect Cardholder Data with Strong Cryptography"
+  - "Requirement 5: Protect All Systems and Networks from Malicious Software"
+  - "Requirement 6: Develop and Maintain Secure Systems and Software"
+  - "Requirement 7: Restrict Access to System Components and Cardholder Data"
+  - "Requirement 8: Identify Users and Authenticate Access"
+  - "Requirement 9: Restrict Physical Access to Cardholder Data"
+  - "Requirement 10: Log and Monitor All Access"
+  - "Requirement 11: Test Security of Systems and Networks Regularly"
+  - "Requirement 12: Support Information Security with Organizational Policies"
+
+# FIM-specific controls for PCI-DSS 11.5
+fim_controls:
+  - id: pci-11.5.1
+    control_id: "11.5.1"
+    title: Deploy File Integrity Monitoring
+    description: Deploy a change-detection mechanism to alert personnel to unauthorized modification of critical system files, configuration files, or content files
+    category: file_integrity
+    severity: critical
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/passwd
+        - /etc/shadow
+        - /etc/group
+        - /etc/sudoers
+        - /bin/*
+        - /sbin/*
+        - /usr/bin/*
+        - /usr/sbin/*
+        - /lib/*
+        - /usr/lib/*
+        - /boot/*
+        - /etc/ssh/*
+        - /etc/pam.d/*
+      windows:
+        - C:\Windows\System32\*.dll
+        - C:\Windows\System32\*.exe
+        - C:\Windows\System32\*.sys
+        - C:\Windows\System32\config\*
+        - C:\Windows\System32\drivers\*
+        - C:\Windows\Boot\*
+        - C:\bootmgr
+      macos:
+        - /bin/*
+        - /sbin/*
+        - /usr/bin/*
+        - /System/Library/*.dylib
+        - /etc/passwd
+        - /etc/sudoers
+    required_tracking:
+      - content_modified
+      - permissions_changed
+      - ownership_changed
+      - created
+      - deleted
+    alert_on_deviation: true
+    compliance_note: "Critical system files must be monitored for unauthorized changes"
+
+  - id: pci-11.5.1.1
+    control_id: "11.5.1.1"
+    title: Weekly FIM Scan
+    description: Perform critical file comparisons at least weekly
+    category: file_integrity
+    severity: high
+    automated: true
+    scan_interval_hours: 168  # 7 days
+    compliance_note: "Weekly scans required in addition to real-time monitoring"
+
+  - id: pci-11.5.2
+    control_id: "11.5.2"
+    title: Alert on Critical File Changes
+    description: Configure change-detection mechanism to alert on unauthorized modifications
+    category: file_integrity
+    severity: critical
+    automated: true
+    alert_severity: critical
+    alert_channels:
+      - email
+      - siem
+    response_time_hours: 24
+    compliance_note: "Alerts must be investigated within 24 hours"
+
+  - id: pci-10.5.5
+    control_id: "10.5.5"
+    title: FIM for Audit Logs
+    description: Use file integrity monitoring on audit logs to ensure they cannot be modified
+    category: log_integrity
+    severity: critical
+    automated: true
+    monitored_paths:
+      linux:
+        - /var/log/audit/*
+        - /var/log/secure
+        - /var/log/messages
+      windows:
+        - C:\Windows\System32\winevt\Logs\*
+    allowed_changes:
+      - content_modified  # Append only
+    watch_for:
+      - deleted
+      - permissions_changed
+    compliance_note: "Audit logs must be protected from tampering"
+
+  - id: pci-2.2.5
+    control_id: "2.2.5"
+    title: System Configuration Monitoring
+    description: Monitor system configurations for unauthorized changes
+    category: configuration
+    severity: high
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/sysctl.conf
+        - /etc/sysctl.d/*
+        - /etc/security/limits.conf
+        - /etc/cron.d/*
+      windows:
+        - C:\Windows\System32\GroupPolicy\*
+    compliance_note: "Configuration changes must be tracked and reviewed"
+
+controls:
+  # Requirement 1
+  - id: pci-1.1.1
+    control_id: "1.1.1"
+    title: Network security controls documented
+    description: Processes and mechanisms for installing and maintaining network security controls are documented
+    category: network
+    severity: critical
+    automated: false
+    evidence_types:
+      - network_documentation
+      - firewall_standards
+      - change_procedures
+    validation_query: null
+    remediation_steps:
+      - Document network security architecture
+      - Define firewall ruleset standards
+      - Establish change control procedures
+
+  - id: pci-1.2.1
+    control_id: "1.2.1"
+    title: Configuration standards for NSCs defined
+    description: Configuration standards for network security control (NSC) rulesets are defined
+    category: network
+    severity: critical
+    automated: true
+    evidence_types:
+      - firewall_configs
+      - ruleset_standards
+      - compliance_scans
+    validation_query: network_controls_configured
+    remediation_steps:
+      - Define NSC configuration standards
+      - Implement firewall hardening
+      - Review configurations quarterly
+
+  - id: pci-1.2.7
+    control_id: "1.2.7"
+    title: Network segmentation implemented
+    description: Network segmentation is implemented to isolate the CDE
+    category: network
+    severity: critical
+    automated: true
+    evidence_types:
+      - network_diagrams
+      - vlan_configs
+      - segmentation_tests
+    validation_query: network_segmentation_verified
+    remediation_steps:
+      - Segment cardholder data environment (CDE)
+      - Implement VLANs and firewall rules
+      - Test segmentation effectiveness
+
+  # Requirement 3
+  - id: pci-3.3.1
+    control_id: "3.3.1"
+    title: SAD not retained after authorization
+    description: Sensitive authentication data is not retained after authorization
+    category: data_protection
+    severity: critical
+    automated: true
+    evidence_types:
+      - data_retention_policies
+      - database_scans
+      - deletion_logs
+    validation_query: sad_not_retained
+    remediation_steps:
+      - Identify all SAD storage locations
+      - Purge SAD immediately post-authorization
+      - Implement automated deletion
+
+  - id: pci-3.4.1
+    control_id: "3.4.1"
+    title: PAN rendered unreadable
+    description: Primary account number (PAN) is rendered unreadable wherever it is stored
+    category: data_protection
+    severity: critical
+    automated: true
+    evidence_types:
+      - encryption_configs
+      - tokenization_status
+      - pan_storage_scans
+    validation_query: data_encryption_enabled
+    remediation_steps:
+      - Encrypt PAN using strong cryptography
+      - Implement tokenization where possible
+      - Validate encryption coverage
+
+  - id: pci-3.5.1
+    control_id: "3.5.1"
+    title: Cryptographic keys managed
+    description: Cryptographic keys are managed securely
+    category: data_protection
+    severity: critical
+    automated: true
+    evidence_types:
+      - key_management_procedures
+      - key_inventory
+      - access_logs
+    validation_query: key_management_implemented
+    remediation_steps:
+      - Implement key management system
+      - Restrict key access
+      - Rotate keys regularly
+
+  # Requirement 5
+  - id: pci-5.2.1
+    control_id: "5.2.1"
+    title: Anti-malware deployed on all systems
+    description: Anti-malware solutions are deployed on all system components
+    category: endpoint
+    severity: critical
+    automated: true
+    evidence_types:
+      - av_status
+      - deployment_reports
+      - coverage_verification
+    validation_query: antimalware_deployed
+    remediation_steps:
+      - Deploy anti-malware on all systems
+      - Enable real-time protection
+      - Verify deployment coverage
+
+  - id: pci-5.3.1
+    control_id: "5.3.1"
+    title: Anti-malware kept current
+    description: Anti-malware mechanisms and definitions are kept current
+    category: endpoint
+    severity: high
+    automated: true
+    evidence_types:
+      - signature_updates
+      - update_logs
+      - currency_reports
+    validation_query: antimalware_current
+    remediation_steps:
+      - Enable automatic signature updates
+      - Monitor update status
+      - Verify update frequency
+
+  - id: pci-5.4.1
+    control_id: "5.4.1"
+    title: Anti-malware scans performed
+    description: System components are protected from malware through periodic scans
+    category: endpoint
+    severity: high
+    automated: true
+    evidence_types:
+      - scan_schedules
+      - scan_reports
+      - detection_logs
+    validation_query: malware_scans_performed
+    remediation_steps:
+      - Schedule regular scans
+      - Review scan results
+      - Remediate detections promptly
+
+  # Requirement 6
+  - id: pci-6.2.2
+    control_id: "6.2.2"
+    title: Inventory of bespoke software maintained
+    description: An inventory of bespoke and custom software is maintained
+    category: change_management
+    severity: medium
+    automated: true
+    evidence_types:
+      - software_inventory
+      - codebase_catalog
+      - version_tracking
+    validation_query: software_inventory_current
+    remediation_steps:
+      - Catalog all custom software
+      - Track versions and dependencies
+      - Update inventory regularly
+
+  - id: pci-6.3.1
+    control_id: "6.3.1"
+    title: Security vulnerabilities identified
+    description: Security vulnerabilities are identified and addressed
+    category: change_management
+    severity: critical
+    automated: true
+    evidence_types:
+      - vulnerability_scans
+      - patch_reports
+      - remediation_tracking
+    validation_query: vulnerabilities_managed
+    remediation_steps:
+      - Scan for vulnerabilities regularly
+      - Prioritize critical vulnerabilities
+      - Track remediation progress
+
+  - id: pci-6.4.1
+    control_id: "6.4.1"
+    title: Change control processes followed
+    description: Change control processes are defined and followed for all changes
+    category: change_management
+    severity: high
+    automated: false
+    evidence_types:
+      - change_tickets
+      - approval_records
+      - test_results
+    validation_query: null
+    remediation_steps:
+      - Define change management procedures
+      - Require approvals for all changes
+      - Test changes before deployment
+
+  # Requirement 8
+  - id: pci-8.2.1
+    control_id: "8.2.1"
+    title: Strong authentication implemented
+    description: Strong authentication for users is implemented
+    category: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - authentication_configs
+      - mfa_status
+      - password_policies
+    validation_query: strong_authentication_enabled
+    remediation_steps:
+      - Implement multi-factor authentication
+      - Enforce strong password policies
+      - Monitor authentication attempts
+
+  - id: pci-8.3.1
+    control_id: "8.3.1"
+    title: MFA for all access into CDE
+    description: Multi-factor authentication is implemented for all access into the CDE
+    category: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - mfa_configs
+      - access_logs
+      - mfa_enforcement
+    validation_query: mfa_enforced_cde
+    remediation_steps:
+      - Enforce MFA for CDE access
+      - Support multiple MFA methods
+      - Monitor MFA bypass attempts
+
+  - id: pci-8.4.1
+    control_id: "8.4.1"
+    title: MFA for all remote access
+    description: Multi-factor authentication is implemented for all remote network access
+    category: access_control
+    severity: critical
+    automated: true
+    evidence_types:
+      - vpn_configs
+      - remote_access_logs
+      - mfa_enforcement
+    validation_query: mfa_enforced_remote
+    remediation_steps:
+      - Enforce MFA for VPN access
+      - Require MFA for remote desktop
+      - Log all remote sessions
+
+  # Requirement 10
+  - id: pci-10.2.1
+    control_id: "10.2.1"
+    title: Audit logs capture all access
+    description: Audit logs capture all individual user access to cardholder data
+    category: logging
+    severity: critical
+    automated: true
+    evidence_types:
+      - log_configs
+      - log_samples
+      - access_tracking
+    validation_query: audit_logging_enabled
+    remediation_steps:
+      - Enable comprehensive audit logging
+      - Log all CDE access
+      - Capture user attribution
+
+  - id: pci-10.2.2
+    control_id: "10.2.2"
+    title: Audit logs capture all privileged actions
+    description: Audit logs capture all actions by privileged users
+    category: logging
+    severity: critical
+    automated: true
+    evidence_types:
+      - privileged_activity_logs
+      - admin_actions
+      - sudo_logs
+    validation_query: privileged_logging_enabled
+    remediation_steps:
+      - Log all privileged operations
+      - Monitor administrator activity
+      - Alert on suspicious privileged actions
+
+  - id: pci-10.3.1
+    control_id: "10.3.1"
+    title: Audit log entries include required details
+    description: Audit log entries contain user identification, type of event, date/time, etc.
+    category: logging
+    severity: high
+    automated: true
+    evidence_types:
+      - log_format_configs
+      - log_samples
+      - field_validation
+    validation_query: log_format_compliant
+    remediation_steps:
+      - Configure comprehensive log fields
+      - Include user, timestamp, source, outcome
+      - Validate log completeness
+
+  - id: pci-10.4.1
+    control_id: "10.4.1"
+    title: Audit logs protected from unauthorized modification
+    description: Audit logs are protected from unauthorized modifications
+    category: logging
+    severity: critical
+    automated: true
+    evidence_types:
+      - log_protection_configs
+      - immutability_settings
+      - integrity_checks
+    validation_query: logs_protected
+    remediation_steps:
+      - Implement log file integrity monitoring
+      - Use append-only or immutable storage
+      - Restrict log file access
+
+  - id: pci-10.7.2
+    control_id: "10.7.2"
+    title: Audit logs reviewed regularly
+    description: Audit logs are reviewed to identify anomalies or suspicious activity
+    category: logging
+    severity: high
+    automated: true
+    evidence_types:
+      - log_review_reports
+      - siem_alerts
+      - analyst_notes
+    validation_query: logs_reviewed
+    remediation_steps:
+      - Implement automated log analysis
+      - Review logs daily
+      - Investigate anomalies promptly
+
+  # Requirement 11
+  - id: pci-11.3.1
+    control_id: "11.3.1"
+    title: External penetration testing performed
+    description: External penetration testing is performed annually
+    category: detection
+    severity: high
+    automated: false
+    evidence_types:
+      - pentest_reports
+      - remediation_evidence
+      - retest_results
+    validation_query: null
+    remediation_steps:
+      - Conduct annual penetration test
+      - Remediate identified vulnerabilities
+      - Retest after remediation
+
+  - id: pci-11.3.2
+    control_id: "11.3.2"
+    title: Internal penetration testing performed
+    description: Internal penetration testing is performed annually
+    category: detection
+    severity: high
+    automated: false
+    evidence_types:
+      - internal_pentest_reports
+      - remediation_tracking
+      - retest_results
+    validation_query: null
+    remediation_steps:
+      - Conduct annual internal penetration test
+      - Test segmentation effectiveness
+      - Remediate findings
+
+  - id: pci-11.5.1
+    control_id: "11.5.1"
+    title: File integrity monitoring deployed
+    description: Change-detection mechanisms are deployed on critical system files
+    category: detection
+    severity: critical
+    automated: true
+    evidence_types:
+      - fim_config
+      - fim_alerts
+      - baseline_reports
+    validation_query: fim_deployed
+    remediation_steps:
+      - Deploy FIM solution
+      - Monitor critical files and directories
+      - Alert on unauthorized changes
+
+  - id: pci-11.6.1
+    control_id: "11.6.1"
+    title: Intrusion detection/prevention deployed
+    description: Intrusion detection and/or prevention techniques are deployed
+    category: detection
+    severity: critical
+    automated: true
+    evidence_types:
+      - ids_ips_configs
+      - detection_logs
+      - alert_reports
+    validation_query: ids_ips_deployed
+    remediation_steps:
+      - Deploy IDS/IPS at CDE perimeter
+      - Configure detection signatures
+      - Monitor alerts continuously
+
+  # Requirement 12
+  - id: pci-12.1.1
+    control_id: "12.1.1"
+    title: Overall information security policy established
+    description: An overall information security policy is established
+    category: policy
+    severity: critical
+    automated: false
+    evidence_types:
+      - security_policy
+      - approval_records
+      - distribution_logs
+    validation_query: null
+    remediation_steps:
+      - Develop comprehensive security policy
+      - Obtain executive approval
+      - Communicate to all personnel
+
+  - id: pci-12.10.1
+    control_id: "12.10.1"
+    title: Incident response plan implemented
+    description: An incident response plan is implemented to respond immediately to system breach
+    category: policy
+    severity: critical
+    automated: false
+    evidence_types:
+      - incident_response_plan
+      - contact_lists
+      - playbooks
+    validation_query: null
+    remediation_steps:
+      - Develop incident response plan
+      - Define roles and responsibilities
+      - Test plan annually

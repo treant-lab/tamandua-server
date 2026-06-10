@@ -1,0 +1,78 @@
+# Performance-Optimized Policy Template
+# Minimal resource usage for performance-sensitive environments
+
+name: Performance Optimized
+description: Lightweight policy for resource-constrained or performance-critical systems
+scope: organization
+compliance_tags:
+  - performance
+  - lightweight
+
+collectors:
+  process:
+    enabled: true
+    interval_ms: 15000
+    options:
+      collect_command_line: true
+      collect_environment: false
+      collect_modules: false
+
+  file:
+    enabled: false
+    interval_ms: 60000
+    options:
+      monitored_paths: []
+      exclude_paths: []
+
+  network:
+    enabled: true
+    interval_ms: 30000
+    options:
+      collect_connections: true
+      collect_listening_ports: false
+
+  dns:
+    enabled: false
+    interval_ms: 60000
+    options:
+      log_all_queries: false
+      log_suspicious_domains: true
+
+  registry:
+    enabled: false
+    interval_ms: 120000
+
+resource_limits:
+  max_cpu_percent: 5
+  max_memory_mb: 256
+  max_disk_mb: 500
+  max_network_bandwidth_mbps: 5
+
+detection:
+  yara_enabled: false
+  sigma_enabled: true
+  ml_enabled: false
+  custom_rules: []
+  rule_sets:
+    - critical_threats_only
+
+response:
+  allowed_actions:
+    - isolate
+  auto_response_enabled: false
+  max_actions_per_hour: 5
+  require_approval: true
+  approval_timeout_minutes: 60
+
+network:
+  allowed_domains: []
+  blocked_domains: []
+  proxy_enabled: false
+  proxy_url: null
+  ssl_inspection_enabled: false
+
+logging:
+  log_level: warning
+  max_log_size_mb: 50
+  log_rotation_days: 3
+  send_logs_to_server: true

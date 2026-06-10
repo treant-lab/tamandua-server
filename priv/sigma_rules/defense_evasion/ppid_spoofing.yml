@@ -1,0 +1,264 @@
+title: PPID Spoofing - Suspicious Parent Process
+id: a39e5af0-c3d7-4c11-97de-ea3f2c1f8e01
+status: experimental
+description: |
+    Detects Parent PID (PPID) spoofing where a process claims to have a different
+    parent process than the one that actually created it. This technique is used
+    by adversaries to evade detection by appearing to be spawned by legitimate
+    system processes like svchost.exe or explorer.exe.
+author: Tamandua Security Team
+date: 2024/01/20
+modified: 2024/01/20
+references:
+    - https://attack.mitre.org/techniques/T1134/004/
+    - https://blog.didierstevens.com/2009/11/22/quickpost-selectmyparent-or-playing-with-the-windows-process-tree/
+    - https://blog.f-secure.com/detecting-parent-pid-spoofing/
+    - https://www.ired.team/offensive-security/defense-evasion/parent-pid-spoofing
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    # Pattern 1: Shell spawned by unexpected svchost.exe without -k flag
+    selection_svchost_shell:
+        ParentImage|endswith: '\svchost.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+    filter_svchost_legitimate:
+        ParentCommandLine|contains: '-k '
+
+    # Pattern 2: Suspicious child from high-value system processes
+    selection_system_process_child:
+        ParentImage|endswith:
+            - '\lsass.exe'
+            - '\csrss.exe'
+            - '\smss.exe'
+            - '\wininit.exe'
+            - '\winlogon.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\rundll32.exe'
+            - '\regsvr32.exe'
+            - '\mshta.exe'
+
+    # Pattern 3: Process created by explorer.exe with suspicious indicators
+    selection_explorer_suspicious:
+        ParentImage|endswith: '\explorer.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - '-enc'
+            - '-encodedcommand'
+            - '-windowstyle hidden'
+            - 'downloadstring'
+            - 'invoke-expression'
+            - 'iex'
+            - 'frombase64'
+
+    # Pattern 4: RuntimeBroker spawning shells (common PPID spoof target)
+    selection_runtimebroker:
+        ParentImage|endswith: '\RuntimeBroker.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+
+    # Pattern 5: conhost.exe spawning processes (unusual)
+    selection_conhost:
+        ParentImage|endswith: '\conhost.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+
+    condition: (selection_svchost_shell and not filter_svchost_legitimate) or selection_system_process_child or selection_explorer_suspicious or selection_runtimebroker or selection_conhost
+falsepositives:
+    - Legitimate scheduled tasks
+    - System administration scripts
+    - Software installation
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.privilege_escalation
+    - attack.t1134.004
+
+---
+title: PPID Spoofing - STARTUPINFOEX Detection
+id: b40f6bf1-d4e8-5d22-98ef-fb4f3d2f9e12
+status: experimental
+description: |
+    Detects potential PPID spoofing via STARTUPINFOEX/UpdateProcThreadAttribute
+    by monitoring for suspicious parent-child relationships combined with
+    behavioral indicators typical of PPID spoofing attacks.
+author: Tamandua Security Team
+date: 2024/01/20
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    # Combination of high-value parent + suspicious child + suspicious command line
+    selection_parent:
+        ParentImage|endswith:
+            - '\svchost.exe'
+            - '\services.exe'
+            - '\explorer.exe'
+            - '\RuntimeBroker.exe'
+            - '\sihost.exe'
+            - '\taskhostw.exe'
+    selection_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\mshta.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\rundll32.exe'
+            - '\regsvr32.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - '-enc '
+            - '-e '
+            - '-ep bypass'
+            - '-executionpolicy bypass'
+            - '-windowstyle hidden'
+            - '-nop'
+            - '-noprofile'
+            - 'downloadstring'
+            - 'downloadfile'
+            - 'invoke-webrequest'
+            - 'iwr '
+            - 'curl '
+            - 'invoke-expression'
+            - 'iex '
+            - 'start-process'
+            - 'frombase64string'
+            - 'decompress'
+            - 'gzipstream'
+            - 'memorystream'
+    condition: selection_parent and selection_child and selection_cmdline
+falsepositives:
+    - Legitimate administrative scripts
+    - Software deployment tools
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.privilege_escalation
+    - attack.t1134.004
+
+---
+title: PPID Spoofing - Anomalous Process Tree
+id: c51a7cf2-e5f9-6e33-a9f0-gc5f4e3f0f23
+status: experimental
+description: |
+    Detects anomalous process trees that may indicate PPID spoofing,
+    where the declared parent process is inconsistent with typical
+    Windows process hierarchies.
+author: Tamandua Security Team
+date: 2024/01/20
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    # Windows Terminal should spawn shells, not svchost
+    selection_terminal_anomaly:
+        ParentImage|endswith: '\svchost.exe'
+        Image|endswith: '\WindowsTerminal.exe'
+
+    # Visual Studio Code should spawn from explorer, not system processes
+    selection_code_anomaly:
+        ParentImage|endswith:
+            - '\svchost.exe'
+            - '\services.exe'
+            - '\lsass.exe'
+        Image|endswith: '\Code.exe'
+
+    # Browsers should not spawn from system processes
+    selection_browser_anomaly:
+        ParentImage|endswith:
+            - '\svchost.exe'
+            - '\services.exe'
+            - '\lsass.exe'
+            - '\csrss.exe'
+        Image|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\iexplore.exe'
+
+    # Office applications anomaly
+    selection_office_anomaly:
+        ParentImage|endswith:
+            - '\svchost.exe'
+            - '\lsass.exe'
+            - '\csrss.exe'
+        Image|endswith:
+            - '\WINWORD.EXE'
+            - '\EXCEL.EXE'
+            - '\POWERPNT.EXE'
+            - '\OUTLOOK.EXE'
+
+    condition: selection_terminal_anomaly or selection_code_anomaly or selection_browser_anomaly or selection_office_anomaly
+falsepositives:
+    - Very rare edge cases
+level: critical
+tags:
+    - attack.defense_evasion
+    - attack.privilege_escalation
+    - attack.t1134.004
+
+---
+title: PPID Spoofing - LOLBin with Spoofed Parent
+id: d62b8df3-f6fa-7f44-baf1-hd6g5f4g1g34
+status: experimental
+description: |
+    Detects LOLBins (Living Off The Land Binaries) spawned with potentially
+    spoofed parent processes, which is a common technique to evade detection.
+author: Tamandua Security Team
+date: 2024/01/20
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '\svchost.exe'
+            - '\RuntimeBroker.exe'
+            - '\dllhost.exe'
+            - '\sihost.exe'
+    selection_lolbin:
+        Image|endswith:
+            - '\certutil.exe'
+            - '\bitsadmin.exe'
+            - '\msbuild.exe'
+            - '\installutil.exe'
+            - '\regasm.exe'
+            - '\regsvcs.exe'
+            - '\cmstp.exe'
+            - '\msiexec.exe'
+            - '\control.exe'
+            - '\wmic.exe'
+            - '\pcalua.exe'
+            - '\forfiles.exe'
+            - '\syncappvpublishingserver.exe'
+            - '\presentationhost.exe'
+    filter_legitimate:
+        ParentCommandLine|contains: '-k '
+    condition: selection_parent and selection_lolbin and not filter_legitimate
+falsepositives:
+    - System administration tools
+    - Software deployment
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.execution
+    - attack.t1134.004
+    - attack.t1218

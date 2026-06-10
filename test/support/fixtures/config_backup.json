@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "timestamp": "2024-01-01T00:00:00Z",
+  "settings": {
+    "retention": {
+      "alerts": 90,
+      "events": 30,
+      "logs": 7
+    },
+    "sla": {
+      "critical": {
+        "acknowledge_minutes": 15,
+        "resolve_hours": 4
+      },
+      "high": {
+        "acknowledge_minutes": 30,
+        "resolve_hours": 8
+      }
+    },
+    "integrations": {
+      "slack": {
+        "enabled": true,
+        "webhook_url": "https://hooks.slack.com/services/TEST"
+      },
+      "email": {
+        "enabled": true,
+        "smtp_server": "smtp.example.com"
+      }
+    }
+  }
+}

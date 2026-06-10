@@ -1,0 +1,579 @@
+name: SOC 2
+full_name: Service Organization Control 2 Type II
+version: "2017 Trust Services Criteria"
+description: Auditing standard for service organizations based on Trust Service Principles
+url: https://www.aicpa.org/soc
+
+trust_principles:
+  - Security (CC): Common Criteria applicable to all SOC 2 audits
+  - Availability (A): System available for operation and use as committed
+  - Processing Integrity (PI): System processing is complete, valid, accurate, timely, authorized
+  - Confidentiality (C): Information designated as confidential is protected
+  - Privacy (P): Personal information is collected, used, retained, disclosed appropriately
+
+controls:
+  # CC - Common Criteria (Security)
+  - id: soc2-cc1.1
+    control_id: CC1.1
+    title: COSO Principle 1 - Demonstrates Commitment to Integrity and Ethical Values
+    description: Entity demonstrates commitment to integrity and ethical values
+    category: security
+    severity: critical
+    automated: false
+    evidence_types:
+      - code_of_conduct
+      - ethics_policy
+      - training_records
+    validation_query: null
+    remediation_steps:
+      - Establish code of conduct
+      - Communicate ethical values
+      - Provide ethics training
+
+  - id: soc2-cc2.1
+    control_id: CC2.1
+    title: COSO Principle 13 - Relevant Information Quality and Communication
+    description: Entity obtains or generates and uses relevant, quality information to support internal control
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - communication_procedures
+      - information_quality_reviews
+      - stakeholder_communications
+    validation_query: null
+    remediation_steps:
+      - Define information requirements
+      - Ensure information quality
+      - Communicate effectively
+
+  - id: soc2-cc3.1
+    control_id: CC3.1
+    title: COSO Principle 6 - Specifies Objectives
+    description: Entity specifies objectives with sufficient clarity
+    category: security
+    severity: medium
+    automated: false
+    evidence_types:
+      - objectives_documentation
+      - performance_metrics
+      - monitoring_reports
+    validation_query: null
+    remediation_steps:
+      - Define clear security objectives
+      - Establish performance metrics
+      - Monitor objective achievement
+
+  - id: soc2-cc4.1
+    control_id: CC4.1
+    title: COSO Principle 16 - Evaluation and Communication of Deficiencies
+    description: Entity selects, develops, and performs ongoing evaluations to ascertain control presence
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - evaluation_reports
+      - deficiency_tracking
+      - remediation_evidence
+    validation_query: null
+    remediation_steps:
+      - Conduct regular control evaluations
+      - Document deficiencies
+      - Track remediation
+
+  - id: soc2-cc5.1
+    control_id: CC5.1
+    title: COSO Principle 14 - Internal Communication
+    description: Entity internally communicates information necessary for internal control
+    category: security
+    severity: medium
+    automated: false
+    evidence_types:
+      - internal_communications
+      - policy_distribution
+      - incident_notifications
+    validation_query: null
+    remediation_steps:
+      - Establish communication channels
+      - Distribute policies and procedures
+      - Communicate incidents and changes
+
+  - id: soc2-cc6.1
+    control_id: CC6.1
+    title: Logical and Physical Access Controls
+    description: Entity implements logical access security software, infrastructure, and architectures
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - access_configs
+      - authentication_logs
+      - identity_provider_config
+    validation_query: logical_access_configured
+    remediation_steps:
+      - Implement identity and access management
+      - Configure role-based access control
+      - Enable multi-factor authentication
+
+  - id: soc2-cc6.2
+    control_id: CC6.2
+    title: Prior to issuing system credentials, entity registers and authorizes new users
+    description: Prior to issuing system credentials and granting access, entity registers and authorizes new internal and external users
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - user_requests
+      - approval_records
+      - provisioning_logs
+    validation_query: null
+    remediation_steps:
+      - Implement user provisioning workflow
+      - Require manager approval
+      - Document all access grants
+
+  - id: soc2-cc6.3
+    control_id: CC6.3
+    title: Entity authorizes, modifies, or removes access
+    description: Entity authorizes, modifies, or removes access to data, software, functions, and services
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - access_change_logs
+      - approval_workflows
+      - access_reviews
+    validation_query: access_changes_authorized
+    remediation_steps:
+      - Implement access change management
+      - Require approvals for access modifications
+      - Conduct periodic access reviews
+
+  - id: soc2-cc6.6
+    control_id: CC6.6
+    title: Entity implements logical access security measures
+    description: Entity implements logical access security measures to protect against threats from sources outside its system boundaries
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - firewall_configs
+      - ids_ips_logs
+      - perimeter_security
+    validation_query: perimeter_security_implemented
+    remediation_steps:
+      - Deploy firewalls and network security
+      - Implement intrusion detection/prevention
+      - Monitor external threats
+
+  - id: soc2-cc6.7
+    control_id: CC6.7
+    title: Entity restricts transmission, movement, and removal of information
+    description: Entity restricts transmission, movement, and removal of information to authorized users and processes
+    category: security
+    severity: high
+    automated: true
+    evidence_types:
+      - dlp_configs
+      - transfer_policies
+      - data_movement_logs
+    validation_query: data_transfer_restricted
+    remediation_steps:
+      - Implement data loss prevention
+      - Define data transfer policies
+      - Monitor data movements
+
+  - id: soc2-cc6.8
+    control_id: CC6.8
+    title: Entity implements controls to prevent or detect unauthorized access
+    description: Entity implements controls to prevent or detect and act upon introduction of unauthorized or malicious software
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - av_edr_status
+      - malware_detections
+      - remediation_logs
+    validation_query: malware_protection_enabled
+    remediation_steps:
+      - Deploy endpoint protection
+      - Enable real-time malware detection
+      - Respond to detections promptly
+
+  - id: soc2-cc7.1
+    control_id: CC7.1
+    title: Entity uses detection and monitoring procedures
+    description: Entity uses detection and monitoring procedures to identify anomalies, indicators of unauthorized access
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - monitoring_configs
+      - alert_rules
+      - siem_logs
+    validation_query: monitoring_enabled
+    remediation_steps:
+      - Deploy SIEM/EDR solution
+      - Configure detection rules
+      - Monitor alerts 24/7
+
+  - id: soc2-cc7.2
+    control_id: CC7.2
+    title: Entity monitors system components
+    description: Entity monitors system components and the operation of those components for anomalies
+    category: security
+    severity: high
+    automated: true
+    evidence_types:
+      - system_monitoring
+      - performance_metrics
+      - anomaly_reports
+    validation_query: system_monitoring_enabled
+    remediation_steps:
+      - Monitor system performance
+      - Establish baselines
+      - Alert on anomalies
+
+  - id: soc2-cc7.3
+    control_id: CC7.3
+    title: Entity evaluates security events
+    description: Entity evaluates security events to determine whether they could or have resulted in a failure
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - event_analysis
+      - incident_reports
+      - investigation_logs
+    validation_query: events_evaluated
+    remediation_steps:
+      - Analyze all security events
+      - Investigate potential incidents
+      - Document findings
+
+  - id: soc2-cc7.4
+    control_id: CC7.4
+    title: Entity responds to identified security incidents
+    description: Entity responds to identified security incidents by executing defined incident response program
+    category: security
+    severity: critical
+    automated: true
+    evidence_types:
+      - incident_response_plan
+      - response_logs
+      - lessons_learned
+    validation_query: incident_response_implemented
+    remediation_steps:
+      - Develop incident response plan
+      - Execute response procedures
+      - Conduct post-incident reviews
+
+  - id: soc2-cc7.5
+    control_id: CC7.5
+    title: Entity identifies, develops, and implements activities
+    description: Entity identifies, develops, and implements activities to recover from identified security incidents
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - recovery_procedures
+      - backup_verification
+      - recovery_tests
+    validation_query: null
+    remediation_steps:
+      - Develop recovery procedures
+      - Test backup restoration
+      - Conduct recovery exercises
+
+  - id: soc2-cc8.1
+    control_id: CC8.1
+    title: Entity authorizes, designs, develops or acquires, configures, documents, tests, approves changes
+    description: Entity authorizes, designs, develops or acquires, configures, documents, tests, approves, and implements changes to infrastructure, data, software, and procedures
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - change_tickets
+      - approval_records
+      - test_results
+    validation_query: null
+    remediation_steps:
+      - Implement change management process
+      - Require approvals for changes
+      - Test before implementation
+
+  - id: soc2-cc9.1
+    control_id: CC9.1
+    title: Entity identifies, selects, and develops risk mitigation activities
+    description: Entity identifies, selects, and develops risk mitigation activities for risks arising from potential business disruptions
+    category: security
+    severity: high
+    automated: false
+    evidence_types:
+      - bcp_documentation
+      - risk_assessments
+      - mitigation_plans
+    validation_query: null
+    remediation_steps:
+      - Conduct business impact analysis
+      - Develop business continuity plan
+      - Implement mitigation activities
+
+  # A - Availability
+  - id: soc2-a1.1
+    control_id: A1.1
+    title: Entity maintains, monitors, and evaluates system availability
+    description: Entity maintains, monitors, and evaluates current processing capacity and use
+    category: availability
+    severity: high
+    automated: true
+    evidence_types:
+      - capacity_monitoring
+      - performance_metrics
+      - utilization_reports
+    validation_query: availability_monitored
+    remediation_steps:
+      - Monitor system capacity
+      - Track resource utilization
+      - Plan capacity expansion
+
+  - id: soc2-a1.2
+    control_id: A1.2
+    title: Entity authorizes, designs, develops, implements, operates, approves, maintains availability commitments
+    description: Entity authorizes, designs, develops or acquires, implements, operates, approves, maintains, and monitors environmental protections, software, data backup processes, and recovery infrastructure
+    category: availability
+    severity: critical
+    automated: true
+    evidence_types:
+      - backup_configs
+      - recovery_procedures
+      - backup_verification
+    validation_query: backup_implemented
+    remediation_steps:
+      - Implement automated backups
+      - Test backup restoration
+      - Maintain recovery infrastructure
+
+  - id: soc2-a1.3
+    control_id: A1.3
+    title: Entity provides for recovery and continuity of services
+    description: Entity provides for recovery and continuity of services in accordance with its service commitments and system requirements
+    category: availability
+    severity: critical
+    automated: false
+    evidence_types:
+      - disaster_recovery_plan
+      - recovery_tests
+      - rto_rpo_documentation
+    validation_query: null
+    remediation_steps:
+      - Develop disaster recovery plan
+      - Define RTO and RPO
+      - Test recovery procedures
+
+  # PI - Processing Integrity
+  - id: soc2-pi1.1
+    control_id: PI1.1
+    title: Entity obtains or generates, uses, and communicates relevant information
+    description: Entity obtains or generates, uses, and communicates relevant, quality information regarding processing integrity objectives
+    category: processing_integrity
+    severity: high
+    automated: false
+    evidence_types:
+      - data_quality_procedures
+      - validation_rules
+      - quality_reports
+    validation_query: null
+    remediation_steps:
+      - Define data quality standards
+      - Implement validation rules
+      - Monitor data quality
+
+  - id: soc2-pi1.2
+    control_id: PI1.2
+    title: Entity implements policies to achieve processing integrity objectives
+    description: Entity implements policies and procedures over system inputs to achieve processing integrity objectives
+    category: processing_integrity
+    severity: high
+    automated: true
+    evidence_types:
+      - input_validation
+      - error_handling
+      - data_quality_checks
+    validation_query: input_validation_implemented
+    remediation_steps:
+      - Validate all system inputs
+      - Implement error handling
+      - Check data completeness
+
+  - id: soc2-pi1.3
+    control_id: PI1.3
+    title: Entity implements policies over system processing
+    description: Entity implements policies and procedures over system processing to achieve processing integrity objectives
+    category: processing_integrity
+    severity: high
+    automated: true
+    evidence_types:
+      - processing_controls
+      - integrity_checks
+      - audit_trails
+    validation_query: processing_integrity_verified
+    remediation_steps:
+      - Implement processing controls
+      - Verify data integrity
+      - Maintain audit trails
+
+  # C - Confidentiality
+  - id: soc2-c1.1
+    control_id: C1.1
+    title: Entity identifies and maintains confidential information
+    description: Entity identifies and maintains confidential information to meet system objectives
+    category: confidentiality
+    severity: critical
+    automated: true
+    evidence_types:
+      - data_classification
+      - confidential_data_inventory
+      - classification_policies
+    validation_query: confidential_data_identified
+    remediation_steps:
+      - Classify all data
+      - Identify confidential information
+      - Maintain data inventory
+
+  - id: soc2-c1.2
+    control_id: C1.2
+    title: Entity disposes of confidential information
+    description: Entity disposes of confidential information to meet system objectives
+    category: confidentiality
+    severity: high
+    automated: true
+    evidence_types:
+      - disposal_procedures
+      - sanitization_logs
+      - destruction_certificates
+    validation_query: secure_disposal_implemented
+    remediation_steps:
+      - Implement secure disposal procedures
+      - Use certified destruction methods
+      - Document all disposals
+
+  # P - Privacy
+  - id: soc2-p1.1
+    control_id: P1.1
+    title: Entity provides notice of privacy practices
+    description: Entity provides notice to data subjects about its privacy practices
+    category: privacy
+    severity: high
+    automated: false
+    evidence_types:
+      - privacy_policy
+      - privacy_notices
+      - communication_records
+    validation_query: null
+    remediation_steps:
+      - Publish privacy policy
+      - Provide clear privacy notices
+      - Communicate privacy practices
+
+  - id: soc2-p2.1
+    control_id: P2.1
+    title: Entity communicates choices available
+    description: Entity communicates choices available regarding collection, use, retention, disclosure of personal information
+    category: privacy
+    severity: high
+    automated: false
+    evidence_types:
+      - consent_mechanisms
+      - opt_out_procedures
+      - choice_documentation
+    validation_query: null
+    remediation_steps:
+      - Provide clear choices
+      - Implement consent mechanisms
+      - Honor opt-out requests
+
+  - id: soc2-p3.1
+    control_id: P3.1
+    title: Entity collects personal information with consent
+    description: Entity collects personal information only for identified purposes with implicit or explicit consent
+    category: privacy
+    severity: critical
+    automated: true
+    evidence_types:
+      - consent_records
+      - collection_purposes
+      - consent_tracking
+    validation_query: consent_obtained
+    remediation_steps:
+      - Define collection purposes
+      - Obtain explicit consent
+      - Track consent records
+
+  - id: soc2-p4.1
+    control_id: P4.1
+    title: Entity limits use of personal information
+    description: Entity limits use of personal information to purposes identified in notice
+    category: privacy
+    severity: critical
+    automated: true
+    evidence_types:
+      - usage_policies
+      - purpose_limitation
+      - compliance_monitoring
+    validation_query: purpose_limitation_enforced
+    remediation_steps:
+      - Enforce purpose limitation
+      - Monitor data usage
+      - Prevent unauthorized use
+
+  - id: soc2-p5.1
+    control_id: P5.1
+    title: Entity retains personal information
+    description: Entity retains personal information consistent with its objectives
+    category: privacy
+    severity: high
+    automated: true
+    evidence_types:
+      - retention_policies
+      - retention_schedules
+      - deletion_logs
+    validation_query: retention_policies_enforced
+    remediation_steps:
+      - Define retention periods
+      - Implement automated deletion
+      - Document retention decisions
+
+  - id: soc2-p6.1
+    control_id: P6.1
+    title: Entity disposes of personal information
+    description: Entity disposes of personal information to meet objectives
+    category: privacy
+    severity: high
+    automated: true
+    evidence_types:
+      - disposal_procedures
+      - deletion_verification
+      - sanitization_records
+    validation_query: personal_data_disposed_securely
+    remediation_steps:
+      - Implement secure disposal
+      - Verify complete deletion
+      - Document all disposals
+
+  - id: soc2-p7.1
+    control_id: P7.1
+    title: Entity discloses personal information with consent
+    description: Entity discloses personal information to third parties with implicit or explicit consent
+    category: privacy
+    severity: critical
+    automated: true
+    evidence_types:
+      - disclosure_consents
+      - third_party_agreements
+      - disclosure_logs
+    validation_query: disclosure_consent_verified
+    remediation_steps:
+      - Obtain consent before disclosure
+      - Execute data sharing agreements
+      - Log all disclosures

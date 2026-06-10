@@ -1,0 +1,223 @@
+title: Registry Run Key Modification
+id: 17daecf9-def0-7123-4567-901234567890
+status: experimental
+description: Detects modification of registry run keys for persistence
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1547/001/
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains:
+            - '\CurrentVersion\Run'
+            - '\CurrentVersion\RunOnce'
+            - '\CurrentVersion\RunServices'
+            - '\CurrentVersion\Policies\Explorer\Run'
+    filter:
+        Image|endswith:
+            - '\msiexec.exe'
+            - '\setup.exe'
+            - '\installer.exe'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate software installation
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1547.001
+
+---
+title: Scheduled Task Creation via Schtasks
+id: 28ebdf0a-ef01-8234-5678-012345678901
+status: experimental
+description: Detects scheduled task creation for persistence
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\schtasks.exe'
+        CommandLine|contains|all:
+            - '/create'
+        CommandLine|contains:
+            - '/sc'
+            - '/tn'
+    filter:
+        CommandLine|contains:
+            - 'Microsoft\\'
+            - 'Windows\\'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate administrative tasks
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1053.005
+
+---
+title: WMI Event Subscription
+id: 39fcef1b-f012-9345-6789-123456789012
+status: experimental
+description: Detects WMI event subscription for persistence
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_wmic:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains:
+            - '__EventFilter'
+            - '__EventConsumer'
+            - '__FilterToConsumerBinding'
+            - 'CommandLineEventConsumer'
+            - 'ActiveScriptEventConsumer'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Register-WmiEvent'
+            - 'Set-WmiInstance'
+            - '__EventFilter'
+    condition: selection_wmic or selection_ps
+falsepositives:
+    - Legitimate monitoring solutions
+level: high
+tags:
+    - attack.persistence
+    - attack.t1546.003
+
+---
+title: New Service Creation via sc.exe
+id: 4a0dfa2c-0123-a456-789a-234567890123
+status: experimental
+description: Detects new service creation for persistence
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\sc.exe'
+        CommandLine|contains|all:
+            - 'create'
+            - 'binPath'
+    condition: selection
+falsepositives:
+    - Legitimate software installation
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1543.003
+
+---
+title: Startup Folder Modification
+id: 5b1eab3d-1234-b567-89ab-345678901234
+status: experimental
+description: Detects file creation in startup folders
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection:
+        TargetFilename|contains:
+            - '\Start Menu\Programs\Startup\'
+            - '\Programs\Startup\'
+        TargetFilename|endswith:
+            - '.exe'
+            - '.bat'
+            - '.cmd'
+            - '.vbs'
+            - '.js'
+            - '.lnk'
+    condition: selection
+falsepositives:
+    - Legitimate software installation
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1547.001
+
+---
+title: Image File Execution Options Injection
+id: 6c2fbc4e-2345-c678-9abc-456789012345
+status: experimental
+description: Detects IFEO debugger key modification for persistence/evasion
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains: 'Image File Execution Options'
+        TargetObject|contains:
+            - 'Debugger'
+            - 'GlobalFlag'
+    condition: selection
+falsepositives:
+    - Debugging tools installation
+level: high
+tags:
+    - attack.persistence
+    - attack.defense_evasion
+    - attack.t1546.012
+
+---
+title: AppInit DLLs Modification
+id: 7d3acd5f-3456-d789-abcd-567890123456
+status: experimental
+description: Detects AppInit_DLLs registry modification
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains:
+            - '\Windows NT\CurrentVersion\Windows\AppInit_DLLs'
+            - '\Windows NT\CurrentVersion\Windows\LoadAppInit_DLLs'
+    condition: selection
+falsepositives:
+    - Security software
+level: high
+tags:
+    - attack.persistence
+    - attack.t1546.010
+
+---
+title: Winlogon Helper DLL Modification
+id: 8e4bde6a-4567-e89a-bcde-678901234567
+status: experimental
+description: Detects Winlogon registry modification for persistence
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains: 'Microsoft\Windows NT\CurrentVersion\Winlogon'
+        TargetObject|contains:
+            - 'Shell'
+            - 'Userinit'
+            - 'Notify'
+            - 'System'
+    condition: selection
+falsepositives:
+    - Legitimate system configuration
+level: high
+tags:
+    - attack.persistence
+    - attack.t1547.004

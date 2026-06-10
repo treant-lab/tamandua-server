@@ -1,0 +1,17 @@
+test_case:
+  name: "LSASS Memory Access Detection"
+  description: "Tests detection of suspicious LSASS process access"
+  rule: "credential_access/lsass_access.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\lsass.exe"
+        cmdline: "lsass.exe"
+        user: "NT AUTHORITY\\SYSTEM"
+        pid: 628
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1003.001"]
+  tags: ["credential_access", "lsass", "positive"]

@@ -1,0 +1,358 @@
+# Tamandua EDR - Behavioral Chain Detection Rules
+# Multi-stage attack sequence detection using temporal correlation
+
+title: Credential Theft Attack Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901234
+status: experimental
+description: Detects credential theft attack chain - enumeration followed by LSASS access and lateral movement
+references:
+  - https://attack.mitre.org/tactics/TA0006/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Enumeration
+  enumeration:
+    CommandLine|contains:
+      - 'net user'
+      - 'net group'
+      - 'whoami /all'
+      - 'nltest'
+      - 'dsquery'
+  # Stage 2: Credential access (within 5 minutes)
+  credential_access:
+    TargetImage|endswith: '\lsass.exe'
+    GrantedAccess|contains:
+      - '0x1010'
+      - '0x1410'
+      - '0x1438'
+  # Stage 3: Lateral movement
+  lateral_movement:
+    CommandLine|contains:
+      - 'wmic /node:'
+      - 'psexec'
+      - 'Enter-PSSession'
+      - 'Invoke-Command'
+  timeframe: 5m
+  condition: enumeration | near credential_access | near lateral_movement
+falsepositives:
+  - IT administration activities
+  - Security assessments
+level: critical
+tags:
+  - attack.credential_access
+  - attack.t1003
+  - attack.lateral_movement
+  - attack.t1021
+
+---
+title: Data Exfiltration Attack Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901235
+status: experimental
+description: Detects data exfiltration chain - file enumeration, staging, archive creation, and transfer
+references:
+  - https://attack.mitre.org/tactics/TA0010/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: File enumeration
+  file_enum:
+    CommandLine|contains:
+      - 'dir /s'
+      - 'forfiles'
+      - 'where /r'
+      - 'Get-ChildItem -Recurse'
+  # Stage 2: Archive creation
+  archive_create:
+    CommandLine|contains:
+      - '7z a'
+      - 'rar a'
+      - 'Compress-Archive'
+      - 'tar -c'
+      - 'zip -r'
+  # Stage 3: Transfer
+  transfer:
+    CommandLine|contains:
+      - 'curl -F'
+      - 'Invoke-WebRequest -Method Post'
+      - 'ftp put'
+      - 'scp '
+      - 'rclone copy'
+  timeframe: 30m
+  condition: file_enum | near archive_create | near transfer
+falsepositives:
+  - Backup operations
+  - File synchronization
+level: high
+tags:
+  - attack.collection
+  - attack.t1005
+  - attack.exfiltration
+  - attack.t1041
+
+---
+title: Privilege Escalation Attack Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901236
+status: experimental
+description: Detects privilege escalation chain - initial execution, token manipulation, and persistence
+references:
+  - https://attack.mitre.org/tactics/TA0004/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Initial script execution
+  script_exec:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\cmd.exe'
+      - '\wscript.exe'
+    CommandLine|contains:
+      - '-enc'
+      - '-e '
+      - '/c '
+  # Stage 2: UAC bypass
+  uac_bypass:
+    CommandLine|contains:
+      - 'fodhelper'
+      - 'computerdefaults'
+      - 'sdclt'
+      - 'eventvwr'
+      - 'silentcleanup'
+  # Stage 3: Persistence
+  persistence:
+    CommandLine|contains:
+      - 'reg add'
+      - 'schtasks /create'
+      - 'New-Service'
+      - 'sc create'
+  timeframe: 10m
+  condition: script_exec | near uac_bypass | near persistence
+falsepositives:
+  - Legitimate software installation
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1548.002
+  - attack.persistence
+  - attack.t1547.001
+
+---
+title: Defense Evasion Before Malicious Activity
+id: bc1a2b3c-4d5e-6f78-9012-345678901237
+status: experimental
+description: Detects defense evasion followed by suspicious activity
+references:
+  - https://attack.mitre.org/tactics/TA0005/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Defense evasion
+  evasion:
+    CommandLine|contains:
+      - 'Set-MpPreference -DisableRealtimeMonitoring'
+      - 'Disable-WindowsOptionalFeature'
+      - 'wevtutil cl'
+      - 'Stop-Service WinDefend'
+      - 'reg add.*DisableAntiSpyware'
+  # Stage 2: Malicious activity after evasion
+  malicious:
+    CommandLine|contains:
+      - 'Invoke-Mimikatz'
+      - 'sekurlsa'
+      - 'procdump -ma lsass'
+      - 'rundll32.*comsvcs.dll'
+      - 'SharpHound'
+  timeframe: 15m
+  condition: evasion | near malicious
+falsepositives:
+  - Security testing
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+  - attack.credential_access
+  - attack.t1003
+
+---
+title: Ransomware Pre-Encryption Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901238
+status: experimental
+description: Detects ransomware preparation - backup deletion, service stop, and encryption indicators
+references:
+  - https://attack.mitre.org/techniques/T1486/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Shadow copy deletion
+  shadow_delete:
+    CommandLine|contains:
+      - 'vssadmin delete shadows'
+      - 'wmic shadowcopy delete'
+      - 'bcdedit /set {default} recoveryenabled no'
+  # Stage 2: Service disruption
+  service_stop:
+    CommandLine|contains:
+      - 'net stop'
+      - 'taskkill /f'
+      - 'Stop-Service'
+    CommandLine|contains:
+      - 'sql'
+      - 'exchange'
+      - 'backup'
+      - 'vss'
+  # Stage 3: File modification at scale
+  mass_modification:
+    CommandLine|contains:
+      - '.encrypted'
+      - '.locked'
+      - 'readme.txt'
+      - 'ransom'
+  timeframe: 30m
+  condition: shadow_delete | near service_stop
+falsepositives:
+  - System maintenance (rare to combine with service stops)
+level: critical
+tags:
+  - attack.impact
+  - attack.t1486
+  - attack.t1490
+
+---
+title: LOLBin Execution Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901239
+status: experimental
+description: Detects chained LOLBin abuse indicating malicious activity
+references:
+  - https://attack.mitre.org/techniques/T1218/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  lolbin1:
+    Image|endswith:
+      - '\mshta.exe'
+      - '\msbuild.exe'
+      - '\installutil.exe'
+      - '\regasm.exe'
+  lolbin2:
+    Image|endswith:
+      - '\rundll32.exe'
+      - '\regsvr32.exe'
+      - '\certutil.exe'
+  lolbin3:
+    Image|endswith:
+      - '\wmic.exe'
+      - '\cmstp.exe'
+      - '\wscript.exe'
+  timeframe: 5m
+  condition: lolbin1 | near lolbin2 | near lolbin3
+falsepositives:
+  - Complex installation scripts
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1218
+
+---
+title: C2 Establishment Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901240
+status: experimental
+description: Detects C2 establishment pattern - DNS lookup, connection, and periodic beacon
+references:
+  - https://attack.mitre.org/tactics/TA0011/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  # Stage 1: DNS resolution for C2
+  dns_lookup:
+    QueryName|re: '^[a-z0-9]{15,}\.'  # DGA-like domain
+  # Stage 2: Initial connection
+  initial_conn:
+    DestinationPort:
+      - 443
+      - 8443
+      - 80
+      - 8080
+    Initiated: 'true'
+  # Stage 3: Periodic callbacks (same destination)
+  beacon:
+    DestinationPort:
+      - 443
+      - 8443
+  timeframe: 10m
+  condition: dns_lookup | near initial_conn | near beacon
+falsepositives:
+  - CDN services
+  - Cloud applications
+level: medium
+tags:
+  - attack.command_and_control
+  - attack.t1071
+  - attack.t1568
+
+---
+title: Internal Reconnaissance Chain
+id: bc1a2b3c-4d5e-6f78-9012-345678901241
+status: experimental
+description: Detects internal reconnaissance pattern - network discovery, AD enumeration, and share access
+references:
+  - https://attack.mitre.org/tactics/TA0007/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Network discovery
+  network_disc:
+    CommandLine|contains:
+      - 'arp -a'
+      - 'net view'
+      - 'ping -n'
+      - 'nslookup'
+      - 'Get-NetNeighbor'
+  # Stage 2: AD enumeration
+  ad_enum:
+    CommandLine|contains:
+      - 'Get-ADUser'
+      - 'Get-ADComputer'
+      - 'Get-ADGroup'
+      - 'dsquery'
+      - 'ldapsearch'
+      - 'adfind'
+  # Stage 3: Share enumeration
+  share_enum:
+    CommandLine|contains:
+      - 'net share'
+      - 'Get-SmbShare'
+      - 'Invoke-ShareFinder'
+  timeframe: 15m
+  condition: network_disc | near ad_enum | near share_enum
+falsepositives:
+  - IT inventory scripts
+  - Legitimate administration
+level: medium
+tags:
+  - attack.discovery
+  - attack.t1018
+  - attack.t1087.002
+  - attack.t1135

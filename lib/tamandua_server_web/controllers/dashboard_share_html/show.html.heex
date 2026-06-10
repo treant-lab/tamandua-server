@@ -1,0 +1,82 @@
+<div class={"min-h-screen #{if @share.transparent_background, do: "bg-transparent", else: "bg-gray-50 dark:bg-gray-900"}"}>
+  <%= if @share.show_header do %>
+    <div class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-4">
+            <%= if @share.branding_config["logo_url"] do %>
+              <img src={@share.branding_config["logo_url"]} alt="Logo" class="h-8" />
+            <% end %>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-white">
+              <%= @page_title %>
+            </h1>
+          </div>
+          <%= if @share.branding_config["show_last_updated"] do %>
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+              Last updated: <%= Calendar.strftime(@dashboard_layout.updated_at, "%B %d, %Y at %H:%M") %>
+            </div>
+          <% end %>
+        </div>
+        <%= if @dashboard_layout.description do %>
+          <p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
+            <%= @dashboard_layout.description %>
+          </p>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <%= if @share.show_watermark do %>
+      <div class="mb-4 text-center text-xs text-gray-400 dark:text-gray-600">
+        <span>Shared via Tamandua EDR</span>
+      </div>
+    <% end %>
+
+    <!-- Dashboard Grid -->
+    <div
+      id="shared-dashboard-grid"
+      class="grid grid-cols-12 gap-4 auto-rows-min"
+      phx-hook="SharedDashboardRefresh"
+      data-refresh-interval={@share.refresh_interval}
+    >
+      <%= for widget <- @widgets do %>
+        <div
+          id={"widget-#{widget.id}"}
+          class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700"
+          style={"grid-column: span #{widget.width}; min-height: #{widget.height * 80}px;"}
+        >
+          <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+              <%= widget.title %>
+            </h3>
+          </div>
+          <div class="p-4">
+            <%= TamanduaServerWeb.DashboardShareHTML.WidgetRenderer.render_widget_content(widget, @widget_data[widget.id]) %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+  <%= if @share.show_footer do %>
+    <footer class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 mt-8">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div class="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
+          <div>
+            <%= if @share.branding_config["company_name"] do %>
+              <span class="font-medium"><%= @share.branding_config["company_name"] %></span>
+              <span class="mx-2">•</span>
+            <% end %>
+            <span>Powered by Tamandua EDR</span>
+          </div>
+          <%= if @share.branding_config["support_url"] do %>
+            <a href={@share.branding_config["support_url"]} class="text-blue-600 hover:text-blue-700" target="_blank" rel="noopener noreferrer">
+              Support
+            </a>
+          <% end %>
+        </div>
+      </div>
+    </footer>
+  <% end %>
+</div>

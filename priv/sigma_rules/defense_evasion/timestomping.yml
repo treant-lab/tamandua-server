@@ -1,0 +1,50 @@
+title: File Timestamp Manipulation
+id: de04a001-tmst-0004-0001-000000000001
+status: stable
+description: |
+  Detects timestomping techniques where adversaries modify file creation,
+  modification, or access timestamps to blend in with legitimate files.
+  This rule detects known command-line tools and PowerShell methods used
+  for timestamp manipulation.
+references:
+  - https://attack.mitre.org/techniques/T1070/006/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1070.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - '.CreationTime ='
+      - '.LastWriteTime ='
+      - '.LastAccessTime ='
+      - 'Set-ItemProperty'
+      - 'CreationTimeUtc'
+      - 'LastWriteTimeUtc'
+  selection_nircmd:
+    CommandLine|contains:
+      - 'timestomp'
+      - 'NirCmd'
+      - 'SetFileTime'
+  selection_touch:
+    CommandLine|contains:
+      - 'touch -t'
+      - 'touch -d'
+      - 'touch --date'
+  filter_git:
+    ParentImage|endswith:
+      - '\git.exe'
+      - '\svn.exe'
+  condition: (selection_ps or selection_nircmd or selection_touch) and not filter_git
+falsepositives:
+  - Build systems that set deterministic timestamps
+  - Version control systems (Git, SVN)
+level: medium

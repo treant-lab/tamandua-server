@@ -1,0 +1,92 @@
+title: Exfiltration via Cloud Storage CLI Tools
+id: ef03a001-clst-0003-0001-000000000001
+status: stable
+description: |
+  Detects use of cloud storage command-line tools (rclone, MEGAcmd, AWS CLI,
+  Azure CLI, gsutil) for potential data exfiltration. These tools enable
+  bulk data transfer to cloud storage that may bypass network DLP controls.
+references:
+  - https://attack.mitre.org/techniques/T1567/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1567.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_rclone:
+    Image|endswith:
+      - '\rclone.exe'
+    CommandLine|contains:
+      - 'copy'
+      - 'sync'
+      - 'move'
+  selection_mega:
+    Image|endswith:
+      - '\MEGAcmdServer.exe'
+      - '\mega-cmd.exe'
+    CommandLine|contains:
+      - 'put'
+      - 'upload'
+  selection_aws:
+    CommandLine|contains:
+      - 'aws s3 cp'
+      - 'aws s3 sync'
+      - 'aws s3 mv'
+  selection_azure:
+    CommandLine|contains:
+      - 'az storage blob upload'
+      - 'azcopy'
+  filter_sysadmin:
+    ParentImage|contains:
+      - '\backup\'
+      - '\scheduled\'
+  condition: (selection_rclone or selection_mega or selection_aws or selection_azure) and not filter_sysadmin
+falsepositives:
+  - Legitimate cloud backup operations
+  - Authorized data migration
+level: high
+
+---
+title: Rclone Configuration with Remote Storage
+id: ef03a002-clst-0003-0002-000000000002
+status: stable
+description: |
+  Detects rclone being configured with remote storage backends. Rclone is
+  increasingly used by ransomware operators and APT groups for data
+  exfiltration because it supports 40+ cloud storage providers.
+references:
+  - https://attack.mitre.org/techniques/T1567/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1567.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\rclone.exe'
+    CommandLine|contains:
+      - 'config'
+      - '--config'
+  selection_remote:
+    CommandLine|contains:
+      - 'mega'
+      - 'ftp'
+      - 'sftp'
+      - 's3'
+      - 'dropbox'
+      - 'gdrive'
+      - 'onedrive'
+  filter_none:
+    CommandLine: ''
+  condition: selection and selection_remote and not filter_none
+falsepositives:
+  - Legitimate rclone configuration by administrators
+level: high

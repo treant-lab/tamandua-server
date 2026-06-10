@@ -1,0 +1,192 @@
+name: Insider Threat Investigation
+description: |
+  Comprehensive workflow for investigating potential insider threats
+  including data hoarding, unauthorized access, and policy violations.
+  Handles sensitive HR/legal considerations.
+category: insider_threat
+
+metadata:
+  mitre_techniques:
+    - T1530
+    - T1074
+    - T1048
+  mitre_tactics:
+    - collection
+    - exfiltration
+  difficulty: hard
+  expected_duration_minutes: 60
+  version: 1.0
+  author: Tamandua Security Team
+  requires_approval: true
+  legal_hold: true
+
+steps:
+  - type: query
+    name: After-Hours Access
+    description: Identify unusual after-hours system access
+    query_template: |
+      event_type:authentication AND
+      success:true AND
+      user:[target_user] AND
+      (hour:(0-5 OR 22-23) OR day_of_week:(6 OR 7))
+    next_actions:
+      found: 1
+      not_found: 3
+
+  - type: collect_evidence
+    name: Access Pattern Analysis
+    description: Analyze user's historical access patterns
+    evidence_queries:
+      - user_login_history_30d
+      - access_deviation_score
+      - location_analysis
+      - device_fingerprints
+
+  - type: decision
+    name: Assess Access Anomaly
+    description: Determine if access pattern is anomalous
+    decision_criteria:
+      - Significant deviation from baseline?
+      - New device or location?
+      - Correlates with HR actions (termination notice, etc.)?
+      - Multiple failed attempts before success?
+    next_actions:
+      anomalous: 3
+      normal: 13
+
+  - type: query
+    name: Data Access Monitoring
+    description: Check for excessive or unauthorized data access
+    query_template: |
+      event_type:(file_access OR file_copy OR file_read) AND
+      user:[target_user] AND
+      (path:(*Confidential* OR *Finance* OR *HR* OR *Legal* OR *Customer*) OR
+       sensitivity:high)
+      GROUP BY user HAVING COUNT(*) > 100 WITHIN 24h
+
+  - type: query
+    name: Removable Media Usage
+    description: Check for data copying to USB or external drives
+    query_template: |
+      event_type:(device_connect OR file_copy) AND
+      user:[target_user] AND
+      (device_type:usb_storage OR
+       destination_path:(D:\\* OR E:\\* OR F:\\* OR G:\\*))
+
+  - type: query
+    name: Cloud Uploads
+    description: Monitor uploads to personal cloud services
+    query_template: |
+      event_type:(network_connect OR dns_query) AND
+      user:[target_user] AND
+      domain:(*dropbox.com OR *drive.google.com OR
+             *onedrive.live.com OR *wetransfer.com OR *sendspace.com)
+
+  - type: collect_evidence
+    name: Comprehensive User Activity
+    description: Collect all user activity across systems
+    evidence_queries:
+      - email_activity
+      - chat_logs
+      - badge_access_logs
+      - vpn_connections
+      - database_queries
+      - print_jobs
+
+  - type: manual_review
+    name: HR Context Review
+    description: Review with HR for employment context
+    review_checklist:
+      - Is employee under investigation?
+      - Has employee received termination notice?
+      - Are there performance issues on record?
+      - Has employee expressed dissatisfaction?
+      - Is there pending litigation?
+      - Does employee have financial pressures?
+    requires_approval:
+      - hr_manager
+      - legal_counsel
+
+  - type: decision
+    name: Threat Level Assessment
+    description: Assess the level of insider threat
+    decision_criteria:
+      - Volume of sensitive data accessed
+      - Evidence of exfiltration attempts
+      - Timing relative to employment actions
+      - Financial or competitive motivations
+      - Sophistication of evasion attempts
+    next_actions:
+      high_threat: 9
+      medium_threat: 10
+      low_threat: 12
+
+  - type: notify
+    name: Critical Insider Threat Alert
+    description: Immediate notification to executive team
+    notification_config:
+      priority: critical
+      channels:
+        - secure_email
+        - phone
+      recipients:
+        - ciso
+        - hr_director
+        - legal_counsel
+        - ceo
+      confidential: true
+
+  - type: collect_evidence
+    name: Legal Hold Evidence Collection
+    description: Preserve all evidence under legal hold
+    evidence_queries:
+      - comprehensive_user_timeline
+      - all_file_access
+      - all_network_activity
+      - all_email_metadata
+      - all_system_logs
+    legal_hold: true
+    chain_of_custody: true
+
+  - type: manual_review
+    name: Legal Review & Action Planning
+    description: Coordinate response with legal and HR
+    review_checklist:
+      - Should employee access be restricted?
+      - Is law enforcement contact warranted?
+      - What is the potential damage scope?
+      - Are there other implicated employees?
+      - Should forensic imaging be performed?
+      - What are the legal implications?
+    requires_approval:
+      - legal_counsel
+      - hr_director
+
+  - type: decision
+    name: Determine Immediate Actions
+    description: Decide on immediate containment actions
+    decision_criteria:
+      - Employee currently has system access
+      - Active exfiltration detected
+      - Criminal activity suspected
+      - Competitive threat identified
+    next_actions:
+      restrict_access: 13
+      continue_monitoring: 13
+      terminate_immediately: 13
+
+  - type: create_alert
+    name: Insider Threat Case
+    description: Create formal insider threat investigation case
+    alert_config:
+      severity: high
+      title: Insider Threat Investigation - [User]
+      confidential: true
+      case_type: insider_threat
+      recommended_actions:
+        - Document all findings thoroughly
+        - Maintain strict confidentiality
+        - Coordinate with HR and Legal
+        - Preserve evidence for potential litigation
+        - Monitor employee activity if still employed
+        - Review access controls and DLP policies

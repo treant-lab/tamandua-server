@@ -1,0 +1,102 @@
+title: Office Application Spawning Suspicious Process
+id: ex06a001-ofmc-0006-0001-000000000001
+status: stable
+description: |
+  Detects Microsoft Office applications (Word, Excel, PowerPoint, Outlook)
+  spawning suspicious child processes. This is a strong indicator of
+  malicious macro or OLE object execution, as Office applications should
+  not typically spawn command interpreters or script engines.
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://attack.mitre.org/techniques/T1566/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.initial_access
+  - attack.t1204.002
+  - attack.t1566.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+      - '\OUTLOOK.EXE'
+      - '\MSACCESS.EXE'
+      - '\MSPUB.EXE'
+      - '\ONENOTE.EXE'
+  selection_child:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+      - '\regsvr32.exe'
+      - '\rundll32.exe'
+      - '\certutil.exe'
+      - '\bitsadmin.exe'
+      - '\schtasks.exe'
+      - '\sc.exe'
+      - '\net.exe'
+      - '\net1.exe'
+  filter_normal:
+    Image|endswith: '\splwow64.exe'
+  filter_print:
+    Image|endswith: '\FLTLDR.EXE'
+  condition: selection_parent and selection_child and not (filter_normal or filter_print)
+falsepositives:
+  - Legitimate Office add-ins that invoke system utilities
+  - Office mail merge operations
+level: high
+
+---
+title: Office Application Creating Executable File
+id: ex06a002-ofmc-0006-0002-000000000002
+status: stable
+description: |
+  Detects Office applications writing executable files to disk, which
+  indicates malicious macro activity dropping a payload.
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1204.002
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+      - '\OUTLOOK.EXE'
+    TargetFilename|endswith:
+      - '.exe'
+      - '.dll'
+      - '.scr'
+      - '.bat'
+      - '.cmd'
+      - '.ps1'
+      - '.vbs'
+      - '.js'
+      - '.hta'
+  filter_temp:
+    TargetFilename|contains:
+      - '\Microsoft\Office\'
+      - '\WebView\'
+      - '\Document Recovery\'
+  condition: selection and not filter_temp
+falsepositives:
+  - Office saving embedded objects to disk
+level: high

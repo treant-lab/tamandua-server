@@ -1,0 +1,44 @@
+name: "Living off the Land Attack Chain"
+description: "Abuse of legitimate system tools (LOLBins) for malicious purposes"
+severity: medium
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - defense-evasion
+  - lolbas
+  - lolbins
+
+steps:
+  - name: "LOLBin File Download"
+    techniques:
+      - T1105       # Ingress Tool Transfer
+      - T1218.011   # Rundll32
+      - T1140       # Deobfuscate/Decode Files
+    threshold: 1
+    timeframe: 900  # 15 minutes
+    description: "Abuse of certutil, bitsadmin, rundll32, or similar tools"
+
+  - name: "Script Execution"
+    techniques:
+      - T1059.001  # PowerShell
+      - T1059.003  # Windows Command Shell
+      - T1059.005  # Visual Basic
+    threshold: 1
+    timeframe: 600  # 10 minutes
+    conditions:
+      same_agent: true
+    description: "PowerShell or command shell script execution"
+
+  - name: "Defense Evasion"
+    techniques:
+      - T1027       # Obfuscated Files or Information
+      - T1140       # Deobfuscate/Decode
+      - T1070       # Indicator Removal
+      - T1070.001   # Clear Windows Event Logs
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_agent: true
+    description: "Obfuscation, decoding, or log clearing activity"
+
+narrative_template: "LOLBAS attack chain: legitimate tools abused by {user} for file download and script execution on {process} within {timespan}"

@@ -1,0 +1,47 @@
+name: "Data Exfiltration Response"
+description: "Response to suspected data exfiltration with network blocking and investigation"
+
+trigger:
+  detection_type: "data_exfiltration"
+  confidence: 0.85
+  severity: "high"
+
+actions:
+  - action: "block_ip"
+    block_ip:
+      reason: "Data exfiltration attempt blocked"
+
+  - action: "block_domain"
+    block_domain:
+      reason: "C2 domain blocked"
+
+  - action: "kill_process"
+    kill_process:
+      force: true
+
+  - action: "collect_forensics"
+    collect_forensics:
+      memory_dump: false
+      process_list: true
+      network_connections: true
+      browser_history: true
+      event_logs: true
+
+  - action: "isolate_host"
+    isolate_host: {}
+
+  - action: "update_blocklist"
+    update_blocklist:
+      blocklist_type: "ip"
+      reason: "Data exfiltration threat actor infrastructure"
+
+  - action: "create_ticket"
+    create_ticket:
+      title: "Data Exfiltration Attempt Blocked"
+      severity: "critical"
+      priority: "P1"
+
+  - action: "send_notification"
+    send_notification:
+      channel: "slack"
+      message: "CRITICAL: Data exfiltration attempt detected and blocked. Network isolation in effect."

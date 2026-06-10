@@ -1,0 +1,96 @@
+title: AI Runtime - Known Jailbreak Keywords
+id: runtime-ai-020
+status: stable
+description: Detects known jailbreak keywords and phrases used to bypass LLM safety filters
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://www.jailbreakchat.com/
+    - https://learnprompting.org/docs/prompt_hacking/jailbreaking
+logsource:
+    category: llm_request
+    product: tamandua
+detection:
+    selection_jailbreak:
+        PromptPreview|contains:
+            - 'DAN mode'
+            - 'developer mode'
+            - 'no restrictions'
+            - 'bypass safety'
+            - 'without limitations'
+            - 'ignore safety'
+            - 'disable filters'
+    condition: selection_jailbreak
+falsepositives:
+    - Security research discussions
+    - Educational content about AI safety
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1562
+    - ai_security
+    - jailbreak
+
+---
+title: AI Runtime - Persona Manipulation for Jailbreak
+id: runtime-ai-021
+status: stable
+description: Detects persona manipulation attempts to enable restricted behaviors
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://arxiv.org/abs/2308.03825
+logsource:
+    category: llm_request
+    product: tamandua
+detection:
+    selection_persona:
+        PromptPreview|contains:
+            - 'evil mode'
+            - 'unfiltered mode'
+            - 'unrestricted AI'
+            - 'no ethics'
+            - 'without morals'
+            - 'amoral assistant'
+            - 'chaotic mode'
+    condition: selection_persona
+falsepositives:
+    - Creative writing or fiction
+    - Philosophy discussions
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1562
+    - ai_security
+    - jailbreak
+
+---
+title: AI Runtime - Instruction Override Jailbreak
+id: runtime-ai-022
+status: stable
+description: Detects instruction override patterns used for jailbreak attempts
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://research.nccgroup.com/2022/12/05/exploring-prompt-injection-attacks/
+logsource:
+    category: llm_request
+    product: tamandua
+detection:
+    selection_override:
+        PromptPreview|contains:
+            - 'from now on'
+            - 'new role'
+            - 'ignore your training'
+            - 'forget your rules'
+            - 'disregard guidelines'
+            - 'bypass your programming'
+    condition: selection_override
+falsepositives:
+    - Legitimate instruction updates in authorized contexts
+level: medium
+tags:
+    - attack.defense_evasion
+    - attack.t1562
+    - ai_security
+    - jailbreak

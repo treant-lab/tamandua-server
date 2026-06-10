@@ -1,0 +1,106 @@
+title: RDP Session Hijacking via Tscon
+id: lm04a001-rdph-0004-0001-000000000001
+status: stable
+description: |
+  Detects RDP session hijacking using tscon.exe. An attacker with SYSTEM
+  privileges can use tscon to connect to another user's RDP session without
+  needing their password. This is a well-known post-exploitation technique
+  for accessing sessions belonging to higher-privileged users.
+references:
+  - https://attack.mitre.org/techniques/T1563/002/
+  - https://medium.com/@networksecurity/rdp-hijacking-how-to-hijack-rds-and-remoteapp-sessions-transparently-to-move-through-an-organization-22f5cb0f0a4a
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1563.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\tscon.exe'
+    CommandLine|contains: '/dest:'
+  filter_legit:
+    ParentImage|endswith: '\termsrv.exe'
+  condition: selection and not filter_legit
+falsepositives:
+  - Legitimate RDP session management by administrators
+level: critical
+
+---
+title: RDP Session Hijacking via Service Creation
+id: lm04a002-rdph-0004-0002-000000000002
+status: stable
+description: |
+  Detects the creation of a Windows service with a command that includes
+  tscon.exe, which is used to hijack RDP sessions. Attackers create a service
+  running as SYSTEM that executes tscon to connect to a target session.
+references:
+  - https://attack.mitre.org/techniques/T1563/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1563.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains|all:
+      - 'create'
+      - 'tscon'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Extremely unlikely in legitimate environments
+level: critical
+
+---
+title: RDP Tunneling via Port Forwarding
+id: lm04a003-rdph-0004-0003-000000000003
+status: stable
+description: |
+  Detects potential RDP tunneling through SSH port forwarding or netsh portproxy,
+  which are used to forward RDP traffic through compromised hosts to pivot
+  deeper into the network.
+references:
+  - https://attack.mitre.org/techniques/T1021/001/
+  - https://attack.mitre.org/techniques/T1572/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.001
+  - attack.t1572
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ssh:
+    Image|endswith:
+      - '\ssh.exe'
+      - '\plink.exe'
+    CommandLine|contains:
+      - '-L '
+      - '-R '
+      - '3389'
+  selection_netsh:
+    Image|endswith: '\netsh.exe'
+    CommandLine|contains|all:
+      - 'portproxy'
+      - '3389'
+  filter_admin:
+    User|contains: 'SYSTEM'
+    ParentImage|endswith: '\services.exe'
+  condition: (selection_ssh or selection_netsh) and not filter_admin
+falsepositives:
+  - Legitimate SSH tunneling by developers or administrators
+  - Network port redirection for testing
+level: high

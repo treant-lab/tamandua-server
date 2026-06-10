@@ -1,0 +1,146 @@
+title: Ransomware File Extension Modification
+id: im01a001-rans-0001-0001-000000000001
+status: stable
+description: |
+  Detects mass file encryption by monitoring for file creation/modification
+  with known ransomware extensions. These extensions are appended to files
+  after encryption by ransomware families. High volumes of such events in
+  rapid succession is a critical indicator of active ransomware encryption.
+references:
+  - https://attack.mitre.org/techniques/T1486/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1486
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|endswith:
+      - '.encrypted'
+      - '.locked'
+      - '.crypt'
+      - '.crypto'
+      - '.enc'
+      - '.crypted'
+      - '.ransom'
+      - '.wnry'
+      - '.wcry'
+      - '.cerber'
+      - '.locky'
+      - '.zepto'
+      - '.thor'
+      - '.aesir'
+      - '.dharma'
+      - '.phobos'
+      - '.ryuk'
+      - '.maze'
+      - '.revil'
+      - '.sodinokibi'
+      - '.conti'
+      - '.lockbit'
+      - '.hive'
+      - '.blackbasta'
+      - '.play'
+  filter_legit:
+    Image|endswith:
+      - '\VeraCrypt.exe'
+      - '\BitLocker.exe'
+      - '\gpg.exe'
+  condition: selection and not filter_legit
+falsepositives:
+  - Legitimate encryption software (VeraCrypt, BitLocker, GPG)
+  - Password-protected ZIP creation
+level: critical
+
+---
+title: Ransomware Note File Creation
+id: im01a002-rans-0001-0002-000000000002
+status: stable
+description: |
+  Detects creation of ransomware ransom note files. Ransomware typically
+  drops ransom notes in every directory with encrypted files, using
+  distinctive naming patterns that include keywords like README, DECRYPT,
+  RECOVER, or HOW_TO.
+references:
+  - https://attack.mitre.org/techniques/T1486/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1486
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_name:
+    TargetFilename|contains:
+      - 'DECRYPT'
+      - 'RECOVER'
+      - 'RESTORE'
+      - 'HOW_TO'
+      - 'HELP_DECRYPT'
+      - '_readme'
+      - 'RANSOM'
+      - 'YOUR_FILES'
+      - 'ATTENTION'
+      - 'READ_ME'
+  selection_ext:
+    TargetFilename|endswith:
+      - '.txt'
+      - '.html'
+      - '.hta'
+      - '.htm'
+  filter_system:
+    TargetFilename|contains:
+      - '\Program Files'
+      - '\Windows\'
+  condition: selection_name and selection_ext and not filter_system
+falsepositives:
+  - Software documentation files
+level: critical
+
+---
+title: Mass File Rename - Potential Ransomware Activity
+id: im01a003-rans-0001-0003-000000000003
+status: stable
+description: |
+  Detects suspicious rename operations that are characteristic of ransomware
+  encrypting files and renaming them with new extensions. Tools like
+  rename or ren are used in some ransomware strains.
+references:
+  - https://attack.mitre.org/techniques/T1486/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1486
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+    CommandLine|contains:
+      - 'ren *.'
+      - 'rename *.'
+      - 'Rename-Item'
+      - 'Move-Item'
+    CommandLine|contains:
+      - '.encrypted'
+      - '.locked'
+      - '.crypt'
+      - '.enc'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Bulk file renaming by administrators
+level: critical

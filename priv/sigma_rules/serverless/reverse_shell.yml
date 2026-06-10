@@ -1,0 +1,176 @@
+title: Serverless Reverse Shell Detection
+id: d4e5f6a7-b8c9-0123-def0-456789012345
+status: stable
+description: Detects reverse shell execution patterns in serverless functions
+references:
+  - https://attack.mitre.org/techniques/T1059/
+  - https://attack.mitre.org/techniques/T1071/
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.execution
+  - attack.t1059
+  - attack.command_and_control
+  - attack.t1071
+  - serverless
+logsource:
+  category: serverless
+  product: any
+detection:
+  # Classic reverse shell patterns
+  selection_bash:
+    CommandLine|contains:
+      - 'bash -i >& /dev/tcp/'
+      - 'bash -c "bash -i >& /dev/tcp/'
+      - '/bin/bash -i >& /dev/tcp/'
+      - 'nc -e /bin/bash'
+      - 'nc -e /bin/sh'
+      - 'ncat -e /bin/bash'
+      - 'netcat -e /bin/bash'
+      - 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh'
+      - '/dev/tcp/'
+
+  # Python reverse shells
+  selection_python:
+    CommandLine|contains:
+      - 'python -c "import socket,subprocess,os'
+      - "python -c 'import socket,subprocess,os"
+      - 'socket.socket(socket.AF_INET'
+      - 'subprocess.call(["/bin/sh"'
+      - 'pty.spawn("/bin/bash")'
+      - 'pty.spawn("/bin/sh")'
+
+  # Node.js reverse shells
+  selection_node:
+    CommandLine|contains:
+      - 'require("child_process").exec'
+      - 'child_process.spawn("/bin/sh"'
+      - 'net.connect'
+      - 'socket.connect'
+
+  # Perl reverse shells
+  selection_perl:
+    CommandLine|contains:
+      - 'perl -e "use Socket'
+      - 'perl -MIO -e'
+
+  # Ruby reverse shells
+  selection_ruby:
+    CommandLine|contains:
+      - 'ruby -rsocket -e'
+      - 'TCPSocket.new'
+
+  # PHP reverse shells
+  selection_php:
+    CommandLine|contains:
+      - 'php -r "$sock=fsockopen'
+      - 'fsockopen("'
+      - 'shell_exec('
+      - 'passthru('
+      - 'system('
+      - 'exec('
+
+  # Log message patterns
+  selection_logs:
+    Message|contains:
+      - 'reverse shell'
+      - 'bind shell'
+      - 'backdoor'
+      - 'shell connected'
+      - 'spawning shell'
+
+  condition: selection_bash or selection_python or selection_node or selection_perl or selection_ruby or selection_php or selection_logs
+fields:
+  - FunctionName
+  - RequestId
+  - CommandLine
+  - DestinationIP
+  - DestinationPort
+falsepositives:
+  - Legitimate administrative tools
+  - Security testing
+level: critical
+---
+title: Serverless Command Injection Attempt
+id: e5f6a7b8-c9d0-1234-ef01-567890123456
+status: stable
+description: Detects command injection patterns in serverless function logs
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.execution
+  - attack.t1059
+logsource:
+  category: serverless
+  product: any
+detection:
+  selection_injection:
+    Message|contains:
+      - '$(cat /etc/passwd)'
+      - '`cat /etc/passwd`'
+      - '; cat /etc/passwd'
+      - '| cat /etc/passwd'
+      - '&& cat /etc/passwd'
+      - '|| cat /etc/passwd'
+      - '$(id)'
+      - '`id`'
+      - '$(whoami)'
+      - '`whoami`'
+      - '$(uname'
+      - '`uname'
+      - '${IFS}'
+      - '$IFS'
+      - '%0a'
+      - '%0d'
+      - '\n'
+      - '\r'
+
+  selection_shell_metachar:
+    Message|re: '[;&|`$()].*[;&|`$()]'
+
+  condition: selection_injection or selection_shell_metachar
+falsepositives:
+  - Web application security tests that submit command-injection payloads to validate input filtering.
+  - Sanitized scanner logs containing payload strings without execution or outbound connection evidence.
+level: high
+---
+title: Serverless Outbound Connection to C2 Ports
+id: f6a7b8c9-d0e1-2345-f012-678901234567
+status: stable
+description: Detects serverless functions connecting to common C2 ports
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.command_and_control
+  - attack.t1571
+logsource:
+  category: serverless
+  product: any
+detection:
+  selection:
+    DestinationPort:
+      - 4444   # Metasploit default
+      - 5555   # Common backdoor
+      - 6666   # Common backdoor
+      - 7777   # Common backdoor
+      - 8888   # Common backdoor
+      - 9999   # Common backdoor
+      - 1337   # Elite/leet port
+      - 31337  # Elite port
+      - 12345  # NetBus
+      - 54321  # Back Orifice
+      - 6667   # IRC
+      - 6697   # IRC SSL
+      - 8080   # Alternative HTTP (suspicious from Lambda)
+      - 9001   # Tor
+      - 9030   # Tor
+      - 9050   # Tor SOCKS
+
+  condition: selection
+fields:
+  - FunctionName
+  - DestinationIP
+  - DestinationPort
+falsepositives:
+  - Development/test environments using non-standard ports
+level: high

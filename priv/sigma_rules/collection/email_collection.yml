@@ -1,0 +1,51 @@
+title: Email Collection via PowerShell or COM
+id: co03a001-emai-0003-0001-000000000001
+status: stable
+description: |
+  Detects email collection activities using PowerShell Outlook COM objects
+  or direct access to Outlook PST/OST data files. Attackers collect email
+  for intelligence gathering, credential harvesting from password reset
+  emails, and business email compromise.
+references:
+  - https://attack.mitre.org/techniques/T1114/001/
+  - https://attack.mitre.org/techniques/T1114/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.collection
+  - attack.t1114.001
+  - attack.t1114.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Outlook.Application'
+      - 'MAPI.Session'
+      - 'GetNamespace("MAPI")'
+      - '.pst'
+      - '.ost'
+  selection_file:
+    CommandLine|contains:
+      - 'copy '
+      - 'Copy-Item'
+      - 'xcopy'
+      - 'robocopy'
+    CommandLine|contains:
+      - '.pst'
+      - '.ost'
+      - 'Outlook\\'
+  filter_backup:
+    ParentImage|contains:
+      - '\backup\'
+      - '\veeam\'
+  condition: (selection_ps or selection_file) and not filter_backup
+falsepositives:
+  - Legitimate email backup operations
+  - Email migration tools
+level: high

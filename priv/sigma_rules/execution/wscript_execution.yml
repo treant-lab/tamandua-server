@@ -1,0 +1,84 @@
+title: WScript Suspicious Script Execution
+id: ex02a001-wscr-0002-0001-000000000001
+status: stable
+description: |
+  Detects Windows Script Host (wscript.exe or cscript.exe) executing scripts
+  from suspicious locations such as temp directories, downloads, or user
+  profiles. VBScript and JScript files are commonly used as initial access
+  payloads delivered via phishing or drive-by downloads.
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+  - https://attack.mitre.org/techniques/T1059/007/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1059.005
+  - attack.t1059.007
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+  selection_suspicious:
+    CommandLine|contains:
+      - '\Temp\'
+      - '\Downloads\'
+      - '\AppData\'
+      - '\Users\Public\'
+      - '\Desktop\'
+  filter_known:
+    CommandLine|contains:
+      - '\Windows\System32\'
+      - '\Program Files\'
+      - '\Windows\CCM\'
+  condition: selection and selection_suspicious and not filter_known
+falsepositives:
+  - Legitimate scripts downloaded and executed by administrators
+  - Windows logon scripts stored in user profiles
+level: medium
+
+---
+title: WScript Spawning Suspicious Child Process
+id: ex02a002-wscr-0002-0002-000000000002
+status: stable
+description: |
+  Detects wscript.exe or cscript.exe spawning suspicious child processes
+  such as PowerShell, cmd.exe, or network utilities. This indicates the
+  script is being used as a dropper or downloader.
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1059.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\mshta.exe'
+      - '\regsvr32.exe'
+      - '\rundll32.exe'
+      - '\certutil.exe'
+      - '\bitsadmin.exe'
+  filter_logon:
+    ParentCommandLine|contains: '\NETLOGON\'
+  condition: selection and not filter_logon
+falsepositives:
+  - Logon scripts that invoke command utilities
+  - Legacy enterprise scripts
+level: high

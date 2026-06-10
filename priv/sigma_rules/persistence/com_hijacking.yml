@@ -1,0 +1,79 @@
+title: COM Object Hijacking via Registry
+id: pe06a001-comh-0006-0001-000000000001
+status: stable
+description: |
+  Detects COM object hijacking by monitoring for modifications to CLSID
+  InprocServer32 or LocalServer32 registry keys in HKCU. Attackers replace
+  legitimate COM object DLL paths with malicious ones. Since HKCU entries
+  take precedence over HKLM, this allows persistence without admin privileges.
+references:
+  - https://attack.mitre.org/techniques/T1546/015/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.defense_evasion
+  - attack.t1546.015
+logsource:
+  category: registry_set
+  product: windows
+detection:
+  selection:
+    TargetObject|contains:
+      - '\Classes\CLSID\'
+      - '\Classes\Wow6432Node\CLSID\'
+    TargetObject|contains:
+      - '\InprocServer32'
+      - '\LocalServer32'
+  filter_system:
+    Image|startswith:
+      - 'C:\Windows\'
+      - 'C:\Program Files\'
+      - 'C:\Program Files (x86)\'
+  filter_installer:
+    Image|endswith:
+      - '\msiexec.exe'
+      - '\regsvr32.exe'
+      - '\setup.exe'
+  condition: selection and not (filter_system or filter_installer)
+falsepositives:
+  - Legitimate software registration
+  - Visual Studio COM component registration
+level: medium
+
+---
+title: COM Object Hijacking via Suspicious Paths
+id: pe06a002-comh-0006-0002-000000000002
+status: stable
+description: |
+  Detects COM object hijacking where the replacement DLL is located in
+  suspicious directories like Temp, AppData, or user-writable paths rather
+  than standard program directories.
+references:
+  - https://attack.mitre.org/techniques/T1546/015/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.t1546.015
+logsource:
+  category: registry_set
+  product: windows
+detection:
+  selection:
+    TargetObject|contains: '\InprocServer32'
+    Details|contains:
+      - '\AppData\'
+      - '\Temp\'
+      - '\Users\Public\'
+      - '\ProgramData\'
+  filter_known:
+    Details|contains:
+      - '\Microsoft\OneDrive\'
+      - '\Google\Update\'
+  condition: selection and not filter_known
+falsepositives:
+  - Legitimate applications storing COM DLLs in AppData
+level: high

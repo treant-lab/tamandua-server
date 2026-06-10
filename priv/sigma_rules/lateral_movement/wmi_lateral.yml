@@ -1,0 +1,117 @@
+title: WMI Remote Process Creation
+id: lm02a001-wmil-0002-0001-000000000001
+status: stable
+description: |
+  Detects WMI-based lateral movement where wmic.exe is used with /node: to
+  target a remote host and create a process. This is a common post-exploitation
+  technique used by frameworks like CrackMapExec, Impacket, and manual attackers.
+references:
+  - https://attack.mitre.org/techniques/T1047/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.execution
+  - attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\wmic.exe'
+    CommandLine|contains|all:
+      - '/node:'
+      - 'process'
+      - 'call'
+      - 'create'
+  filter_local:
+    CommandLine|contains:
+      - '/node:localhost'
+      - '/node:127.0.0.1'
+  condition: selection and not filter_local
+falsepositives:
+  - Legitimate remote WMI management by administrators
+  - Enterprise monitoring tools using WMI queries
+level: high
+
+---
+title: WMI Remote Execution via PowerShell
+id: lm02a002-wmil-0002-0002-000000000002
+status: stable
+description: |
+  Detects PowerShell-based WMI remote execution using Invoke-WmiMethod,
+  Invoke-CimMethod, or Get-WmiObject with -ComputerName targeting remote hosts.
+references:
+  - https://attack.mitre.org/techniques/T1047/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.execution
+  - attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-WmiMethod'
+      - 'Invoke-CimMethod'
+  selection_remote:
+    CommandLine|contains: '-ComputerName'
+  filter_local:
+    CommandLine|contains:
+      - '-ComputerName localhost'
+      - '-ComputerName $env:COMPUTERNAME'
+  condition: selection and selection_remote and not filter_local
+falsepositives:
+  - Legitimate remote management PowerShell scripts
+  - SCCM client health scripts
+level: high
+
+---
+title: WMI Lateral Movement via WmiPrvSE Child Process
+id: lm02a003-wmil-0002-0003-000000000003
+status: stable
+description: |
+  Detects suspicious child processes spawned by WmiPrvSE.exe, which indicates
+  a command was executed remotely via WMI. Legitimate WMI operations rarely
+  spawn cmd.exe, powershell.exe, or script interpreters.
+references:
+  - https://attack.mitre.org/techniques/T1047/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.execution
+  - attack.t1047
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\WmiPrvSE.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+      - '\regsvr32.exe'
+      - '\rundll32.exe'
+  filter_legit:
+    CommandLine|contains:
+      - '\Windows\CCM\'
+      - 'WmiApRpl'
+  condition: selection and not filter_legit
+falsepositives:
+  - SCCM client operations triggered via WMI
+  - Legitimate enterprise monitoring via WMI
+level: high

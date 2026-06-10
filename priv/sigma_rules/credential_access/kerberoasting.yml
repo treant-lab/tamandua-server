@@ -1,0 +1,110 @@
+title: Kerberoasting via SetSPN
+id: ca05a001-kerb-0005-0001-000000000001
+status: stable
+description: |
+  Detects Kerberoasting reconnaissance using setspn.exe to enumerate service
+  principal names (SPNs). Kerberoasting involves requesting TGS tickets for
+  service accounts and cracking them offline to recover plaintext passwords.
+  Enumeration of SPNs is typically the first step.
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+  - https://adsecurity.org/?p=2293
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\setspn.exe'
+    CommandLine|contains:
+      - '-Q '
+      - '-T '
+      - '-q '
+      - '-t '
+      - '-F'
+  filter_system:
+    User|contains: 'SYSTEM'
+    ParentImage|endswith: '\services.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Legitimate SPN management by Active Directory administrators
+level: medium
+
+---
+title: Kerberoasting via PowerShell
+id: ca05a002-kerb-0005-0002-000000000002
+status: stable
+description: |
+  Detects Kerberoasting attacks using PowerShell-based tools such as
+  Invoke-Kerberoast, Rubeus, or manual KerberosRequestorSecurityToken
+  requests. These tools request RC4-encrypted TGS tickets for service
+  accounts that can be cracked offline.
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+  - https://github.com/GhostPack/Rubeus
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-Kerberoast'
+      - 'KerberosRequestorSecurityToken'
+      - 'Request-SPNTicket'
+      - 'Get-DomainSPNTicket'
+      - 'kerberoast'
+  filter_audit:
+    ParentImage|endswith: '\audit.exe'
+  condition: selection and not filter_audit
+falsepositives:
+  - Authorized penetration testing
+  - Security assessment scripts
+level: high
+
+---
+title: Kerberoasting TGS Request for Service Account
+id: ca05a003-kerb-0005-0003-000000000003
+status: stable
+description: |
+  Detects Kerberos TGS (Ticket Granting Service) requests using RC4
+  encryption (etype 0x17) for service accounts, which is a hallmark of
+  Kerberoasting. Modern environments should use AES encryption; the
+  presence of RC4 TGS requests is anomalous.
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+logsource:
+  category: security
+  product: windows
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType: '0x17'
+    ServiceName|endswith:
+      - '$'
+  filter_machine:
+    ServiceName|startswith: 'krbtgt'
+  condition: selection and not filter_machine
+falsepositives:
+  - Legacy applications that require RC4 Kerberos encryption
+  - Environments that have not migrated to AES
+level: high

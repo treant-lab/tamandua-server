@@ -1,0 +1,105 @@
+<div class="min-h-screen flex flex-col md:flex-row">
+  <!-- Sidebar -->
+  <aside class="w-full md:w-64 bg-[var(--color-neutral-900)] text-[var(--color-foreground)] flex-shrink-0">
+    <div class="p-4 flex items-center gap-3 border-b border-[var(--color-border)]">
+      <img src="/images/logo-sm.png" alt="Tamandua EDR" class="h-10 w-auto" />
+    </div>
+
+    <nav class="p-4 space-y-1">
+      <.link navigate={~p"/dashboard"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">📊</span>
+        <span>Dashboard</span>
+      </.link>
+
+      <.link navigate={~p"/agents"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">💻</span>
+        <span>Agents</span>
+      </.link>
+
+      <.link navigate={~p"/alerts"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🚨</span>
+        <span>Alerts</span>
+      </.link>
+
+      <.link navigate={~p"/events"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">📝</span>
+        <span>Events</span>
+      </.link>
+
+      <div class="pt-4 pb-2 px-3 text-xs font-semibold text-[var(--color-muted)] uppercase tracking-wider">
+        Detection
+      </div>
+
+      <.link navigate={~p"/hunting"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🔍</span>
+        <span>Threat Hunting</span>
+      </.link>
+
+      <.link navigate={~p"/mitre"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🛡️</span>
+        <span>MITRE ATT&CK</span>
+      </.link>
+
+      <.link navigate={~p"/rules"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">📜</span>
+        <span>Rules</span>
+      </.link>
+
+      <.link navigate={~p"/iocs"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🦠</span>
+        <span>IOCs</span>
+      </.link>
+
+      <div class="pt-4 pb-2 px-3 text-xs font-semibold text-[var(--color-muted)] uppercase tracking-wider">
+        Response
+      </div>
+
+      <.link navigate={~p"/live/runtime/kill-switch"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🛑</span>
+        <span>Kill Switch</span>
+      </.link>
+
+      <.link navigate={~p"/live/remediation/approvals"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">✓</span>
+        <span>Approvals</span>
+      </.link>
+
+      <.link navigate={~p"/live/remediation/dashboard"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">📋</span>
+        <span>Remediation</span>
+      </.link>
+
+      <div class="pt-4 pb-2 px-3 text-xs font-semibold text-[var(--color-muted)] uppercase tracking-wider">
+        System
+      </div>
+
+      <.link navigate={~p"/settings"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">⚙️</span>
+        <span>Settings</span>
+      </.link>
+    </nav>
+
+    <div class="p-4 border-t border-[var(--color-border)] mt-auto">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-full bg-[var(--color-neutral-700)]"></div>
+        <div class="text-sm">
+          <div class="font-medium text-[var(--color-foreground)]">Admin User</div>
+          <div class="text-[var(--color-muted)] text-xs">admin@treantlab.org</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="flex-1 overflow-y-auto h-screen bg-[var(--color-background)]">
+    <header class="bg-[var(--color-neutral-50)] dark:bg-[var(--color-neutral-800)] shadow-sm border-b border-[var(--color-border)] p-4 flex justify-between items-center md:hidden">
+      <img src="/images/logo-sm.png" alt="Tamandua EDR" class="h-8 w-auto" />
+      <button class="text-[var(--color-muted)]">Menu</button>
+    </header>
+
+    <div class="mx-auto max-w-7xl">
+      <.flash_group flash={@flash} />
+      <%= @inner_content %>
+    </div>
+  </main>
+</div>

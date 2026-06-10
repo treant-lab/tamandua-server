@@ -1,0 +1,74 @@
+title: Pass-the-Ticket via Mimikatz
+id: lm08a001-ptkt-0008-0001-000000000001
+status: stable
+description: |
+  Detects Pass-the-Ticket attacks using Mimikatz kerberos::ptt module or
+  Rubeus ptt command. This technique injects stolen Kerberos tickets into
+  the current logon session to impersonate another user.
+references:
+  - https://attack.mitre.org/techniques/T1550/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.credential_access
+  - attack.t1550.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_mimikatz:
+    CommandLine|contains:
+      - 'kerberos::ptt'
+      - 'kerberos::golden'
+      - 'kerberos::silver'
+  selection_rubeus:
+    CommandLine|contains:
+      - 'Rubeus'
+      - 'rubeus'
+    CommandLine|contains:
+      - 'ptt'
+      - 'createnetonly'
+      - 'asktgs'
+      - 'asktgt'
+      - 's4u'
+  filter_test:
+    ParentImage|contains: '\pentest\'
+  condition: (selection_mimikatz or selection_rubeus) and not filter_test
+falsepositives:
+  - Authorized security testing
+level: critical
+
+---
+title: Kerberos Ticket Export to File
+id: lm08a002-ptkt-0008-0002-000000000002
+status: stable
+description: |
+  Detects Kerberos ticket export operations that write .kirbi or .ccache files
+  to disk, which are used in Pass-the-Ticket and Golden/Silver Ticket attacks.
+references:
+  - https://attack.mitre.org/techniques/T1550/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1550.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|endswith:
+      - '.kirbi'
+      - '.ccache'
+  filter_system:
+    Image|endswith:
+      - '\lsass.exe'
+      - '\krb5kdc.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Kerberos debugging and troubleshooting
+  - MIT Kerberos client operations
+level: high

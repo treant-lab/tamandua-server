@@ -1,0 +1,19 @@
+test_case:
+  name: "Screen Capture Detection"
+  description: "Tests detection of screenshot capture tools"
+  rule: "collection/screen_capture.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        cmdline: "powershell.exe -Command \"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen.Bounds\""
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 6891
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1113"]
+  tags: ["collection", "screenshot", "positive"]

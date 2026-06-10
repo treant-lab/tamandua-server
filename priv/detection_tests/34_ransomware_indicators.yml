@@ -1,0 +1,19 @@
+test_case:
+  name: "Ransomware Shadow Copy Deletion"
+  description: "Tests detection of ransomware deleting shadow copies"
+  rule: "impact/ransomware_indicators.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\vssadmin.exe"
+        cmdline: "vssadmin.exe delete shadows /all /quiet"
+        parent_path: "C:\\Users\\Public\\ransomware.exe"
+        user: "WORKSTATION\\user"
+        pid: 8765
+        ppid: 5124
+  expected: match
+  expected_severity: critical
+  expected_mitre: ["T1490"]
+  tags: ["impact", "ransomware", "positive"]

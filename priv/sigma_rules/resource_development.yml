@@ -1,0 +1,534 @@
+title: Code Signing Certificate Request
+id: resource-001-cert-request
+status: experimental
+description: Detects generation of code signing certificate requests which may indicate attacker tooling preparation
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_makecert:
+        Image|endswith:
+            - '\makecert.exe'
+            - '\certreq.exe'
+            - '\certutil.exe'
+        CommandLine|contains:
+            - '-r'
+            - '-n "CN='
+            - '-ss'
+            - 'CodeSign'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'New-SelfSignedCertificate'
+            - 'CodeSigningCert'
+    selection_openssl:
+        CommandLine|contains:
+            - 'openssl req'
+            - 'openssl x509'
+            - 'openssl genpkey'
+    condition: selection_makecert or selection_ps or selection_openssl
+falsepositives:
+    - Legitimate software development
+    - Certificate administration
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1587.002
+
+---
+title: Domain Registration Tool Usage
+id: resource-002-domain-reg
+status: experimental
+description: Detects usage of domain registration tools or APIs
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationHostname|contains:
+            - 'namecheap.com'
+            - 'godaddy.com'
+            - 'cloudflare.com/registrar'
+            - 'domains.google.com'
+            - 'register.com'
+            - 'dynadot.com'
+            - 'porkbun.com'
+            - 'njal.la'
+    filter:
+        ProcessName|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+    condition: selection and not filter
+falsepositives:
+    - IT staff managing domains
+    - Automated domain management
+level: low
+tags:
+    - attack.resource_development
+    - attack.t1583.001
+
+---
+title: VPS/Cloud Infrastructure Provisioning via CLI
+id: resource-003-infra-provision
+status: experimental
+description: Detects provisioning of cloud infrastructure via command line which may indicate attacker infrastructure setup
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_aws:
+        CommandLine|contains:
+            - 'aws ec2 run-instances'
+            - 'aws lightsail create-instances'
+    selection_azure:
+        CommandLine|contains:
+            - 'az vm create'
+            - 'az container create'
+    selection_gcp:
+        CommandLine|contains:
+            - 'gcloud compute instances create'
+            - 'gcloud run deploy'
+    selection_do:
+        CommandLine|contains:
+            - 'doctl compute droplet create'
+    selection_terraform:
+        CommandLine|contains:
+            - 'terraform apply'
+            - 'terraform import'
+    condition: selection_aws or selection_azure or selection_gcp or selection_do or selection_terraform
+falsepositives:
+    - DevOps activities
+    - Legitimate cloud management
+level: low
+tags:
+    - attack.resource_development
+    - attack.t1583.003
+
+---
+title: Phishing Kit Download or Setup
+id: resource-004-phishing-kit
+status: experimental
+description: Detects download or setup of known phishing kits
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: file_create
+    product: windows
+detection:
+    selection_files:
+        TargetFilename|contains:
+            - 'gophish'
+            - 'evilginx'
+            - 'modlishka'
+            - 'muraena'
+            - 'credsniper'
+            - 'king-phisher'
+            - 'phishery'
+    selection_paths:
+        TargetFilename|contains:
+            - '\phishing\'
+            - '\phish\'
+            - '\social-engineer\'
+    condition: selection_files or selection_paths
+falsepositives:
+    - Red team exercises
+    - Security awareness training
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1585.002
+
+---
+title: Malware Compilation Activity
+id: resource-005-malware-compile
+status: experimental
+description: Detects compilation of code with suspicious characteristics suggesting malware development
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_compilers:
+        Image|endswith:
+            - '\csc.exe'
+            - '\cl.exe'
+            - '\gcc.exe'
+            - '\g++.exe'
+            - '\msbuild.exe'
+    suspicious_paths:
+        CommandLine|contains:
+            - '\Temp\'
+            - '\AppData\'
+            - '\Downloads\'
+            - '\Desktop\'
+            - 'payload'
+            - 'shellcode'
+            - 'inject'
+            - 'bypass'
+    condition: selection_compilers and suspicious_paths
+falsepositives:
+    - Software development
+    - Security research
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1587.001
+
+---
+title: C2 Framework Setup
+id: resource-006-c2-setup
+status: experimental
+description: Detects setup or configuration of known C2 frameworks
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_cobalt:
+        CommandLine|contains:
+            - 'teamserver'
+            - 'cobaltstrike'
+            - '.cna'
+            - 'aggressor'
+    selection_metasploit:
+        CommandLine|contains:
+            - 'msfconsole'
+            - 'msfvenom'
+            - 'meterpreter'
+    selection_sliver:
+        CommandLine|contains:
+            - 'sliver-server'
+            - 'sliver-client'
+    selection_covenant:
+        CommandLine|contains:
+            - 'Covenant.exe'
+            - 'dotnet.*Covenant'
+    selection_mythic:
+        CommandLine|contains:
+            - 'mythic-cli'
+            - 'Mythic'
+    condition: selection_cobalt or selection_metasploit or selection_sliver or selection_covenant or selection_mythic
+falsepositives:
+    - Red team operations
+    - Security testing
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1587.001
+    - attack.t1588.002
+
+---
+title: Credential Stuffing Tool Presence
+id: resource-007-cred-stuff
+status: experimental
+description: Detects presence or execution of credential stuffing tools
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tools:
+        CommandLine|contains:
+            - 'sentry mba'
+            - 'openbullet'
+            - 'storm'
+            - 'black bullet'
+            - 'snipr'
+            - 'credential.*checker'
+            - 'account.*checker'
+    selection_files:
+        Image|endswith:
+            - '\sentryMBA.exe'
+            - '\OpenBullet.exe'
+    condition: selection_tools or selection_files
+falsepositives:
+    - Security testing
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1586.002
+
+---
+title: SSL Certificate Generation for C2
+id: resource-008-c2-cert
+status: experimental
+description: Detects generation of SSL certificates commonly used for C2 infrastructure
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains:
+            - 'certbot'
+            - 'letsencrypt'
+            - 'acme.sh'
+            - 'acme-client'
+    suspicious_paths:
+        CommandLine|contains:
+            - '\Temp\'
+            - '\AppData\'
+            - 'certonly'
+    condition: selection and suspicious_paths
+falsepositives:
+    - Legitimate SSL certificate management
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1587.003
+
+---
+title: Tor/Proxy Infrastructure Setup
+id: resource-009-proxy-setup
+status: experimental
+description: Detects setup of Tor or proxy infrastructure for anonymization
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tor:
+        CommandLine|contains:
+            - 'tor.exe'
+            - 'tor '
+            - 'torrc'
+            - 'hidden_service'
+    selection_proxy:
+        CommandLine|contains:
+            - 'proxychains'
+            - 'socat'
+            - 'chisel'
+            - 'reGeorg'
+            - 'tunna'
+            - 'plink -D'
+    condition: selection_tor or selection_proxy
+falsepositives:
+    - Privacy-conscious users
+    - Legitimate proxy usage
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1583.006
+
+---
+title: Email Infrastructure Setup
+id: resource-010-email-infra
+status: experimental
+description: Detects setup of email infrastructure potentially for phishing campaigns
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_postfix:
+        CommandLine|contains:
+            - 'postfix'
+            - 'sendmail'
+            - 'exim'
+    selection_tools:
+        CommandLine|contains:
+            - 'gophish'
+            - 'king-phisher'
+            - 'swaks'
+            - 'smtp-user-enum'
+    condition: selection_postfix or selection_tools
+falsepositives:
+    - Mail server administration
+    - Email testing
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1583.004
+
+---
+title: Exploit Development Tools
+id: resource-011-exploit-dev
+status: experimental
+description: Detects usage of exploit development and weaponization tools
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tools:
+        CommandLine|contains:
+            - 'msfvenom'
+            - 'veil'
+            - 'unicorn'
+            - 'shellter'
+            - 'donut'
+            - 'charlotte'
+            - 'srdi'
+            - 'pe_to_shellcode'
+    selection_debug:
+        Image|endswith:
+            - '\windbg.exe'
+            - '\x64dbg.exe'
+            - '\ollydbg.exe'
+            - '\ida64.exe'
+        CommandLine|contains:
+            - 'crash'
+            - 'exploit'
+            - 'fuzz'
+    condition: selection_tools or selection_debug
+falsepositives:
+    - Security research
+    - Red team operations
+level: high
+tags:
+    - attack.resource_development
+    - attack.t1587.004
+
+---
+title: Botnet Infrastructure Configuration
+id: resource-012-botnet-config
+status: experimental
+description: Detects configuration files or commands related to botnet infrastructure
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: file_create
+    product: windows
+detection:
+    selection_files:
+        TargetFilename|endswith:
+            - '\bot.cfg'
+            - '\botnet.cfg'
+            - '\c2.cfg'
+            - '\cnc.cfg'
+            - '.bot'
+    selection_content:
+        TargetFilename|contains:
+            - 'mirai'
+            - 'qbot'
+            - 'emotet'
+            - 'trickbot'
+    condition: selection_files or selection_content
+falsepositives:
+    - Malware research
+    - Security analysis
+level: critical
+tags:
+    - attack.resource_development
+    - attack.t1583.005
+
+---
+title: Staged Payload Download
+id: resource-013-staged-payload
+status: experimental
+description: Detects download of payloads from file sharing services commonly used for staging
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationHostname|contains:
+            - 'pastebin.com'
+            - 'hastebin.com'
+            - 'ghostbin.com'
+            - 'transfer.sh'
+            - 'file.io'
+            - 'temp.sh'
+    filter:
+        ProcessName|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate file sharing
+    - Developer tools
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1608.001
+
+---
+title: Dynamic DNS Configuration
+id: resource-014-ddns
+status: experimental
+description: Detects configuration of dynamic DNS services commonly used for C2
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationHostname|endswith:
+            - '.duckdns.org'
+            - '.no-ip.com'
+            - '.no-ip.org'
+            - '.no-ip.biz'
+            - '.ddns.net'
+            - '.hopto.org'
+            - '.serveftp.com'
+            - '.servegame.com'
+            - '.zapto.org'
+            - '.sytes.net'
+    condition: selection
+falsepositives:
+    - Home users with dynamic IP
+    - Small business hosting
+level: medium
+tags:
+    - attack.resource_development
+    - attack.t1583.001
+
+---
+title: Social Media Bot Account Activity
+id: resource-015-social-bot
+status: experimental
+description: Detects automated activity suggesting social media account creation or manipulation
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tools:
+        CommandLine|contains:
+            - 'massplanner'
+            - 'jarvee'
+            - 'followliker'
+            - 'socialcaptain'
+            - 'instazood'
+            - 'twitter.*bot'
+            - 'insta.*bot'
+    selection_selenium:
+        CommandLine|contains:
+            - 'selenium'
+            - 'puppeteer'
+            - 'playwright'
+        CommandLine|contains:
+            - 'twitter.com'
+            - 'facebook.com'
+            - 'instagram.com'
+            - 'linkedin.com'
+    condition: selection_tools or selection_selenium
+falsepositives:
+    - Marketing automation
+    - Social media management
+level: low
+tags:
+    - attack.resource_development
+    - attack.t1585.001
+    - attack.t1586.001

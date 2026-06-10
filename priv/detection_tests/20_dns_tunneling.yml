@@ -1,0 +1,17 @@
+test_case:
+  name: "DNS Tunneling Detection"
+  description: "Tests detection of suspicious DNS query patterns"
+  rule: "command_and_control/dns_tunneling.yml"
+  rule_type: sigma
+  events:
+    - type: dns_query
+      os_type: windows
+      data:
+        query_name: "aabbccddeeff11223344556677889900aabbccddeeff.evil-c2.com"
+        query_type: "TXT"
+        process_path: "C:\\Users\\Public\\malware.exe"
+        process_pid: 8234
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1071.004"]
+  tags: ["command_and_control", "dns", "positive"]

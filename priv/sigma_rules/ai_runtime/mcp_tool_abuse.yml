@@ -1,0 +1,163 @@
+title: AI Runtime - Sensitive File Write from ML Process
+id: runtime-ai-010
+status: stable
+description: Detects ML/AI processes writing to sensitive system locations
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1543/
+    - https://attack.mitre.org/techniques/T1098/
+logsource:
+    category: file_event
+    product: any
+detection:
+    selection_ml_process:
+        ParentImage|endswith:
+            - '/python'
+            - '/python3'
+            - '\python.exe'
+            - '\python3.exe'
+            - '/ollama'
+            - '\ollama.exe'
+            - '/claude-desktop'
+            - '\claude-desktop.exe'
+    selection_sensitive:
+        TargetFilename|contains:
+            - '/etc/'
+            - 'C:\Windows\System32'
+            - '.ssh/authorized_keys'
+            - '/etc/passwd'
+            - '/etc/shadow'
+            - 'C:\Windows\System32\drivers'
+    condition: selection_ml_process and selection_sensitive
+falsepositives:
+    - Legitimate system administration tools
+    - Package installers with elevated privileges
+level: critical
+tags:
+    - attack.persistence
+    - attack.t1543
+    - attack.privilege_escalation
+    - attack.t1098
+    - ai_security
+    - mcp_abuse
+
+---
+title: AI Runtime - Credential File Access from ML Process
+id: runtime-ai-011
+status: stable
+description: Detects ML/AI processes accessing credential files
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1552/001/
+logsource:
+    category: file_access
+    product: any
+detection:
+    selection_ml_process:
+        ProcessName|contains:
+            - 'python'
+            - 'ollama'
+            - 'jupyter'
+            - 'ipython'
+    selection_cred_files:
+        TargetFilename|endswith:
+            - '.env'
+            - 'credentials.json'
+            - 'credentials.yaml'
+            - '.aws/credentials'
+            - '.huggingface/token'
+            - 'secrets.json'
+            - '.netrc'
+    condition: selection_ml_process and selection_cred_files
+falsepositives:
+    - Legitimate credential loading for authenticated APIs
+level: high
+tags:
+    - attack.credential_access
+    - attack.t1552.001
+    - ai_security
+    - mcp_abuse
+
+---
+title: AI Runtime - Shell Command Execution from ML Process
+id: runtime-ai-012
+status: stable
+description: Detects shell command execution spawned from ML/AI processes
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1059/
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_shell:
+        Image|endswith:
+            - '/bin/sh'
+            - '/bin/bash'
+            - 'cmd.exe'
+            - 'powershell.exe'
+            - 'pwsh.exe'
+    selection_ml_parent:
+        ParentImage|contains:
+            - 'python'
+            - 'ollama'
+            - 'jupyter'
+            - 'claude-desktop'
+    selection_suspicious_cmdline:
+        CommandLine|contains:
+            - 'curl'
+            - 'wget'
+            - 'nc '
+            - 'netcat'
+            - 'bash -i'
+            - 'sh -i'
+            - '/dev/tcp'
+    condition: selection_shell and selection_ml_parent and selection_suspicious_cmdline
+falsepositives:
+    - Legitimate subprocess execution (git, compilers)
+level: high
+tags:
+    - attack.execution
+    - attack.t1059
+    - ai_security
+    - mcp_abuse
+
+---
+title: AI Runtime - Browser Credential Store Access from ML Process
+id: runtime-ai-013
+status: stable
+description: Detects ML/AI processes accessing browser credential databases
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1555/003/
+logsource:
+    category: file_access
+    product: any
+detection:
+    selection_ml_process:
+        ProcessName|contains:
+            - 'python'
+            - 'ollama'
+            - 'jupyter'
+    selection_browser_db:
+        TargetFilename|contains:
+            - 'google-chrome/Default/Login Data'
+            - 'firefox/Profiles'
+            - 'Microsoft/Edge/User Data/Default/Login Data'
+            - 'BraveSoftware/Brave-Browser/Default/Login Data'
+            - 'Cookies'
+            - 'Web Data'
+    condition: selection_ml_process and selection_browser_db
+falsepositives:
+    - Browser automation tools
+    - Password manager integrations
+level: critical
+tags:
+    - attack.credential_access
+    - attack.t1555.003
+    - ai_security
+    - mcp_abuse

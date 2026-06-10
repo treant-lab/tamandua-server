@@ -1,0 +1,396 @@
+title: Credential Discovery via LSASS or Stored Credential Enumeration
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0001
+status: experimental
+description: Detects safe but security-relevant credential discovery behaviors such as LSASS metadata inspection, credential manager enumeration, and browser credential store probing.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  lsass_probe:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains|all:
+      - 'Get-Process'
+      - 'lsass'
+  credential_manager:
+    Image|endswith:
+      - '\cmdkey.exe'
+      - '\vaultcmd.exe'
+    CommandLine|contains:
+      - '/list'
+      - 'listcreds'
+  browser_store_probe_object:
+    CommandLine|contains:
+      - 'Login Data'
+      - 'Web Data'
+      - 'Cookies'
+  browser_store_probe_path:
+    CommandLine|contains:
+      - 'Chrome\User Data'
+      - 'Edge\User Data'
+      - 'Firefox\Profiles'
+  credential_file_probe:
+    CommandLine|contains:
+      - 'findstr'
+      - 'password'
+      - 'credential'
+  condition: lsass_probe or credential_manager or (browser_store_probe_object and browser_store_probe_path) or credential_file_probe
+falsepositives:
+  - Inventory scripts and administrator credential audits.
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+  - attack.t1552.001
+  - attack.t1555.003
+
+---
+title: Lateral WMI WinRM Remote Management Discovery
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0002
+status: experimental
+description: Detects WMI, WinRM, and PowerShell remoting discovery that often precedes lateral movement.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  wmi_cim_tool:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Get-CimInstance'
+      - 'Get-WmiObject'
+      - 'Invoke-WmiMethod'
+      - 'Invoke-CimMethod'
+  wmi_cim_target:
+    CommandLine|contains:
+      - 'Win32_Process'
+      - '-ComputerName'
+  cmd_wrapped_wmi_cim:
+    Image|endswith: '\cmd.exe'
+    CommandLine|contains|all:
+      - 'powershell.exe'
+      - 'Get-CimInstance'
+      - 'Win32_Process'
+  winrm_cli_probe:
+    Image|endswith:
+      - '\winrm.cmd'
+      - '\winrm.exe'
+    CommandLine|contains:
+      - 'enumerate'
+      - 'winrm/config'
+  winrm_service_probe:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains|all:
+      - 'query'
+      - 'WinRM'
+  psremoting_probe:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-Command'
+      - 'Enter-PSSession'
+      - 'New-PSSession'
+  condition: (wmi_cim_tool and wmi_cim_target) or cmd_wrapped_wmi_cim or winrm_cli_probe or winrm_service_probe or psremoting_probe
+falsepositives:
+  - Legitimate remote administration and inventory tooling.
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.execution
+  - attack.t1047
+  - attack.t1021.006
+  - attack.t1059.001
+
+---
+title: Privilege Service Scheduled Task Abuse Indicators
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0003
+status: experimental
+description: Detects service creation, scheduled task creation, and UAC configuration discovery that can support privilege escalation or persistence.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  scheduled_task_create:
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains|all:
+      - '/Create'
+      - '/TN'
+  service_create:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains|all:
+      - 'create'
+      - 'binPath'
+  uac_discovery:
+    Image|endswith: '\reg.exe'
+    CommandLine|contains|all:
+      - 'Policies\System'
+      - 'EnableLUA'
+  condition: scheduled_task_create or service_create or uac_discovery
+falsepositives:
+  - Software installers and administrator maintenance.
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.persistence
+  - attack.t1548.002
+  - attack.t1053.005
+  - attack.t1543.003
+
+---
+title: C2 Beacon or Download Tool Usage
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0004
+status: experimental
+description: Detects command-line web clients and PowerShell network probes that can be used for beaconing or ingress tool transfer.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  curl_http:
+    Image|endswith: '\curl.exe'
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+  curl_download:
+    Image|endswith: '\curl.exe'
+    CommandLine|contains:
+      - ' -o '
+      - ' --output '
+      - ' -O '
+      - ' -L '
+  curl_download_commandline:
+    CommandLine|contains|all:
+      - 'curl'
+      - 'http'
+      - ' -o '
+  curl_transfer_commandline:
+    CommandLine|contains|all:
+      - 'curl'
+      - 'http'
+      - ' -L '
+  cmd_wrapped_curl:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains|all:
+      - 'curl.exe'
+      - 'http'
+  powershell_network_probe:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Test-NetConnection'
+      - 'Invoke-WebRequest'
+      - 'Invoke-RestMethod'
+  condition: curl_http or curl_download or curl_download_commandline or curl_transfer_commandline or cmd_wrapped_curl or powershell_network_probe
+falsepositives:
+  - Administrative scripts and developer tooling.
+level: high
+tags:
+  - attack.command_and_control
+  - attack.t1071.001
+  - attack.t1105
+  - attack.t1095
+
+---
+title: Exfiltration Staging Archive and Transfer Indicators
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0005
+status: experimental
+description: Detects local staging, archive creation, and follow-on transfer utilities commonly seen before exfiltration.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  archive_create:
+    Image|endswith:
+      - '\tar.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - '.zip'
+      - 'Compress-Archive'
+      - ' -a -c -f '
+  staged_temp_location:
+    CommandLine|contains:
+      - '%TEMP%'
+      - '\Temp\'
+  staged_temp_marker:
+    CommandLine|contains:
+      - '.zip'
+      - 'archive'
+      - 'exfil'
+      - 'staging'
+  transfer_after_staging:
+    Image|endswith:
+      - '\curl.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+  cmd_wrapped_transfer:
+    Image|endswith: '\cmd.exe'
+    CommandLine|contains|all:
+      - 'curl.exe'
+      - 'http'
+  condition: archive_create or (staged_temp_location and staged_temp_marker) or transfer_after_staging or cmd_wrapped_transfer
+falsepositives:
+  - Backup scripts and administrative archive jobs.
+level: high
+tags:
+  - attack.exfiltration
+  - attack.collection
+  - attack.t1005
+  - attack.t1560.001
+  - attack.t1041
+
+---
+title: DLL Search Order Hijack or Sideload Canary Indicators
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0006
+status: experimental
+description: Detects creation of DLL canaries in writable directories and suspicious DLL proxy execution useful for sideload and search-order hijack validation.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  dll_canary_create:
+    CommandLine|contains:
+      - '.dll'
+      - '\Temp\'
+      - '%TEMP%'
+  rundll32_sideload_probe:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|contains:
+      - 'PrintUIEntry'
+      - 'Control_RunDLL'
+      - ','
+  condition: dll_canary_create or rundll32_sideload_probe
+falsepositives:
+  - Installers and Control Panel automation.
+level: high
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.defense_evasion
+  - attack.t1574.001
+  - attack.t1574.002
+
+---
+title: Regsvr32 Rundll32 Mshta Certutil LOLBin Proxy Execution
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0007
+status: experimental
+description: Detects broad signed-binary proxy execution indicators across common Windows LOLBins.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  regsvr32_proxy:
+    Image|endswith: '\regsvr32.exe'
+    CommandLine|contains:
+      - 'scrobj.dll'
+      - '/i:'
+      - '/n'
+  rundll32_proxy:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|contains:
+      - ','
+      - 'javascript:'
+      - 'Control_RunDLL'
+      - 'PrintUIEntry'
+  mshta_proxy:
+    Image|endswith: '\mshta.exe'
+    CommandLine|contains:
+      - 'javascript:'
+      - 'vbscript:'
+      - 'http://'
+      - 'https://'
+  certutil_decode:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains:
+      - '-decode'
+      - '/decode'
+      - '-encode'
+      - '/encode'
+      - '-urlcache'
+      - '/urlcache'
+  cmd_wrapped_lolbin:
+    Image|endswith: '\cmd.exe'
+    CommandLine|contains:
+      - 'regsvr32.exe'
+      - 'rundll32.exe'
+      - 'mshta.exe'
+      - 'certutil.exe'
+  condition: regsvr32_proxy or rundll32_proxy or mshta_proxy or certutil_decode or cmd_wrapped_lolbin
+falsepositives:
+  - COM registration, certificate maintenance, and legacy admin scripts.
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1218.010
+  - attack.t1218.011
+  - attack.t1218.005
+  - attack.t1140
+
+---
+title: Tamper Defense Discovery via Defender or VSSAdmin
+id: 68e230d4-7d36-4df7-a7f4-1d7e1d7b0008
+status: experimental
+description: Detects security-tool configuration discovery and recovery-control probing that commonly precedes tamper or impact activity.
+author: Tamandua Security Team
+date: 2026/05/25
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  defender_preference_probe:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Get-MpPreference'
+      - 'Set-MpPreference'
+      - 'Add-MpPreference'
+  vssadmin_probe:
+    Image|endswith: '\vssadmin.exe'
+    CommandLine|contains:
+      - 'list shadows'
+      - 'delete shadows'
+      - 'resize shadowstorage'
+  indicator_removal:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'del /f'
+      - 'Remove-Item'
+      - 'Clear-EventLog'
+      - 'wevtutil cl'
+  condition: defender_preference_probe or vssadmin_probe or indicator_removal
+falsepositives:
+  - Administrative security posture checks and maintenance cleanup.
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.impact
+  - attack.t1562.001
+  - attack.t1070.004
+  - attack.t1490

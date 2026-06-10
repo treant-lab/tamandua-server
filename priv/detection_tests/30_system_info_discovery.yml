@@ -1,0 +1,19 @@
+test_case:
+  name: "System Information Discovery"
+  description: "Tests detection of reconnaissance commands"
+  rule: "discovery/system_info_discovery.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\systeminfo.exe"
+        cmdline: "systeminfo.exe"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 8234
+        ppid: 2048
+  expected: match
+  expected_severity: low
+  expected_mitre: ["T1082"]
+  tags: ["discovery", "reconnaissance", "positive"]

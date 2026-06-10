@@ -1,0 +1,91 @@
+title: Windows Firewall Disabled via Netsh
+id: de02a001-fwll-0002-0001-000000000001
+status: stable
+description: |
+  Detects disabling of Windows Firewall using netsh advfirewall or legacy
+  netsh firewall commands, or PowerShell Set-NetFirewallProfile. Adversaries
+  disable the firewall to allow unrestricted network access for C2
+  communication, lateral movement, and data exfiltration.
+references:
+  - https://attack.mitre.org/techniques/T1562/004/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1562.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_netsh:
+    Image|endswith: '\netsh.exe'
+    CommandLine|contains:
+      - 'advfirewall set allprofiles state off'
+      - 'advfirewall set currentprofile state off'
+      - 'advfirewall set domainprofile state off'
+      - 'advfirewall set privateprofile state off'
+      - 'advfirewall set publicprofile state off'
+      - 'firewall set opmode disable'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Set-NetFirewallProfile -Enabled False'
+      - 'Set-NetFirewallProfile -Profile * -Enabled False'
+      - 'Set-NetFirewallProfile -All -Enabled False'
+  filter_gpo:
+    ParentImage|endswith: '\svchost.exe'
+    ParentCommandLine|contains: 'gpsvc'
+  condition: (selection_netsh or selection_ps) and not filter_gpo
+falsepositives:
+  - Legitimate firewall reconfiguration during network changes
+  - Group Policy processing (if GPO disables firewall)
+level: high
+
+---
+title: Firewall Rule Added to Allow Suspicious Traffic
+id: de02a002-fwll-0002-0002-000000000002
+status: stable
+description: |
+  Detects addition of firewall rules that allow all inbound traffic or
+  traffic on suspicious ports. Attackers add permissive firewall rules
+  to enable C2 callbacks, reverse shells, and lateral movement.
+references:
+  - https://attack.mitre.org/techniques/T1562/004/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1562.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\netsh.exe'
+    CommandLine|contains: 'add rule'
+    CommandLine|contains: 'allow'
+  selection_suspicious:
+    CommandLine|contains:
+      - 'dir=in'
+      - 'action=allow'
+    CommandLine|contains:
+      - 'localport=Any'
+      - 'localport=4444'
+      - 'localport=5555'
+      - 'localport=6666'
+      - 'localport=8080'
+      - 'localport=8443'
+      - 'program=Any'
+  filter_known:
+    CommandLine|contains:
+      - '\Program Files\'
+      - 'Windows Defender'
+  condition: selection and selection_suspicious and not filter_known
+falsepositives:
+  - Legitimate application firewall rules
+  - Software installation creating firewall exceptions
+level: medium

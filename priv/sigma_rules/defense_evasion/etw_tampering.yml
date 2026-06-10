@@ -1,0 +1,241 @@
+title: ETW Function Patching Detected
+id: tamandua-etw-patch-001
+status: production
+description: |
+  Detects patching of ETW (Event Tracing for Windows) functions to blind EDR telemetry.
+
+  ETW tampering is a defense evasion technique where malware patches functions like
+  NtTraceEvent or EtwEventWrite to prevent security tools from receiving telemetry.
+  Common patch patterns include:
+  - ret (0xC3) - immediate return
+  - xor eax, eax; ret - return zero status
+  - jmp to attacker-controlled code
+
+  This is a critical indicator of advanced malware attempting to evade detection.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+  - https://blog.xpnsec.com/hiding-your-dotnet-etw-patching/
+  - https://www.mdsec.co.uk/2020/03/hiding-your-net-etw-patching/
+logsource:
+  product: tamandua
+  service: agent
+  category: etw_tampering
+detection:
+  selection:
+    event_type:
+      - 'etw_tampering'
+      - 'etw_prologue_patched'
+      - 'ntdll_stub_modified'
+      - 'fresh_ntdll_mapping'
+      - 'ntdll_write_detected'
+      - 'syscall_region_tampered'
+  condition: selection
+falsepositives:
+  - Security research tools
+  - Some anti-cheat systems
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: ETW Prologue Patching - RET Pattern
+id: tamandua-etw-patch-002
+status: production
+description: |
+  Detects ETW function prologue patched with simple RET (0xC3) instruction.
+  This causes the ETW function to immediately return without tracing events.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type: 'etw_prologue_patched'
+    patch_pattern: 'ret'
+  condition: selection
+falsepositives:
+  - Very unlikely in legitimate software
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: ETW Prologue Patching - XOR EAX Pattern
+id: tamandua-etw-patch-003
+status: production
+description: |
+  Detects ETW function prologue patched with XOR EAX, EAX; RET pattern.
+  This causes the ETW function to return STATUS_SUCCESS (0) without tracing.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type: 'etw_prologue_patched'
+    patch_pattern: 'xor_eax_ret'
+  condition: selection
+falsepositives:
+  - Very unlikely in legitimate software
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: Fresh NTDLL Mapping (Unhooking Attempt)
+id: tamandua-etw-patch-004
+status: production
+description: |
+  Detects a process loading a fresh copy of ntdll.dll from disk.
+  This is a common technique to bypass EDR hooks by using an unhooked ntdll.
+
+  Legitimate processes rarely need to manually map ntdll.dll since it's
+  already loaded by the Windows loader.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+  - https://www.ired.team/offensive-security/defense-evasion/how-to-unhook-a-dll-using-c++
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type: 'fresh_ntdll_mapping'
+  condition: selection
+falsepositives:
+  - Some legitimate security tools
+  - Debugging/analysis tools
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: NTDLL Write Detected
+id: tamandua-etw-patch-005
+status: production
+description: |
+  Detects write operations to the .text section of ntdll.dll.
+  This indicates potential inline hooking or unhooking attempts.
+
+  The ntdll.dll .text section should be read-only during normal operation.
+  Any writes suggest tampering with system call stubs or security hooks.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type: 'ntdll_write_detected'
+  condition: selection
+falsepositives:
+  - Some debugging tools
+  - Security software performing instrumentation
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: Syscall Region Tampered
+id: tamandua-etw-patch-006
+status: production
+description: |
+  Detects modification of syscall stub regions in ntdll.dll.
+  Syscall stubs are the entry points for system calls and should
+  never be modified during normal operation.
+
+  Tampering with syscall stubs can redirect system calls to
+  attacker-controlled code or disable security monitoring.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type: 'syscall_region_tampered'
+  condition: selection
+falsepositives:
+  - Very unlikely in legitimate software
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: NtTraceEvent Function Patched
+id: tamandua-etw-patch-007
+status: production
+description: |
+  Detects patching of NtTraceEvent function, the core ETW tracing syscall.
+  Patching this function prevents ALL ETW events from being generated.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type:
+      - 'etw_prologue_patched'
+      - 'etw_tampering'
+    target_function|contains:
+      - 'NtTraceEvent'
+      - 'ZwTraceEvent'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: EtwEventWrite Function Patched
+id: tamandua-etw-patch-008
+status: production
+description: |
+  Detects patching of EtwEventWrite function, which writes events to ETW.
+  This is commonly patched by .NET malware to disable CLR ETW events.
+author: Tamandua Security Team
+date: 2026/05/05
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+  - https://blog.xpnsec.com/hiding-your-dotnet-etw-patching/
+logsource:
+  product: tamandua
+  service: agent
+detection:
+  selection:
+    event_type:
+      - 'etw_prologue_patched'
+      - 'etw_tampering'
+    target_function|contains:
+      - 'EtwEventWrite'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006

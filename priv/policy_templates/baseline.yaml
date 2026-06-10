@@ -1,0 +1,88 @@
+# Baseline Security Policy Template
+# Balanced protection with moderate resource usage
+
+name: Baseline Security
+description: Standard security policy for general-purpose endpoints
+scope: organization
+compliance_tags:
+  - standard
+  - baseline
+
+collectors:
+  process:
+    enabled: true
+    interval_ms: 5000
+    options:
+      collect_command_line: true
+      collect_environment: false
+      collect_modules: true
+
+  file:
+    enabled: true
+    interval_ms: 30000
+    options:
+      monitored_paths:
+        - /etc
+        - /usr/bin
+        - /usr/sbin
+        - C:\Windows\System32
+        - C:\Program Files
+      exclude_paths:
+        - /tmp
+        - /var/tmp
+
+  network:
+    enabled: true
+    interval_ms: 10000
+    options:
+      collect_connections: true
+      collect_listening_ports: true
+
+  dns:
+    enabled: true
+    interval_ms: 10000
+    options:
+      log_all_queries: false
+      log_suspicious_domains: true
+
+  registry:
+    enabled: false
+    interval_ms: 60000
+
+resource_limits:
+  max_cpu_percent: 10
+  max_memory_mb: 500
+  max_disk_mb: 1000
+  max_network_bandwidth_mbps: 10
+
+detection:
+  yara_enabled: true
+  sigma_enabled: true
+  ml_enabled: true
+  custom_rules: []
+  rule_sets:
+    - malware_detection
+    - suspicious_behavior
+    - exploit_detection
+
+response:
+  allowed_actions:
+    - isolate
+    - kill_process
+  auto_response_enabled: false
+  max_actions_per_hour: 10
+  require_approval: true
+  approval_timeout_minutes: 30
+
+network:
+  allowed_domains: []
+  blocked_domains: []
+  proxy_enabled: false
+  proxy_url: null
+  ssl_inspection_enabled: false
+
+logging:
+  log_level: info
+  max_log_size_mb: 100
+  log_rotation_days: 7
+  send_logs_to_server: true

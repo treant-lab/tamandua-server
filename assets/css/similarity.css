@@ -1,0 +1,266 @@
+/**
+ * Similarity Detection Styles
+ *
+ * Styles for alert similarity visualization and components.
+ */
+
+/* ==================== Similarity Graph ==================== */
+
+.similarity-graph-container {
+  @apply p-6;
+}
+
+.filters-panel {
+  @apply bg-white rounded-lg shadow p-6 mb-6;
+}
+
+.visualization-panel {
+  @apply grid grid-cols-3 gap-6;
+}
+
+#similarity-plot {
+  @apply w-full;
+  min-height: 600px;
+}
+
+/* Cluster item in sidebar */
+.cluster-item {
+  @apply p-2 border rounded cursor-pointer transition-colors;
+}
+
+.cluster-item:hover {
+  @apply bg-gray-50;
+}
+
+.cluster-item.selected {
+  @apply bg-indigo-50 border-indigo-300;
+}
+
+/* ==================== Similarity Badges ==================== */
+
+.similarity-badge {
+  @apply inline-flex items-center px-2 py-1 rounded-full text-xs font-medium;
+}
+
+.badge-similarity-high {
+  @apply bg-green-100 text-green-800;
+}
+
+.badge-similarity-medium {
+  @apply bg-yellow-100 text-yellow-800;
+}
+
+.badge-similarity-low {
+  @apply bg-gray-100 text-gray-800;
+}
+
+/* ==================== Similar Alerts Component ==================== */
+
+.similar-alerts-component {
+  @apply bg-white rounded-lg shadow p-6;
+}
+
+.similar-alert-item {
+  @apply border rounded-lg p-4 transition-colors;
+}
+
+.similar-alert-item:hover {
+  @apply bg-gray-50;
+}
+
+/* ==================== Severity Badges ==================== */
+
+.badge {
+  @apply inline-flex items-center px-2 py-1 rounded-full text-xs font-medium;
+}
+
+.badge-critical {
+  @apply bg-red-100 text-red-800;
+}
+
+.badge-high {
+  @apply bg-orange-100 text-orange-800;
+}
+
+.badge-medium {
+  @apply bg-yellow-100 text-yellow-800;
+}
+
+.badge-low {
+  @apply bg-blue-100 text-blue-800;
+}
+
+.badge-info {
+  @apply bg-gray-100 text-gray-800;
+}
+
+/* ==================== Loading States ==================== */
+
+.loading-state {
+  @apply bg-white rounded-lg shadow p-12 text-center;
+}
+
+.loading-state .spinner {
+  @apply animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto;
+}
+
+/* ==================== Error States ==================== */
+
+.error-state {
+  @apply bg-red-50 border border-red-200 rounded-lg p-4;
+}
+
+.error-state p {
+  @apply text-red-800;
+}
+
+/* ==================== Stats Display ==================== */
+
+.stats {
+  @apply space-y-2;
+}
+
+.stat {
+  @apply flex justify-between items-center;
+}
+
+.stat span:first-child {
+  @apply text-gray-600;
+}
+
+.stat span:last-child {
+  @apply font-semibold text-gray-900;
+}
+
+/* ==================== Duplicate Indicators ==================== */
+
+.duplicate-badge {
+  @apply inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800;
+}
+
+.duplicate-link {
+  @apply text-sm text-indigo-600 hover:text-indigo-800 underline;
+}
+
+/* ==================== Cluster Visualization ==================== */
+
+.cluster-legend {
+  @apply flex flex-wrap gap-2 mb-4;
+}
+
+.cluster-legend-item {
+  @apply flex items-center gap-1;
+}
+
+.cluster-legend-color {
+  @apply w-4 h-4 rounded-full;
+}
+
+.cluster-legend-label {
+  @apply text-xs text-gray-700;
+}
+
+/* ==================== Interactive Elements ==================== */
+
+.clickable {
+  @apply cursor-pointer transition-transform hover:scale-105;
+}
+
+.selected-alert {
+  @apply ring-2 ring-indigo-500 ring-offset-2;
+}
+
+/* ==================== Responsive Design ==================== */
+
+@media (max-width: 1024px) {
+  .visualization-panel {
+    @apply grid-cols-1;
+  }
+
+  #similarity-plot {
+    min-height: 400px;
+  }
+}
+
+@media (max-width: 640px) {
+  .filters-panel form {
+    @apply grid-cols-1;
+  }
+
+  .similarity-graph-container {
+    @apply p-4;
+  }
+}
+
+/* ==================== Animation ==================== */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/* ==================== Tooltips ==================== */
+
+.tooltip {
+  @apply absolute z-50 px-3 py-2 text-sm text-white bg-gray-900 rounded-lg shadow-lg;
+  pointer-events: none;
+}
+
+.tooltip::after {
+  content: '';
+  @apply absolute bottom-full left-1/2 -ml-1 border-4 border-transparent border-b-gray-900;
+}
+
+/* ==================== Plotly Customization ==================== */
+
+.js-plotly-plot .plotly {
+  @apply rounded-lg;
+}
+
+.js-plotly-plot .plotly .modebar {
+  @apply opacity-50 hover:opacity-100 transition-opacity;
+}
+
+/* ==================== Dark Mode Support (Optional) ==================== */
+
+@media (prefers-color-scheme: dark) {
+  .similarity-graph-container {
+    @apply text-gray-100;
+  }
+
+  .filters-panel,
+  .similar-alerts-component,
+  .loading-state {
+    @apply bg-gray-800 text-gray-100;
+  }
+
+  .similar-alert-item {
+    @apply border-gray-700;
+  }
+
+  .similar-alert-item:hover {
+    @apply bg-gray-700;
+  }
+
+  .badge-similarity-high {
+    @apply bg-green-900 text-green-200;
+  }
+
+  .badge-similarity-medium {
+    @apply bg-yellow-900 text-yellow-200;
+  }
+
+  .badge-similarity-low {
+    @apply bg-gray-700 text-gray-300;
+  }
+}

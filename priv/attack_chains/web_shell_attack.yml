@@ -1,0 +1,39 @@
+name: "Web Shell Deployment and Exploitation"
+description: "Web application compromise leading to shell access and command execution"
+severity: critical
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - initial-access
+  - persistence
+  - web-attack
+
+steps:
+  - name: "Web Application Exploit"
+    techniques:
+      - T1190  # Exploit Public-Facing Application
+    threshold: 1
+    timeframe: 900  # 15 minutes
+    description: "Exploitation attempt against web application"
+
+  - name: "Web Shell Upload"
+    techniques:
+      - T1505.003  # Web Shell
+    threshold: 1
+    timeframe: 600  # 10 minutes
+    conditions:
+      same_dest_ip: true
+    description: "Web shell file written to disk or webroot"
+
+  - name: "Command Execution via Shell"
+    techniques:
+      - T1059       # Command and Scripting Interpreter
+      - T1059.003   # Windows Command Shell
+      - T1059.004   # Unix Shell
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_agent: true
+    description: "Commands executed through web shell interface"
+
+narrative_template: "Web shell attack: application on {source_ip} exploited, shell deployed, and commands executed as {user} within {timespan}"

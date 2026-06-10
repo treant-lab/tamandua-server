@@ -1,0 +1,53 @@
+title: Security Software Discovery
+id: di05a001-sswd-0005-0001-000000000001
+status: stable
+description: |
+  Detects enumeration of installed security software (antivirus, EDR, firewall)
+  via WMI, PowerShell, or registry queries. Attackers enumerate security
+  products to identify defenses they need to evade or disable.
+references:
+  - https://attack.mitre.org/techniques/T1518/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.discovery
+  - attack.t1518.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_wmic:
+    Image|endswith: '\wmic.exe'
+    CommandLine|contains:
+      - 'AntiVirusProduct'
+      - 'AntiSpywareProduct'
+      - 'FirewallProduct'
+      - '/Namespace:\\\\root\\SecurityCenter2'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Get-MpComputerStatus'
+      - 'Get-MpThreat'
+      - 'Get-CimInstance -Namespace root/SecurityCenter2'
+      - 'root\\SecurityCenter2'
+      - 'AntiVirusProduct'
+  selection_tasklist:
+    Image|endswith: '\tasklist.exe'
+    CommandLine|contains:
+      - 'MsMpEng'
+      - 'CSFalcon'
+      - 'SentinelAgent'
+      - 'CylanceSvc'
+      - 'bdagent'
+      - 'avp.exe'
+      - 'savservice'
+  filter_defender:
+    Image|contains: '\Windows Defender\'
+  condition: (selection_wmic or selection_ps or selection_tasklist) and not filter_defender
+falsepositives:
+  - Security assessment and compliance scripts
+  - IT inventory tools
+level: medium

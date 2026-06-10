@@ -1,0 +1,19 @@
+test_case:
+  name: "WinRM Lateral Movement"
+  description: "Tests detection of WinRM-based lateral movement"
+  rule: "lateral_movement/winrm_lateral.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\wsmprovhost.exe"
+        cmdline: "C:\\Windows\\System32\\wsmprovhost.exe -Embedding"
+        parent_path: "C:\\Windows\\System32\\svchost.exe"
+        user: "NT AUTHORITY\\NETWORK SERVICE"
+        pid: 4892
+        ppid: 892
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1021.006"]
+  tags: ["lateral_movement", "winrm", "positive"]

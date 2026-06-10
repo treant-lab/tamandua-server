@@ -1,0 +1,223 @@
+<div class="auth-page auth-page--login">
+  <div class="auth-shell">
+    <section class="auth-intel-panel" aria-label="Tamandua Sentinel trust overview">
+      <div class="auth-panel-top">
+        <div class="auth-brand-lockup">
+          <img src="/images/logo.png" alt="Tamandua Sentinel" class="auth-brand-mark" />
+          <div>
+            <p class="auth-brand-name">Tamandua</p>
+            <p class="auth-brand-mode">SENTINEL CONSOLE</p>
+          </div>
+        </div>
+        <span class="auth-status-chip">tenant online - mTLS</span>
+      </div>
+
+      <div class="auth-intel-copy">
+        <p class="auth-kicker">SIGN IN - TENANT CONSOLE</p>
+        <h1>Authenticate to your sovereign security workspace.</h1>
+        <p>
+          Credentials stay inside your control plane. Endpoint telemetry remains private while
+          privacy-safe proofs of health, incidents and remediation can be anchored on Solana.
+        </p>
+      </div>
+
+      <div class="auth-context-strip">
+        <span>WORKSPACE</span>
+        <strong>self-hosted control plane</strong>
+        <em>TLS 1.3 - cert pinned - regional data</em>
+      </div>
+
+      <div class="auth-mode-row" aria-label="Supported authentication methods">
+        <span class="is-active">Password</span>
+        <span>Operator wallet</span>
+        <span>SSO ready</span>
+        <span>Recovery</span>
+      </div>
+
+      <div class="auth-proof-log" aria-label="Public attestation log preview">
+        <div class="auth-proof-heading">
+          <span>LIVE - PUBLIC ATTESTATION LOG</span>
+          <strong>Solana proof layer</strong>
+        </div>
+        <div class="auth-proof-row">
+          <span>00:00:04</span>
+          <strong>PROOF_OF_HEALTH</strong>
+          <em>fleet status - clean</em>
+          <code>8f3a...9c12</code>
+        </div>
+        <div class="auth-proof-row">
+          <span>00:00:31</span>
+          <strong>PROOF_OF_INCIDENT</strong>
+          <em>sev=high - T1555</em>
+          <code>ab27...41e9</code>
+        </div>
+        <div class="auth-proof-row">
+          <span>00:01:07</span>
+          <strong>PROOF_OF_REMEDIATION</strong>
+          <em>containment - 3 actions</em>
+          <code>44b8...0c7d</code>
+        </div>
+      </div>
+
+      <div class="auth-metrics-grid">
+        <div>
+          <span>AGENTS ONLINE</span>
+          <strong>99.8%</strong>
+          <em>fleet readiness</em>
+        </div>
+        <div>
+          <span>OPEN CRITICALS</span>
+          <strong>0</strong>
+          <em>health gated</em>
+        </div>
+        <div>
+          <span>LAST PROOF</span>
+          <strong>4s</strong>
+          <em>public audit trail</em>
+        </div>
+      </div>
+
+      <p class="auth-assurance">
+        No hostname, username, local IP or customer identifier is published on-chain.
+      </p>
+    </section>
+
+    <main class="auth-card" aria-label="Sign in form">
+      <div class="auth-header">
+        <div class="auth-console-tag">SENTINEL ACCESS</div>
+        <h2 class="auth-title">
+          Sign in to <span>Tamandua</span>
+        </h2>
+        <p class="auth-subtitle">
+          Use your operator account or a linked Solana wallet.
+        </p>
+      </div>
+
+      <div class="wallet-auth" data-wallet-auth="login">
+        <div class="wallet-auth-divider">
+          <span>Web3 sign-in</span>
+        </div>
+        <div class="wallet-grid">
+          <button type="button" class="wallet-button" data-wallet-provider="phantom">Phantom</button>
+          <button type="button" class="wallet-button" data-wallet-provider="backpack">Backpack</button>
+          <button type="button" class="wallet-button" data-wallet-provider="solflare">Solflare</button>
+          <button type="button" class="wallet-button" data-wallet-provider="metamask">MetaMask</button>
+        </div>
+        <p class="wallet-status" data-wallet-status></p>
+      </div>
+
+      <.form for={%{}} action={~p"/login"} method="post" class="auth-form" autocomplete="new-password" data-login-form>
+        <input type="text" name="username" autocomplete="username" tabindex="-1" class="hidden" aria-hidden="true" />
+        <input type="password" name="password_placeholder" autocomplete="new-password" tabindex="-1" class="hidden" aria-hidden="true" />
+
+        <%= if @error_message do %>
+          <div class="error-message">
+            <p class="text-sm"><%= @error_message %></p>
+          </div>
+        <% end %>
+
+        <div class="auth-fields">
+          <div>
+            <label for="tamandua-login-email" class="auth-label">
+              Operator email
+            </label>
+            <input
+              id="tamandua-login-email"
+              name="user[email]"
+              type="email"
+              autocomplete="new-password"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              value=""
+              required
+              class="input-field"
+              placeholder="operator@company.com"
+              autofocus
+            />
+          </div>
+
+          <div>
+            <label for="tamandua-login-password" class="auth-label">
+              Password
+            </label>
+            <input
+              id="tamandua-login-password"
+              name="user[password]"
+              type="password"
+              autocomplete="new-password"
+              value=""
+              required
+              class="input-field"
+              placeholder="Enter your password"
+            />
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary w-full">
+          Sign in
+        </button>
+
+        <div class="auth-footer flex-col gap-4">
+          <a href={~p"/register"} class="btn-outline w-full text-center">
+            Create tenant workspace
+          </a>
+          <a href={~p"/forgot-password"} class="auth-link">
+            Forgot your password?
+          </a>
+        </div>
+      </.form>
+    </main>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const bindLoginSubmitGuard = () => {
+      document.querySelectorAll('[data-login-form]').forEach((form) => {
+        if (form.dataset.submitGuardBound === 'true') return
+        form.dataset.submitGuardBound = 'true'
+
+        form.addEventListener('submit', (event) => {
+          if (form.dataset.submitted === 'true') {
+            event.preventDefault()
+            return
+          }
+
+          form.dataset.submitted = 'true'
+          const submitButton = form.querySelector('button[type="submit"]')
+          if (submitButton) {
+            submitButton.disabled = true
+            submitButton.setAttribute('aria-busy', 'true')
+            submitButton.textContent = 'Signing in...'
+          }
+        })
+      })
+    }
+
+    const clearLoginFields = () => {
+      document.querySelectorAll('[data-login-form] input:not([type="hidden"])').forEach((input) => {
+        input.value = ''
+      })
+    }
+
+    window.addEventListener('pageshow', () => {
+      document.querySelectorAll('[data-login-form]').forEach((form) => {
+        form.dataset.submitted = 'false'
+        const submitButton = form.querySelector('button[type="submit"]')
+        if (submitButton) {
+          submitButton.disabled = false
+          submitButton.removeAttribute('aria-busy')
+          submitButton.textContent = 'Sign in'
+        }
+      })
+      clearLoginFields()
+      bindLoginSubmitGuard()
+    })
+    document.addEventListener('DOMContentLoaded', () => {
+      clearLoginFields()
+      bindLoginSubmitGuard()
+    })
+    setTimeout(clearLoginFields, 150)
+  })()
+</script>

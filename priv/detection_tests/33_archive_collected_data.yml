@@ -1,0 +1,19 @@
+test_case:
+  name: "Data Archiving for Exfiltration"
+  description: "Tests detection of suspicious data compression"
+  rule: "collection/archive_collected_data.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Program Files\\7-Zip\\7z.exe"
+        cmdline: "7z.exe a -p password C:\\Users\\Public\\data.7z C:\\Users\\*\\Documents\\*"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 7234
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1560.001"]
+  tags: ["collection", "compression", "positive"]

@@ -1,0 +1,297 @@
+title: Supply Chain - Cargo Build Script Network Activity
+id: d4e5f6a7-0004-supplychain-cargo-001
+status: stable
+description: Detects network activity from Cargo build scripts (build.rs) which could indicate supply chain compromise
+author: Tamandua Security Team
+date: 2026/04/04
+references:
+    - https://attack.mitre.org/techniques/T1195/001/
+    - https://doc.rust-lang.org/cargo/reference/build-scripts.html
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_cargo_build:
+        ParentImage|endswith:
+            - '/cargo'
+            - '\cargo.exe'
+            - '/rustc'
+            - '\rustc.exe'
+        ParentCommandLine|contains:
+            - 'build'
+            - 'install'
+            - 'run'
+    filter_trusted:
+        DestinationHostname|contains:
+            - 'crates.io'
+            - 'static.crates.io'
+            - 'github.com'
+            - 'rust-lang.org'
+    condition: selection_cargo_build and not filter_trusted
+falsepositives:
+    - Build scripts downloading legitimate dependencies
+    - Custom build steps fetching resources
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.execution
+    - attack.t1059
+
+---
+title: Supply Chain - Cargo Build Script Spawns Suspicious Process
+id: d4e5f6a7-0004-supplychain-cargo-002
+status: stable
+description: Detects Cargo build scripts spawning suspicious child processes
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_cargo_parent:
+        ParentImage|endswith:
+            - '/cargo'
+            - '\cargo.exe'
+        ParentCommandLine|contains:
+            - 'build'
+            - 'install'
+    selection_suspicious_child:
+        Image|endswith:
+            - '/sh'
+            - '/bash'
+            - '\cmd.exe'
+            - '\powershell.exe'
+        CommandLine|contains:
+            - 'curl'
+            - 'wget'
+            - 'base64'
+            - 'http://'
+            - 'https://'
+            - '-enc'
+    condition: selection_cargo_parent and selection_suspicious_child
+falsepositives:
+    - Legitimate build scripts downloading resources
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.execution
+
+---
+title: Supply Chain - RubyGem Install Hook Suspicious Activity
+id: d4e5f6a7-0004-supplychain-gem-001
+status: stable
+description: Detects suspicious activity from RubyGem pre_install or post_install hooks
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_gem_parent:
+        ParentImage|endswith:
+            - '/gem'
+            - '\gem.cmd'
+            - '/ruby'
+            - '\ruby.exe'
+        ParentCommandLine|contains:
+            - 'install'
+            - 'update'
+    selection_network_child:
+        CommandLine|contains:
+            - 'Net::HTTP'
+            - 'open-uri'
+            - 'curl'
+            - 'wget'
+            - 'http://'
+            - 'https://'
+    condition: selection_gem_parent and selection_network_child
+falsepositives:
+    - Gems that legitimately download resources during install
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+
+---
+title: Supply Chain - RubyGem Native Extension Malicious Build
+id: d4e5f6a7-0004-supplychain-gem-002
+status: stable
+description: Detects potential malicious activity during RubyGem native extension compilation
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_extconf:
+        ParentCommandLine|contains:
+            - 'extconf.rb'
+            - 'mkmf'
+        ParentImage|endswith:
+            - '/ruby'
+            - '\ruby.exe'
+    selection_suspicious:
+        CommandLine|contains:
+            - 'eval('
+            - 'system('
+            - 'exec('
+            - '`'
+            - 'Kernel.spawn'
+    condition: selection_extconf and selection_suspicious
+falsepositives:
+    - Complex build configurations
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.execution
+
+---
+title: Supply Chain - Go Module Download from Untrusted Proxy
+id: d4e5f6a7-0004-supplychain-go-001
+status: stable
+description: Detects Go module downloads bypassing trusted proxies
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_go:
+        Image|endswith:
+            - '/go'
+            - '\go.exe'
+        CommandLine|contains:
+            - 'get'
+            - 'mod download'
+            - 'install'
+    filter_trusted:
+        DestinationHostname|contains:
+            - 'proxy.golang.org'
+            - 'sum.golang.org'
+            - 'github.com'
+            - 'gitlab.com'
+            - 'bitbucket.org'
+            - 'gopkg.in'
+    condition: selection_go and not filter_trusted
+falsepositives:
+    - Private Go module registries
+    - GOPROXY=direct configuration
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+
+---
+title: Supply Chain - Go Generate Suspicious Command
+id: d4e5f6a7-0004-supplychain-go-002
+status: stable
+description: Detects go generate executing suspicious commands that could indicate supply chain attack
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_go_generate:
+        ParentImage|endswith:
+            - '/go'
+            - '\go.exe'
+        ParentCommandLine|contains: 'generate'
+    selection_suspicious_child:
+        CommandLine|contains:
+            - 'curl'
+            - 'wget'
+            - 'powershell'
+            - 'http://'
+            - 'https://'
+            - 'base64'
+            - 'eval'
+    condition: selection_go_generate and selection_suspicious_child
+falsepositives:
+    - Code generators that fetch templates
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.execution
+
+---
+title: Supply Chain - Package Manager Environment Exfiltration
+id: d4e5f6a7-0004-supplychain-env-001
+status: stable
+description: Detects package manager child processes accessing environment variables commonly used for credentials
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_pkg_manager:
+        ParentImage|endswith:
+            - '/npm'
+            - '\npm.cmd'
+            - '/pip'
+            - '\pip.exe'
+            - '/cargo'
+            - '\cargo.exe'
+            - '/gem'
+            - '\gem.cmd'
+            - '/go'
+            - '\go.exe'
+    selection_env_access:
+        CommandLine|contains:
+            - 'AWS_ACCESS_KEY'
+            - 'AWS_SECRET'
+            - 'NPM_TOKEN'
+            - 'GH_TOKEN'
+            - 'GITHUB_TOKEN'
+            - 'PYPI_TOKEN'
+            - 'CARGO_REGISTRY_TOKEN'
+            - 'GEM_HOST_API_KEY'
+    condition: selection_pkg_manager and selection_env_access
+falsepositives:
+    - Legitimate authentication for private registries
+level: critical
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.credential_access
+    - attack.t1552.001
+
+---
+title: Supply Chain - Alternative Package Manager Suspicious Hooks
+id: d4e5f6a7-0004-supplychain-alt-001
+status: stable
+description: Detects suspicious activity from alternative package manager install hooks (pnpm, yarn, bun)
+author: Tamandua Security Team
+date: 2026/04/04
+logsource:
+    category: process_creation
+    product: any
+detection:
+    selection_alt_pkg:
+        ParentImage|endswith:
+            - '/pnpm'
+            - '\pnpm.cmd'
+            - '/yarn'
+            - '\yarn.cmd'
+            - '/bun'
+            - '\bun.exe'
+    selection_suspicious:
+        CommandLine|contains:
+            - 'DownloadString'
+            - 'Invoke-WebRequest'
+            - 'FromBase64'
+            - '-enc '
+            - 'eval('
+            - 'exec('
+    condition: selection_alt_pkg and selection_suspicious
+falsepositives:
+    - Legitimate package scripts
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.001

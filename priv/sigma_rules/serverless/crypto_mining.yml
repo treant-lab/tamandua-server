@@ -1,0 +1,137 @@
+title: Serverless Cryptocurrency Mining Detection
+id: 7c4e3f2a-b1d8-4c9e-a5f6-8d2b1e0c3a4b
+status: stable
+description: Detects potential cryptocurrency mining activity in serverless functions
+references:
+  - https://attack.mitre.org/techniques/T1496/
+  - https://www.lacework.com/blog/cryptomining-in-serverless/
+author: Tamandua EDR
+date: 2026/01/29
+modified: 2026/01/29
+tags:
+  - attack.impact
+  - attack.t1496
+  - serverless
+  - cloud
+logsource:
+  category: serverless
+  product: aws_lambda
+  service: cloudwatch
+detection:
+  # Process/command patterns
+  selection_process:
+    CommandLine|contains:
+      - 'xmrig'
+      - 'minerd'
+      - 'cpuminer'
+      - 'cgminer'
+      - 'bfgminer'
+      - 'ethminer'
+      - 'phoenixminer'
+      - 'coinhive'
+      - 'cryptonight'
+      - 'stratum+tcp://'
+      - 'stratum+ssl://'
+      - 'pool.minexmr.com'
+      - 'pool.supportxmr.com'
+      - 'xmrpool.eu'
+      - 'monerohash.com'
+
+  # Log message patterns
+  selection_log:
+    Message|contains:
+      - 'mining pool'
+      - 'hashrate'
+      - 'accepted share'
+      - 'rejected share'
+      - 'CPU usage: 100%'
+      - 'cryptonight'
+      - 'monero'
+      - 'xmr wallet'
+
+  # Network patterns
+  selection_network:
+    DestinationPort:
+      - 3333
+      - 4444
+      - 5555
+      - 7777
+      - 8888
+      - 9999
+      - 14433
+      - 14444
+
+  # Resource patterns
+  selection_resource:
+    MemoryUsage|gt: 90
+    CPUTime|gt: 300000  # 5 minutes
+
+  condition: selection_process or selection_log or (selection_network and selection_resource)
+fields:
+  - FunctionName
+  - RequestId
+  - MemoryUsage
+  - Duration
+  - DestinationIP
+  - DestinationPort
+falsepositives:
+  - Legitimate cryptocurrency operations
+  - Performance testing with high CPU usage
+level: critical
+---
+title: Azure Functions Cryptocurrency Mining
+id: 8d5e4f3b-c2e9-5d0f-b6g7-9e3c2f1d4b5c
+status: stable
+description: Detects cryptocurrency mining in Azure Functions
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.impact
+  - attack.t1496
+logsource:
+  category: serverless
+  product: azure_functions
+  service: application_insights
+detection:
+  selection:
+    Message|contains:
+      - 'xmrig'
+      - 'cryptonight'
+      - 'stratum'
+      - 'mining'
+      - 'hashrate'
+    PerformanceCounter|gt: 95
+
+  condition: selection
+falsepositives:
+  - Load or performance tests that intentionally stress CPU and log mining-like benchmark strings.
+  - Security validation labs that replay cryptocurrency-mining indicators in serverless telemetry.
+level: critical
+---
+title: GCP Cloud Functions Cryptocurrency Mining
+id: 9e6f5g4c-d3f0-6e1g-c7h8-0f4d3g2e5c6d
+status: stable
+description: Detects cryptocurrency mining in GCP Cloud Functions
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.impact
+  - attack.t1496
+logsource:
+  category: serverless
+  product: gcp_cloud_functions
+  service: cloud_logging
+detection:
+  selection:
+    textPayload|contains:
+      - 'xmrig'
+      - 'cryptonight'
+      - 'stratum'
+      - 'mining pool'
+      - 'accepted share'
+
+  condition: selection
+falsepositives:
+  - Load or performance tests that intentionally stress CPU and log mining-like benchmark strings.
+  - Security validation labs that replay cryptocurrency-mining indicators in serverless telemetry.
+level: critical

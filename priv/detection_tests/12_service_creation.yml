@@ -1,0 +1,20 @@
+test_case:
+  name: "Malicious Service Creation"
+  description: "Tests detection of service-based persistence"
+  rule: "persistence/service_creation.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\sc.exe"
+        cmdline: "sc.exe create EvilService binPath= C:\\Windows\\Temp\\malware.exe start= auto"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 7892
+        ppid: 2048
+        is_elevated: true
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1543.003"]
+  tags: ["persistence", "service", "positive"]

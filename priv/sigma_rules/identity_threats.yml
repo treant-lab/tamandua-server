@@ -1,0 +1,1068 @@
+# Identity Threat Detection - Active Directory Attack Sigma Rules
+# MITRE ATT&CK Coverage: T1558, T1003.006, T1550, T1556, T1207, T1018, T1110
+#
+# These rules detect sophisticated Active Directory identity attacks including
+# Kerberoasting, AS-REP Roasting, DCSync, Golden/Silver Ticket forgery,
+# Pass-the-Hash/Ticket, Skeleton Key, DCShadow, LDAP Reconnaissance,
+# and Password Spraying.
+
+# =============================================================================
+# Kerberoasting (T1558.003)
+# =============================================================================
+
+title: Kerberoasting - Service Ticket Request with RC4 Encryption
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000001
+status: experimental
+description: |
+  Detects potential Kerberoasting by identifying TGS requests using RC4
+  encryption (0x17). Modern environments use AES256 (0x12); RC4 requests
+  for non-machine service accounts indicate offline cracking attempts.
+  Kerberoasting extracts service account password hashes from TGS tickets
+  and cracks them offline without triggering account lockout.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+  - https://www.harmj0y.net/blog/powershell/kerberoasting-without-mimikatz/
+  - https://adsecurity.org/?p=2293
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType: '0x17'
+  filter_machine:
+    ServiceName|endswith: '$'
+  filter_krbtgt:
+    ServiceName: 'krbtgt'
+  condition: selection and not filter_machine and not filter_krbtgt
+falsepositives:
+  - Legacy applications using RC4 encryption
+  - Environments that have not migrated to AES
+  - Old service accounts with RC4-only SPNs
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+
+---
+
+title: Kerberoasting - High Volume TGS Requests with RC4
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000002
+status: experimental
+description: |
+  Detects high-volume Kerberoasting by monitoring for multiple TGS requests
+  with RC4 encryption from a single source within a short timeframe.
+  Automated tools like Rubeus and Invoke-Kerberoast generate many requests.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType: '0x17'
+  filter_machine:
+    ServiceName|endswith: '$'
+  condition: selection and not filter_machine
+  timeframe: 1m
+  count:
+    field: ServiceName
+    condition: '>= 5'
+falsepositives:
+  - Automated service discovery tools
+  - Monitoring solutions querying multiple SPNs
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+
+# =============================================================================
+# AS-REP Roasting (T1558.004)
+# =============================================================================
+
+---
+
+title: AS-REP Roasting - Pre-Authentication Disabled Account Request
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000003
+status: experimental
+description: |
+  Detects AS-REP Roasting attempts by monitoring for Kerberos AS-REQ
+  responses for accounts with pre-authentication disabled (PreAuthType 0).
+  Attackers target these accounts to obtain AS-REP hashes crackable offline.
+  Event 4768 with a successful status and no pre-auth indicates the account
+  has DONT_REQUIRE_PREAUTH set in userAccountControl.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/004/
+  - https://www.harmj0y.net/blog/activedirectory/roasting-as-reps/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+    Status: '0x0'
+    PreAuthType: '0'
+  filter_machine:
+    TargetUserName|endswith: '$'
+  condition: selection and not filter_machine
+falsepositives:
+  - Service accounts legitimately configured without pre-authentication
+  - Legacy Kerberos implementations
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558.004
+
+---
+
+title: AS-REP Roasting - Bulk Account Enumeration
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000004
+status: experimental
+description: |
+  Detects bulk AS-REP Roasting enumeration where an attacker queries many
+  accounts to find those with pre-authentication disabled. High volume of
+  4768 events with pre-auth type 0 from a single source indicates automated
+  tool usage such as Rubeus asreproast or Get-ASREPHash.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/004/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+    PreAuthType: '0'
+  condition: selection
+  timeframe: 5m
+  count:
+    field: TargetUserName
+    condition: '>= 10'
+falsepositives:
+  - Kerberos health monitoring scripts
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.004
+
+# =============================================================================
+# DCSync (T1003.006)
+# =============================================================================
+
+---
+
+title: DCSync - Directory Replication from Non-DC
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000005
+status: experimental
+description: |
+  Detects DCSync attacks by monitoring Event ID 4662 for directory replication
+  requests with the DS-Replication-Get-Changes and DS-Replication-Get-Changes-All
+  extended rights GUIDs. When a non-domain-controller account requests these
+  replication operations, it indicates an attacker using Mimikatz lsadump::dcsync
+  or similar tools to extract password hashes from Active Directory.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1003/006/
+  - https://adsecurity.org/?p=1729
+  - https://blog.stealthbits.com/what-is-dcsync/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4662
+    Properties|contains:
+      - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+      - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
+      - '89e95b76-444d-4c62-991a-0facbeda640c'
+  filter_dc_accounts:
+    SubjectUserName|endswith: '$'
+  filter_system:
+    SubjectUserName:
+      - 'SYSTEM'
+      - 'LOCAL SERVICE'
+  condition: selection and not filter_dc_accounts and not filter_system
+falsepositives:
+  - Azure AD Connect synchronization accounts
+  - Authorized backup solutions using DRS protocol
+  - Domain controller promotion operations
+level: critical
+tags:
+  - attack.credential_access
+  - attack.t1003.006
+
+---
+
+title: DCSync - Replication Rights Granted to Non-Standard Account
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000006
+status: experimental
+description: |
+  Detects when replication rights (DS-Replication-Get-Changes-All) are
+  granted to a non-standard account, which is a prerequisite for DCSync.
+  Attackers may modify ACLs on the domain object to enable future DCSync.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1003/006/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 5136
+    AttributeLDAPDisplayName: 'nTSecurityDescriptor'
+    ObjectClass: 'domainDNS'
+  filter_known:
+    SubjectUserName|endswith: '$'
+  condition: selection and not filter_known
+falsepositives:
+  - Legitimate AD administration tasks
+  - Azure AD Connect configuration changes
+level: critical
+tags:
+  - attack.credential_access
+  - attack.persistence
+  - attack.t1003.006
+
+# =============================================================================
+# Golden Ticket (T1558.001)
+# =============================================================================
+
+---
+
+title: Golden Ticket - TGT Request with Abnormal Lifetime
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000007
+status: experimental
+description: |
+  Detects potential Golden Ticket usage by identifying TGT requests (4768)
+  where the ticket lifetime exceeds the domain policy maximum (typically
+  10 hours / 36000 seconds). Forged Golden Tickets often have abnormally
+  long lifetimes (e.g., 10 years) because attackers set arbitrary values
+  when crafting the ticket with the krbtgt hash.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+  - https://adsecurity.org/?p=1515
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+  filter_normal_lifetime:
+    TicketLifetime|lte: 36000
+  condition: selection and not filter_normal_lifetime
+falsepositives:
+  - Custom Kerberos policies with extended ticket lifetimes
+  - Test environments with relaxed policies
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.001
+
+---
+
+title: Golden Ticket - TGS Request Without Prior TGT
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000008
+status: experimental
+description: |
+  Detects potential Golden Ticket usage by identifying TGS requests (4769)
+  for a user without a corresponding prior TGT request (4768) in the same
+  session. Golden Tickets bypass the KDC for TGT issuance, so the TGS
+  request appears without an associated AS-REQ.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType:
+      - '0x17'
+      - '0x18'
+  filter_krbtgt:
+    ServiceName|startswith: 'krbtgt'
+  condition: selection and not filter_krbtgt
+falsepositives:
+  - Log collection gaps causing missing 4768 events
+  - Kerberos delegation scenarios
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558.001
+
+---
+
+title: Golden Ticket - Forged PAC with Elevated RID
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000009
+status: experimental
+description: |
+  Detects potential Golden Ticket with forged PAC by monitoring for logon
+  events (4624) where the account SID contains privileged group RIDs
+  (500=Administrator, 512=Domain Admins, 519=Enterprise Admins) but the
+  logon does not originate from expected domain controller sources.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    TargetUserSid|endswith:
+      - '-500'
+      - '-512'
+      - '-519'
+  filter_dc:
+    IpAddress|re: '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)'
+    WorkstationName|contains: 'DC'
+  condition: selection and not filter_dc
+falsepositives:
+  - Legitimate admin logons from workstations
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.001
+
+# =============================================================================
+# Silver Ticket (T1558.002)
+# =============================================================================
+
+---
+
+title: Silver Ticket - Service Logon Anomaly
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000010
+status: experimental
+description: |
+  Detects potential Silver Ticket attacks by monitoring for service account
+  logon events (4624 type 3) that lack a corresponding TGS request (4769).
+  Silver Tickets forge service tickets directly using the service account's
+  NTLM hash, bypassing the KDC entirely. The absence of a TGS request for
+  the service while a network logon occurs is anomalous.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/002/
+  - https://adsecurity.org/?p=2011
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    TargetUserName|re: '(svc_|service_|sa_|sql_|http_|iis_)'
+  filter_machine:
+    TargetUserName|endswith: '$'
+  filter_local:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  condition: selection and not filter_machine and not filter_local
+falsepositives:
+  - Legitimate service account network logons
+  - Application pool identity logons
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558.002
+
+---
+
+title: Silver Ticket - Encrypted Ticket without KDC Interaction
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000011
+status: experimental
+description: |
+  Detects Silver Ticket usage by monitoring for successful Kerberos service
+  access (4624) with encryption downgrade to RC4 for service accounts, where
+  no corresponding 4769 TGS event was logged. Silver Tickets are forged
+  locally and never interact with the KDC.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1558/002/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    AuthenticationPackageName: 'Kerberos'
+    KeyLength: '0'
+  filter_local:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  condition: selection and not filter_local
+falsepositives:
+  - Kerberos authentication with cached credentials
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558.002
+
+# =============================================================================
+# Pass-the-Hash (T1550.002)
+# =============================================================================
+
+---
+
+title: Pass-the-Hash - NTLM Network Logon from Unusual Source
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000012
+status: experimental
+description: |
+  Detects potential Pass-the-Hash attacks by monitoring for NTLM type 3
+  (network) logon events from sources that are not typical for the target
+  account. PtH uses stolen NTLM hashes to authenticate without knowing
+  the plaintext password. Key indicators are: LogonType 3 (Network),
+  NTLM authentication, and origination from non-standard workstations.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1550/002/
+  - https://blog.stealthbits.com/how-to-detect-pass-the-hash-attacks/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    AuthenticationPackageName: 'NTLM'
+  filter_ntlm_v2:
+    LmPackageName: 'NTLM V2'
+  filter_local:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  filter_system:
+    TargetUserName:
+      - 'ANONYMOUS LOGON'
+      - 'SYSTEM'
+  condition: selection and not filter_ntlm_v2 and not filter_local and not filter_system
+falsepositives:
+  - Legacy applications using NTLMv1
+  - Misconfigured NLA settings
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.credential_access
+  - attack.t1550.002
+
+---
+
+title: Pass-the-Hash - Overpass-the-Hash via LogonType 9
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000013
+status: experimental
+description: |
+  Detects Overpass-the-Hash (Pass-the-Key) attacks by monitoring for logon
+  events with LogonType 9 (NewCredentials) and seclogo logon process.
+  This pattern is generated by Mimikatz sekurlsa::pth and similar tools
+  that use NTLM hashes to obtain Kerberos tickets.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1550/002/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 9
+    AuthenticationPackageName: 'Negotiate'
+    LogonProcessName: 'seclogo'
+  filter_machine:
+    TargetUserName|endswith: '$'
+  condition: selection and not filter_machine
+falsepositives:
+  - RunAs with /netonly flag
+  - Legitimate credential delegation scenarios
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.t1550.002
+
+# =============================================================================
+# Pass-the-Ticket (T1550.003)
+# =============================================================================
+
+---
+
+title: Pass-the-Ticket - Kerberos Logon from Abnormal Host
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000014
+status: experimental
+description: |
+  Detects potential Pass-the-Ticket attacks by monitoring for Kerberos
+  type 3 (network) logon events from hosts that do not match the
+  expected source for the authenticating account. Stolen Kerberos
+  tickets injected on a different machine produce logon events from
+  unexpected network locations.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1550/003/
+  - https://blog.stealthbits.com/detect-pass-the-ticket-attacks/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    AuthenticationPackageName: 'Kerberos'
+  filter_local:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  filter_machine:
+    TargetUserName|endswith: '$'
+  condition: selection and not filter_local and not filter_machine
+falsepositives:
+  - Legitimate Kerberos delegation
+  - Users roaming between workstations
+  - VPN connections changing source IP
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.credential_access
+  - attack.t1550.003
+
+---
+
+title: Pass-the-Ticket - Ticket Export File Created
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000015
+status: experimental
+description: |
+  Detects Kerberos ticket export to disk (.kirbi or .ccache files), a
+  prerequisite for Pass-the-Ticket attacks. Tools like Mimikatz
+  kerberos::list /export and Rubeus dump write tickets to these formats.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1550/003/
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|endswith:
+      - '.kirbi'
+      - '.ccache'
+  filter_system:
+    Image|endswith:
+      - '\lsass.exe'
+      - '\krb5kdc.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Kerberos debugging and troubleshooting
+  - MIT Kerberos client operations
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.credential_access
+  - attack.t1550.003
+
+# =============================================================================
+# Skeleton Key (T1556.001)
+# =============================================================================
+
+---
+
+title: Skeleton Key - Mimidrv Service Installation
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000016
+status: experimental
+description: |
+  Detects Skeleton Key deployment via mimidrv driver installation (Event
+  7045). The Skeleton Key attack patches LSASS on a domain controller to
+  accept a master password alongside legitimate passwords, allowing
+  universal access to any AD account. The mimidrv.sys driver is used by
+  Mimikatz to interact with LSASS in kernel mode.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1556/001/
+  - https://adsecurity.org/?p=1275
+  - https://www.secureworks.com/research/skeleton-key-malware-analysis
+logsource:
+  product: windows
+  service: system
+detection:
+  selection_service:
+    EventID: 7045
+    ServiceName|contains:
+      - 'mimidrv'
+      - 'mimikatz'
+  selection_binary:
+    EventID: 7045
+    ImagePath|contains:
+      - 'mimidrv.sys'
+      - 'mimikatz'
+      - 'mimilib'
+  condition: selection_service or selection_binary
+falsepositives:
+  - Authorized penetration testing
+  - Security research environments
+level: critical
+tags:
+  - attack.persistence
+  - attack.credential_access
+  - attack.t1556.001
+
+---
+
+title: Skeleton Key - LSASS Memory Patch Indicators
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000017
+status: experimental
+description: |
+  Detects Skeleton Key deployment indicators by monitoring for suspicious
+  modifications to the LSASS process. When a Skeleton Key is installed,
+  Event 4673 (sensitive privilege use) may fire for SeTcbPrivilege on LSASS,
+  and Event 4611 (trusted logon process registered) may appear for a
+  non-standard process interacting with LSASS.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1556/001/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection_privilege:
+    EventID: 4673
+    ProcessName|endswith: '\lsass.exe'
+    PrivilegeList|contains: 'SeTcbPrivilege'
+  selection_logon_process:
+    EventID: 4611
+  filter_standard:
+    SubjectUserName:
+      - 'SYSTEM'
+      - 'LOCAL SERVICE'
+      - 'NETWORK SERVICE'
+  condition: (selection_privilege or selection_logon_process) and not filter_standard
+falsepositives:
+  - Third-party authentication providers
+  - Smart card middleware
+level: high
+tags:
+  - attack.persistence
+  - attack.credential_access
+  - attack.t1556.001
+
+# =============================================================================
+# DCShadow (T1207)
+# =============================================================================
+
+---
+
+title: DCShadow - Rogue Replication Source Added
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000018
+status: experimental
+description: |
+  Detects DCShadow attacks by monitoring Event ID 4929 which indicates an
+  Active Directory replication source was added. DCShadow registers a rogue
+  domain controller in AD, pushes malicious changes (e.g., SPN modifications,
+  SIDHistory injection) via replication, then unregisters. Event 4929 fires
+  when a new replication partner is introduced.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1207/
+  - https://www.dcshadow.com/
+  - https://blog.alsid.eu/dcshadow-explained-4510f52fc19d
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4929
+  filter_known_dc:
+    SourceDRA|contains: 'DC'
+  condition: selection and not filter_known_dc
+falsepositives:
+  - Legitimate domain controller promotion
+  - AD forest trust establishment
+  - Azure AD Connect replication
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1207
+
+---
+
+title: DCShadow - SPN Registration for Replication Service
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000019
+status: experimental
+description: |
+  Detects DCShadow preparation by monitoring for the registration of a
+  Global Catalog SPN (GC/) or Directory Replication Service SPN (E3514235-)
+  on a non-domain-controller computer object. DCShadow requires these SPNs
+  to impersonate a DC for replication purposes.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1207/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4742
+    ServicePrincipalNames|contains:
+      - 'GC/'
+      - 'E3514235-4B06-11D1-AB04-00C04FC2DCD2'
+  filter_dc:
+    TargetUserName|contains: 'DC'
+  condition: selection and not filter_dc
+falsepositives:
+  - Legitimate domain controller promotion
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1207
+
+# =============================================================================
+# LDAP Reconnaissance (T1018)
+# =============================================================================
+
+---
+
+title: LDAP Reconnaissance - High Volume Queries from Non-DC
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000020
+status: experimental
+description: |
+  Detects LDAP reconnaissance by monitoring for high-volume LDAP queries
+  originating from non-domain-controller sources. Attackers use tools like
+  SharpHound, ADExplorer, ldapsearch, and PowerView to enumerate AD objects
+  including users, groups, GPOs, trusts, and ACLs for attack path analysis.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1018/
+  - https://attack.mitre.org/techniques/T1087/002/
+  - https://bloodhound.readthedocs.io/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 1644
+  condition: selection
+  timeframe: 5m
+  count:
+    condition: '>= 50'
+falsepositives:
+  - Legitimate AD administration tools
+  - SCCM or similar management platforms querying AD
+  - Azure AD Connect synchronization
+level: medium
+tags:
+  - attack.discovery
+  - attack.t1018
+  - attack.t1087.002
+
+---
+
+title: LDAP Reconnaissance - BloodHound Collection Patterns
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000021
+status: experimental
+description: |
+  Detects BloodHound/SharpHound AD enumeration by monitoring for process
+  creation events with command-line patterns consistent with SharpHound
+  collection methods (DCOnly, All, Session, Group, ACL, ObjectProps).
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1018/
+  - https://github.com/BloodHoundAD/BloodHound
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_sharphound:
+    CommandLine|contains:
+      - 'SharpHound'
+      - 'Invoke-BloodHound'
+      - 'Get-BloodHoundData'
+      - '--CollectionMethod'
+      - '-CollectionMethod'
+  selection_adexplorer:
+    Image|endswith: '\ADExplorer.exe'
+    CommandLine|contains: '-snapshot'
+  condition: selection_sharphound or selection_adexplorer
+falsepositives:
+  - Authorized security assessments
+  - AD auditing tools
+level: high
+tags:
+  - attack.discovery
+  - attack.t1018
+
+# =============================================================================
+# Password Spraying (T1110.003)
+# =============================================================================
+
+---
+
+title: Password Spraying - Multiple Failed Logons Across Accounts
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000022
+status: experimental
+description: |
+  Detects password spraying attacks by monitoring for multiple failed logon
+  events (4625) from the same source IP targeting different user accounts
+  within a short timeframe. Password spraying tries a single common password
+  against many accounts to avoid lockout thresholds, making it stealthier
+  than brute force attacks against a single account.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+  - https://www.microsoft.com/en-us/security/blog/2020/04/23/protecting-organization-password-spray-attacks/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+    LogonType:
+      - 3
+      - 10
+  condition: selection
+  timeframe: 5m
+  count:
+    field: IpAddress
+    condition: '>= 10'
+falsepositives:
+  - Misconfigured applications with expired credentials
+  - Automated service health checks with wrong passwords
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110.003
+
+---
+
+title: Password Spraying - Distributed Source Pattern
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000023
+status: experimental
+description: |
+  Detects distributed password spraying where the same target account
+  receives failed logon attempts from multiple different source IPs.
+  This variant catches spraying attacks routed through multiple proxies
+  or compromised hosts to evade single-source detection.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+    SubStatus:
+      - '0xC000006A'
+      - '0xC0000064'
+  condition: selection
+  timeframe: 10m
+  count:
+    field: TargetUserName
+    condition: '>= 15'
+falsepositives:
+  - Helpdesk password reset scenarios
+  - User lockout events during password policy changes
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110.003
+
+---
+
+title: Password Spraying - Successful Logon After Multiple Failures
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000024
+status: experimental
+description: |
+  Detects a successful password spray by monitoring for a successful logon
+  (4624) from a source IP that previously generated multiple failed logon
+  attempts (4625) against different accounts. This pattern indicates the
+  attacker found a valid credential during the spray.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+logsource:
+  product: windows
+  service: security
+detection:
+  failure:
+    EventID: 4625
+    LogonType: 3
+  success:
+    EventID: 4624
+    LogonType: 3
+  condition: failure | count(TargetUserName) >= 5 and success
+  timeframe: 10m
+falsepositives:
+  - Users misremembering passwords followed by a correct attempt
+  - Load-balanced applications with intermittent credential issues
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110.003
+
+# =============================================================================
+# Additional Identity Threat Indicators
+# =============================================================================
+
+---
+
+title: AdminSDHolder Modification - Persistence via Protected Groups
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000025
+status: experimental
+description: |
+  Detects modifications to the AdminSDHolder object which controls the
+  security descriptors of privileged AD groups. Attackers modify AdminSDHolder
+  ACLs to gain persistent elevated access that survives SDProp cleanup.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1098/
+  - https://adsecurity.org/?p=1906
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 5136
+    ObjectDN|contains: 'CN=AdminSDHolder,CN=System'
+    AttributeLDAPDisplayName: 'nTSecurityDescriptor'
+  condition: selection
+falsepositives:
+  - Legitimate AD security hardening
+level: critical
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1098
+
+---
+
+title: SID History Injection - Domain Persistence
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000026
+status: experimental
+description: |
+  Detects SID History injection attacks by monitoring for modifications
+  to the sIDHistory attribute on user or computer objects. Attackers inject
+  privileged SIDs (Domain Admins, Enterprise Admins) into sIDHistory to
+  maintain persistent elevated access that survives password changes.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1134/005/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4765
+  selection_modify:
+    EventID: 4766
+  condition: selection or selection_modify
+falsepositives:
+  - Legitimate domain migration with SID history
+  - AD forest trust with SID filtering disabled
+level: critical
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1134.005
+
+---
+
+title: NTDS.dit Access - Offline Credential Extraction
+id: d4e5f6a7-b8c9-4d0e-a1f2-300000000027
+status: experimental
+description: |
+  Detects attempts to access or copy the NTDS.dit file which contains
+  all Active Directory password hashes. Attackers use ntdsutil, vssadmin
+  shadow copies, or direct file access to obtain the database for offline
+  hash extraction using tools like secretsdump.
+author: Tamandua EDR
+date: 2026/01/01
+modified: 2026/02/02
+references:
+  - https://attack.mitre.org/techniques/T1003/003/
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ntdsutil:
+    Image|endswith: '\ntdsutil.exe'
+    CommandLine|contains:
+      - 'ifm'
+      - 'snapshot'
+      - 'activate instance ntds'
+  selection_vssadmin:
+    Image|endswith: '\vssadmin.exe'
+    CommandLine|contains|all:
+      - 'create'
+      - 'shadow'
+  selection_copy:
+    CommandLine|contains:
+      - '\Windows\NTDS\ntds.dit'
+      - '\Windows\NTDS\NTDS.dit'
+  condition: selection_ntdsutil or selection_vssadmin or selection_copy
+falsepositives:
+  - Legitimate AD backup operations
+  - Disaster recovery procedures
+level: critical
+tags:
+  - attack.credential_access
+  - attack.t1003.003

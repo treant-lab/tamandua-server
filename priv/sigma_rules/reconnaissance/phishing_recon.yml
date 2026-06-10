@@ -1,0 +1,302 @@
+title: Spearphishing Attachment with Credential Harvesting
+id: b2c3d4e5-0002-recon-0001-000000000001
+status: stable
+description: Detects Office documents with macros that may harvest credentials or system information
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_office_parent:
+        ParentImage|endswith:
+            - '\WINWORD.EXE'
+            - '\EXCEL.EXE'
+            - '\POWERPNT.EXE'
+            - '\OUTLOOK.EXE'
+    selection_recon_child:
+        Image|endswith:
+            - '\whoami.exe'
+            - '\hostname.exe'
+            - '\systeminfo.exe'
+            - '\ipconfig.exe'
+            - '\net.exe'
+            - '\nltest.exe'
+        CommandLine|contains:
+            - 'user'
+            - 'domain'
+            - '/all'
+    selection_powershell_child:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Get-ADUser'
+            - 'Get-WmiObject'
+            - 'Get-ComputerInfo'
+            - 'Get-LocalUser'
+            - 'Get-NetIPAddress'
+            - 'Invoke-WebRequest'
+            - 'System.Net.WebClient'
+    condition: selection_office_parent and (selection_recon_child or selection_powershell_child)
+falsepositives:
+    - Legitimate Office automation
+    - IT administration scripts embedded in documents
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1598.002
+    - attack.execution
+    - attack.t1204.002
+
+---
+title: HTML Smuggling with Credential Form
+id: b2c3d4e5-0002-recon-0002-000000000002
+status: stable
+description: Detects HTML files containing potential credential harvesting forms
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/003/
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_html_creation:
+        TargetFilename|endswith:
+            - '.html'
+            - '.htm'
+            - '.hta'
+        TargetFilename|contains:
+            - '\Downloads\'
+            - '\Temp\'
+            - '\AppData\Local\Temp\'
+    selection_by_browser:
+        Image|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\iexplore.exe'
+    condition: selection_html_creation and selection_by_browser
+falsepositives:
+    - Legitimate web downloads
+    - Web development
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1598.003
+    - attack.initial_access
+    - attack.t1566.001
+
+---
+title: Suspicious Browser Form Submission Detection
+id: b2c3d4e5-0002-recon-0003-000000000003
+status: stable
+description: Detects browser network traffic to common phishing/credential harvesting domains
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/001/
+logsource:
+    category: dns_query
+    product: any
+detection:
+    selection_phishing_indicators:
+        query|contains:
+            - '-login'
+            - 'login-'
+            - 'secure-login'
+            - 'account-verify'
+            - 'verify-account'
+            - 'signin-'
+            - '-signin'
+            - 'update-password'
+            - 'password-reset'
+            - 'credential'
+            - 'authenticate-'
+    filter_legitimate:
+        query|endswith:
+            - 'microsoft.com'
+            - 'google.com'
+            - 'amazon.com'
+            - 'apple.com'
+            - 'github.com'
+            - 'gitlab.com'
+            - 'okta.com'
+            - 'auth0.com'
+    condition: selection_phishing_indicators and not filter_legitimate
+falsepositives:
+    - Legitimate login pages
+    - Password management services
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1598.001
+    - attack.t1598.003
+
+---
+title: Email Client Spawning Suspicious Process
+id: b2c3d4e5-0002-recon-0004-000000000004
+status: stable
+description: Detects email clients spawning processes that could indicate phishing attack success
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_email_parent:
+        ParentImage|endswith:
+            - '\OUTLOOK.EXE'
+            - '\thunderbird.exe'
+            - '\Mail.exe'
+    selection_suspicious_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\regsvr32.exe'
+            - '\rundll32.exe'
+            - '\certutil.exe'
+    condition: selection_email_parent and selection_suspicious_child
+falsepositives:
+    - Legitimate email automation
+    - IT administration via email scripts
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1598.002
+    - attack.initial_access
+    - attack.t1566.001
+    - attack.execution
+    - attack.t1059
+
+---
+title: OAuth/SAML Phishing Consent Flow
+id: b2c3d4e5-0002-recon-0005-000000000005
+status: stable
+description: Detects potential OAuth consent phishing or SAML-based credential harvesting
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/001/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_oauth_endpoints:
+        DestinationHostname|contains:
+            - 'oauth'
+            - 'authorize'
+            - 'consent'
+            - 'saml'
+            - 'adfs'
+    selection_suspicious_domains:
+        DestinationHostname|contains:
+            - '.xyz'
+            - '.top'
+            - '.work'
+            - '.click'
+            - '.link'
+            - '.info'
+            - 'auth-'
+            - '-auth.'
+    condition: selection_oauth_endpoints and selection_suspicious_domains
+falsepositives:
+    - Legitimate OAuth applications
+    - Third-party identity providers
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1598.001
+
+---
+title: Email Attachment Opens Browser to External URL
+id: b2c3d4e5-0002-recon-0006-000000000006
+status: stable
+description: Detects email attachments that open browser to external URLs for credential harvesting
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/003/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_office:
+        ParentImage|endswith:
+            - '\WINWORD.EXE'
+            - '\EXCEL.EXE'
+            - '\POWERPNT.EXE'
+            - '\OUTLOOK.EXE'
+    selection_browser:
+        Image|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\iexplore.exe'
+        CommandLine|contains:
+            - 'http://'
+            - 'https://'
+    filter_legitimate:
+        CommandLine|contains:
+            - 'microsoft.com'
+            - 'office.com'
+            - 'sharepoint.com'
+            - 'onedrive.com'
+    condition: selection_office and selection_browser and not filter_legitimate
+falsepositives:
+    - Legitimate document hyperlinks
+    - Corporate documents with external references
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1598.003
+    - attack.initial_access
+    - attack.t1566.002
+
+---
+title: Potential Credential Harvesting via PDF
+id: b2c3d4e5-0002-recon-0007-000000000007
+status: stable
+description: Detects PDF readers spawning processes that may indicate embedded credential harvesting
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1598/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_pdf_parent:
+        ParentImage|endswith:
+            - '\AcroRd32.exe'
+            - '\Acrobat.exe'
+            - '\FoxitReader.exe'
+            - '\FoxitPhantomPDF.exe'
+            - '\SumatraPDF.exe'
+    selection_suspicious_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+    condition: selection_pdf_parent and selection_suspicious_child
+falsepositives:
+    - PDF forms with legitimate automation
+    - PDF-based IT workflows
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1598.002
+    - attack.execution
+    - attack.t1204.002

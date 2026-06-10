@@ -1,0 +1,710 @@
+# Identity Protection Sigma Rules
+# MITRE ATT&CK Coverage: T1078, T1558, T1550, T1003.006, T1110
+
+# =============================================================================
+# Kerberos Attacks
+# =============================================================================
+
+title: Kerberoasting - TGS Request for Service Account
+id: tamandua-identity-001
+status: stable
+description: |
+  Detects potential Kerberoasting attack by monitoring for TGS requests
+  with RC4 encryption targeting service accounts. Kerberoasting allows
+  attackers to request service tickets for any SPN and crack them offline.
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+  - https://www.harmj0y.net/blog/powershell/kerberoasting-without-mimikatz/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType: '0x17'  # RC4-HMAC
+  filter_computer:
+    ServiceName|endswith: '$'
+  filter_krbtgt:
+    ServiceName: krbtgt
+  condition: selection and not filter_computer and not filter_krbtgt
+  timeframe: 1m
+  count:
+    field: ServiceName
+    condition: '>= 5'
+falsepositives:
+  - Legitimate service account access patterns
+  - Legacy applications using RC4
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.003
+
+---
+
+title: AS-REP Roasting - Pre-Auth Disabled Account
+id: tamandua-identity-002
+status: stable
+description: |
+  Detects AS-REP Roasting attempts by monitoring for Kerberos
+  pre-authentication failures for accounts with "Do not require Kerberos
+  preauthentication" flag set. Attackers target these accounts to obtain
+  crackable AS-REP responses.
+references:
+  - https://attack.mitre.org/techniques/T1558/004/
+  - https://www.harmj0y.net/blog/activedirectory/roasting-as-reps/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+    Status: '0x0'  # Success (no pre-auth required)
+    PreAuthType: '0'
+  condition: selection
+  timeframe: 5m
+  count:
+    field: TargetUserName
+    condition: '>= 10'
+falsepositives:
+  - Service accounts with pre-auth disabled by design
+  - Legacy Kerberos implementations
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.004
+
+---
+
+title: Suspicious Kerberos Ticket Encryption Downgrade
+id: tamandua-identity-003
+status: stable
+description: |
+  Detects potential Golden/Silver ticket attacks by monitoring for
+  Kerberos tickets with encryption types that don't match the domain's
+  supported encryption policies, particularly RC4 when AES is expected.
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+  - https://attack.mitre.org/techniques/T1558/002/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection_tgt:
+    EventID: 4768
+    TicketEncryptionType:
+      - '0x17'  # RC4
+      - '0x18'  # RC4-EXP
+  selection_tgs:
+    EventID: 4769
+    TicketEncryptionType:
+      - '0x17'  # RC4
+      - '0x18'  # RC4-EXP
+  filter_krbtgt:
+    ServiceName: krbtgt
+  condition: (selection_tgt or selection_tgs) and not filter_krbtgt
+falsepositives:
+  - Legacy systems requiring RC4
+  - Misconfigured domain encryption settings
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1558
+
+---
+
+title: Potential Golden Ticket Attack - TGT with Unusual Lifetime
+id: tamandua-identity-004
+status: experimental
+description: |
+  Detects potential Golden Ticket usage by identifying TGT requests
+  with abnormally long ticket lifetimes (> 10 hours) which is a common
+  indicator of forged tickets.
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+  filter_normal_lifetime:
+    TicketLifetime|lte: 36000  # 10 hours in seconds
+  condition: selection and not filter_normal_lifetime
+falsepositives:
+  - Custom Kerberos policies with extended ticket lifetimes
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1558.001
+
+# =============================================================================
+# DCSync Attacks
+# =============================================================================
+
+---
+
+title: DCSync Attack - Directory Replication Request
+id: tamandua-identity-005
+status: stable
+description: |
+  Detects DCSync attack attempts by monitoring for directory replication
+  requests from non-domain controller systems. DCSync allows attackers
+  with replication privileges to extract password hashes directly from AD.
+references:
+  - https://attack.mitre.org/techniques/T1003/006/
+  - https://adsecurity.org/?p=1729
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4662
+    ObjectType|contains: 'domainDNS'
+    Properties|contains:
+      - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes
+      - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes-All
+      - '89e95b76-444d-4c62-991a-0facbeda640c'  # DS-Replication-Get-Changes-In-Filtered-Set
+  filter_dc:
+    SubjectUserName|endswith: '$'
+    SubjectUserName|contains: 'DC'
+  condition: selection and not filter_dc
+falsepositives:
+  - Legitimate Azure AD Connect servers
+  - Authorized backup tools using DRS
+  - Domain controller promotions
+level: critical
+tags:
+  - attack.credential_access
+  - attack.t1003.006
+
+---
+
+title: Suspicious Replication Privileges Assigned
+id: tamandua-identity-006
+status: stable
+description: |
+  Detects when directory replication privileges are assigned to a
+  non-standard account, which could be preparation for a DCSync attack.
+references:
+  - https://attack.mitre.org/techniques/T1003/006/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID:
+      - 5136  # Directory object modified
+      - 4738  # User account changed
+    AttributeLDAPDisplayName|contains:
+      - 'nTSecurityDescriptor'
+  filter_replication:
+    ObjectDN|contains:
+      - 'DS-Replication-Get-Changes'
+      - 'Replicating Directory Changes'
+  condition: selection and filter_replication
+falsepositives:
+  - Legitimate AD administration
+level: high
+tags:
+  - attack.credential_access
+  - attack.persistence
+  - attack.t1003.006
+
+# =============================================================================
+# Password Spray / Brute Force
+# =============================================================================
+
+---
+
+title: Password Spray Attack - Multiple Failed Logons Same Source
+id: tamandua-identity-007
+status: stable
+description: |
+  Detects password spray attacks by monitoring for multiple failed
+  logon attempts from the same source IP targeting different accounts.
+  Password spray attempts to avoid lockouts by trying one password
+  against many accounts.
+references:
+  - https://attack.mitre.org/techniques/T1110/003/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+    LogonType:
+      - 3   # Network
+      - 10  # RemoteInteractive
+  condition: selection
+  timeframe: 5m
+  count:
+    field: IpAddress
+    condition: '>= 10'
+falsepositives:
+  - Misconfigured applications with wrong credentials
+  - Automated tools with expired service accounts
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110.003
+
+---
+
+title: Brute Force Attack - Single Account Multiple Failures
+id: tamandua-identity-008
+status: stable
+description: |
+  Detects brute force attacks by monitoring for multiple failed logon
+  attempts against a single account from any source.
+references:
+  - https://attack.mitre.org/techniques/T1110/001/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+  condition: selection
+  timeframe: 5m
+  count:
+    field: TargetUserName
+    condition: '>= 10'
+falsepositives:
+  - Users who forgot their passwords
+  - Automated tools with expired credentials
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1110.001
+
+---
+
+title: Credential Stuffing - Multiple Account Lockouts
+id: tamandua-identity-009
+status: stable
+description: |
+  Detects potential credential stuffing by monitoring for multiple
+  account lockouts in a short time window, indicating attackers are
+  using leaked credential databases.
+references:
+  - https://attack.mitre.org/techniques/T1110/004/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4740  # Account lockout
+  condition: selection
+  timeframe: 10m
+  count:
+    condition: '>= 5'
+falsepositives:
+  - Mass password expiration events
+  - Help desk testing
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110.004
+
+# =============================================================================
+# Pass-the-Hash / Pass-the-Ticket
+# =============================================================================
+
+---
+
+title: Pass-the-Hash - NTLM Logon with Hash
+id: tamandua-identity-010
+status: stable
+description: |
+  Detects potential Pass-the-Hash attacks by monitoring for NTLM
+  authentication events with characteristics typical of hash-based
+  authentication (network logon with NTLM from unexpected sources).
+references:
+  - https://attack.mitre.org/techniques/T1550/002/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3  # Network
+    AuthenticationPackageName: NTLM
+    LmPackageName: 'NTLM V1'
+  filter_local:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  condition: selection and not filter_local
+falsepositives:
+  - Legacy applications using NTLM v1
+  - Misconfigured NLA settings
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.t1550.002
+
+---
+
+title: Overpass-the-Hash - Unusual Kerberos Request
+id: tamandua-identity-011
+status: stable
+description: |
+  Detects potential Overpass-the-Hash attacks by monitoring for
+  Kerberos TGT requests that come from network logon sessions,
+  indicating NTLM hash was used to request Kerberos tickets.
+references:
+  - https://attack.mitre.org/techniques/T1550/002/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4768
+    SourceAddress|not:
+      - '::1'
+      - '127.0.0.1'
+      - ''
+  filter_workstations:
+    SourceAddress|endswith: '$'
+  condition: selection and not filter_workstations
+falsepositives:
+  - Remote users authenticating via VPN
+  - Cloud services using Kerberos
+level: low
+tags:
+  - attack.lateral_movement
+  - attack.t1550.002
+
+# =============================================================================
+# Privilege Escalation
+# =============================================================================
+
+---
+
+title: Sensitive Privilege Use - Special Logon
+id: tamandua-identity-012
+status: stable
+description: |
+  Detects logons with sensitive/administrative privileges that should
+  be monitored, such as SeDebugPrivilege, SeBackupPrivilege, etc.
+references:
+  - https://attack.mitre.org/techniques/T1134/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4672
+  filter_system:
+    SubjectUserSid:
+      - 'S-1-5-18'  # SYSTEM
+      - 'S-1-5-19'  # LOCAL SERVICE
+      - 'S-1-5-20'  # NETWORK SERVICE
+  sensitive_privs:
+    PrivilegeList|contains:
+      - 'SeDebugPrivilege'
+      - 'SeTakeOwnershipPrivilege'
+      - 'SeLoadDriverPrivilege'
+      - 'SeRestorePrivilege'
+      - 'SeBackupPrivilege'
+      - 'SeImpersonatePrivilege'
+      - 'SeTcbPrivilege'
+  condition: selection and sensitive_privs and not filter_system
+falsepositives:
+  - Legitimate administrative tasks
+  - Backup software
+  - Anti-malware tools
+level: medium
+tags:
+  - attack.privilege_escalation
+  - attack.t1134
+
+---
+
+title: User Added to Sensitive Group
+id: tamandua-identity-013
+status: stable
+description: |
+  Detects when a user is added to a sensitive security group such as
+  Domain Admins, Enterprise Admins, or local Administrators.
+references:
+  - https://attack.mitre.org/techniques/T1098/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID:
+      - 4728  # Member added to global group
+      - 4732  # Member added to local group
+      - 4756  # Member added to universal group
+    TargetUserName|contains:
+      - 'Domain Admins'
+      - 'Enterprise Admins'
+      - 'Schema Admins'
+      - 'Administrators'
+      - 'Account Operators'
+      - 'Backup Operators'
+      - 'Server Operators'
+      - 'DnsAdmins'
+  condition: selection
+falsepositives:
+  - Legitimate IT administration
+  - Onboarding of new administrators
+level: high
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1098
+
+# =============================================================================
+# Account Manipulation
+# =============================================================================
+
+---
+
+title: User Account Created
+id: tamandua-identity-014
+status: stable
+description: |
+  Detects creation of new user accounts which could indicate
+  persistence mechanism or preparation for lateral movement.
+references:
+  - https://attack.mitre.org/techniques/T1136/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4720
+  filter_system:
+    SubjectUserName|endswith: '$'
+  condition: selection and not filter_system
+falsepositives:
+  - Legitimate user provisioning
+  - Automated account creation
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1136
+
+---
+
+title: Hidden User Account Created
+id: tamandua-identity-015
+status: stable
+description: |
+  Detects creation of user accounts with names ending in $ which
+  are hidden by default in Windows user interfaces.
+references:
+  - https://attack.mitre.org/techniques/T1136/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4720
+    TargetUserName|endswith: '$'
+  filter_computer:
+    TargetUserName|re: '^[A-Z0-9]{15}\$$'  # Normal computer accounts
+  condition: selection and not filter_computer
+falsepositives:
+  - Legitimate service accounts named with $
+level: high
+tags:
+  - attack.persistence
+  - attack.defense_evasion
+  - attack.t1136
+
+---
+
+title: Password Never Expires Set
+id: tamandua-identity-016
+status: stable
+description: |
+  Detects when an account is modified to have a password that
+  never expires, which could indicate persistence preparation.
+references:
+  - https://attack.mitre.org/techniques/T1098/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4738
+    UserAccountControl|contains: "Don't Expire Password"
+  condition: selection
+falsepositives:
+  - Service accounts configured for non-expiring passwords
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1098
+
+# =============================================================================
+# Suspicious Logon Patterns
+# =============================================================================
+
+---
+
+title: Off-Hours Administrator Logon
+id: tamandua-identity-017
+status: stable
+description: |
+  Detects administrative logons occurring outside of normal business
+  hours (10 PM to 6 AM) which could indicate compromise.
+references:
+  - https://attack.mitre.org/techniques/T1078/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType:
+      - 2   # Interactive
+      - 10  # RemoteInteractive
+    TargetUserName|re: '.*admin.*'
+  condition: selection
+  # Note: Time-based filtering handled by detection engine
+falsepositives:
+  - Legitimate after-hours maintenance
+  - Incident response activities
+  - Administrators in different time zones
+level: low
+tags:
+  - attack.initial_access
+  - attack.t1078
+
+---
+
+title: Explicit Credential Logon (runas)
+id: tamandua-identity-018
+status: stable
+description: |
+  Detects use of explicit credentials for logon (Event 4648), which
+  occurs when runas or similar tools are used with alternate credentials.
+references:
+  - https://attack.mitre.org/techniques/T1078/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4648
+  filter_system:
+    SubjectUserName:
+      - 'SYSTEM'
+      - 'LOCAL SERVICE'
+      - 'NETWORK SERVICE'
+  filter_localhost:
+    TargetServerName|contains:
+      - 'localhost'
+      - '127.0.0.1'
+  condition: selection and not filter_system and not filter_localhost
+falsepositives:
+  - Legitimate use of runas by administrators
+  - Scheduled tasks running with different credentials
+level: low
+tags:
+  - attack.credential_access
+  - attack.t1078
+
+---
+
+title: Multiple Logon Failures Followed by Success
+id: tamandua-identity-019
+status: stable
+description: |
+  Detects a pattern of multiple failed logons followed by a successful
+  logon for the same account, indicating potential password guessing.
+references:
+  - https://attack.mitre.org/techniques/T1110/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  failure:
+    EventID: 4625
+  success:
+    EventID: 4624
+  condition: failure | count(TargetUserName) >= 3 and success
+  timeframe: 5m
+falsepositives:
+  - Users misremembering passwords
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1110
+
+---
+
+title: Logon from Anonymous IP Address
+id: tamandua-identity-020
+status: stable
+description: |
+  Detects logons from IP addresses associated with anonymization
+  services like Tor or known VPN/proxy services.
+references:
+  - https://attack.mitre.org/techniques/T1090/
+author: Tamandua EDR
+date: 2026/01/28
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType:
+      - 3   # Network
+      - 10  # RemoteInteractive
+  # Note: IP reputation check handled by detection engine enrichment
+  condition: selection
+  # Enrichment: Check if IpAddress is in Tor exit node list or proxy list
+falsepositives:
+  - Legitimate VPN usage
+  - Remote workers in privacy-conscious countries
+level: high
+tags:
+  - attack.initial_access
+  - attack.t1090
+  - attack.t1078

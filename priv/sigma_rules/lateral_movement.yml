@@ -1,0 +1,237 @@
+title: PsExec Service Installation
+id: 39f0796f-f012-9345-6789-789012345678
+status: experimental
+description: Detects PsExec service installation for lateral movement
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1569/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\psexec.exe'
+            - '\psexec64.exe'
+    selection_network:
+        CommandLine|contains: '\\\\'
+    condition: selection and selection_network
+falsepositives:
+    - Legitimate administrative tools
+level: high
+tags:
+    - attack.lateral_movement
+    - attack.t1569.002
+
+---
+title: Remote Service Creation via sc.exe
+id: 4a0180aa-0123-a456-789a-890123456789
+status: experimental
+description: Detects remote service creation
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\sc.exe'
+        CommandLine|contains|all:
+            - '\\\\'
+            - 'create'
+    condition: selection
+falsepositives:
+    - Legitimate remote administration
+level: high
+tags:
+    - attack.lateral_movement
+    - attack.t1543.003
+
+---
+title: WMI Lateral Movement
+id: 5b1291bb-1234-b567-89ab-901234567890
+status: experimental
+description: Detects WMI-based lateral movement
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_wmic:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains:
+            - '/node:'
+            - 'process call create'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Invoke-WmiMethod'
+            - 'Invoke-CimMethod'
+            - 'gwmi '
+            - 'Get-WmiObject'
+            - '-ComputerName'
+    condition: selection_wmic or selection_ps
+falsepositives:
+    - Legitimate remote management
+level: high
+tags:
+    - attack.lateral_movement
+    - attack.t1047
+
+---
+title: SMB/Windows Admin Shares
+id: 6c2302cc-2345-c678-9abc-012345678901
+status: experimental
+description: Detects access to administrative shares
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains:
+            - '\\\\*\\C$'
+            - '\\\\*\\ADMIN$'
+            - '\\\\*\\IPC$'
+    condition: selection
+falsepositives:
+    - Legitimate administrative access
+level: medium
+tags:
+    - attack.lateral_movement
+    - attack.t1021.002
+
+---
+title: RDP Connection Initiation
+id: 7d3413dd-3456-d789-abcd-123456789012
+status: experimental
+description: Detects RDP connection attempts
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\mstsc.exe'
+        CommandLine|contains: '/v:'
+    condition: selection
+falsepositives:
+    - Legitimate remote desktop usage
+level: low
+tags:
+    - attack.lateral_movement
+    - attack.t1021.001
+
+---
+title: Pass-the-Hash Detection
+id: 8e4524ee-4567-e89a-bcde-234567890123
+status: experimental
+description: Detects potential pass-the-hash attacks
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: security
+    product: windows
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 9
+        AuthenticationPackageName: 'Negotiate'
+    condition: selection
+falsepositives:
+    - Legitimate NTLM authentication
+level: medium
+tags:
+    - attack.lateral_movement
+    - attack.t1550.002
+
+---
+title: WinRM Remote Execution
+id: 9f5635ff-5678-f9ab-cdef-345678901234
+status: experimental
+description: Detects WinRM-based remote execution
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_winrs:
+        Image|endswith: '\winrs.exe'
+        CommandLine|contains: '-r:'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Invoke-Command'
+            - 'Enter-PSSession'
+            - 'New-PSSession'
+            - '-ComputerName'
+    condition: selection_winrs or selection_ps
+falsepositives:
+    - Legitimate remote management
+level: medium
+tags:
+    - attack.lateral_movement
+    - attack.t1021.006
+
+---
+title: DCOM Lateral Movement
+id: a06746aa-6789-0abc-def0-456789012345
+status: experimental
+description: Detects DCOM-based lateral movement
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        ParentImage|endswith:
+            - '\mmc.exe'
+            - '\excel.exe'
+            - '\outlook.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+    condition: selection
+falsepositives:
+    - Legitimate Office automation
+level: medium
+tags:
+    - attack.lateral_movement
+    - attack.t1021.003
+
+---
+title: SSH Lateral Movement on Windows
+id: b17857bb-789a-1bcd-ef01-567890123456
+status: experimental
+description: Detects SSH usage for lateral movement on Windows
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\ssh.exe'
+            - '\plink.exe'
+            - '\putty.exe'
+        CommandLine|contains:
+            - '@'
+            - '-l '
+    condition: selection
+falsepositives:
+    - Legitimate SSH usage
+level: low
+tags:
+    - attack.lateral_movement
+    - attack.t1021.004

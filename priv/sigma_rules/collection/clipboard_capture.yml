@@ -1,0 +1,40 @@
+title: Clipboard Data Collection
+id: co02a001-clip-0002-0001-000000000001
+status: stable
+description: |
+  Detects clipboard data collection via PowerShell or known utilities.
+  Attackers monitor the clipboard to capture copied passwords, tokens,
+  cryptocurrency addresses, and other sensitive data.
+references:
+  - https://attack.mitre.org/techniques/T1115/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.collection
+  - attack.t1115
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Get-Clipboard'
+      - '[Windows.Forms.Clipboard]'
+      - 'System.Windows.Forms.Clipboard'
+      - 'GetText()'
+      - 'clip.exe'
+  selection_clip:
+    Image|endswith: '\clip.exe'
+  filter_term:
+    ParentImage|endswith:
+      - '\WindowsTerminal.exe'
+      - '\cmd.exe'
+  condition: selection_ps and not filter_term
+falsepositives:
+  - Legitimate clipboard management utilities
+  - Password manager clipboard operations
+level: medium

@@ -1,0 +1,19 @@
+test_case:
+  name: "Network Discovery"
+  description: "Tests detection of network scanning/discovery"
+  rule: "discovery/network_discovery.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\net.exe"
+        cmdline: "net.exe view /domain"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 9123
+        ppid: 2048
+  expected: match
+  expected_severity: low
+  expected_mitre: ["T1018"]
+  tags: ["discovery", "network", "positive"]

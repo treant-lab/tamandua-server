@@ -1,0 +1,20 @@
+test_case:
+  name: "SAM Registry Dumping"
+  description: "Tests detection of SAM database credential theft"
+  rule: "credential_access/sam_registry_access.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\reg.exe"
+        cmdline: "reg.exe save HKLM\\SAM C:\\Users\\Public\\sam.hive"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "NT AUTHORITY\\SYSTEM"
+        pid: 6754
+        ppid: 2048
+        is_elevated: true
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1003.002"]
+  tags: ["credential_access", "sam", "positive"]

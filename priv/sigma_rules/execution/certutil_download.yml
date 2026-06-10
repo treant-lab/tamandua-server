@@ -1,0 +1,81 @@
+title: Certutil File Download
+id: ex04a001-cert-0004-0001-000000000001
+status: stable
+description: |
+  Detects use of certutil.exe to download files from the internet. Certutil
+  is a legitimate Windows certificate utility that can be abused to download
+  arbitrary files via its -urlcache parameter. This is a common LOLBin
+  technique used to download second-stage payloads.
+references:
+  - https://attack.mitre.org/techniques/T1105/
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.command_and_control
+  - attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains:
+      - '-urlcache'
+      - '/urlcache'
+      - '-verifyctl'
+      - '/verifyctl'
+  selection_download:
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+      - '-f '
+      - '/f '
+      - '-split'
+  filter_legit:
+    CommandLine|contains:
+      - 'microsoft.com'
+      - 'windowsupdate.com'
+      - 'crl.'
+  condition: selection and selection_download and not filter_legit
+falsepositives:
+  - Legitimate certificate revocation list (CRL) downloads
+  - Certificate validation operations
+level: high
+
+---
+title: Certutil Base64 Decode
+id: ex04a002-cert-0004-0002-000000000002
+status: stable
+description: |
+  Detects certutil.exe being used to decode Base64-encoded files. Attackers
+  encode payloads in Base64 and use certutil -decode to reconstruct the
+  binary, bypassing network-level detection and content filters.
+references:
+  - https://attack.mitre.org/techniques/T1140/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1140
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains:
+      - '-decode'
+      - '/decode'
+      - '-decodehex'
+      - '/decodehex'
+  filter_system:
+    User|contains: 'SYSTEM'
+    ParentImage|endswith: '\svchost.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Legitimate certificate encoding/decoding operations
+level: medium

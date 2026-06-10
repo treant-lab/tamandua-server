@@ -1,0 +1,42 @@
+# Elixir / Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+
+# Phoenix
+/priv/static/assets/
+/priv/static/cache_manifest.json
+/assets/node_modules/
+
+# Release / distribution artifacts (publish via GitHub Releases, not source)
+/priv/static/downloads/agents/
+
+# Rustler NIF build output (bundled tamandua_nif/)
+/tamandua_nif/_build/
+/tamandua_nif/deps/
+/tamandua_nif/native/**/target/
+/tamandua_nif/priv/native/
+
+# Env / secrets
+.env
+*.secret
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log
+
+# Stray saved HTTP responses (debug scratch)
+/response.html

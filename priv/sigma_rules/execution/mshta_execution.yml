@@ -1,0 +1,76 @@
+title: MSHTA Execution with Remote URL
+id: ex03a001-msht-0003-0001-000000000001
+status: stable
+description: |
+  Detects MSHTA.exe executing HTA files from remote URLs or inline scripts.
+  MSHTA is a signed Microsoft binary that executes HTML Applications (HTAs)
+  which can contain VBScript or JavaScript. It is abused for both execution
+  and defense evasion since HTAs run with full trust outside the browser
+  security sandbox.
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+  - https://lolbas-project.github.io/lolbas/Binaries/Mshta/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.defense_evasion
+  - attack.t1218.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\mshta.exe'
+  selection_remote:
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+      - 'ftp://'
+      - 'javascript:'
+      - 'vbscript:'
+  filter_about:
+    CommandLine|contains: 'about:blank'
+  condition: selection and selection_remote and not filter_about
+falsepositives:
+  - Legitimate HTA-based enterprise applications
+  - Internal web applications using HTA for admin tools
+level: high
+
+---
+title: MSHTA Spawning Suspicious Child Process
+id: ex03a002-msht-0003-0002-000000000002
+status: stable
+description: |
+  Detects MSHTA spawning child processes that indicate malicious payload
+  delivery. Legitimate HTA applications rarely spawn PowerShell, cmd.exe,
+  or other script interpreters.
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1218.005
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\mshta.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\regsvr32.exe'
+      - '\certutil.exe'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Legacy HTA applications that invoke system utilities
+level: high

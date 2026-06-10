@@ -1,0 +1,97 @@
+title: Critical Service Stopped
+id: im03a001-svst-0003-0001-000000000001
+status: stable
+description: |
+  Detects stopping of critical Windows services including backup, security,
+  and database services. Ransomware and destructive malware stop these
+  services to prevent backup recovery, disable security defenses, and
+  ensure database files can be encrypted.
+references:
+  - https://attack.mitre.org/techniques/T1489/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1489
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_sc:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains: 'stop'
+  selection_net:
+    Image|endswith:
+      - '\net.exe'
+      - '\net1.exe'
+    CommandLine|contains: 'stop'
+  selection_critical:
+    CommandLine|contains:
+      - 'vss'
+      - 'sql'
+      - 'svc$'
+      - 'memtas'
+      - 'mepocs'
+      - 'veeam'
+      - 'backup'
+      - 'GxVss'
+      - 'GxBlr'
+      - 'GxFWD'
+      - 'GxCVD'
+      - 'GxCIMgr'
+      - 'MSSQL'
+      - 'MySQL'
+      - 'oracle'
+      - 'postgres'
+      - 'exchange'
+      - 'sophos'
+      - 'KAVFS'
+      - 'AcrSch2Svc'
+  filter_maintenance:
+    ParentImage|endswith: '\services.exe'
+    User|contains: 'SYSTEM'
+  condition: (selection_sc or selection_net) and selection_critical and not filter_maintenance
+falsepositives:
+  - Legitimate service maintenance during patching
+  - Database maintenance windows
+level: high
+
+---
+title: Bulk Service Stopping via Batch Script
+id: im03a002-svst-0003-0002-000000000002
+status: stable
+description: |
+  Detects rapid stopping of multiple services via batch commands, which is
+  a pattern commonly observed in ransomware deploying service-stopping
+  scripts to maximize file access for encryption.
+references:
+  - https://attack.mitre.org/techniques/T1489/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1489
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\cmd.exe'
+    Image|endswith:
+      - '\sc.exe'
+      - '\net.exe'
+      - '\net1.exe'
+      - '\taskkill.exe'
+    CommandLine|contains:
+      - 'stop'
+      - '/F'
+  filter_maintenance:
+    ParentCommandLine|contains:
+      - '\Windows\CCM\'
+      - '\SCCM\'
+  condition: selection and not filter_maintenance
+falsepositives:
+  - Maintenance scripts that restart services
+level: medium

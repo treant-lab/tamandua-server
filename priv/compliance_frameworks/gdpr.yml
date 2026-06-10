@@ -1,0 +1,268 @@
+name: GDPR
+full_name: General Data Protection Regulation
+version: "2016/679"
+description: EU regulation on data protection and privacy
+url: https://gdpr.eu/
+
+categories:
+  - data_protection
+  - consent
+  - breach_notification
+  - data_subject_rights
+  - cross_border_transfer
+
+controls:
+  - id: gdpr-art-5
+    control_id: Article 5
+    title: Principles relating to processing of personal data
+    description: Personal data must be processed lawfully, fairly, and transparently
+    category: data_protection
+    severity: critical
+    automated: true
+    evidence_types:
+      - data_inventory
+      - processing_activities
+      - consent_records
+    validation_query: data_processing_lawful
+    remediation_steps:
+      - Document legal basis for all processing activities
+      - Maintain records of processing activities (ROPA)
+      - Implement data minimization principles
+
+  - id: gdpr-art-6
+    control_id: Article 6
+    title: Lawfulness of processing
+    description: Processing must have a legal basis (consent, contract, legal obligation, etc.)
+    category: data_protection
+    severity: critical
+    automated: false
+    evidence_types:
+      - legal_basis_documentation
+      - consent_records
+      - contract_records
+    validation_query: null
+    remediation_steps:
+      - Identify legal basis for each processing activity
+      - Document legal basis in ROPA
+      - Obtain and record consent where required
+
+  - id: gdpr-art-7
+    control_id: Article 7
+    title: Conditions for consent
+    description: Consent must be freely given, specific, informed, and unambiguous
+    category: consent
+    severity: high
+    automated: true
+    evidence_types:
+      - consent_mechanisms
+      - consent_records
+      - withdrawal_logs
+    validation_query: consent_valid
+    remediation_steps:
+      - Implement granular consent mechanisms
+      - Enable easy consent withdrawal
+      - Document consent records with timestamps
+
+  - id: gdpr-art-13-14
+    control_id: Article 13-14
+    title: Information to be provided to data subjects
+    description: Provide transparent information about data processing
+    category: data_protection
+    severity: high
+    automated: false
+    evidence_types:
+      - privacy_notices
+      - privacy_policy
+      - communication_logs
+    validation_query: null
+    remediation_steps:
+      - Create clear privacy notices
+      - Publish comprehensive privacy policy
+      - Communicate processing purposes to data subjects
+
+  - id: gdpr-art-15
+    control_id: Article 15
+    title: Right of access by the data subject
+    description: Data subjects can request access to their personal data
+    category: data_subject_rights
+    severity: high
+    automated: true
+    evidence_types:
+      - access_requests
+      - data_exports
+      - response_logs
+    validation_query: access_requests_handled
+    remediation_steps:
+      - Implement data subject access request (DSAR) workflow
+      - Enable self-service data export
+      - Respond within 30 days
+
+  - id: gdpr-art-16
+    control_id: Article 16
+    title: Right to rectification
+    description: Data subjects can request correction of inaccurate data
+    category: data_subject_rights
+    severity: medium
+    automated: true
+    evidence_types:
+      - rectification_requests
+      - correction_logs
+      - response_logs
+    validation_query: rectification_handled
+    remediation_steps:
+      - Implement data correction workflow
+      - Verify identity before rectification
+      - Document all corrections
+
+  - id: gdpr-art-17
+    control_id: Article 17
+    title: Right to erasure (right to be forgotten)
+    description: Data subjects can request deletion of their data
+    category: data_subject_rights
+    severity: high
+    automated: true
+    evidence_types:
+      - erasure_requests
+      - deletion_logs
+      - retention_policies
+    validation_query: erasure_handled
+    remediation_steps:
+      - Implement data deletion workflow
+      - Define retention policies
+      - Verify erasure completion
+
+  - id: gdpr-art-18
+    control_id: Article 18
+    title: Right to restriction of processing
+    description: Data subjects can request processing restrictions
+    category: data_subject_rights
+    severity: medium
+    automated: true
+    evidence_types:
+      - restriction_requests
+      - processing_flags
+      - response_logs
+    validation_query: restriction_handled
+    remediation_steps:
+      - Implement processing restriction flags
+      - Document restriction reasons
+      - Resume only when lawful
+
+  - id: gdpr-art-20
+    control_id: Article 20
+    title: Right to data portability
+    description: Data subjects can receive their data in machine-readable format
+    category: data_subject_rights
+    severity: medium
+    automated: true
+    evidence_types:
+      - portability_requests
+      - data_exports
+      - export_formats
+    validation_query: portability_supported
+    remediation_steps:
+      - Implement structured data export (JSON, CSV, XML)
+      - Enable direct transfer to other controllers
+      - Document export formats
+
+  - id: gdpr-art-25
+    control_id: Article 25
+    title: Data protection by design and by default
+    description: Implement data protection measures from the start
+    category: data_protection
+    severity: high
+    automated: false
+    evidence_types:
+      - design_documentation
+      - privacy_impact_assessments
+      - default_settings
+    validation_query: null
+    remediation_steps:
+      - Conduct Data Protection Impact Assessments (DPIA)
+      - Implement privacy-enhancing technologies
+      - Set privacy-friendly defaults
+
+  - id: gdpr-art-30
+    control_id: Article 30
+    title: Records of processing activities
+    description: Maintain comprehensive records of processing activities (ROPA)
+    category: data_protection
+    severity: critical
+    automated: false
+    evidence_types:
+      - ropa_document
+      - processing_inventory
+      - data_flow_diagrams
+    validation_query: null
+    remediation_steps:
+      - Create and maintain ROPA
+      - Document all processing activities
+      - Update ROPA regularly
+
+  - id: gdpr-art-32
+    control_id: Article 32
+    title: Security of processing
+    description: Implement appropriate technical and organizational measures
+    category: data_protection
+    severity: critical
+    automated: true
+    evidence_types:
+      - encryption_status
+      - access_controls
+      - security_assessments
+    validation_query: security_measures_implemented
+    remediation_steps:
+      - Implement encryption at rest and in transit
+      - Deploy access controls and authentication
+      - Conduct regular security assessments
+
+  - id: gdpr-art-33
+    control_id: Article 33
+    title: Notification of personal data breach to supervisory authority
+    description: Notify data protection authority within 72 hours of breach discovery
+    category: breach_notification
+    severity: critical
+    automated: true
+    evidence_types:
+      - breach_detection_logs
+      - notification_records
+      - incident_reports
+    validation_query: breach_notification_enabled
+    remediation_steps:
+      - Implement breach detection mechanisms
+      - Define breach notification workflow
+      - Establish 72-hour notification process
+
+  - id: gdpr-art-34
+    control_id: Article 34
+    title: Communication of personal data breach to data subject
+    description: Notify affected individuals when high risk to rights and freedoms
+    category: breach_notification
+    severity: critical
+    automated: true
+    evidence_types:
+      - breach_communications
+      - affected_individuals
+      - risk_assessments
+    validation_query: subject_notification_enabled
+    remediation_steps:
+      - Assess breach risk to individuals
+      - Implement notification templates
+      - Track individual notifications
+
+  - id: gdpr-art-44-49
+    control_id: Article 44-49
+    title: Transfers of personal data to third countries
+    description: Ensure adequate protection for cross-border data transfers
+    category: cross_border_transfer
+    severity: critical
+    automated: false
+    evidence_types:
+      - transfer_impact_assessments
+      - standard_contractual_clauses
+      - adequacy_decisions
+    validation_query: null
+    remediation_steps:
+      - Conduct Transfer Impact Assessments (TIA)
+      - Implement Standard Contractual Clauses (SCC)
+      - Verify adequacy decisions for destination countries

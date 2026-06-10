@@ -1,0 +1,92 @@
+title: Proxy Tool Execution for C2 Tunneling
+id: cc03a001-prxy-0003-0001-000000000001
+status: stable
+description: |
+  Detects execution of proxy and tunneling tools that may be used to relay
+  C2 traffic through compromised hosts. Tools like Chisel, plink, and
+  Proxifier create SOCKS or HTTP proxies for network pivoting.
+references:
+  - https://attack.mitre.org/techniques/T1090/
+  - https://attack.mitre.org/techniques/T1572/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.command_and_control
+  - attack.t1090
+  - attack.t1572
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_tools:
+    Image|endswith:
+      - '\chisel.exe'
+      - '\plink.exe'
+      - '\proxifier.exe'
+      - '\Proxychains.exe'
+      - '\reGeorg.exe'
+      - '\ncat.exe'
+      - '\socat.exe'
+      - '\ligolo.exe'
+  selection_ssh_tunnel:
+    Image|endswith:
+      - '\ssh.exe'
+      - '\plink.exe'
+    CommandLine|contains:
+      - '-D '
+      - '-L '
+      - '-R '
+      - '-N '
+  selection_ngrok:
+    Image|endswith: '\ngrok.exe'
+    CommandLine|contains:
+      - 'tcp'
+      - 'http'
+  filter_dev:
+    ParentImage|contains:
+      - '\Code.exe'
+      - '\IntelliJ'
+      - '\terminal\'
+  condition: (selection_tools or selection_ssh_tunnel or selection_ngrok) and not filter_dev
+falsepositives:
+  - Legitimate SSH tunneling by developers
+  - Ngrok usage for development
+level: medium
+
+---
+title: Network Tunnel Service Installation
+id: cc03a002-prxy-0003-0002-000000000002
+status: stable
+description: |
+  Detects installation of tunneling tools as Windows services, which provides
+  persistent network access for C2 communication across reboots.
+references:
+  - https://attack.mitre.org/techniques/T1090/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.command_and_control
+  - attack.persistence
+  - attack.t1090
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains: 'create'
+    CommandLine|contains:
+      - 'chisel'
+      - 'plink'
+      - 'ngrok'
+      - 'cloudflared'
+      - 'frp'
+      - 'ligolo'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Legitimate tunnel service installation by IT teams
+level: high

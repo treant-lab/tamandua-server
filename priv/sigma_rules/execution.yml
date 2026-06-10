@@ -1,0 +1,215 @@
+title: Suspicious PowerShell Download Cradle
+id: a0c3d5e2-6789-0abc-def1-234567890123
+status: experimental
+description: Detects PowerShell download and execute patterns
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_powershell:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+    selection_download:
+        CommandLine|contains:
+            - 'IEX'
+            - 'Invoke-Expression'
+            - 'DownloadString'
+            - 'DownloadFile'
+            - 'DownloadData'
+            - 'Net.WebClient'
+            - 'Invoke-WebRequest'
+            - 'iwr '
+            - 'irm '
+            - 'Invoke-RestMethod'
+            - 'Start-BitsTransfer'
+    selection_flags:
+        CommandLine|contains:
+            - '-enc'
+            - '-encodedcommand'
+            - '-nop'
+            - '-noprofile'
+            - '-w hidden'
+            - '-windowstyle hidden'
+            - '-exec bypass'
+            - '-executionpolicy bypass'
+    condition: selection_powershell and (selection_download or selection_flags)
+falsepositives:
+    - Legitimate administrative scripts
+level: high
+tags:
+    - attack.execution
+    - attack.t1059.001
+
+---
+title: WMIC Process Creation
+id: b1d4e6f3-789a-1bcd-ef01-345678901234
+status: experimental
+description: Detects WMIC being used to create processes
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains: 'process call create'
+    condition: selection
+falsepositives:
+    - Legitimate administrative tasks
+level: high
+tags:
+    - attack.execution
+    - attack.t1047
+
+---
+title: MSHTA Execution with Script Protocol
+id: c2e5f7a4-89ab-2cde-f012-456789012345
+status: experimental
+description: Detects MSHTA executing scripts from URLs or inline
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        Image|endswith: '\mshta.exe'
+    selection_cmd:
+        CommandLine|contains:
+            - 'javascript:'
+            - 'vbscript:'
+            - 'http://'
+            - 'https://'
+            - '.hta'
+    condition: all of selection_*
+falsepositives:
+    - Legitimate HTA applications
+level: high
+tags:
+    - attack.execution
+    - attack.defense_evasion
+    - attack.t1218.005
+
+---
+title: Certutil Download Activity
+id: d3f6a8b5-9abc-3def-0123-567890123456
+status: experimental
+description: Detects certutil.exe being used to download files
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        Image|endswith: '\certutil.exe'
+    selection_cmd:
+        CommandLine|contains:
+            - '-urlcache'
+            - '/urlcache'
+            - '-f '
+            - '/f '
+            - 'http'
+    condition: all of selection_*
+falsepositives:
+    - Legitimate certificate operations
+level: high
+tags:
+    - attack.command_and_control
+    - attack.t1105
+
+---
+title: Regsvr32 Network Activity (Squiblydoo)
+id: e4a7b9c6-abcd-4ef0-1234-678901234567
+status: experimental
+description: Detects Regsvr32 executing scripts from URLs
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        Image|endswith: '\regsvr32.exe'
+    selection_cmd:
+        CommandLine|contains:
+            - '/i:http'
+            - '/i:https'
+            - 'scrobj.dll'
+            - '/s /n'
+            - '/n /s'
+    condition: all of selection_*
+falsepositives:
+    - Legitimate COM registration
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1218.010
+
+---
+title: Rundll32 Suspicious Activity
+id: f5b8cad7-bcde-5f01-2345-789012345678
+status: experimental
+description: Detects suspicious Rundll32 usage
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        Image|endswith: '\rundll32.exe'
+    selection_cmd:
+        CommandLine|contains:
+            - 'javascript:'
+            - 'shell32.dll,Control_RunDLL'
+            - 'url.dll,FileProtocolHandler'
+            - 'comsvcs.dll,MiniDump'
+            - 'zipfldr.dll,RouteTheCall'
+            - 'advpack.dll,LaunchINFSection'
+            - ',#'
+    condition: all of selection_*
+falsepositives:
+    - Legitimate DLL execution
+level: medium
+tags:
+    - attack.defense_evasion
+    - attack.t1218.011
+
+---
+title: MSBuild Suspicious Execution
+id: 06c9dbe8-cdef-6012-3456-890123456789
+status: experimental
+description: Detects MSBuild executing potentially malicious tasks
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\MSBuild.exe'
+            - '\msbuild.exe'
+        CommandLine|contains:
+            - '.xml'
+            - '.csproj'
+            - '.proj'
+    filter:
+        ParentImage|endswith:
+            - '\devenv.exe'
+            - '\dotnet.exe'
+            - '\vs_installershell.exe'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate build processes
+level: medium
+tags:
+    - attack.defense_evasion
+    - attack.t1127.001

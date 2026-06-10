@@ -1,0 +1,98 @@
+title: Encoded PowerShell Command Execution
+id: ex01a001-psen-0001-0001-000000000001
+status: stable
+description: |
+  Detects PowerShell execution with encoded commands (-enc, -EncodedCommand).
+  Adversaries encode PowerShell commands in Base64 to evade static analysis,
+  signature-based detection, and command-line logging. This is one of the
+  most common initial execution techniques used in fileless attacks.
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1027/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.defense_evasion
+  - attack.t1059.001
+  - attack.t1027
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - '-enc '
+      - '-EncodedCommand '
+      - '-encodedcommand '
+      - '-ec '
+      - '-en '
+  filter_short:
+    CommandLine|re: '-enc\s+[A-Za-z0-9+/=]{1,20}\s*$'
+  filter_known:
+    ParentImage|endswith:
+      - '\svchost.exe'
+      - '\services.exe'
+    CommandLine|contains: 'Windows\CCM'
+  condition: selection and not (filter_short or filter_known)
+falsepositives:
+  - SCCM client executing encoded configuration scripts
+  - Legitimate automation tools that use encoded commands
+level: high
+
+---
+title: PowerShell Obfuscation Techniques
+id: ex01a002-psen-0001-0002-000000000002
+status: stable
+description: |
+  Detects PowerShell command obfuscation techniques including string
+  concatenation, character replacement, backtick escaping, and
+  Invoke-Expression/IEX patterns used to evade detection.
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1027/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.t1027
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_obfuscation:
+    CommandLine|contains:
+      - '[char]'
+      - '-join'
+      - '-replace'
+      - '.replace('
+      - 'FromBase64String'
+      - '[Convert]::'
+      - '[System.Text.Encoding]::'
+      - 'Invoke-Expression'
+      - 'IEX('
+      - 'IEX ('
+      - '.Invoke('
+      - '${env:'
+  filter_admin:
+    ParentImage|endswith:
+      - '\WindowsTerminal.exe'
+      - '\explorer.exe'
+    CommandLine|contains:
+      - '.ps1'
+      - 'Import-Module'
+  condition: selection and selection_obfuscation and not filter_admin
+falsepositives:
+  - Legitimate PowerShell scripts with string manipulation
+  - Administrative scripts using Base64 encoding
+level: medium

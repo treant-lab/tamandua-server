@@ -1,0 +1,36 @@
+[package]
+name = "tamandua_nif"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tamandua EDR Team"]
+description = "Rust NIFs for high-performance operations in Tamandua EDR"
+license = "MIT"
+
+[lib]
+name = "tamandua_nif"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.31"
+yara = { version = "0.25", optional = true }
+sha2 = "0.10"
+sha1 = "0.10"
+md5 = "0.7"
+rayon = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+regex = "1.10"
+thiserror = "1.0"
+base64 = "0.21"
+hex = "0.4"
+
+[features]
+default = ["yara"]
+yara = ["dep:yara"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

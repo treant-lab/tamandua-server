@@ -1,0 +1,52 @@
+title: MSBuild Execution with Suspicious Arguments
+id: de07a001-msbu-0007-0001-000000000001
+status: stable
+description: |
+  Detects MSBuild.exe executing project files from suspicious locations or
+  without a parent Visual Studio process. MSBuild can compile and execute
+  inline C# code from XML project files, making it a popular LOLBin for
+  application whitelisting bypass.
+references:
+  - https://attack.mitre.org/techniques/T1127/001/
+  - https://lolbas-project.github.io/lolbas/Binaries/Msbuild/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.execution
+  - attack.t1127.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\MSBuild.exe'
+      - '\msbuild.exe'
+  selection_suspicious:
+    CommandLine|contains:
+      - '\Temp\'
+      - '\AppData\'
+      - '\Users\Public\'
+      - '\Downloads\'
+      - 'http://'
+      - 'https://'
+  filter_devenv:
+    ParentImage|endswith:
+      - '\devenv.exe'
+      - '\dotnet.exe'
+      - '\vs_installershell.exe'
+      - '\MSBuild.exe'
+      - '\msbuild.exe'
+  filter_ci:
+    ParentImage|contains:
+      - '\agent\\'
+      - '\TeamCity\'
+      - '\Jenkins\'
+      - '\actions-runner\'
+  condition: selection and selection_suspicious and not (filter_devenv or filter_ci)
+falsepositives:
+  - Developers building projects from non-standard directories
+  - CI/CD pipeline build processes
+level: high

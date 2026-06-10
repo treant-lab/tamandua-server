@@ -1,0 +1,91 @@
+title: Outbound Connection on Non-Standard Port
+id: cc04a001-nspt-0004-0001-000000000001
+status: stable
+description: |
+  Detects outbound network connections on ports commonly used by attack
+  frameworks and malware for C2 communication. These ports are not typically
+  used by legitimate applications.
+references:
+  - https://attack.mitre.org/techniques/T1571/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.command_and_control
+  - attack.t1571
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection:
+    DestinationPort:
+      - 4444
+      - 4445
+      - 5555
+      - 6666
+      - 1337
+      - 31337
+      - 9001
+      - 9050
+      - 9150
+      - 13337
+      - 50050
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\firefox.exe'
+      - '\msedge.exe'
+      - '\iexplore.exe'
+  filter_local:
+    DestinationIp|startswith:
+      - '127.'
+      - '10.'
+      - '172.16.'
+      - '192.168.'
+  condition: selection and not (filter_browser or filter_local)
+falsepositives:
+  - Custom application services running on these ports
+  - Development environments
+level: medium
+
+---
+title: Suspicious Process Making Outbound HTTPS Connection
+id: cc04a002-nspt-0004-0002-000000000002
+status: stable
+description: |
+  Detects non-browser processes making outbound HTTPS connections, which
+  may indicate C2 communication. While many legitimate applications use
+  HTTPS, this rule focuses on suspicious executables from unusual locations.
+references:
+  - https://attack.mitre.org/techniques/T1071/001/
+  - https://attack.mitre.org/techniques/T1573/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.command_and_control
+  - attack.t1071.001
+  - attack.t1573.002
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection:
+    DestinationPort: 443
+    Initiated: 'true'
+  selection_suspicious:
+    Image|contains:
+      - '\Temp\'
+      - '\AppData\Local\Temp\'
+      - '\Users\Public\'
+      - '\ProgramData\'
+  filter_update:
+    Image|contains:
+      - '\Google\Update\'
+      - '\Microsoft\EdgeUpdate\'
+      - '\Microsoft\Edge\Application\'
+  condition: selection and selection_suspicious and not filter_update
+falsepositives:
+  - Legitimate applications installed in non-standard paths
+  - Auto-update processes
+level: medium

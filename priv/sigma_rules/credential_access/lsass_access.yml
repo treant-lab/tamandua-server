@@ -1,0 +1,142 @@
+title: LSASS Memory Access via Suspicious Process
+id: ca01a001-lsas-0001-0001-000000000001
+status: stable
+description: |
+  Detects processes accessing LSASS memory with read permissions indicative of
+  credential dumping. Adversaries use tools like Mimikatz, ProcDump, and custom
+  loaders to read LSASS memory and extract plaintext credentials, NTLM hashes,
+  and Kerberos tickets. This rule targets the specific access masks associated
+  with memory reads (PROCESS_VM_READ, PROCESS_QUERY_INFORMATION).
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4663
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+logsource:
+  category: process_access
+  product: windows
+detection:
+  selection:
+    TargetImage|endswith: '\lsass.exe'
+    GrantedAccess|contains:
+      - '0x1010'
+      - '0x1410'
+      - '0x1438'
+      - '0x143a'
+      - '0x1fffff'
+      - '0x1f0fff'
+      - '0x1f1fff'
+  filter_system:
+    SourceImage|endswith:
+      - '\csrss.exe'
+      - '\lsm.exe'
+      - '\wmiprvse.exe'
+      - '\svchost.exe'
+      - '\msiexec.exe'
+      - '\wininit.exe'
+      - '\services.exe'
+  filter_av:
+    SourceImage|contains:
+      - '\MsMpEng.exe'
+      - '\MpCopyAccelerator.exe'
+      - '\Windows Defender\'
+      - '\Crowdstrike\'
+      - '\Carbon Black\'
+      - '\SentinelOne\'
+  filter_system_paths:
+    SourceImage|startswith:
+      - 'C:\Windows\System32\'
+      - 'C:\Windows\SysWOW64\'
+      - 'C:\Program Files\Windows Defender\'
+  condition: selection and not (filter_system or filter_av or filter_system_paths)
+falsepositives:
+  - Legitimate endpoint security products scanning LSASS
+  - Windows Credential Guard processes
+  - System diagnostics tools (e.g., Process Monitor)
+level: high
+
+---
+title: LSASS Dump via ProcDump
+id: ca01a002-lsas-0001-0002-000000000002
+status: stable
+description: |
+  Detects use of Sysinternals ProcDump or renamed copies to dump the LSASS
+  process memory to disk. Attackers frequently use ProcDump because it is a
+  legitimate Microsoft-signed tool, making it less likely to trigger AV alerts.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://docs.microsoft.com/en-us/sysinternals/downloads/procdump
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_procdump:
+    Image|endswith: '\procdump.exe'
+    CommandLine|contains:
+      - 'lsass'
+  selection_procdump64:
+    Image|endswith: '\procdump64.exe'
+    CommandLine|contains:
+      - 'lsass'
+  selection_generic_lsass_dump:
+    CommandLine|contains|all:
+      - 'lsass'
+    CommandLine|contains:
+      - '-ma '
+      - '-mm '
+      - '.dmp'
+      - 'MiniDump'
+  filter_defender:
+    ParentImage|contains:
+      - '\MsMpEng.exe'
+      - '\Windows Defender\'
+  condition: (selection_procdump or selection_procdump64 or selection_generic_lsass_dump) and not filter_defender
+falsepositives:
+  - Legitimate debugging by Microsoft support
+  - Crash dump collection by monitoring agents
+level: critical
+
+---
+title: LSASS Dump via Comsvcs.dll MiniDump
+id: ca01a003-lsas-0001-0003-000000000003
+status: stable
+description: |
+  Detects credential dumping using comsvcs.dll MiniDump export via rundll32.
+  This is a LOLBin technique that avoids dropping Mimikatz to disk. The
+  attacker calls rundll32 with comsvcs.dll,MiniDump targeting the LSASS PID.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://lolbas-project.github.io/#/OSTips/T1003.001
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|contains|all:
+      - 'comsvcs'
+      - 'MiniDump'
+  filter_legit:
+    ParentImage|endswith:
+      - '\WerFault.exe'
+      - '\svchost.exe'
+  condition: selection and not filter_legit
+falsepositives:
+  - Windows Error Reporting (WER) crash dump collection
+level: critical

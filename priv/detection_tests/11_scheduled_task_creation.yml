@@ -1,0 +1,19 @@
+test_case:
+  name: "Suspicious Scheduled Task Creation"
+  description: "Tests detection of scheduled task persistence"
+  rule: "persistence/scheduled_task_creation.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\schtasks.exe"
+        cmdline: "schtasks.exe /Create /TN Evil /TR C:\\Users\\Public\\evil.exe /SC ONLOGON"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 6124
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1053.005"]
+  tags: ["persistence", "scheduled_task", "positive"]

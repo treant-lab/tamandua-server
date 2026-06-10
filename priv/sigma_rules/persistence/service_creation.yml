@@ -1,0 +1,81 @@
+title: Suspicious Service Creation
+id: pe03a001-scre-0003-0001-000000000001
+status: stable
+description: |
+  Detects creation of new Windows services with suspicious characteristics.
+  Services provide SYSTEM-level persistence and are used by both legitimate
+  software and malware. This rule focuses on services with binPaths pointing
+  to unusual locations or using command-line interpreters.
+references:
+  - https://attack.mitre.org/techniques/T1543/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1543.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains|all:
+      - 'create'
+      - 'binPath'
+  selection_suspicious:
+    CommandLine|contains:
+      - '\AppData\'
+      - '\Temp\'
+      - '\Users\Public\'
+      - 'cmd /c'
+      - 'powershell'
+      - 'mshta'
+      - 'regsvr32'
+      - 'rundll32'
+  filter_legit:
+    CommandLine|contains:
+      - '\Program Files\'
+      - '\Program Files (x86)\'
+      - '\Windows\System32\'
+  condition: selection and selection_suspicious and not filter_legit
+falsepositives:
+  - Legitimate software installation that creates services
+level: high
+
+---
+title: Service Creation via PowerShell
+id: pe03a002-scre-0003-0002-000000000002
+status: stable
+description: |
+  Detects service creation using PowerShell New-Service cmdlet or WMI
+  Win32_Service Create method, which bypasses the need for sc.exe.
+references:
+  - https://attack.mitre.org/techniques/T1543/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.t1543.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'New-Service'
+      - 'Set-Service'
+      - 'Win32_Service'
+      - 'sc.exe create'
+  filter_system:
+    User|contains: 'SYSTEM'
+    ParentImage|endswith: '\services.exe'
+  condition: selection and not filter_system
+falsepositives:
+  - Legitimate service management by administrators
+level: medium

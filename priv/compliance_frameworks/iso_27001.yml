@@ -1,0 +1,532 @@
+name: ISO 27001
+full_name: ISO/IEC 27001:2022 Information Security Management
+version: "2022"
+description: International standard for information security management systems
+url: https://www.iso.org/standard/27001
+
+categories:
+  - organizational
+  - people
+  - physical
+  - technological
+
+domains:
+  - A.5: Organizational controls (37 controls)
+  - A.6: People controls (8 controls)
+  - A.7: Physical controls (14 controls)
+  - A.8: Technological controls (34 controls)
+
+controls:
+  # A.5 - Organizational Controls
+  - id: iso-a.5.1
+    control_id: A.5.1
+    title: Policies for information security
+    description: Information security policy and topic-specific policies defined and approved
+    category: organizational
+    severity: critical
+    automated: false
+    evidence_types:
+      - policy_documents
+      - approval_records
+      - policy_distribution
+    validation_query: null
+    remediation_steps:
+      - Develop information security policy
+      - Obtain management approval
+      - Communicate to all personnel
+
+  - id: iso-a.5.2
+    control_id: A.5.2
+    title: Information security roles and responsibilities
+    description: Information security roles and responsibilities are defined and allocated
+    category: organizational
+    severity: high
+    automated: false
+    evidence_types:
+      - role_definitions
+      - responsibility_matrix
+      - org_chart
+    validation_query: null
+    remediation_steps:
+      - Define information security roles
+      - Create RACI matrix
+      - Assign responsibilities
+
+  - id: iso-a.5.3
+    control_id: A.5.3
+    title: Segregation of duties
+    description: Conflicting duties and areas of responsibility are segregated
+    category: organizational
+    severity: high
+    automated: true
+    evidence_types:
+      - access_matrix
+      - role_assignments
+      - sod_reports
+    validation_query: segregation_of_duties_enforced
+    remediation_steps:
+      - Identify conflicting duties
+      - Implement role-based access control
+      - Monitor for SoD violations
+
+  - id: iso-a.5.7
+    control_id: A.5.7
+    title: Threat intelligence
+    description: Information about information security threats is collected and analyzed
+    category: organizational
+    severity: high
+    automated: true
+    evidence_types:
+      - threat_feeds
+      - intelligence_reports
+      - ioc_database
+    validation_query: threat_intelligence_integrated
+    remediation_steps:
+      - Subscribe to threat intelligence feeds
+      - Integrate with detection systems
+      - Conduct regular threat briefings
+
+  - id: iso-a.5.10
+    control_id: A.5.10
+    title: Acceptable use of information and other associated assets
+    description: Rules for acceptable use of information and assets identified and documented
+    category: organizational
+    severity: medium
+    automated: false
+    evidence_types:
+      - acceptable_use_policy
+      - user_acknowledgments
+      - monitoring_logs
+    validation_query: null
+    remediation_steps:
+      - Develop acceptable use policy
+      - Obtain user acknowledgments
+      - Monitor policy compliance
+
+  - id: iso-a.5.14
+    control_id: A.5.14
+    title: Information transfer
+    description: Information transfer rules, procedures, or agreements in place
+    category: organizational
+    severity: high
+    automated: true
+    evidence_types:
+      - transfer_policies
+      - encryption_configs
+      - transfer_logs
+    validation_query: secure_transfer_enforced
+    remediation_steps:
+      - Define secure transfer procedures
+      - Implement encryption for transfers
+      - Monitor and log all transfers
+
+  - id: iso-a.5.23
+    control_id: A.5.23
+    title: Information security for use of cloud services
+    description: Processes for acquisition, use, management and exit from cloud services
+    category: organizational
+    severity: high
+    automated: false
+    evidence_types:
+      - cloud_inventory
+      - service_agreements
+      - security_assessments
+    validation_query: null
+    remediation_steps:
+      - Inventory cloud services
+      - Review cloud provider security
+      - Define exit strategy
+
+  # A.6 - People Controls
+  - id: iso-a.6.1
+    control_id: A.6.1
+    title: Screening
+    description: Background verification checks carried out on candidates
+    category: people
+    severity: high
+    automated: false
+    evidence_types:
+      - screening_records
+      - background_checks
+      - reference_checks
+    validation_query: null
+    remediation_steps:
+      - Define screening procedures
+      - Conduct background verification
+      - Document screening results
+
+  - id: iso-a.6.2
+    control_id: A.6.2
+    title: Terms and conditions of employment
+    description: Employment contracts state responsibilities for information security
+    category: people
+    severity: medium
+    automated: false
+    evidence_types:
+      - employment_contracts
+      - security_clauses
+      - acknowledgments
+    validation_query: null
+    remediation_steps:
+      - Include security clauses in contracts
+      - Define confidentiality obligations
+      - Obtain signed acknowledgments
+
+  - id: iso-a.6.3
+    control_id: A.6.3
+    title: Information security awareness, education and training
+    description: Personnel receive appropriate awareness, education and training
+    category: people
+    severity: high
+    automated: true
+    evidence_types:
+      - training_records
+      - awareness_campaigns
+      - completion_rates
+    validation_query: security_training_completed
+    remediation_steps:
+      - Develop security awareness program
+      - Conduct regular training sessions
+      - Track completion and effectiveness
+
+  - id: iso-a.6.4
+    control_id: A.6.4
+    title: Disciplinary process
+    description: Formal disciplinary process for information security violations
+    category: people
+    severity: medium
+    automated: false
+    evidence_types:
+      - disciplinary_policy
+      - incident_records
+      - action_taken
+    validation_query: null
+    remediation_steps:
+      - Define disciplinary procedures
+      - Document security violations
+      - Enforce consequences consistently
+
+  - id: iso-a.6.5
+    control_id: A.6.5
+    title: Responsibilities after termination or change of employment
+    description: Information security responsibilities after termination defined and enforced
+    category: people
+    severity: high
+    automated: true
+    evidence_types:
+      - offboarding_checklists
+      - access_revocation_logs
+      - asset_returns
+    validation_query: offboarding_complete
+    remediation_steps:
+      - Define offboarding procedures
+      - Revoke access immediately
+      - Recover assets and credentials
+
+  # A.7 - Physical Controls
+  - id: iso-a.7.1
+    control_id: A.7.1
+    title: Physical security perimeters
+    description: Security perimeters defined and used to protect areas with information
+    category: physical
+    severity: high
+    automated: false
+    evidence_types:
+      - facility_maps
+      - access_control_systems
+      - visitor_logs
+    validation_query: null
+    remediation_steps:
+      - Define security perimeters
+      - Implement physical access controls
+      - Monitor entry and exit
+
+  - id: iso-a.7.2
+    control_id: A.7.2
+    title: Physical entry
+    description: Secure areas protected by appropriate entry controls
+    category: physical
+    severity: high
+    automated: true
+    evidence_types:
+      - access_logs
+      - badge_systems
+      - surveillance_footage
+    validation_query: physical_access_controlled
+    remediation_steps:
+      - Implement badge access systems
+      - Monitor entry attempts
+      - Maintain access logs
+
+  - id: iso-a.7.4
+    control_id: A.7.4
+    title: Physical security monitoring
+    description: Premises continuously monitored for unauthorized physical access
+    category: physical
+    severity: high
+    automated: true
+    evidence_types:
+      - surveillance_systems
+      - alarm_logs
+      - monitoring_records
+    validation_query: physical_monitoring_active
+    remediation_steps:
+      - Deploy surveillance cameras
+      - Implement intrusion detection
+      - Monitor alerts 24/7
+
+  - id: iso-a.7.7
+    control_id: A.7.7
+    title: Clear desk and clear screen
+    description: Clear desk and clear screen rules adopted
+    category: physical
+    severity: medium
+    automated: false
+    evidence_types:
+      - clear_desk_policy
+      - compliance_audits
+      - screen_lock_configs
+    validation_query: null
+    remediation_steps:
+      - Define clear desk policy
+      - Enforce screen lock timeouts
+      - Conduct compliance checks
+
+  # A.8 - Technological Controls
+  - id: iso-a.8.1
+    control_id: A.8.1
+    title: User endpoint devices
+    description: Information on user endpoint devices protected
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - endpoint_inventory
+      - endpoint_protection_status
+      - compliance_reports
+    validation_query: endpoints_protected
+    remediation_steps:
+      - Deploy endpoint protection
+      - Enforce device encryption
+      - Monitor endpoint compliance
+
+  - id: iso-a.8.2
+    control_id: A.8.2
+    title: Privileged access rights
+    description: Allocation and use of privileged access rights restricted and managed
+    category: technological
+    severity: critical
+    automated: true
+    evidence_types:
+      - privileged_accounts
+      - access_reviews
+      - pam_logs
+    validation_query: privileged_access_managed
+    remediation_steps:
+      - Implement privileged access management (PAM)
+      - Conduct regular access reviews
+      - Monitor privileged activities
+
+  - id: iso-a.8.3
+    control_id: A.8.3
+    title: Information access restriction
+    description: Access to information and other associated assets restricted
+    category: technological
+    severity: critical
+    automated: true
+    evidence_types:
+      - access_policies
+      - rbac_configs
+      - access_logs
+    validation_query: access_restricted
+    remediation_steps:
+      - Implement role-based access control
+      - Define access policies
+      - Monitor access attempts
+
+  - id: iso-a.8.5
+    control_id: A.8.5
+    title: Secure authentication
+    description: Secure authentication technologies and procedures implemented
+    category: technological
+    severity: critical
+    automated: true
+    evidence_types:
+      - mfa_configs
+      - authentication_logs
+      - password_policies
+    validation_query: secure_authentication_enabled
+    remediation_steps:
+      - Implement multi-factor authentication
+      - Enforce strong password policies
+      - Monitor authentication failures
+
+  - id: iso-a.8.8
+    control_id: A.8.8
+    title: Management of technical vulnerabilities
+    description: Information about technical vulnerabilities timely obtained and managed
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - vulnerability_scans
+      - patch_status
+      - remediation_timelines
+    validation_query: vulnerabilities_managed
+    remediation_steps:
+      - Conduct regular vulnerability scans
+      - Prioritize and patch critical vulnerabilities
+      - Track remediation progress
+
+  - id: iso-a.8.9
+    control_id: A.8.9
+    title: Configuration management
+    description: Configurations including security configurations recorded and managed
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - configuration_baselines
+      - change_logs
+      - compliance_scans
+    validation_query: configurations_managed
+    remediation_steps:
+      - Define configuration baselines
+      - Implement configuration management
+      - Monitor configuration drift
+
+  - id: iso-a.8.10
+    control_id: A.8.10
+    title: Information deletion
+    description: Information stored in information systems, devices or media deleted when no longer required
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - retention_policies
+      - deletion_logs
+      - sanitization_certificates
+    validation_query: secure_deletion_implemented
+    remediation_steps:
+      - Define data retention policies
+      - Implement secure deletion procedures
+      - Verify deletion completion
+
+  - id: iso-a.8.11
+    control_id: A.8.11
+    title: Data masking
+    description: Data masking used in accordance with topic-specific policy
+    category: technological
+    severity: medium
+    automated: true
+    evidence_types:
+      - masking_configs
+      - masked_datasets
+      - access_logs
+    validation_query: data_masking_enabled
+    remediation_steps:
+      - Identify sensitive data fields
+      - Implement data masking
+      - Test masked data usage
+
+  - id: iso-a.8.12
+    control_id: A.8.12
+    title: Data leakage prevention
+    description: Data leakage prevention measures applied to systems, networks and devices
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - dlp_policies
+      - dlp_alerts
+      - incident_reports
+    validation_query: dlp_deployed
+    remediation_steps:
+      - Deploy DLP solution
+      - Define data classification
+      - Monitor and respond to DLP alerts
+
+  - id: iso-a.8.16
+    control_id: A.8.16
+    title: Monitoring activities
+    description: Networks, systems and applications monitored for anomalous behavior
+    category: technological
+    severity: critical
+    automated: true
+    evidence_types:
+      - monitoring_configs
+      - siem_logs
+      - alert_reports
+    validation_query: monitoring_enabled
+    remediation_steps:
+      - Deploy SIEM/EDR solution
+      - Configure detection rules
+      - Monitor alerts continuously
+
+  - id: iso-a.8.18
+    control_id: A.8.18
+    title: Use of privileged utility programs
+    description: Use of utility programs that might override system and application controls restricted
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - utility_inventory
+      - usage_logs
+      - access_restrictions
+    validation_query: utility_access_restricted
+    remediation_steps:
+      - Identify privileged utilities
+      - Restrict access to authorized users
+      - Log all utility usage
+
+  - id: iso-a.8.23
+    control_id: A.8.23
+    title: Web filtering
+    description: Access to external websites managed to reduce exposure to malicious content
+    category: technological
+    severity: medium
+    automated: true
+    evidence_types:
+      - web_filter_configs
+      - blocked_sites
+      - access_logs
+    validation_query: web_filtering_enabled
+    remediation_steps:
+      - Deploy web filtering solution
+      - Define allowed/blocked categories
+      - Monitor bypass attempts
+
+  - id: iso-a.8.24
+    control_id: A.8.24
+    title: Use of cryptography
+    description: Rules for effective use of cryptography defined and implemented
+    category: technological
+    severity: critical
+    automated: true
+    evidence_types:
+      - encryption_policies
+      - crypto_inventory
+      - key_management
+    validation_query: cryptography_implemented
+    remediation_steps:
+      - Define cryptographic standards
+      - Implement encryption at rest and in transit
+      - Manage cryptographic keys securely
+
+  - id: iso-a.8.28
+    control_id: A.8.28
+    title: Secure coding
+    description: Secure coding principles applied to software development
+    category: technological
+    severity: high
+    automated: true
+    evidence_types:
+      - coding_standards
+      - code_reviews
+      - sast_scan_results
+    validation_query: secure_coding_enforced
+    remediation_steps:
+      - Define secure coding standards
+      - Conduct code reviews
+      - Integrate SAST/DAST into CI/CD

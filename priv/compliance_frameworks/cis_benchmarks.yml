@@ -1,0 +1,234 @@
+name: CIS Benchmarks
+full_name: Center for Internet Security Benchmarks
+version: "8.0"
+description: Consensus-developed secure configuration guidelines for hardening operating systems, applications, and network devices
+url: https://www.cisecurity.org/cis-benchmarks
+
+requirements:
+  - "Control 1: Inventory and Control of Enterprise Assets"
+  - "Control 2: Inventory and Control of Software Assets"
+  - "Control 3: Data Protection"
+  - "Control 4: Secure Configuration of Enterprise Assets and Software"
+  - "Control 5: Account Management"
+  - "Control 6: Access Control Management"
+  - "Control 7: Continuous Vulnerability Management"
+  - "Control 8: Audit Log Management"
+
+# FIM-specific controls
+fim_controls:
+  - id: cis-3.3
+    control_id: "3.3"
+    title: Configure Data Access Control Lists
+    description: Configure data access control lists based on a user's need to know
+    category: data_protection
+    severity: high
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/passwd
+        - /etc/shadow
+        - /etc/group
+        - /etc/gshadow
+        - /etc/sudoers
+        - /etc/sudoers.d/*
+      windows:
+        - C:\Windows\System32\config\SAM
+        - C:\Windows\System32\config\SECURITY
+        - C:\Windows\System32\config\SYSTEM
+      macos:
+        - /etc/passwd
+        - /etc/sudoers
+        - /private/var/db/dslocal/nodes/Default/users/*
+    allowed_changes: []
+    compliance_note: "Changes to these files may indicate unauthorized privilege escalation"
+
+  - id: cis-3.4
+    control_id: "3.4"
+    title: Enforce Data Retention
+    description: Retain FIM change logs for compliance audit trail
+    category: data_protection
+    severity: medium
+    automated: true
+    retention_days: 365
+    compliance_note: "All FIM events must be retained for 1 year minimum"
+
+  - id: cis-4.1
+    control_id: "4.1"
+    title: Establish Secure Configuration Process
+    description: Establish and maintain a secure configuration process for system components
+    category: secure_configuration
+    severity: high
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/ssh/sshd_config
+        - /etc/pam.d/*
+        - /etc/security/*
+        - /etc/sysctl.conf
+        - /etc/sysctl.d/*
+      windows:
+        - C:\Windows\System32\GroupPolicy\*
+        - C:\Windows\System32\secpol.msc
+      macos:
+        - /etc/ssh/sshd_config
+        - /etc/pam.d/*
+    allowed_changes:
+      - content_modified
+    require_approval: true
+    compliance_note: "Configuration changes should go through change management"
+
+  - id: cis-4.7
+    control_id: "4.7"
+    title: Manage Default Accounts
+    description: Monitor for changes to default system accounts
+    category: secure_configuration
+    severity: critical
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/passwd
+        - /etc/shadow
+      windows:
+        - C:\Windows\System32\config\SAM
+    watch_for:
+      - New user accounts
+      - Disabled account re-enabled
+      - Password changes to system accounts
+
+  - id: cis-8.5
+    control_id: "8.5"
+    title: Collect Detailed Audit Logs
+    description: Maintain FIM change logs with full detail for forensic analysis
+    category: audit_management
+    severity: high
+    automated: true
+    required_fields:
+      - path
+      - change_type
+      - previous_hash
+      - current_hash
+      - modifier_pid
+      - modifier_process
+      - timestamp
+    compliance_note: "FIM events must include process attribution"
+
+  - id: cis-8.11
+    control_id: "8.11"
+    title: Audit Log Integrity Protection
+    description: Protect audit log files from modification using file integrity monitoring
+    category: audit_management
+    severity: critical
+    automated: true
+    monitored_paths:
+      linux:
+        - /var/log/audit/*
+        - /var/log/secure
+        - /var/log/messages
+        - /var/log/auth.log
+      windows:
+        - C:\Windows\System32\winevt\Logs\*
+      macos:
+        - /var/log/system.log
+        - /var/log/secure.log
+    allowed_changes: []
+    compliance_note: "Audit logs must not be modified or deleted"
+
+# General controls (non-FIM specific)
+controls:
+  - id: cis-1.1
+    control_id: "1.1"
+    title: Establish Asset Inventory
+    description: Establish and maintain an accurate, detailed, and up-to-date inventory of all enterprise assets
+    category: asset_management
+    severity: high
+    automated: false
+    evidence_types:
+      - asset_inventory
+      - cmdb_export
+    remediation_steps:
+      - Deploy asset discovery tools
+      - Maintain CMDB with all endpoints
+      - Review inventory quarterly
+
+  - id: cis-2.1
+    control_id: "2.1"
+    title: Establish Software Inventory
+    description: Establish and maintain a detailed inventory of all software assets
+    category: asset_management
+    severity: high
+    automated: true
+    evidence_types:
+      - software_inventory
+      - deployment_reports
+    validation_query: software_inventory_current
+    remediation_steps:
+      - Deploy software inventory tools
+      - Track all installed software
+      - Identify unauthorized software
+
+  - id: cis-5.1
+    control_id: "5.1"
+    title: Establish Account Management Process
+    description: Establish and maintain an account management process
+    category: access_control
+    severity: high
+    automated: true
+    validation_query: account_management_configured
+    remediation_steps:
+      - Define account provisioning workflow
+      - Implement access reviews
+      - Configure account expiration policies
+
+  - id: cis-5.3
+    control_id: "5.3"
+    title: Disable Dormant Accounts
+    description: Delete or disable dormant user accounts after a defined period of inactivity
+    category: access_control
+    severity: medium
+    automated: true
+    validation_query: dormant_accounts_disabled
+    remediation_steps:
+      - Define dormancy threshold (30-90 days)
+      - Automate account disabling
+      - Review disabled accounts quarterly
+
+  - id: cis-6.1
+    control_id: "6.1"
+    title: Establish Access Granting Process
+    description: Establish and maintain an access granting process
+    category: access_control
+    severity: high
+    automated: false
+    evidence_types:
+      - access_request_forms
+      - approval_workflows
+    remediation_steps:
+      - Define access request process
+      - Require manager approval
+      - Document all access grants
+
+  - id: cis-7.1
+    control_id: "7.1"
+    title: Establish Vulnerability Management Process
+    description: Establish and maintain a documented vulnerability management process
+    category: vulnerability_management
+    severity: high
+    automated: true
+    validation_query: vulnerability_scanning_active
+    remediation_steps:
+      - Define vulnerability scanning schedule
+      - Prioritize based on severity
+      - Track remediation progress
+
+  - id: cis-8.1
+    control_id: "8.1"
+    title: Establish Audit Log Management Process
+    description: Establish and maintain an audit log management process
+    category: audit_management
+    severity: high
+    automated: true
+    validation_query: audit_logging_enabled
+    remediation_steps:
+      - Define logging requirements
+      - Configure centralized logging
+      - Implement log retention policies

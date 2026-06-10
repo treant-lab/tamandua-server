@@ -1,0 +1,81 @@
+title: Rundll32 Suspicious Execution
+id: de09a001-rd32-0009-0001-000000000001
+status: stable
+description: |
+  Detects suspicious Rundll32.exe usage including JavaScript execution,
+  comsvcs.dll MiniDump, and other LOLBin techniques. Rundll32 is frequently
+  abused to execute DLL exports, bypass application whitelisting, and
+  perform credential dumping.
+references:
+  - https://attack.mitre.org/techniques/T1218/011/
+  - https://lolbas-project.github.io/lolbas/Binaries/Rundll32/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.execution
+  - attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\rundll32.exe'
+  selection_suspicious:
+    CommandLine|contains:
+      - 'javascript:'
+      - 'vbscript:'
+      - 'shell32.dll,Control_RunDLL'
+      - 'url.dll,FileProtocolHandler'
+      - 'comsvcs.dll,MiniDump'
+      - 'zipfldr.dll,RouteTheCall'
+      - 'advpack.dll,LaunchINFSection'
+      - 'advpack.dll,RegisterOCX'
+      - 'ieadvpack.dll,LaunchINFSection'
+      - 'pcwutl.dll,LaunchApplication'
+      - 'syssetup.dll,SetupInfObjectInstallAction'
+  filter_explorer:
+    ParentImage|endswith: '\explorer.exe'
+    CommandLine|contains: 'shell32.dll,Control_RunDLL'
+  condition: selection and selection_suspicious and not filter_explorer
+falsepositives:
+  - Control Panel applet execution via Explorer
+  - Legitimate DLL registration operations
+level: medium
+
+---
+title: Rundll32 Executing DLL from Suspicious Path
+id: de09a002-rd32-0009-0002-000000000002
+status: stable
+description: |
+  Detects Rundll32 loading DLLs from temporary directories, user profiles,
+  or other non-standard locations that may indicate malicious DLL execution.
+references:
+  - https://attack.mitre.org/techniques/T1218/011/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1218.011
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|contains:
+      - '\AppData\Local\Temp\'
+      - '\Users\Public\'
+      - '\ProgramData\'
+      - '\Temp\'
+  filter_known:
+    CommandLine|contains:
+      - '\Microsoft\Windows\'
+      - '\Google\Update\'
+      - '\ClickOnce\'
+  condition: selection and not filter_known
+falsepositives:
+  - Temporary DLL installations during software updates
+level: medium

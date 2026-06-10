@@ -1,0 +1,985 @@
+<style>
+  :root {
+    --lp-bg: #070a08;
+    --lp-bg-2: #0d130f;
+    --lp-panel: rgba(12, 18, 15, 0.78);
+    --lp-panel-2: rgba(19, 28, 23, 0.82);
+    --lp-line: rgba(213, 236, 224, 0.13);
+    --lp-line-2: rgba(87, 226, 168, 0.28);
+    --lp-text: #f3f7f2;
+    --lp-muted: #9bad9f;
+    --lp-soft: #d5e6da;
+    --lp-green: #59e5a6;
+    --lp-green-2: #9df5c9;
+    --lp-cyan: #6bd9ff;
+    --lp-amber: #f4c86a;
+    --lp-red: #ff6f91;
+    --lp-serif: Georgia, "Times New Roman", serif;
+  }
+
+  .lp {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at 78% 12%, rgba(89, 229, 166, 0.19), transparent 30rem),
+      radial-gradient(circle at 14% 6%, rgba(107, 217, 255, 0.12), transparent 26rem),
+      linear-gradient(180deg, #080b09 0%, #090d0a 46%, #070a08 100%);
+    color: var(--lp-text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+
+  .lp a { color: inherit; text-decoration: none; }
+
+  .lp-shell {
+    width: min(1180px, calc(100vw - 40px));
+    margin: 0 auto;
+  }
+
+  .lp-nav {
+    position: fixed;
+    z-index: 40;
+    inset: 18px 0 auto;
+    width: min(1180px, calc(100vw - 40px));
+    margin: 0 auto;
+    min-height: 58px;
+    border: 1px solid var(--lp-line);
+    border-radius: 999px;
+    background: rgba(7, 10, 8, 0.74);
+    backdrop-filter: blur(22px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px 0 18px;
+    box-shadow: 0 20px 80px rgba(0, 0, 0, 0.32);
+  }
+
+  .lp-brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    font-weight: 760;
+    letter-spacing: 0.02em;
+  }
+
+  .lp-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(135deg, var(--lp-green), #126c46);
+    color: #03100a;
+    font-weight: 900;
+  }
+
+  .lp-brand small {
+    display: block;
+    color: var(--lp-muted);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    margin-top: -2px;
+  }
+
+  .lp-links {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--lp-muted);
+    font-size: 13px;
+  }
+
+  .lp-links a {
+    padding: 10px 12px;
+    border-radius: 999px;
+  }
+
+  .lp-links a:hover {
+    color: var(--lp-text);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .lp-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .lp-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    border-radius: 999px;
+    padding: 0 16px;
+    font-size: 13px;
+    font-weight: 720;
+    border: 1px solid var(--lp-line);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--lp-soft);
+  }
+
+  .lp-btn.primary {
+    background: var(--lp-text);
+    color: #07100b;
+    border-color: transparent;
+  }
+
+  .lp-hero {
+    position: relative;
+    min-height: 94vh;
+    display: grid;
+    align-items: center;
+    padding: 118px 0 56px;
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  .lp-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: linear-gradient(to bottom, transparent, black 14%, black 70%, transparent);
+  }
+
+  .lp-hero-copy {
+    position: relative;
+    z-index: 4;
+    max-width: 680px;
+    padding-top: 46px;
+  }
+
+  .lp-eyebrows {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+
+  .lp-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    border-radius: 999px;
+    padding: 0 12px;
+    border: 1px solid var(--lp-line-2);
+    background: rgba(89, 229, 166, 0.08);
+    color: var(--lp-green-2);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .lp-hero h1 {
+    margin: 0;
+    max-width: 760px;
+    font-family: var(--lp-serif);
+    font-size: clamp(58px, 9.2vw, 132px);
+    line-height: 0.88;
+    font-weight: 400;
+    letter-spacing: -0.04em;
+  }
+
+  .lp-hero h1 span {
+    color: var(--lp-green-2);
+    font-style: italic;
+  }
+
+  .lp-lede {
+    max-width: 660px;
+    margin: 28px 0 0;
+    color: var(--lp-soft);
+    font-size: clamp(18px, 2vw, 23px);
+    line-height: 1.55;
+  }
+
+  .lp-hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 34px;
+  }
+
+  .lp-hero-actions .lp-btn {
+    min-height: 48px;
+    padding-inline: 20px;
+  }
+
+  .lp-dashboard {
+    position: absolute;
+    z-index: 2;
+    right: max(22px, calc((100vw - 1180px) / 2));
+    bottom: 56px;
+    width: min(620px, 47vw);
+    border: 1px solid var(--lp-line);
+    border-radius: 20px;
+    background: linear-gradient(180deg, rgba(13, 19, 16, 0.92), rgba(7, 10, 8, 0.86));
+    box-shadow: 0 40px 140px rgba(0, 0, 0, 0.52);
+    overflow: hidden;
+    transform: perspective(1200px) rotateX(2deg) rotateY(-8deg);
+  }
+
+  .lp-window-bar {
+    height: 46px;
+    border-bottom: 1px solid var(--lp-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+    color: var(--lp-muted);
+    font-size: 12px;
+  }
+
+  .lp-dot-row {
+    display: flex;
+    gap: 7px;
+  }
+
+  .lp-dot-row span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--lp-green);
+    opacity: 0.8;
+  }
+
+  .lp-dash-body {
+    display: grid;
+    grid-template-columns: 142px 1fr;
+    min-height: 420px;
+  }
+
+  .lp-dash-nav {
+    border-right: 1px solid var(--lp-line);
+    padding: 16px 12px;
+    color: var(--lp-muted);
+    font-size: 12px;
+  }
+
+  .lp-dash-nav div {
+    padding: 10px;
+    border-radius: 10px;
+  }
+
+  .lp-dash-nav .active {
+    background: rgba(89, 229, 166, 0.1);
+    color: var(--lp-green-2);
+  }
+
+  .lp-dash-main {
+    padding: 18px;
+  }
+
+  .lp-status-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+
+  .lp-status-line h3 {
+    margin: 0;
+    font-size: 17px;
+  }
+
+  .lp-live {
+    color: var(--lp-green-2);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+  }
+
+  .lp-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .lp-metric,
+  .lp-chart,
+  .lp-proof-card {
+    border: 1px solid var(--lp-line);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.035);
+    padding: 12px;
+  }
+
+  .lp-metric span {
+    display: block;
+    color: var(--lp-muted);
+    font-size: 10px;
+  }
+
+  .lp-metric strong {
+    display: block;
+    margin-top: 8px;
+    font-size: 24px;
+  }
+
+  .lp-chart {
+    margin-top: 12px;
+    height: 158px;
+    background:
+      linear-gradient(180deg, rgba(89, 229, 166, 0.1), transparent),
+      repeating-linear-gradient(90deg, transparent 0 42px, rgba(255,255,255,0.04) 42px 43px);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .lp-chart::after {
+    content: "";
+    position: absolute;
+    inset: 34px 18px 26px;
+    background: linear-gradient(135deg, transparent 0 12%, var(--lp-green) 12% 14%, transparent 14% 30%, var(--lp-cyan) 30% 32%, transparent 32% 52%, var(--lp-green) 52% 54%, transparent 54% 75%, var(--lp-amber) 75% 77%, transparent 77%);
+    opacity: 0.9;
+  }
+
+  .lp-proof-card {
+    margin-top: 12px;
+    display: grid;
+    gap: 8px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--lp-muted);
+  }
+
+  .lp-proof-card b {
+    color: var(--lp-green-2);
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+  }
+
+  .lp-supported {
+    position: relative;
+    z-index: 5;
+    margin-top: 64px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    color: var(--lp-muted);
+    font-size: 12px;
+  }
+
+  .lp-supported span {
+    border: 1px solid var(--lp-line);
+    border-radius: 999px;
+    padding: 8px 11px;
+    background: rgba(255,255,255,0.025);
+  }
+
+  .lp-section {
+    position: relative;
+    padding: 92px 0;
+    border-bottom: 1px solid var(--lp-line);
+  }
+
+  .lp-section.alt {
+    background: rgba(255,255,255,0.018);
+  }
+
+  .lp-kicker {
+    color: var(--lp-green-2);
+    font-size: 12px;
+    font-weight: 760;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .lp-section h2 {
+    margin: 12px 0 0;
+    max-width: 760px;
+    font-family: var(--lp-serif);
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    font-size: clamp(42px, 5.8vw, 78px);
+    line-height: 0.95;
+  }
+
+  .lp-section-copy {
+    max-width: 760px;
+    margin: 18px 0 0;
+    color: var(--lp-muted);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  .lp-pipeline {
+    margin-top: 44px;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    border: 1px solid var(--lp-line);
+    border-radius: 18px;
+    overflow: hidden;
+    background: var(--lp-panel);
+  }
+
+  .lp-stage {
+    min-height: 230px;
+    padding: 18px;
+    border-right: 1px solid var(--lp-line);
+  }
+
+  .lp-stage:last-child { border-right: 0; }
+
+  .lp-stage small {
+    color: var(--lp-green-2);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+  }
+
+  .lp-stage h3 {
+    margin: 40px 0 10px;
+    font-size: 22px;
+  }
+
+  .lp-stage p {
+    margin: 0;
+    color: var(--lp-muted);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .lp-stage .scope {
+    display: inline-block;
+    margin-top: 18px;
+    color: var(--lp-green-2);
+    font-size: 11px;
+  }
+
+  .lp-cards {
+    margin-top: 42px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .lp-card {
+    min-height: 260px;
+    border: 1px solid var(--lp-line);
+    border-radius: 18px;
+    background: var(--lp-panel);
+    padding: 22px;
+  }
+
+  .lp-card .type {
+    color: var(--lp-green-2);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+  }
+
+  .lp-card h3 {
+    margin: 28px 0 12px;
+    font-size: 24px;
+  }
+
+  .lp-card p {
+    color: var(--lp-muted);
+    line-height: 1.6;
+  }
+
+  .lp-fields {
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .lp-fields span {
+    border: 1px solid var(--lp-line);
+    border-radius: 999px;
+    padding: 6px 9px;
+    color: var(--lp-soft);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+  }
+
+  .lp-matrix {
+    margin-top: 42px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .lp-matrix-card {
+    border: 1px solid var(--lp-line);
+    border-radius: 18px;
+    background: var(--lp-panel);
+    padding: 22px;
+  }
+
+  .lp-matrix-card h3 {
+    margin: 0 0 18px;
+    color: var(--lp-soft);
+  }
+
+  .lp-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .lp-list div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--lp-muted);
+    font-size: 14px;
+  }
+
+  .lp-check { color: var(--lp-green-2); }
+  .lp-no { color: var(--lp-red); }
+
+  .lp-audience {
+    margin-top: 42px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .lp-audience article {
+    border: 1px solid var(--lp-line);
+    border-radius: 18px;
+    background: var(--lp-panel-2);
+    padding: 22px;
+  }
+
+  .lp-audience h3 {
+    margin: 0;
+    font-size: 20px;
+  }
+
+  .lp-audience p {
+    margin: 12px 0 0;
+    color: var(--lp-muted);
+    line-height: 1.55;
+  }
+
+  .lp-roadmap {
+    margin-top: 42px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .lp-roadmap-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 120px;
+    gap: 18px;
+    align-items: center;
+    border: 1px solid var(--lp-line);
+    border-radius: 16px;
+    background: var(--lp-panel);
+    padding: 16px 18px;
+  }
+
+  .lp-roadmap-row time {
+    color: var(--lp-green-2);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+  }
+
+  .lp-roadmap-row h3 {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .lp-roadmap-row p {
+    margin: 4px 0 0;
+    color: var(--lp-muted);
+    font-size: 13px;
+  }
+
+  .lp-roadmap-row span {
+    justify-self: end;
+    color: var(--lp-muted);
+    font-size: 12px;
+  }
+
+  .lp-alpha {
+    margin-top: 32px;
+    border: 1px solid var(--lp-line-2);
+    border-radius: 18px;
+    background: rgba(89, 229, 166, 0.08);
+    padding: 20px;
+    color: var(--lp-soft);
+    line-height: 1.65;
+  }
+
+  .lp-footer {
+    padding: 34px 0;
+    color: var(--lp-muted);
+    font-size: 13px;
+  }
+
+  .lp-footer .lp-shell {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  @media (max-width: 1060px) {
+    .lp-dashboard {
+      position: relative;
+      right: auto;
+      bottom: auto;
+      width: 100%;
+      margin-top: 42px;
+      transform: none;
+    }
+
+    .lp-pipeline {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .lp-stage:nth-child(3) {
+      border-right: 0;
+    }
+
+    .lp-stage:nth-child(n+4) {
+      border-top: 1px solid var(--lp-line);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .lp-nav {
+      border-radius: 20px;
+      align-items: flex-start;
+      flex-direction: column;
+      padding: 14px;
+      gap: 12px;
+    }
+
+    .lp-links {
+      display: none;
+    }
+
+    .lp-actions {
+      width: 100%;
+    }
+
+    .lp-actions .lp-btn {
+      flex: 1;
+    }
+
+    .lp-hero {
+      padding-top: 164px;
+    }
+
+    .lp-dash-body {
+      grid-template-columns: 1fr;
+    }
+
+    .lp-dash-nav {
+      display: none;
+    }
+
+    .lp-metrics,
+    .lp-cards,
+    .lp-matrix,
+    .lp-audience,
+    .lp-pipeline {
+      grid-template-columns: 1fr;
+    }
+
+    .lp-stage,
+    .lp-stage:nth-child(3) {
+      border-right: 0;
+      border-top: 1px solid var(--lp-line);
+      min-height: auto;
+    }
+
+    .lp-stage:first-child {
+      border-top: 0;
+    }
+
+    .lp-roadmap-row {
+      grid-template-columns: 1fr;
+    }
+
+    .lp-roadmap-row span {
+      justify-self: start;
+    }
+
+    .lp-footer .lp-shell {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+  }
+</style>
+
+<main class="lp">
+  <nav class="lp-nav" aria-label="Primary navigation">
+    <a href={~p"/"} class="lp-brand">
+      <span class="lp-mark">T</span>
+      <span>Tamandua <small>Sentinel</small></span>
+    </a>
+
+    <div class="lp-links">
+      <a href="#product">Product</a>
+      <a href={~p"/public/attestations"}>Public Proofs</a>
+      <a href="#proofs">Whitepaper</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href={~p"/docs/agent-deployment"}>Docs</a>
+      <span class="lp-pill">v0.4.2-alpha</span>
+    </div>
+
+    <div class="lp-actions">
+      <a href={~p"/login"} class="lp-btn">Sign in</a>
+      <a href={~p"/app/dashboard"} class="lp-btn primary">Open dashboard</a>
+    </div>
+  </nav>
+
+  <section class="lp-hero">
+    <div class="lp-shell">
+      <div class="lp-hero-copy">
+        <div class="lp-eyebrows">
+          <span class="lp-pill">Solana Colosseum · Cypherpunk</span>
+          <span class="lp-pill">Self-hosted · privacy-first</span>
+        </div>
+        <h1>Security Oracle for <span>Web3 endpoints.</span></h1>
+        <p class="lp-lede">
+          Tamandua Sentinel is a self-hosted EDR/XDR built for exchanges, custody,
+          treasury and validator teams. Endpoint telemetry stays on your servers.
+          Only privacy-safe security attestations are anchored on Solana.
+        </p>
+        <div class="lp-hero-actions">
+          <a href={~p"/public/attestations"} class="lp-btn primary">View public proofs</a>
+          <a href="#proofs" class="lp-btn">Read whitepaper</a>
+          <a href={~p"/app/dashboard"} class="lp-btn">Open dashboard</a>
+        </div>
+      </div>
+
+      <div class="lp-supported" aria-label="Designed with">
+        <span>DESIGNED WITH</span>
+        <span>Exchanges</span>
+        <span>Custody desks</span>
+        <span>Market makers</span>
+        <span>Treasury teams</span>
+        <span>Validators</span>
+        <span>MSSPs</span>
+      </div>
+    </div>
+
+    <div class="lp-dashboard" aria-label="Tamandua dashboard preview">
+      <div class="lp-window-bar">
+        <div class="lp-dot-row"><span></span><span></span><span></span></div>
+        <span>tamandua://overview · tenant=acme-custody</span>
+        <span class="lp-live">Devnet</span>
+      </div>
+      <div class="lp-dash-body">
+        <aside class="lp-dash-nav">
+          <div class="active">Overview</div>
+          <div>Agents</div>
+          <div>Events</div>
+          <div>Alerts</div>
+          <div>Investigations</div>
+          <div>Live Response</div>
+          <div>On-Chain Proof</div>
+        </aside>
+        <div class="lp-dash-main">
+          <div class="lp-status-line">
+            <div>
+              <h3>Security Status</h3>
+              <span class="lp-live">Fleet overview · last health proof anchored 47s ago</span>
+            </div>
+            <span class="lp-pill">Ingestion healthy</span>
+          </div>
+          <div class="lp-metrics">
+            <div class="lp-metric"><span>Online agents</span><strong>12</strong></div>
+            <div class="lp-metric"><span>Critical 24h</span><strong>0</strong></div>
+            <div class="lp-metric"><span>Open alerts</span><strong>3</strong></div>
+            <div class="lp-metric"><span>Trust score</span><strong>94</strong></div>
+          </div>
+          <div class="lp-chart" aria-hidden="true"></div>
+          <div class="lp-proof-card">
+            <b>On-chain proof</b>
+            <span>anchored=4m23pK... · manifest_hash=0x91f4...ac2e</span>
+            <span>mitre=T1555.003 · ioc_count=7 · telemetry=redacted</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="product" class="lp-section">
+    <div class="lp-shell">
+      <div class="lp-kicker">How it works</div>
+      <h2>Detect privately. Prove publicly.</h2>
+      <p class="lp-section-copy">
+        A six-stage pipeline: telemetry never leaves your perimeter, but anyone can verify
+        the integrity of an incident on-chain.
+      </p>
+
+      <div class="lp-pipeline">
+        <article class="lp-stage">
+          <small>STAGE 01</small>
+          <h3>Agent</h3>
+          <p>Lightweight Windows agent. Outbound mTLS only. No inbound port.</p>
+          <span class="scope">Private · self-hosted</span>
+        </article>
+        <article class="lp-stage">
+          <small>STAGE 02</small>
+          <h3>Detection</h3>
+          <p>Sigma/YARA plus behavioral rules running locally on the host.</p>
+          <span class="scope">Private · self-hosted</span>
+        </article>
+        <article class="lp-stage">
+          <small>STAGE 03</small>
+          <h3>IOCs</h3>
+          <p>Hashed indicators of compromise. Process, file and network metadata.</p>
+          <span class="scope">Private · self-hosted</span>
+        </article>
+        <article class="lp-stage">
+          <small>STAGE 04</small>
+          <h3>Response</h3>
+          <p>Kill, quarantine, isolate. Operator-signed live response.</p>
+          <span class="scope">Private · self-hosted</span>
+        </article>
+        <article class="lp-stage">
+          <small>STAGE 05</small>
+          <h3>Attestation</h3>
+          <p>Manifest hash anchored on Solana. No telemetry on-chain.</p>
+          <span class="scope">Public · Solana</span>
+        </article>
+        <article class="lp-stage">
+          <small>STAGE 06</small>
+          <h3>Public audit</h3>
+          <p>Anyone can verify the proof exists. No customer data exposed.</p>
+          <span class="scope">Public · Solana</span>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="proofs" class="lp-section alt">
+    <div class="lp-shell">
+      <div class="lp-kicker">Proof model</div>
+      <h2>Three classes of attestation.</h2>
+
+      <div class="lp-cards">
+        <article class="lp-card">
+          <span class="type">INCIDENT</span>
+          <h3>Proof of Incident</h3>
+          <p>Cryptographic record that a detection occurred without exposing what was on the host.</p>
+          <div class="lp-fields">
+            <span>incident_hash</span><span>manifest_hash</span><span>severity</span><span>MITRE IDs</span><span>ioc_count</span>
+          </div>
+        </article>
+        <article class="lp-card">
+          <span class="type">HEALTH</span>
+          <h3>Proof of Health</h3>
+          <p>Periodic attestation of fleet posture: clean endpoints, ingestion health and agent count.</p>
+          <div class="lp-fields">
+            <span>fleet_id</span><span>clean_count</span><span>since_last_critical</span><span>trust_score</span>
+          </div>
+        </article>
+        <article class="lp-card">
+          <span class="type">REMEDIATION</span>
+          <h3>Proof of Remediation</h3>
+          <p>Counter-attestation linked back to an incident, signed after live response actions are executed.</p>
+          <div class="lp-fields">
+            <span>incident_ref</span><span>actions[]</span><span>operator_pubkey</span><span>ts_remediated</span>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="lp-section">
+    <div class="lp-shell">
+      <div class="lp-kicker">Privacy model</div>
+      <h2>Nothing sensitive ever leaves your servers.</h2>
+      <p class="lp-section-copy">
+        Tamandua publishes hashes and metadata, never hostnames, usernames, file paths,
+        IP addresses or raw telemetry. The on-chain footprint is fixed-size, content-free
+        and deterministic.
+      </p>
+
+      <div class="lp-matrix">
+        <article class="lp-matrix-card">
+          <h3>On-chain</h3>
+          <div class="lp-list">
+            <div><span>Incident hash</span><b class="lp-check">yes</b></div>
+            <div><span>Manifest hash</span><b class="lp-check">yes</b></div>
+            <div><span>Severity</span><b class="lp-check">yes</b></div>
+            <div><span>MITRE technique IDs</span><b class="lp-check">yes</b></div>
+            <div><span>IOC count by type</span><b class="lp-check">yes</b></div>
+            <div><span>Timestamp</span><b class="lp-check">yes</b></div>
+          </div>
+        </article>
+        <article class="lp-matrix-card">
+          <h3>Self-hosted only</h3>
+          <div class="lp-list">
+            <div><span>Hostname</span><b class="lp-no">never</b></div>
+            <div><span>Username / domain</span><b class="lp-no">never</b></div>
+            <div><span>Internal IP / path</span><b class="lp-no">never</b></div>
+            <div><span>Raw process telemetry</span><b class="lp-no">never</b></div>
+            <div><span>Customer identity</span><b class="lp-no">never</b></div>
+            <div><span>Wallet addresses</span><b class="lp-no">never</b></div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="lp-section alt">
+    <div class="lp-shell">
+      <div class="lp-kicker">Who it protects</div>
+      <h2>Operators that cannot afford a single compromised laptop.</h2>
+      <p class="lp-section-copy">
+        One infostealer on a treasury workstation rewrites your week. Tamandua assumes
+        the threat already touched the keyboard.
+      </p>
+
+      <div class="lp-audience">
+        <article><h3>Exchanges</h3><p>Hot-key custodians, ops desks and support consoles with high blast radius.</p></article>
+        <article><h3>Custody teams</h3><p>Air-gapped signers, ceremony stations and offline coordinators.</p></article>
+        <article><h3>Market makers</h3><p>Trading desks, strategy hosts and key-bearing relays.</p></article>
+        <article><h3>Treasury operators</h3><p>Multisig signers, settlement desks and finance operations.</p></article>
+        <article><h3>Validators</h3><p>Staking operations, RPC operators and infrastructure on-call teams.</p></article>
+        <article><h3>Security teams</h3><p>MSSPs, in-house SOCs and responders who want Sigma/YARA, not telemetry hostage.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="lp-section">
+    <div class="lp-shell">
+      <div class="lp-kicker">Why Solana</div>
+      <h2>Public attestation layer with the right cost and throughput shape.</h2>
+      <div class="lp-cards">
+        <article class="lp-card"><span class="type">01</span><h3>Attestation layer</h3><p>High-throughput public ledger that can absorb continuous health attestations without backpressure on the SOC.</p></article>
+        <article class="lp-card"><span class="type">02</span><h3>Low-cost settlement</h3><p>A proof every minute is economically viable. Auditors and counterparties pay nothing to verify.</p></article>
+        <article class="lp-card"><span class="type">03</span><h3>Public verification</h3><p>Anyone can confirm an incident hash exists, when it landed and which manifest signed it.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap" class="lp-section alt">
+    <div class="lp-shell">
+      <div class="lp-kicker">Roadmap</div>
+      <h2>Honest about where we are.</h2>
+
+      <div class="lp-roadmap">
+        <div class="lp-roadmap-row"><time>Q4 2025</time><div><h3>Hackathon Alpha</h3><p>Windows agent, server, dashboard, basic detections, devnet anchor.</p></div><span>Shipped</span></div>
+        <div class="lp-roadmap-row"><time>Q1 2026</time><div><h3>Open-source Wave</h3><p>Agent plus rules engine open-sourced. Public Sigma rule pack.</p></div><span>In progress</span></div>
+        <div class="lp-roadmap-row"><time>Q2 2026</time><div><h3>Public Proof Network</h3><p>Mainnet anchor, relay mode and public attestation explorer.</p></div><span>Planned</span></div>
+        <div class="lp-roadmap-row"><time>Q3 2026</time><div><h3>Bounty Validation</h3><p>Reviewer consensus, benchmark suite and anti-fraud controls.</p></div><span>Planned</span></div>
+        <div class="lp-roadmap-row"><time>Q4 2026</time><div><h3>Rule/Config Marketplace</h3><p>Detection packs with reputation, false-positive risk score and signed installs.</p></div><span>Planned</span></div>
+      </div>
+
+      <div class="lp-alpha">
+        Advanced alpha. Hackathon MVP. Detection coverage targets infostealers, credential theft,
+        suspicious processes and basic evasion on Windows endpoints. Bounties, marketplace and
+        oracle integrations are roadmap. Sensitive telemetry remains self-hosted in every release.
+      </div>
+    </div>
+  </section>
+
+  <footer class="lp-footer">
+    <div class="lp-shell">
+      <span>Tamandua Sentinel by Treant Lab · Frontier Hackathon 2026</span>
+      <span><a href={~p"/login"}>Dashboard</a> · <a href={~p"/public/attestations"}>Public Proofs</a></span>
+    </div>
+  </footer>
+</main>

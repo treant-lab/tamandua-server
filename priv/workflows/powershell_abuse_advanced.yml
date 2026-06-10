@@ -1,0 +1,148 @@
+name: PowerShell Abuse Hunt (Advanced)
+description: |
+  Advanced workflow for detecting malicious PowerShell usage including
+  obfuscation, fileless malware, and download cradles. Uses multiple
+  detection techniques and correlation.
+category: powershell_abuse
+
+metadata:
+  mitre_techniques:
+    - T1059.001
+    - T1027
+    - T1140
+    - T1105
+  mitre_tactics:
+    - execution
+    - defense-evasion
+  difficulty: hard
+  expected_duration_minutes: 40
+  version: 1.0
+  author: Tamandua Security Team
+
+steps:
+  - type: query
+    name: Encoded PowerShell Commands
+    description: Find base64 encoded or obfuscated PowerShell
+    query_template: |
+      event_type:process_create AND
+      name:(powershell.exe OR pwsh.exe) AND
+      cmdline:(*-enc* OR *-encodedcommand* OR *frombase64*)
+    next_actions:
+      found: 1
+      not_found: 3
+
+  - type: collect_evidence
+    name: Decode Commands
+    description: Decode base64 PowerShell commands for analysis
+    evidence_queries:
+      - decode_base64
+      - extract_urls
+      - extract_ips
+      - process_parent_chain
+
+  - type: decision
+    name: Analyze Decoded Content
+    description: Determine if decoded content is malicious
+    decision_criteria:
+      - Does it download files from the internet?
+      - Does it contain obfuscated strings?
+      - Are there suspicious cmdlets (Invoke-Expression, etc.)?
+      - Does it access sensitive APIs?
+    next_actions:
+      malicious: 3
+      benign: 6
+
+  - type: query
+    name: Download Cradles
+    description: Find PowerShell download cradles
+    query_template: |
+      event_type:process_create AND
+      cmdline:(*downloadstring* OR *downloadfile* OR
+               *invoke-webrequest* OR *wget* OR *iwr*)
+
+  - type: query
+    name: Network Connections
+    description: Identify network connections from PowerShell processes
+    query_template: |
+      event_type:network_connect AND
+      process_name:(powershell.exe OR pwsh.exe) AND
+      timestamp:[evidence.earliest - 1m TO evidence.latest + 5m]
+
+  - type: collect_evidence
+    name: Full Attack Chain
+    description: Reconstruct the complete attack chain
+    evidence_queries:
+      - parent_process
+      - child_processes
+      - files_created
+      - registry_modifications
+      - scheduled_tasks_created
+
+  - type: manual_review
+    name: Malware Analysis
+    description: Review all evidence for malware indicators
+    review_checklist:
+      - Is this part of a known malware family?
+      - What is the initial access vector?
+      - Are there additional hosts infected?
+      - What is the attacker's objective?
+      - Should we preserve samples for detailed analysis?
+
+  - type: decision
+    name: Determine Response
+    description: Decide on appropriate response actions
+    decision_criteria:
+      - Scope of infection
+      - Data accessed or exfiltrated
+      - Persistence mechanisms
+      - Active C2 communication
+    next_actions:
+      contain_immediately: 8
+      investigate_further: 9
+      false_positive: 11
+
+  - type: notify
+    name: Emergency Alert
+    description: Send critical alert for active infection
+    notification_config:
+      priority: critical
+      channels:
+        - email
+        - sms
+        - slack
+      recipients:
+        - soc_team
+        - incident_response
+
+  - type: collect_evidence
+    name: Comprehensive Forensics
+    description: Preserve all forensic evidence
+    evidence_queries:
+      - memory_dump
+      - disk_artifacts
+      - network_pcap
+      - malware_samples
+
+  - type: export_iocs
+    name: Export Indicators
+    description: Export all IOCs to threat intelligence platform
+    export_types:
+      - ip_addresses
+      - domains
+      - urls
+      - file_hashes
+      - registry_keys
+
+  - type: create_alert
+    name: PowerShell Malware Alert
+    description: Create comprehensive alert with all findings
+    alert_config:
+      severity: critical
+      title: Malicious PowerShell Activity Detected
+      recommended_actions:
+        - Isolate affected hosts immediately
+        - Force password reset for affected accounts
+        - Scan entire environment for similar IOCs
+        - Review firewall logs for C2 traffic
+        - Engage incident response team
+        - Document timeline for forensics

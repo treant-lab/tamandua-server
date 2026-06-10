@@ -1,0 +1,37 @@
+# Cargo configuration for Tamandua NIF
+
+[build]
+# Use all available CPU cores
+jobs = -1
+
+[target.x86_64-unknown-linux-gnu]
+# Linux GNU target
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-unknown-linux-musl]
+# Linux MUSL target (static linking)
+rustflags = ["-C", "target-cpu=native", "-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+# Windows MSVC target
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-pc-windows-gnu]
+# Windows GNU target
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-apple-darwin]
+# macOS Intel target
+rustflags = ["-C", "target-cpu=native"]
+
+[target.aarch64-apple-darwin]
+# macOS Apple Silicon target
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.release]
+# Release profile optimizations
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true

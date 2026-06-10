@@ -1,0 +1,160 @@
+# Kubernetes Runtime Security Rules for Tamandua
+# Based on Falco community rules adapted for Tamandua detection engine
+# Source: falcosecurity/rules adapted with modifications
+
+# =============================================================================
+# Lists
+# =============================================================================
+
+- list: shell_binaries
+  items: [bash, sh, ash, zsh, ksh, csh, tcsh, fish]
+
+- list: sensitive_mount_paths
+  items:
+    - /var/run/docker.sock
+    - /var/run/containerd/containerd.sock
+    - /var/run/crio/crio.sock
+    - /etc/kubernetes
+    - /var/lib/kubelet
+    - /etc/shadow
+    - /etc/passwd
+
+- list: container_escape_commands
+  items: [nsenter, unshare, chroot, pivot_root]
+
+- list: cryptominer_processes
+  items: [xmrig, minerd, cpuminer, ccminer, ethminer, cgminer, bfgminer]
+
+- list: network_recon_tools
+  items: [nmap, masscan, netcat, nc, ncat, socat]
+
+- list: k8s_client_binaries
+  items: [kubectl, crictl, ctr, docker, podman]
+
+# =============================================================================
+# Macros
+# =============================================================================
+
+- macro: container
+  condition: container.id != host
+
+- macro: spawned_process
+  condition: evt.type = execve and evt.dir = >
+
+- macro: open_sensitive_file
+  condition: evt.type in (open, openat) and fd.name in (sensitive_mount_paths)
+
+- macro: shell_process
+  condition: proc.name in (shell_binaries)
+
+- macro: outbound_connection
+  condition: evt.type in (connect) and fd.typechar = 4 and fd.direction = >
+
+# =============================================================================
+# Rules
+# =============================================================================
+
+- rule: Shell Spawned in Container
+  desc: Detects shell process started inside a container (potential compromise)
+  condition: spawned_process and container and shell_process
+  output: >
+    Shell spawned in container (user=%user.name container=%container.name
+    image=%container.image.repository command=%proc.cmdline)
+  priority: WARNING
+  tags: [container, shell, mitre-execution, mitre-t1059]
+
+- rule: Container Escape via nsenter/unshare
+  desc: Detects attempt to escape container using namespace manipulation tools
+  condition: >
+    spawned_process and container and
+    proc.name in (container_escape_commands)
+  output: >
+    Container escape attempt detected (user=%user.name container=%container.name
+    command=%proc.cmdline parent=%proc.pname)
+  priority: CRITICAL
+  tags: [container, escape, mitre-privilege-escalation, mitre-t1611]
+
+- rule: Sensitive Host Path Mounted in Container
+  desc: Container has mounted a sensitive host path
+  condition: >
+    container and open_sensitive_file
+  output: >
+    Sensitive file access from container (user=%user.name container=%container.name
+    file=%fd.name image=%container.image.repository)
+  priority: ERROR
+  tags: [container, sensitive-mount, mitre-privilege-escalation, mitre-t1611]
+
+- rule: Privileged Container Started
+  desc: A privileged container was started
+  condition: >
+    evt.type = container and container.privileged = true
+  output: >
+    Privileged container started (container=%container.name
+    image=%container.image.repository user=%user.name)
+  priority: WARNING
+  tags: [container, privileged, mitre-execution, mitre-t1610]
+
+- rule: Cryptominer Process in Container
+  desc: Cryptocurrency mining process detected in container
+  condition: >
+    spawned_process and container and proc.name in (cryptominer_processes)
+  output: >
+    Cryptominer detected in container (container=%container.name
+    process=%proc.name image=%container.image.repository)
+  priority: CRITICAL
+  tags: [container, cryptominer, mitre-impact, mitre-t1496]
+
+- rule: Network Reconnaissance from Container
+  desc: Network scanning tool executed inside container
+  condition: >
+    spawned_process and container and proc.name in (network_recon_tools)
+  output: >
+    Network recon tool in container (container=%container.name
+    process=%proc.name command=%proc.cmdline)
+  priority: WARNING
+  tags: [container, reconnaissance, mitre-discovery, mitre-t1046]
+
+- rule: Kubernetes Client Usage in Container
+  desc: Kubernetes client tool executed in container (potential lateral movement)
+  condition: >
+    spawned_process and container and proc.name in (k8s_client_binaries)
+  output: >
+    K8s client in container (container=%container.name process=%proc.name
+    command=%proc.cmdline user=%user.name)
+  priority: WARNING
+  tags: [container, kubernetes, mitre-discovery, mitre-t1613]
+
+- rule: Service Account Token Access
+  desc: Container process accessed Kubernetes service account token
+  condition: >
+    container and (evt.type = open or evt.type = openat) and
+    fd.name startswith /var/run/secrets/kubernetes.io/serviceaccount
+  output: >
+    Service account token accessed (container=%container.name
+    file=%fd.name process=%proc.name user=%user.name)
+  priority: NOTICE
+  tags: [container, kubernetes, credentials, mitre-credential-access, mitre-t1552]
+
+- rule: Container Drift Detected
+  desc: New executable file created in container after start
+  condition: >
+    container and evt.type in (open, openat) and
+    evt.arg.flags contains O_CREAT and
+    fd.name endswith .sh or fd.name endswith .py or
+    fd.name startswith /tmp or fd.name startswith /dev/shm
+  output: >
+    Container drift detected (container=%container.name file=%fd.name
+    process=%proc.name)
+  priority: WARNING
+  tags: [container, drift, mitre-defense-evasion, mitre-t1036]
+
+- rule: Outbound Connection from Container to External IP
+  desc: Container initiated outbound connection to external IP
+  condition: >
+    container and outbound_connection and
+    not fd.sip in (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8)
+  output: >
+    Outbound connection from container (container=%container.name
+    destination=%fd.sip:%fd.sport process=%proc.name)
+  priority: NOTICE
+  tags: [container, network, mitre-command-and-control, mitre-t1071]

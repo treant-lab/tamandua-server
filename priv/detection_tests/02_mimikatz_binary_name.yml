@@ -1,0 +1,19 @@
+test_case:
+  name: "Mimikatz Binary Name Detection"
+  description: "Tests detection of process named mimikatz.exe"
+  rule: "credential_access/mimikatz_patterns.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Users\\Public\\mimikatz.exe"
+        cmdline: "mimikatz.exe"
+        parent_path: "C:\\Windows\\explorer.exe"
+        user: "WORKSTATION\\user"
+        pid: 5124
+        ppid: 1892
+  expected: match
+  expected_severity: critical
+  expected_mitre: ["T1003.001"]
+  tags: ["credential_access", "mimikatz", "positive"]

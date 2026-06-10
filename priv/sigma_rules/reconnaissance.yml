@@ -1,0 +1,429 @@
+title: Network Port Scanning Detection
+id: recon-001-port-scanning
+status: experimental
+description: Detects potential port scanning activity by monitoring for rapid connection attempts to multiple ports on a single target
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        EventType: 'network_connect'
+    timeframe: 60s
+    condition: selection | count(DestinationPort) by DestinationIP > 20
+falsepositives:
+    - Legitimate vulnerability scanners
+    - Network monitoring tools
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1595.001
+
+---
+title: Horizontal Port Scan Detection
+id: recon-002-horizontal-scan
+status: experimental
+description: Detects scanning of a single port across multiple hosts (horizontal scan)
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        EventType: 'network_connect'
+    timeframe: 60s
+    condition: selection | count(DestinationIP) by DestinationPort > 30
+falsepositives:
+    - Service discovery tools
+    - Legitimate network scanners
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1595.001
+
+---
+title: DNS Zone Transfer Attempt
+id: recon-003-dns-axfr
+status: experimental
+description: Detects DNS zone transfer (AXFR) requests which can expose internal network structure
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryType: 'AXFR'
+    condition: selection
+falsepositives:
+    - Legitimate DNS secondary servers
+    - DNS administration
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1590.002
+
+---
+title: LDAP Enumeration Burst
+id: recon-004-ldap-enum
+status: experimental
+description: Detects burst of LDAP queries indicative of Active Directory reconnaissance
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: ldap_query
+    product: windows
+detection:
+    selection:
+        EventType: 'ldap_query'
+    timeframe: 60s
+    condition: selection | count() by SourceIP > 50
+falsepositives:
+    - Legitimate directory services
+    - Administrative tools
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1087.002
+
+---
+title: SMB Share Enumeration
+id: recon-005-smb-enum
+status: experimental
+description: Detects enumeration of SMB shares across the network
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_net:
+        Image|endswith: '\net.exe'
+        CommandLine|contains:
+            - 'view \\\\'
+            - 'share \\\\'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Get-SmbShare'
+            - 'Invoke-ShareFinder'
+    condition: selection_net or selection_ps
+falsepositives:
+    - IT administration
+    - Network auditing
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1135
+
+---
+title: SharpHound/BloodHound Collection
+id: recon-006-bloodhound
+status: experimental
+description: Detects Active Directory reconnaissance tools like SharpHound and BloodHound
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_exe:
+        Image|endswith:
+            - '\SharpHound.exe'
+            - '\BloodHound.exe'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Invoke-BloodHound'
+            - 'SharpHound'
+            - 'Get-DomainUser'
+            - 'Get-DomainGroup'
+            - 'Get-DomainComputer'
+            - 'Get-DomainTrust'
+    condition: selection_exe or selection_ps
+falsepositives:
+    - Red team exercises
+    - Authorized security assessments
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1087.002
+    - attack.t1482
+
+---
+title: WHOIS Lookup via Command Line
+id: recon-007-whois
+status: experimental
+description: Detects WHOIS lookups which may indicate reconnaissance of external targets
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\whois.exe'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains: 'whois'
+    condition: selection or selection_ps
+falsepositives:
+    - Security researchers
+    - IT staff investigating domains
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1596.002
+
+---
+title: Nmap Execution
+id: recon-008-nmap
+status: experimental
+description: Detects execution of Nmap network scanner
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_exe:
+        Image|endswith:
+            - '\nmap.exe'
+            - '\zenmap.exe'
+    selection_script:
+        CommandLine|contains:
+            - 'nmap '
+            - 'nmap.exe'
+    condition: selection_exe or selection_script
+falsepositives:
+    - Authorized penetration testing
+    - Security assessments
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1595.001
+
+---
+title: Active Directory Reconnaissance via ADFind
+id: recon-009-adfind
+status: experimental
+description: Detects ADFind Active Directory reconnaissance tool
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\AdFind.exe'
+    selection_rename:
+        CommandLine|contains:
+            - ' -f '
+            - ' -b '
+            - 'objectcategory='
+            - 'objectclass='
+            - '-gcb'
+    condition: selection or selection_rename
+falsepositives:
+    - Legitimate AD administration
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1087.002
+
+---
+title: Network Host Discovery via ARP
+id: recon-010-arp-scan
+status: experimental
+description: Detects ARP-based network host discovery
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_arp:
+        Image|endswith: '\arp.exe'
+        CommandLine|contains: '-a'
+    selection_nbtscan:
+        Image|endswith: '\nbtscan.exe'
+    selection_arpscan:
+        CommandLine|contains:
+            - 'arpscan'
+            - 'arp-scan'
+    condition: selection_arp or selection_nbtscan or selection_arpscan
+falsepositives:
+    - Network troubleshooting
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1018
+
+---
+title: Email Harvesting Tool Detection
+id: recon-011-email-harvest
+status: experimental
+description: Detects tools used for email address harvesting
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tools:
+        Image|endswith:
+            - '\theHarvester.exe'
+            - '\theharvester.py'
+            - '\EmailHarvester.exe'
+    selection_ps:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'theHarvester'
+            - 'email.*harvest'
+            - 'gather.*email'
+    condition: selection_tools or selection_ps
+falsepositives:
+    - Security researchers
+    - OSINT activities
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1589.002
+
+---
+title: Subdomain Enumeration Tool
+id: recon-012-subdomain-enum
+status: experimental
+description: Detects subdomain enumeration tools and techniques
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_tools:
+        CommandLine|contains:
+            - 'sublist3r'
+            - 'subfinder'
+            - 'amass enum'
+            - 'assetfinder'
+            - 'knockpy'
+    condition: selection_tools
+falsepositives:
+    - Security assessments
+    - Bug bounty activities
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1590.002
+
+---
+title: DNS Reconnaissance via dig/nslookup
+id: recon-013-dns-recon
+status: experimental
+description: Detects DNS reconnaissance using dig or nslookup with suspicious parameters
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_nslookup:
+        Image|endswith: '\nslookup.exe'
+        CommandLine|contains:
+            - 'type='
+            - '-type='
+            - 'querytype='
+            - 'ls -d'
+    selection_dig:
+        CommandLine|contains:
+            - 'dig '
+            - 'dig.exe'
+        CommandLine|contains:
+            - 'AXFR'
+            - 'ANY'
+            - 'TXT'
+            - 'MX'
+            - 'NS'
+    condition: selection_nslookup or selection_dig
+falsepositives:
+    - DNS administration
+    - Network troubleshooting
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1590.002
+
+---
+title: Cloud Resource Enumeration
+id: recon-014-cloud-enum
+status: experimental
+description: Detects enumeration of cloud resources via CLI tools
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_aws:
+        CommandLine|contains:
+            - 'aws s3 ls'
+            - 'aws iam list'
+            - 'aws ec2 describe'
+            - 'aws rds describe'
+    selection_azure:
+        CommandLine|contains:
+            - 'az vm list'
+            - 'az storage account list'
+            - 'az ad user list'
+            - 'az ad group list'
+    selection_gcp:
+        CommandLine|contains:
+            - 'gcloud compute instances list'
+            - 'gcloud iam service-accounts list'
+            - 'gsutil ls'
+    condition: selection_aws or selection_azure or selection_gcp
+falsepositives:
+    - Cloud administration
+    - DevOps activities
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1526
+
+---
+title: SSL Certificate Enumeration
+id: recon-015-cert-enum
+status: experimental
+description: Detects enumeration of SSL certificates which can reveal subdomains and infrastructure
+author: Tamandua Security Team
+date: 2024/03/17
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        CommandLine|contains:
+            - 'crt.sh'
+            - 'censys.io'
+            - 'shodan'
+            - 'certspotter'
+            - 'sslmate'
+    condition: selection
+falsepositives:
+    - Security researchers
+    - Certificate management
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1596.003

@@ -1,0 +1,123 @@
+# High Security Policy Template
+# Maximum protection with increased resource usage
+
+name: High Security
+description: Enhanced security policy for critical systems and sensitive data
+scope: organization
+compliance_tags:
+  - high_security
+  - critical_systems
+  - pci_dss
+  - hipaa
+
+collectors:
+  process:
+    enabled: true
+    interval_ms: 2000
+    options:
+      collect_command_line: true
+      collect_environment: true
+      collect_modules: true
+      collect_handles: true
+
+  file:
+    enabled: true
+    interval_ms: 5000
+    options:
+      monitored_paths:
+        - /
+        - C:\
+      exclude_paths:
+        - /proc
+        - /sys
+      collect_file_hashes: true
+      detect_new_executables: true
+
+  network:
+    enabled: true
+    interval_ms: 2000
+    options:
+      collect_connections: true
+      collect_listening_ports: true
+      collect_packet_metadata: true
+      deep_packet_inspection: true
+
+  dns:
+    enabled: true
+    interval_ms: 2000
+    options:
+      log_all_queries: true
+      log_suspicious_domains: true
+      block_known_bad_domains: true
+
+  registry:
+    enabled: true
+    interval_ms: 10000
+    options:
+      monitored_keys:
+        - HKLM\Software\Microsoft\Windows\CurrentVersion\Run
+        - HKLM\System\CurrentControlSet\Services
+
+  kernel_events:
+    enabled: true
+    interval_ms: 1000
+    options:
+      collect_syscalls: true
+      collect_driver_loads: true
+
+resource_limits:
+  max_cpu_percent: 25
+  max_memory_mb: 1024
+  max_disk_mb: 5000
+  max_network_bandwidth_mbps: 50
+
+detection:
+  yara_enabled: true
+  sigma_enabled: true
+  ml_enabled: true
+  behavioral_analysis_enabled: true
+  custom_rules: []
+  rule_sets:
+    - malware_detection
+    - ransomware_detection
+    - suspicious_behavior
+    - exploit_detection
+    - credential_theft
+    - lateral_movement
+    - data_exfiltration
+
+response:
+  allowed_actions:
+    - isolate
+    - kill_process
+    - quarantine
+    - block_network
+  auto_response_enabled: true
+  max_actions_per_hour: 50
+  require_approval: false
+  approval_timeout_minutes: 5
+  auto_isolate_on_critical: true
+
+network:
+  allowed_domains:
+    - "*.company.com"
+  blocked_domains:
+    - "*.tempmail.com"
+    - "*.torrent.com"
+  proxy_enabled: true
+  proxy_url: "http://proxy.company.com:8080"
+  ssl_inspection_enabled: true
+  egress_filtering_enabled: true
+
+deception:
+  honeyfiles_enabled: true
+  honeytokens_enabled: true
+  fake_credentials_enabled: true
+
+logging:
+  log_level: debug
+  max_log_size_mb: 500
+  log_rotation_days: 30
+  send_logs_to_server: true
+  syslog_enabled: true
+  syslog_server: "syslog.company.com:514"

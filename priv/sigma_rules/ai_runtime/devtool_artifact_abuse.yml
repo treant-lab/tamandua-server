@@ -1,0 +1,102 @@
+title: AI Runtime - Malicious Devtool Artifact Pattern
+id: runtime-ai-030
+status: stable
+description: Detects Tamandua AI artifact inventory events where Codex, Claude, Cursor, Windsurf, MCP, prompt, or skill files matched malicious behavior categories.
+author: Tamandua Security Team
+date: 2026/05/14
+references:
+    - https://attack.mitre.org/techniques/T1552/001/
+    - https://attack.mitre.org/techniques/T1005/
+    - https://attack.mitre.org/techniques/T1041/
+logsource:
+    category: software_inventory
+    product: tamandua
+detection:
+    selection_inventory:
+        AIDiscovery: true
+    selection_malicious_patterns:
+        MatchedPatterns|contains:
+            - 'secret_exfiltration'
+            - 'network_exfiltration'
+            - 'approval_bypass'
+            - 'auto_exec_shell'
+            - 'sensitive_file_read'
+            - 'git_tampering'
+    condition: selection_inventory and selection_malicious_patterns
+falsepositives:
+    - Authorized red team labs or security training repositories
+    - Internal security policies documenting malicious examples
+level: high
+tags:
+    - attack.credential_access
+    - attack.t1552.001
+    - attack.collection
+    - attack.t1005
+    - attack.exfiltration
+    - attack.t1041
+    - ai_security
+    - ai_devtools
+
+---
+title: AI Runtime - MCP Config Shell or Network Exfil Behavior
+id: runtime-ai-031
+status: stable
+description: Detects MCP configuration artifacts that combine shell execution or network exfiltration behavior with sensitive data access patterns.
+author: Tamandua Security Team
+date: 2026/05/14
+references:
+    - https://attack.mitre.org/techniques/T1059/
+    - https://attack.mitre.org/techniques/T1041/
+logsource:
+    category: software_inventory
+    product: tamandua
+detection:
+    selection_mcp:
+        ArtifactType|contains: 'mcp_config'
+    selection_exec_or_network:
+        MatchedPatterns|contains:
+            - 'auto_exec_shell'
+            - 'network_exfiltration'
+            - 'secret_exfiltration'
+    condition: selection_mcp and selection_exec_or_network
+falsepositives:
+    - Legitimate MCP servers that invoke local tools with clear operator approval
+level: critical
+tags:
+    - attack.execution
+    - attack.t1059
+    - attack.exfiltration
+    - attack.t1041
+    - ai_security
+    - mcp_abuse
+
+---
+title: AI Runtime - Agent Skill or Prompt Approval Bypass
+id: runtime-ai-032
+status: stable
+description: Detects AI skill or prompt artifacts that attempt to bypass approval, sandbox, or permission controls.
+author: Tamandua Security Team
+date: 2026/05/14
+references:
+    - https://attack.mitre.org/techniques/T1562/
+logsource:
+    category: software_inventory
+    product: tamandua
+detection:
+    selection_artifact:
+        ArtifactType|contains:
+            - 'skill_artifact'
+            - 'prompt_artifact'
+            - 'codex_cli'
+            - 'claude_cli'
+    selection_bypass:
+        MatchedPatterns|contains: 'approval_bypass'
+    condition: selection_artifact and selection_bypass
+falsepositives:
+    - Benign documentation describing approval policy settings
+level: critical
+tags:
+    - attack.defense_evasion
+    - attack.t1562
+    - ai_security
+    - ai_devtools

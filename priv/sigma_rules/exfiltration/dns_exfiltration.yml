@@ -1,0 +1,76 @@
+title: DNS Data Exfiltration via Encoded Subdomains
+id: ef01a001-dnsx-0001-0001-000000000001
+status: stable
+description: |
+  Detects DNS queries with unusually long encoded subdomain labels that may
+  contain data being exfiltrated via DNS. DNS exfiltration tools like dnscat2,
+  iodine, and Cobalt Strike encode stolen data into subdomain queries sent to
+  attacker-controlled authoritative name servers.
+references:
+  - https://attack.mitre.org/techniques/T1048/
+  - https://attack.mitre.org/techniques/T1071/004/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1048
+  - attack.command_and_control
+  - attack.t1071.004
+logsource:
+  category: dns_query
+  product: windows
+detection:
+  selection:
+    QueryName|re: '(?:^|\.)[a-z0-9\-]{30,}(?:\.|$)'
+  filter_legit:
+    QueryName|contains:
+      - '.microsoft.com'
+      - '.windows.com'
+      - '.amazonaws.com'
+      - '.cloudfront.net'
+      - '._domainkey.'
+      - '._dmarc.'
+      - '.akadns.net'
+      - '.akamaiedge.net'
+  condition: selection and not filter_legit
+falsepositives:
+  - DKIM and DMARC DNS records
+  - Cloud provider auto-generated hostnames
+level: high
+
+---
+title: DNS Exfiltration Tool Detection
+id: ef01a002-dnsx-0001-0002-000000000002
+status: stable
+description: |
+  Detects execution of known DNS exfiltration and tunneling tools including
+  dnscat2, iodine, dns2tcp, and dnsexfil. These tools encode arbitrary data
+  into DNS queries and responses.
+references:
+  - https://attack.mitre.org/techniques/T1048/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1048
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'dnscat'
+      - 'iodine'
+      - 'dns2tcp'
+      - 'dnsexfil'
+      - 'dnscapy'
+      - 'Invoke-DNSExfiltration'
+      - 'Invoke-PowerCloud'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Authorized penetration testing
+level: critical

@@ -1,0 +1,81 @@
+title: System Information Discovery via Multiple Tools
+id: di01a001-sysi-0001-0001-000000000001
+status: stable
+description: |
+  Detects system information gathering using systeminfo, hostname, or
+  whoami commands. While individual use is common, rapid succession of
+  multiple discovery commands from the same process context is indicative
+  of post-exploitation reconnaissance.
+references:
+  - https://attack.mitre.org/techniques/T1082/
+  - https://attack.mitre.org/techniques/T1033/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.discovery
+  - attack.t1082
+  - attack.t1033
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\systeminfo.exe'
+      - '\hostname.exe'
+      - '\whoami.exe'
+  selection_whoami_priv:
+    Image|endswith: '\whoami.exe'
+    CommandLine|contains:
+      - '/priv'
+      - '/all'
+      - '/groups'
+  filter_system:
+    User|contains: 'SYSTEM'
+    ParentImage|endswith: '\svchost.exe'
+  condition: (selection or selection_whoami_priv) and not filter_system
+falsepositives:
+  - Administrative troubleshooting
+  - Monitoring scripts
+level: low
+
+---
+title: WMI System Information Query
+id: di01a002-sysi-0001-0002-000000000002
+status: stable
+description: |
+  Detects WMI-based system information gathering queries commonly used
+  during post-exploitation reconnaissance (OS version, BIOS, hardware).
+references:
+  - https://attack.mitre.org/techniques/T1082/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.discovery
+  - attack.t1082
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\wmic.exe'
+    CommandLine|contains:
+      - 'os get'
+      - 'computersystem get'
+      - 'bios get'
+      - 'cpu get'
+      - 'memorychip get'
+      - 'diskdrive get'
+      - 'logicaldisk get'
+  filter_monitoring:
+    ParentImage|contains:
+      - '\monitoring\'
+      - '\nagios\'
+      - '\zabbix\'
+  condition: selection and not filter_monitoring
+falsepositives:
+  - System monitoring agents
+  - Inventory management tools
+level: informational

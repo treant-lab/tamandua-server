@@ -1,0 +1,81 @@
+title: DCOM Lateral Movement via MMC20
+id: lm05a001-dcom-0005-0001-000000000001
+status: stable
+description: |
+  Detects lateral movement using DCOM objects, specifically MMC20.Application
+  and ShellBrowserWindow. Attackers instantiate these COM objects on remote
+  hosts and call their Execute methods to run commands. This detection
+  identifies the child process spawned from the DCOM handler.
+references:
+  - https://attack.mitre.org/techniques/T1021/003/
+  - https://enigma0x3.net/2017/01/05/lateral-movement-using-the-mmc20-application-com-object/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\mmc.exe'
+      - '\excel.exe'
+      - '\outlook.exe'
+      - '\winword.exe'
+      - '\powerpnt.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\mshta.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+  filter_office:
+    ParentCommandLine|contains:
+      - '.msc'
+      - '-Embedding'
+  condition: selection and not filter_office
+falsepositives:
+  - Legitimate Office automation scripts
+  - MMC snap-in launching utilities
+level: high
+
+---
+title: DCOM Lateral Movement via ShellWindows
+id: lm05a002-dcom-0005-0002-000000000002
+status: stable
+description: |
+  Detects PowerShell commands creating DCOM objects targeting remote systems.
+  Attackers use [activator]::CreateInstance or New-Object with -ComObject
+  to instantiate DCOM objects remotely for lateral movement.
+references:
+  - https://attack.mitre.org/techniques/T1021/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'MMC20.Application'
+      - 'ShellWindows'
+      - 'ShellBrowserWindow'
+      - '9BA05972-F6A8-11CF-A442-00A0C90A8F39'
+      - 'C08AFD90-F2A1-11D1-8455-00A0C91F3880'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Authorized penetration testing
+level: high

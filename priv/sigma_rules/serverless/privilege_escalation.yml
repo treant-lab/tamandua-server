@@ -1,0 +1,199 @@
+title: Serverless IAM Privilege Escalation Attempt
+id: e1f2a3b4-c5d6-7890-4567-123456789012
+status: stable
+description: Detects attempts to escalate privileges via IAM from serverless functions
+references:
+  - https://attack.mitre.org/techniques/T1078.004/
+  - https://rhinosecuritylabs.com/aws/aws-privilege-escalation-methods-mitigation/
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.privilege_escalation
+  - attack.t1078.004
+  - serverless
+  - cloud
+logsource:
+  category: serverless
+  product: aws_lambda
+detection:
+  # IAM policy modification
+  selection_iam_modify:
+    AWSService: 'iam'
+    EventName:
+      - 'CreateUser'
+      - 'CreateRole'
+      - 'CreatePolicy'
+      - 'AttachUserPolicy'
+      - 'AttachRolePolicy'
+      - 'PutUserPolicy'
+      - 'PutRolePolicy'
+      - 'AttachGroupPolicy'
+      - 'AddUserToGroup'
+      - 'CreateAccessKey'
+      - 'UpdateAssumeRolePolicy'
+
+  # STS abuse
+  selection_sts_abuse:
+    AWSService: 'sts'
+    EventName:
+      - 'AssumeRole'
+      - 'AssumeRoleWithSAML'
+      - 'AssumeRoleWithWebIdentity'
+      - 'GetFederationToken'
+
+  # Lambda function modification (persistence)
+  selection_lambda_modify:
+    AWSService: 'lambda'
+    EventName:
+      - 'UpdateFunctionCode'
+      - 'UpdateFunctionConfiguration'
+      - 'AddPermission'
+      - 'CreateFunction'
+
+  condition: selection_iam_modify or selection_sts_abuse or selection_lambda_modify
+fields:
+  - FunctionName
+  - RequestId
+  - EventName
+  - UserIdentity
+  - TargetResource
+falsepositives:
+  - Approved infrastructure-as-code deployments or CI/CD jobs modifying IAM, STS, or Lambda configuration.
+  - Break-glass or incident-response automation executed by known administrative service principals.
+level: critical
+---
+title: Azure Functions Managed Identity Abuse
+id: f2a3b4c5-d6e7-8901-5678-234567890123
+status: stable
+description: Detects abuse of Azure managed identity from functions
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.privilege_escalation
+  - attack.t1078.004
+logsource:
+  category: serverless
+  product: azure_functions
+detection:
+  # Role assignment changes
+  selection_rbac:
+    OperationName|contains:
+      - 'Microsoft.Authorization/roleAssignments/write'
+      - 'Microsoft.Authorization/roleDefinitions/write'
+
+  # Key Vault access with elevated permissions
+  selection_keyvault:
+    OperationName|contains:
+      - 'Microsoft.KeyVault/vaults/accessPolicies/write'
+      - 'Microsoft.KeyVault/managedHsms'
+
+  # Subscription-level operations
+  selection_subscription:
+    OperationName|contains:
+      - 'Microsoft.Subscription'
+      - 'Microsoft.Management/managementGroups'
+
+  condition: selection_rbac or selection_keyvault or selection_subscription
+fields:
+  - FunctionName
+  - OperationName
+  - Caller
+falsepositives:
+  - Approved Azure deployment pipelines changing RBAC, Key Vault access policies, or management-group configuration.
+  - Emergency access workflows executed by known managed identities during incident response.
+level: critical
+---
+title: GCP Cloud Functions Service Account Impersonation
+id: a3b4c5d6-e7f8-9012-6789-345678901234
+status: stable
+description: Detects service account impersonation from Cloud Functions
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.privilege_escalation
+  - attack.t1078.004
+logsource:
+  category: serverless
+  product: gcp_cloud_functions
+detection:
+  # Service account token generation
+  selection_sa_tokens:
+    MethodName|contains:
+      - 'GenerateAccessToken'
+      - 'GenerateIdToken'
+      - 'SignJwt'
+      - 'SignBlob'
+
+  # IAM policy modifications
+  selection_iam:
+    MethodName|contains:
+      - 'SetIamPolicy'
+      - 'CreateServiceAccountKey'
+      - 'CreateServiceAccount'
+
+  condition: selection_sa_tokens or selection_iam
+fields:
+  - FunctionName
+  - MethodName
+  - PrincipalEmail
+falsepositives:
+  - Approved GCP deployment automation creating service-account keys or updating IAM policy.
+  - Workload identity federation or token-generation flows from known build and operations accounts.
+level: critical
+---
+title: Serverless Container Escape Attempt
+id: b4c5d6e7-f8a9-0123-7890-456789012345
+status: stable
+description: Detects attempts to escape the serverless container/sandbox
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.privilege_escalation
+  - attack.t1611
+logsource:
+  category: serverless
+  product: any
+detection:
+  # Sensitive file system access
+  selection_fs:
+    FilePath|contains:
+      - '/proc/1/'
+      - '/proc/self/root'
+      - '/proc/sys/'
+      - '/sys/kernel/'
+      - '/sys/class/'
+      - '/dev/mem'
+      - '/dev/kmem'
+
+  # Container-related operations
+  selection_container:
+    CommandLine|contains:
+      - 'docker'
+      - 'containerd'
+      - 'runc'
+      - 'ctr'
+      - 'crictl'
+
+  # Kernel module operations
+  selection_kernel:
+    CommandLine|contains:
+      - 'insmod'
+      - 'modprobe'
+      - 'rmmod'
+
+  # Namespace manipulation
+  selection_namespace:
+    CommandLine|contains:
+      - 'nsenter'
+      - 'unshare'
+      - 'setns'
+
+  condition: selection_fs or selection_container or selection_kernel or selection_namespace
+fields:
+  - FunctionName
+  - FilePath
+  - CommandLine
+falsepositives:
+  - Security posture or compliance scanners inspecting container namespace and procfs metadata.
+  - Controlled sandbox-escape validation in an isolated lab.
+level: critical

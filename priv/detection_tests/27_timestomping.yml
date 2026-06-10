@@ -1,0 +1,19 @@
+test_case:
+  name: "Timestomping Detection"
+  description: "Tests detection of file timestamp manipulation"
+  rule: "defense_evasion/timestomping.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        cmdline: "powershell.exe -Command \"(Get-Item C:\\malware.exe).CreationTime = '01/01/2000 00:00:00'\""
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\admin"
+        pid: 5678
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1070.006"]
+  tags: ["defense_evasion", "timestomping", "positive"]

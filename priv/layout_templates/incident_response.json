@@ -1,0 +1,91 @@
+{
+  "name": "Incident Response Dashboard",
+  "description": "Real-time incident tracking, response metrics, and attack storyline visualization for IR teams",
+  "template_category": "incident_response",
+  "tags": ["incident", "response", "ir", "containment"],
+  "author_name": "Tamandua EDR",
+  "widgets": [
+    {
+      "type": "recent_alerts",
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "limit": 15,
+        "status": "open",
+        "sortBy": "severity",
+        "showAssignee": true
+      }
+    },
+    {
+      "type": "response_times",
+      "x": 6,
+      "y": 0,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "metrics": ["MTTD", "MTTR", "MTTC", "MTTH"],
+        "period": "7d",
+        "showSLA": true,
+        "chartType": "bar"
+      }
+    },
+    {
+      "type": "storyline_viewer",
+      "x": 0,
+      "y": 4,
+      "w": 12,
+      "h": 5,
+      "settings": {
+        "showProcessTree": true,
+        "showNetworkConnections": true,
+        "showFileActivity": true,
+        "autoRefresh": 30
+      }
+    },
+    {
+      "type": "correlation_graph",
+      "x": 0,
+      "y": 9,
+      "w": 12,
+      "h": 5,
+      "settings": {
+        "nodeTypes": ["alerts", "agents", "iocs", "users"],
+        "maxNodes": 100,
+        "showClusters": true
+      }
+    },
+    {
+      "type": "ioc_matches",
+      "x": 0,
+      "y": 14,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "period": "24h",
+        "groupBy": "ioc_type",
+        "showConfidence": true
+      }
+    },
+    {
+      "type": "behavioral_anomalies",
+      "x": 6,
+      "y": 14,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "threshold": 0.7,
+        "showBaseline": true,
+        "limit": 10
+      }
+    }
+  ],
+  "settings": {
+    "gridColumns": 12,
+    "rowHeight": 60,
+    "margins": [10, 10],
+    "animate": true,
+    "float": true
+  }
+}

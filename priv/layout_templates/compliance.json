@@ -1,0 +1,92 @@
+{
+  "name": "Compliance Dashboard",
+  "description": "Compliance monitoring, audit trails, and regulatory framework tracking for compliance officers",
+  "template_category": "compliance",
+  "tags": ["compliance", "audit", "regulatory", "governance"],
+  "author_name": "Tamandua EDR",
+  "widgets": [
+    {
+      "type": "compliance_score",
+      "x": 0,
+      "y": 0,
+      "w": 4,
+      "h": 4,
+      "settings": {
+        "frameworks": ["SOC2", "ISO27001", "NIST", "HIPAA", "PCI-DSS"],
+        "showBreakdown": true,
+        "showTrend": true
+      }
+    },
+    {
+      "type": "asset_inventory",
+      "x": 4,
+      "y": 0,
+      "w": 8,
+      "h": 4,
+      "settings": {
+        "groupBy": "asset_type",
+        "showCompliant": true,
+        "showNonCompliant": true,
+        "showUnmanaged": true
+      }
+    },
+    {
+      "type": "user_activity",
+      "x": 0,
+      "y": 4,
+      "w": 12,
+      "h": 4,
+      "settings": {
+        "period": "7d",
+        "showPrivilegedAccess": true,
+        "showAnomalies": true,
+        "chartType": "heatmap"
+      }
+    },
+    {
+      "type": "agent_status",
+      "x": 0,
+      "y": 8,
+      "w": 6,
+      "h": 3,
+      "settings": {
+        "showOffline": true,
+        "showOutdated": true,
+        "showPolicyViolations": true,
+        "groupBy": "department"
+      }
+    },
+    {
+      "type": "system_health",
+      "x": 6,
+      "y": 8,
+      "w": 6,
+      "h": 3,
+      "settings": {
+        "metrics": ["uptime", "coverage", "update_compliance"],
+        "showAlerts": true
+      }
+    },
+    {
+      "type": "table_widget",
+      "x": 0,
+      "y": 11,
+      "w": 12,
+      "h": 5,
+      "settings": {
+        "title": "Recent Compliance Events",
+        "query": "compliance_events",
+        "columns": ["timestamp", "event_type", "resource", "status", "remediation"],
+        "sortBy": "timestamp",
+        "pageSize": 20
+      }
+    }
+  ],
+  "settings": {
+    "gridColumns": 12,
+    "rowHeight": 60,
+    "margins": [10, 10],
+    "animate": true,
+    "float": true
+  }
+}

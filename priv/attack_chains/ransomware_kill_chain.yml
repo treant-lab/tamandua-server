@@ -1,0 +1,40 @@
+name: "Ransomware Kill Chain"
+description: "Multi-stage ransomware deployment and execution pattern"
+severity: critical
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - impact
+  - ransomware
+  - data-destruction
+
+steps:
+  - name: "Discovery Phase"
+    techniques:
+      - T1083  # File and Directory Discovery
+      - T1082  # System Information Discovery
+    threshold: 2
+    timeframe: 600  # 10 minutes
+    description: "File and system enumeration before encryption"
+
+  - name: "Defense Inhibition"
+    techniques:
+      - T1562       # Impair Defenses
+      - T1562.001   # Disable or Modify Tools
+      - T1490       # Inhibit System Recovery
+    threshold: 1
+    timeframe: 900  # 15 minutes
+    conditions:
+      same_agent: true
+    description: "Security tools disabled or backups deleted"
+
+  - name: "Data Encryption for Impact"
+    techniques:
+      - T1486  # Data Encrypted for Impact
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_agent: true
+    description: "Mass file encryption activity detected"
+
+narrative_template: "RANSOMWARE ATTACK DETECTED: {process} enumerated system, disabled defenses, and encrypted files on agent {source_ip} within {timespan}"

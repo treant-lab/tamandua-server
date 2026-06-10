@@ -1,0 +1,156 @@
+name: CI
+
+# Standalone CI for the tamandua-server mirror. The bundled Rust NIF
+# (apps/tamandua_nif -> ./tamandua_nif in the mirror) is compiled via rustler,
+# so a Rust toolchain is provisioned. Canonical gate is Linux (the Elixir stack,
+# including bcrypt, is not built/tested on Windows hosts).
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & Test (Elixir)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: tamandua
+          POSTGRES_PASSWORD: tamandua_test_password
+          POSTGRES_DB: tamandua_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: tamandua
+          RABBITMQ_DEFAULT_PASS: tamandua_test_password
+        options: >-
+          --health-cmd "rabbitmq-diagnostics check_running"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5672:5672
+    env:
+      MIX_ENV: test
+      DATABASE_URL: ecto://tamandua:tamandua_test_password@localhost/tamandua_test
+      REDIS_URL: redis://localhost:6379
+      RABBITMQ_URL: amqp://tamandua:tamandua_test_password@localhost:5672
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.15'
+          otp-version: '26'
+          version-type: strict
+
+      - name: Setup Rust (for the bundled NIF)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: _build
+          key: ${{ runner.os }}-build-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-build-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+        continue-on-error: true
+
+      - name: Create & migrate database
+        run: |
+          mix ecto.create
+          mix ecto.migrate
+
+      - name: Test
+        run: mix test
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.15'
+          otp-version: '26'
+          version-type: strict
+      - name: Setup Rust (for the bundled NIF)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache PLT
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-plt-
+      - name: Install dependencies
+        run: mix deps.get
+      - name: Dialyzer
+        run: mix dialyzer
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.15'
+          otp-version: '26'
+      - name: Install dependencies
+        run: |
+          mix local.hex --force
+          mix deps.get
+      - name: mix deps.audit
+        run: mix deps.audit
+        continue-on-error: true

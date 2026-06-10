@@ -1,0 +1,122 @@
+title: Mimikatz Command-Line Module Invocation
+id: ca07a001-mimi-0007-0001-000000000001
+status: stable
+description: |
+  Detects Mimikatz command-line module invocations including sekurlsa,
+  kerberos, crypto, vault, lsadump, dpapi, privilege, and token modules.
+  Mimikatz is the most widely used credential theft tool and its command
+  syntax is distinctive enough for high-confidence detection.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://github.com/gentilkiwi/mimikatz
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+  - attack.t1003.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_modules:
+    CommandLine|contains:
+      - 'sekurlsa::logonpasswords'
+      - 'sekurlsa::wdigest'
+      - 'sekurlsa::msv'
+      - 'sekurlsa::kerberos'
+      - 'sekurlsa::tspkg'
+      - 'sekurlsa::credman'
+      - 'sekurlsa::minidump'
+      - 'lsadump::sam'
+      - 'lsadump::secrets'
+      - 'lsadump::cache'
+      - 'lsadump::dcsync'
+      - 'kerberos::golden'
+      - 'kerberos::silver'
+      - 'kerberos::ptt'
+      - 'kerberos::list'
+      - 'crypto::capi'
+      - 'crypto::cng'
+      - 'vault::cred'
+      - 'vault::list'
+      - 'dpapi::cred'
+      - 'dpapi::masterkey'
+      - 'token::elevate'
+      - 'token::duplicate'
+      - 'privilege::debug'
+      - 'misc::cmd'
+      - 'misc::skeleton'
+  filter_none:
+    CommandLine: ''
+  condition: selection_modules and not filter_none
+falsepositives:
+  - Authorized security assessments using Mimikatz
+level: critical
+
+---
+title: Mimikatz Binary Name Detection
+id: ca07a002-mimi-0007-0002-000000000002
+status: stable
+description: |
+  Detects execution of binaries named mimikatz or known Mimikatz variants
+  (mimilib, mimidrv, mimilove). While renaming is trivial, many attackers
+  use the tool as-is, especially in automated attack chains.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\mimikatz.exe'
+      - '\mimikatz64.exe'
+      - '\mimilib.dll'
+      - '\mimidrv.sys'
+  filter_lab:
+    Image|contains: '\test\'
+  condition: selection and not filter_lab
+falsepositives:
+  - Security testing in controlled lab environments
+level: critical
+
+---
+title: Mimikatz Driver Load (Mimidrv)
+id: ca07a003-mimi-0007-0003-000000000003
+status: stable
+description: |
+  Detects the loading of the Mimikatz kernel driver (mimidrv.sys), which
+  provides kernel-level access for credential extraction and security
+  bypass. The driver is loaded via sc.exe or through Mimikatz itself.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+  - attack.privilege_escalation
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'mimidrv'
+      - '!+'
+  filter_legit:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains: 'MsMpEng'
+  condition: selection and not filter_legit
+falsepositives:
+  - Authorized red team testing
+level: critical

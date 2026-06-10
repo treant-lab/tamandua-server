@@ -1,0 +1,107 @@
+{
+  "name": "SOC Analyst Dashboard",
+  "description": "Comprehensive dashboard for SOC analysts with real-time threat monitoring, alert triage, and agent status",
+  "template_category": "soc_analyst",
+  "tags": ["soc", "analyst", "monitoring", "alerts"],
+  "author_name": "Tamandua EDR",
+  "widgets": [
+    {
+      "type": "threat_gauge",
+      "x": 0,
+      "y": 0,
+      "w": 4,
+      "h": 3,
+      "settings": {
+        "title": "Threat Level",
+        "showLabel": true
+      }
+    },
+    {
+      "type": "alert_volume",
+      "x": 4,
+      "y": 0,
+      "w": 8,
+      "h": 3,
+      "settings": {
+        "period": "24h",
+        "showTrend": true,
+        "groupBy": "hour"
+      }
+    },
+    {
+      "type": "recent_alerts",
+      "x": 0,
+      "y": 3,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "limit": 10,
+        "status": "open",
+        "showSeverity": true
+      }
+    },
+    {
+      "type": "top_threats",
+      "x": 6,
+      "y": 3,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "limit": 5,
+        "period": "7d",
+        "groupBy": "threat_type"
+      }
+    },
+    {
+      "type": "agent_status",
+      "x": 0,
+      "y": 7,
+      "w": 4,
+      "h": 3,
+      "settings": {
+        "showOffline": true,
+        "showIsolated": true
+      }
+    },
+    {
+      "type": "mitre_coverage",
+      "x": 4,
+      "y": 7,
+      "w": 8,
+      "h": 3,
+      "settings": {
+        "showTactics": true,
+        "highlightGaps": true
+      }
+    },
+    {
+      "type": "detection_efficacy",
+      "x": 0,
+      "y": 10,
+      "w": 6,
+      "h": 3,
+      "settings": {
+        "period": "30d",
+        "showFalsePositives": true
+      }
+    },
+    {
+      "type": "response_times",
+      "x": 6,
+      "y": 10,
+      "w": 6,
+      "h": 3,
+      "settings": {
+        "metrics": ["MTTD", "MTTR", "MTTC"],
+        "showSLA": true
+      }
+    }
+  ],
+  "settings": {
+    "gridColumns": 12,
+    "rowHeight": 60,
+    "margins": [10, 10],
+    "animate": true,
+    "float": true
+  }
+}

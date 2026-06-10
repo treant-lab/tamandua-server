@@ -1,0 +1,20 @@
+test_case:
+  name: "RDP Session Hijacking"
+  description: "Tests detection of RDP session hijacking for lateral movement"
+  rule: "lateral_movement/rdp_hijacking.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\tscon.exe"
+        cmdline: "tscon.exe 2 /dest:rdp-tcp#0"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "NT AUTHORITY\\SYSTEM"
+        pid: 8912
+        ppid: 2048
+        is_elevated: true
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1563.002"]
+  tags: ["lateral_movement", "rdp", "positive"]

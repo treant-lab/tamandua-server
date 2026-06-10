@@ -1,0 +1,114 @@
+## Error messages for Tamandua EDR
+msgid ""
+msgstr ""
+"Language: en\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+## Validation Errors
+msgid "can't be blank"
+msgstr "can't be blank"
+
+msgid "has already been taken"
+msgstr "has already been taken"
+
+msgid "is invalid"
+msgstr "is invalid"
+
+msgid "must be accepted"
+msgstr "must be accepted"
+
+msgid "has invalid format"
+msgstr "has invalid format"
+
+msgid "is too short"
+msgstr "is too short"
+
+msgid "is too long"
+msgstr "is too long"
+
+msgid "must be equal to %{count}"
+msgstr "must be equal to %{count}"
+
+msgid "must be less than %{count}"
+msgstr "must be less than %{count}"
+
+msgid "must be greater than %{count}"
+msgstr "must be greater than %{count}"
+
+## Authentication Errors
+msgid "Invalid email or password"
+msgstr "Invalid email or password"
+
+msgid "Your account has been locked"
+msgstr "Your account has been locked"
+
+msgid "Your session has expired"
+msgstr "Your session has expired"
+
+msgid "You must be logged in to access this page"
+msgstr "You must be logged in to access this page"
+
+msgid "You do not have permission to access this resource"
+msgstr "You do not have permission to access this resource"
+
+msgid "Invalid two-factor authentication code"
+msgstr "Invalid two-factor authentication code"
+
+## API Errors
+msgid "Rate limit exceeded"
+msgstr "Rate limit exceeded"
+
+msgid "Invalid API key"
+msgstr "Invalid API key"
+
+msgid "API request failed"
+msgstr "API request failed"
+
+msgid "Timeout error"
+msgstr "Timeout error"
+
+## Database Errors
+msgid "Database connection error"
+msgstr "Database connection error"
+
+msgid "Record not found"
+msgstr "Record not found"
+
+msgid "Unable to save changes"
+msgstr "Unable to save changes"
+
+msgid "Constraint violation"
+msgstr "Constraint violation"
+
+## File Upload Errors
+msgid "File too large"
+msgstr "File too large"
+
+msgid "Invalid file type"
+msgstr "Invalid file type"
+
+msgid "Upload failed"
+msgstr "Upload failed"
+
+## Network Errors
+msgid "Connection timeout"
+msgstr "Connection timeout"
+
+msgid "Network error"
+msgstr "Network error"
+
+msgid "Service unavailable"
+msgstr "Service unavailable"
+
+## General Errors
+msgid "An unexpected error occurred"
+msgstr "An unexpected error occurred"
+
+msgid "Something went wrong"
+msgstr "Something went wrong"
+
+msgid "Please try again later"
+msgstr "Please try again later"
+
+msgid "Operation failed"
+msgstr "Operation failed"

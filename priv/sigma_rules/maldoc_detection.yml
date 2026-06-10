@@ -1,0 +1,570 @@
+# Tamandua EDR - Malicious Document Detection Rules
+# Detects execution of malicious LNK, PDF, Office macros, VBS, JS, ISO
+
+title: Suspicious LNK File Execution
+id: md01a001-lnk-0001-0001-000000000001
+status: stable
+description: Detects execution of LNK files that spawn suspicious processes
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1204.002
+  - attack.initial_access
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_parent:
+    ParentCommandLine|contains: '.lnk'
+  selection_child:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+      - '\rundll32.exe'
+  condition: selection_parent and selection_child
+falsepositives:
+  - Legitimate application shortcuts with command line arguments
+level: high
+
+---
+title: LNK File with Encoded Command
+id: md01a002-lnk-0001-0002-000000000002
+status: stable
+description: Detects LNK files executing encoded PowerShell commands
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.001
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentCommandLine|contains: '.lnk'
+    CommandLine|contains:
+      - '-enc'
+      - '-e '
+      - '-encodedcommand'
+      - 'FromBase64'
+      - 'hidden'
+      - '-nop'
+      - '-w hidden'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: PDF Reader Spawning Suspicious Process
+id: md02a001-pdf-0002-0001-000000000001
+status: stable
+description: Detects PDF readers spawning command interpreters or script engines
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1204.002
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - '\AcroRd32.exe'
+      - '\Acrobat.exe'
+      - '\FoxitReader.exe'
+      - '\FoxitPhantomPDF.exe'
+      - '\SumatraPDF.exe'
+      - '\PDFXEdit.exe'
+      - '\msedge.exe'
+      - '\chrome.exe'
+      - '\firefox.exe'
+  selection_child:
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+      - '\rundll32.exe'
+      - '\certutil.exe'
+  condition: selection_parent and selection_child
+falsepositives:
+  - PDF forms with legitimate automation
+  - Browser-based PDF actions
+level: high
+
+---
+title: PDF JavaScript Execution via Reader
+id: md02a002-pdf-0002-0002-000000000002
+status: stable
+description: Detects PDF JavaScript exploitation indicators
+references:
+  - https://attack.mitre.org/techniques/T1059/007/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.007
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\AcroRd32.exe'
+      - '\Acrobat.exe'
+    CommandLine|contains:
+      - 'javascript:'
+      - 'eval'
+      - 'unescape'
+      - 'fromCharCode'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: Macro-Enabled Document Spawning Script Engine
+id: md03a001-macro-0003-0001-000000000001
+status: stable
+description: Detects Office applications spawning script interpreters after opening macro-enabled documents
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1204.002
+  - attack.t1059.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+      - '\OUTLOOK.EXE'
+  selection_child:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+  condition: selection_parent and selection_child
+falsepositives:
+  - Legitimate Office add-ins
+level: high
+
+---
+title: Office Macro Creating Scheduled Task
+id: md03a002-macro-0003-0002-000000000002
+status: stable
+description: Detects Office macros creating scheduled tasks for persistence
+references:
+  - https://attack.mitre.org/techniques/T1053/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.persistence
+  - attack.t1053.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains: '/create'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: Office Macro Downloading Payload
+id: md03a003-macro-0003-0003-000000000003
+status: stable
+description: Detects Office macros using network utilities to download payloads
+references:
+  - https://attack.mitre.org/techniques/T1105/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1105
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+  selection_download:
+    - Image|endswith:
+        - '\certutil.exe'
+        - '\bitsadmin.exe'
+        - '\curl.exe'
+        - '\wget.exe'
+    - CommandLine|contains:
+        - 'DownloadString'
+        - 'DownloadFile'
+        - 'Invoke-WebRequest'
+        - 'Net.WebClient'
+        - 'XMLHTTP'
+  condition: selection_parent and selection_download
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: VBS File Execution from User Directory
+id: md04a001-vbs-0004-0001-000000000001
+status: stable
+description: Detects VBScript execution from user-writable directories
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+    CommandLine|contains:
+      - '\Users\'
+      - '\Temp\'
+      - '\AppData\'
+      - '\Downloads\'
+      - '\Desktop\'
+    CommandLine|endswith:
+      - '.vbs'
+      - '.vbe'
+  condition: selection
+falsepositives:
+  - Legitimate user scripts
+level: medium
+
+---
+title: VBS Script with Network Activity
+id: md04a002-vbs-0004-0002-000000000002
+status: stable
+description: Detects VBScript making network connections
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.005
+  - attack.command_and_control
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  selection:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+    Initiated: 'true'
+    DestinationPort:
+      - 80
+      - 443
+      - 8080
+      - 8443
+  condition: selection
+falsepositives:
+  - Legitimate update scripts
+level: high
+
+---
+title: JavaScript/JScript File Execution
+id: md05a001-js-0005-0001-000000000001
+status: stable
+description: Detects suspicious JavaScript file execution
+references:
+  - https://attack.mitre.org/techniques/T1059/007/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.007
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+    CommandLine|endswith:
+      - '.js'
+      - '.jse'
+  selection_suspicious:
+    CommandLine|contains:
+      - '\Temp\'
+      - '\AppData\'
+      - '\Downloads\'
+      - 'http://'
+      - 'https://'
+  condition: selection and selection_suspicious
+falsepositives:
+  - Legitimate JavaScript automation
+level: high
+
+---
+title: HTA File Execution
+id: md06a001-hta-0006-0001-000000000001
+status: stable
+description: Detects HTA (HTML Application) file execution
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1218.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: '\mshta.exe'
+    CommandLine|contains:
+      - '.hta'
+      - 'http://'
+      - 'https://'
+      - 'javascript:'
+      - 'vbscript:'
+  condition: selection
+falsepositives:
+  - Legitimate HTA applications (rare)
+level: high
+
+---
+title: HTA Spawning Command Interpreter
+id: md06a002-hta-0006-0002-000000000002
+status: stable
+description: Detects HTA spawning command interpreters
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.defense_evasion
+  - attack.execution
+  - attack.t1218.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith: '\mshta.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: ISO/IMG File Mount and Execution
+id: md07a001-iso-0007-0001-000000000001
+status: stable
+description: Detects execution from mounted ISO/IMG files
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.initial_access
+  - attack.t1204.002
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    # Execution from removable/virtual drive
+    Image|re: '^[D-Z]:\\\\'
+    Image|endswith:
+      - '.exe'
+      - '.dll'
+      - '.scr'
+      - '.bat'
+      - '.cmd'
+      - '.lnk'
+  filter:
+    Image|startswith: 'C:\\'
+  condition: selection and not filter
+falsepositives:
+  - Legitimate removable media usage
+level: medium
+
+---
+title: Explorer Opening ISO/IMG File
+id: md07a002-iso-0007-0002-000000000002
+status: stable
+description: Detects Explorer mounting ISO/IMG files followed by suspicious execution
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1204.002
+logsource:
+  product: windows
+  category: file_event
+detection:
+  selection:
+    TargetFilename|endswith:
+      - '.iso'
+      - '.img'
+      - '.vhd'
+      - '.vhdx'
+    EventType: 'FileOpened'
+  condition: selection
+falsepositives:
+  - Legitimate disk image usage
+level: low
+
+---
+title: Double Extension File Execution
+id: md08a001-ext-0008-0001-000000000001
+status: stable
+description: Detects execution of files with double extensions
+references:
+  - https://attack.mitre.org/techniques/T1036/004/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1036.004
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|re: '\.(pdf|doc|docx|xls|xlsx|txt|jpg|png|gif)\.(exe|scr|bat|cmd|com|pif|lnk|vbs|js|hta)$'
+  condition: selection
+falsepositives:
+  - None expected
+level: critical
+
+---
+title: WSF (Windows Script File) Execution
+id: md09a001-wsf-0009-0001-000000000001
+status: stable
+description: Detects Windows Script File execution
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1059.005
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    Image|endswith:
+      - '\wscript.exe'
+      - '\cscript.exe'
+    CommandLine|endswith: '.wsf'
+  condition: selection
+falsepositives:
+  - Legitimate WSF scripts (rare)
+level: medium
+
+---
+title: Office DDE Attack
+id: md10a001-dde-0010-0001-000000000001
+status: stable
+description: Detects Office DDE (Dynamic Data Exchange) command execution
+references:
+  - https://attack.mitre.org/techniques/T1559/002/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.execution
+  - attack.t1559.002
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+    CommandLine|contains:
+      - 'DDEAUTO'
+      - 'DDE '
+  condition: selection
+falsepositives:
+  - Legitimate DDE usage (very rare)
+level: critical
+
+---
+title: Office External Template Injection
+id: md11a001-template-0011-0001-000000000001
+status: stable
+description: Detects Office loading external templates from network
+references:
+  - https://attack.mitre.org/techniques/T1221/
+author: Tamandua Security
+date: 2025/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1221
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  selection:
+    Image|endswith:
+      - '\WINWORD.EXE'
+      - '\EXCEL.EXE'
+      - '\POWERPNT.EXE'
+    DestinationPort:
+      - 80
+      - 443
+      - 445
+    Initiated: 'true'
+  filter:
+    DestinationHostname|contains:
+      - 'microsoft.com'
+      - 'office.com'
+      - 'windows.com'
+  condition: selection and not filter
+falsepositives:
+  - Legitimate cloud document features
+level: medium

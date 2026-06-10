@@ -1,0 +1,629 @@
+title: DNS Tunneling Detection
+id: 5b125bff-1234-b567-89ab-567890123456
+status: experimental
+description: Detects potential DNS tunneling via long domain queries
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '.{50,}'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.windowsupdate.com'
+            - '.msftncsi.com'
+    condition: selection and not filter
+falsepositives:
+    - CDN domains
+    - Legitimate long domain names
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+
+---
+title: Tor Browser Execution
+id: 6c236caa-2345-c678-9abc-678901234567
+status: experimental
+description: Detects Tor browser execution
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\tor.exe'
+            - '\firefox.exe'
+        CommandLine|contains:
+            - 'tor'
+            - '-profile'
+    selection_path:
+        Image|contains: '\Tor Browser\'
+    condition: selection or selection_path
+falsepositives:
+    - Legitimate privacy-focused users
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1090.003
+
+---
+title: Suspicious PowerShell HTTP Request
+id: 7d347dbb-3456-d789-abcd-789012345678
+status: experimental
+description: Detects PowerShell making HTTP requests to suspicious domains
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'http://'
+            - 'https://'
+    filter:
+        CommandLine|contains:
+            - 'microsoft.com'
+            - 'windows.com'
+            - 'nuget.org'
+            - 'powershellgallery.com'
+            - 'github.com'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate scripts downloading content
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+
+---
+title: BITSAdmin Download
+id: 8e458ecc-4567-e89a-bcde-890123456789
+status: experimental
+description: Detects BITS file transfer abuse
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\bitsadmin.exe'
+        CommandLine|contains:
+            - '/transfer'
+            - '/create'
+            - '/addfile'
+            - 'http://'
+            - 'https://'
+    condition: selection
+falsepositives:
+    - Legitimate software updates
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.defense_evasion
+    - attack.t1197
+
+---
+title: Suspicious Outbound Connection on Non-Standard Port
+id: 9f569fdd-5678-f9ab-cdef-901234567890
+status: experimental
+description: Detects outbound connections on suspicious ports
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationPort:
+            - 4444
+            - 5555
+            - 6666
+            - 6667
+            - 1337
+            - 31337
+            - 8080
+            - 8443
+            - 9001
+            - 9050
+            - 9150
+    condition: selection
+falsepositives:
+    - Legitimate applications using these ports
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1571
+
+---
+title: Cobalt Strike Default Ports
+id: a067a0ee-6789-0abc-def0-012345678901
+status: experimental
+description: Detects connections to default Cobalt Strike ports
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationPort:
+            - 50050
+            - 443
+            - 8443
+        Initiated: 'true'
+    filter:
+        Image|endswith:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\iexplore.exe'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate HTTPS traffic
+level: low
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+
+---
+title: Connection to Known C2 IP Ranges
+id: b178b1ff-789a-1bcd-ef01-123456789012
+status: experimental
+description: Detects connections to known C2 infrastructure IP ranges
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationIp|startswith:
+            - '185.220.'
+            - '45.33.'
+            - '104.248.'
+            - '167.99.'
+            - '178.128.'
+            - '206.189.'
+    condition: selection
+falsepositives:
+    - Legitimate cloud services
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1071
+
+---
+title: IRC Client Activity
+id: c289c2aa-89ab-2cde-f012-234567890123
+status: experimental
+description: Detects IRC client connections
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        DestinationPort:
+            - 6667
+            - 6697
+            - 194
+            - 994
+    condition: selection
+falsepositives:
+    - Legitimate IRC usage
+level: low
+tags:
+    - attack.command_and_control
+    - attack.t1071
+
+---
+title: Ngrok Tunnel Detection
+id: d39ad3bb-9abc-3def-0123-345678901234
+status: experimental
+description: Detects ngrok tunnel usage
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        Image|endswith: '\ngrok.exe'
+    selection_dns:
+        QueryName|contains: 'ngrok.io'
+    condition: selection_img or selection_dns
+falsepositives:
+    - Legitimate development usage
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1572
+
+---
+title: Cloudflare Tunnel Detection
+id: e4abe4cc-abcd-4ef0-1234-456789012345
+status: experimental
+description: Detects Cloudflare tunnel (cloudflared) usage
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection:
+        Image|endswith: '\cloudflared.exe'
+        CommandLine|contains: 'tunnel'
+    condition: selection
+falsepositives:
+    - Legitimate Cloudflare tunnel usage
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1572
+
+---
+title: Reverse Shell Detection
+id: f5bcf5dd-bcde-5f01-2345-567890123456
+status: experimental
+description: Detects potential reverse shell commands
+author: Tamandua Security Team
+date: 2024/01/15
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_nc:
+        CommandLine|contains:
+            - 'nc -e'
+            - 'ncat -e'
+            - 'nc.exe -e'
+    selection_ps:
+        CommandLine|contains:
+            - '$client = New-Object System.Net.Sockets.TCPClient'
+            - 'TCPClient'
+            - 'NetworkStream'
+            - 'GetStream'
+    selection_bash:
+        CommandLine|contains:
+            - 'bash -i'
+            - '/dev/tcp/'
+            - 'mkfifo'
+    condition: selection_nc or selection_ps or selection_bash
+falsepositives:
+    - Penetration testing
+level: high
+tags:
+    - attack.command_and_control
+    - attack.t1059
+
+---
+title: DNS Beaconing Detection - High Frequency
+id: a1b2c3d4-dns1-bcon-freq-111111111111
+status: experimental
+description: >
+  Detects periodic DNS queries to the same domain at regular intervals,
+  indicative of C2 beaconing. Flags domains receiving more than 50 queries
+  within a 5-minute window from the same agent.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://attack.mitre.org/techniques/T1573/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '.+'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.windowsupdate.com'
+            - '.msftncsi.com'
+            - '.office.com'
+            - '.live.com'
+            - '.bing.com'
+            - '.azure.com'
+            - '.googleapis.com'
+            - '.gstatic.com'
+            - '.amazon.com'
+            - '.cloudflare.com'
+    timeframe: 5m
+    condition: selection and not filter | count(QueryName) by QueryName > 50
+falsepositives:
+    - Monitoring or health-check services polling at fixed intervals
+    - CDN prefetch or keep-alive DNS queries
+level: high
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+    - attack.t1573
+
+---
+title: DGA Domain Detection - High Entropy
+id: b2c3d4e5-dns2-dga1-entr-222222222222
+status: experimental
+description: >
+  Detects DNS queries for domains with high Shannon entropy (random-looking
+  character patterns), which is a strong indicator of Domain Generation
+  Algorithm (DGA) activity used by malware families for C2 communication.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1568/002/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '^[a-z0-9]{12,}\.[a-z]{2,6}$'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.google.com'
+            - '.amazonaws.com'
+            - '.cloudfront.net'
+            - '.akamaiedge.net'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate domains with long random-looking subdomains (CDNs, cloud services)
+    - Hash-based URL shorteners
+level: high
+tags:
+    - attack.command_and_control
+    - attack.t1568.002
+
+---
+title: DGA Domain Detection - Unusual Character Distribution
+id: c3d4e5f6-dns3-dga2-char-333333333333
+status: experimental
+description: >
+  Detects DNS queries for domains with unusual character distributions,
+  specifically a high consonant-to-vowel ratio or heavy mixing of numeric
+  and alphabetic characters, common in DGA-generated domains.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1568/002/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection_consonant_heavy:
+        QueryName|re: '^[bcdfghjklmnpqrstvwxyz0-9]{8,}\.'
+    selection_mixed_alphanum:
+        QueryName|re: '^(?=.*[a-z])(?=.*[0-9])[a-z0-9]{10,}\.[a-z]{2,6}$'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.google.com'
+            - '.amazonaws.com'
+            - '.akamaiedge.net'
+            - '.cloudfront.net'
+    condition: (selection_consonant_heavy or selection_mixed_alphanum) and not filter
+falsepositives:
+    - Base64 or hex-encoded legitimate subdomain labels
+    - CDN or cloud service auto-generated hostnames
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1568.002
+
+---
+title: DGA Domain Detection - Long Subdomain Labels
+id: d4e5f6a7-dns4-dga3-long-444444444444
+status: experimental
+description: >
+  Detects DNS queries containing subdomain labels longer than 20 characters,
+  which may indicate DGA domains or DNS data exfiltration attempts.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1568/002/
+    - https://attack.mitre.org/techniques/T1048/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '(?:^|\.)[a-z0-9\-]{21,}(?:\.|$)'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.amazonaws.com'
+            - '.cloudfront.net'
+            - '.akamaiedge.net'
+            - '.akadns.net'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate services with long hostname labels (e.g., DKIM, cloud IDs)
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1568.002
+    - attack.t1048
+
+---
+title: DNS Data Exfiltration - Long Encoded Subdomains
+id: e5f6a7b8-dns5-exfl-long-555555555555
+status: experimental
+description: >
+  Detects DNS queries with unusually long subdomain labels that may contain
+  encoded or encrypted data being exfiltrated via DNS. Attackers encode
+  stolen data into subdomain labels and send DNS queries to attacker-controlled
+  name servers.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1048/
+    - https://attack.mitre.org/techniques/T1071/004/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '(?:^|\.)[a-z0-9\-]{30,}(?:\.|$)'
+    filter:
+        QueryName|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '._domainkey.'
+            - '._dmarc.'
+            - '.amazonaws.com'
+            - '.cloudfront.net'
+    condition: selection and not filter
+falsepositives:
+    - DKIM and DMARC DNS records with long encoded values
+    - Cloud provider resource identifiers
+level: high
+tags:
+    - attack.exfiltration
+    - attack.t1048
+    - attack.command_and_control
+    - attack.t1071.004
+
+---
+title: DNS Data Exfiltration - High Unique Subdomain Volume
+id: f6a7b8c9-dns6-exfl-vol1-666666666666
+status: experimental
+description: >
+  Detects a high volume of unique subdomains under the same parent domain
+  within a short window. This pattern is characteristic of DNS-based data
+  exfiltration where each query carries a chunk of encoded data as a unique
+  subdomain label.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1048/
+    - https://attack.mitre.org/techniques/T1071/004/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|re: '.+\..+\..+'
+    filter:
+        QueryName|endswith:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.google.com'
+            - '.googleapis.com'
+            - '.gstatic.com'
+            - '.amazonaws.com'
+            - '.cloudfront.net'
+            - '.azure.com'
+            - '.office.com'
+    timeframe: 5m
+    condition: selection and not filter | count() by QueryName > 100
+falsepositives:
+    - CDN or analytics services generating many unique subdomains
+    - Legitimate SaaS applications with subdomain-based routing
+level: high
+tags:
+    - attack.exfiltration
+    - attack.t1048
+    - attack.command_and_control
+    - attack.t1071.004
+
+---
+title: DNS Data Exfiltration - TXT Record Queries
+id: a7b8c9d0-dns7-exfl-txt1-777777777777
+status: experimental
+description: >
+  Detects DNS TXT record queries that may be used for data exfiltration or
+  C2 communication. TXT records can carry large payloads and are commonly
+  abused by DNS tunneling tools like iodine, dnscat2, and Cobalt Strike.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://attack.mitre.org/techniques/T1048/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryType: 'TXT'
+    filter:
+        QueryName|endswith:
+            - '.microsoft.com'
+            - '.google.com'
+            - '._domainkey.'
+            - '._dmarc.'
+            - '._spf.'
+            - '.letsencrypt.org'
+            - '._acme-challenge.'
+    condition: selection and not filter
+falsepositives:
+    - SPF, DKIM, and DMARC verification queries
+    - ACME/Let's Encrypt certificate validation
+    - Legitimate TXT record lookups for service discovery
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+    - attack.exfiltration
+    - attack.t1048
+
+---
+title: Suspicious TLD DNS Queries
+id: b8c9d0e1-dns8-stld-mal1-888888888888
+status: experimental
+description: >
+  Detects DNS queries to top-level domains commonly associated with malicious
+  activity. These TLDs are frequently abused for phishing, malware distribution,
+  and C2 infrastructure due to low registration costs and minimal verification.
+author: Tamandua Security Team
+date: 2026/01/27
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://unit42.paloaltonetworks.com/top-level-domains-cybercrime/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        QueryName|endswith:
+            - '.tk'
+            - '.ml'
+            - '.ga'
+            - '.cf'
+            - '.gq'
+            - '.xyz'
+            - '.top'
+            - '.buzz'
+            - '.club'
+    filter:
+        QueryName|contains:
+            - 'google'
+            - 'microsoft'
+            - 'amazon'
+            - 'apple'
+    condition: selection and not filter
+falsepositives:
+    - Legitimate websites hosted on these TLDs
+    - Free-tier domain usage by small businesses
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+    - attack.t1583.001

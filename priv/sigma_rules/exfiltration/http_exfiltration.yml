@@ -1,0 +1,97 @@
+title: HTTP Data Exfiltration via Curl or Wget
+id: ef02a001-http-0002-0001-000000000001
+status: stable
+description: |
+  Detects use of curl, wget, or PowerShell Invoke-WebRequest to upload
+  files to external servers. Attackers exfiltrate data via HTTP POST
+  requests to attacker-controlled infrastructure or legitimate file-sharing
+  services.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+  - https://attack.mitre.org/techniques/T1567/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - attack.t1567
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_curl:
+    Image|endswith:
+      - '\curl.exe'
+      - '\wget.exe'
+    CommandLine|contains:
+      - '-X POST'
+      - '--data'
+      - '-d @'
+      - '--upload-file'
+      - '-T '
+      - '-F file='
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-WebRequest'
+      - 'Invoke-RestMethod'
+      - 'iwr '
+      - 'irm '
+    CommandLine|contains:
+      - '-Method Post'
+      - '-Method Put'
+      - 'upload'
+  filter_dev:
+    ParentImage|contains:
+      - '\git\'
+      - '\npm\'
+      - '\Code.exe'
+  condition: (selection_curl or selection_ps) and not filter_dev
+falsepositives:
+  - Legitimate file uploads by developers
+  - CI/CD pipeline artifact uploads
+level: medium
+
+---
+title: Data Upload to Cloud Storage Services
+id: ef02a002-http-0002-0002-000000000002
+status: stable
+description: |
+  Detects data uploads to popular cloud storage services (Mega, AnonFiles,
+  Transfer.sh, etc.) that are commonly abused for exfiltration.
+references:
+  - https://attack.mitre.org/techniques/T1567/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.exfiltration
+  - attack.t1567.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'mega.nz'
+      - 'anonfiles.com'
+      - 'transfer.sh'
+      - 'file.io'
+      - 'gofile.io'
+      - 'wetransfer.com'
+      - 'sendspace.com'
+      - 'catbox.moe'
+      - 'temp.sh'
+      - 'uguu.se'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\firefox.exe'
+      - '\msedge.exe'
+  condition: selection and not filter_browser
+falsepositives:
+  - Legitimate file sharing by employees
+level: high

@@ -1,0 +1,44 @@
+name: "Reconnaissance to Lateral Movement"
+description: "Discovery activities followed by lateral movement attempts"
+severity: high
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - discovery
+  - lateral-movement
+  - reconnaissance
+
+steps:
+  - name: "Network Discovery"
+    techniques:
+      - T1046  # Network Service Discovery
+      - T1018  # Remote System Discovery
+      - T1135  # Network Share Discovery
+    threshold: 2
+    timeframe: 600  # 10 minutes
+    description: "Network scanning and service discovery"
+
+  - name: "Account Discovery"
+    techniques:
+      - T1087       # Account Discovery
+      - T1087.001   # Local Account
+      - T1087.002   # Domain Account
+    threshold: 1
+    timeframe: 900  # 15 minutes
+    conditions:
+      same_agent: true
+    description: "User and group enumeration"
+
+  - name: "Lateral Movement"
+    techniques:
+      - T1021       # Remote Services
+      - T1021.001   # Remote Desktop Protocol
+      - T1021.002   # SMB/Windows Admin Shares
+      - T1021.006   # Windows Remote Management
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_user: true
+    description: "Remote service access to other systems"
+
+narrative_template: "Lateral movement chain detected: reconnaissance activities by {user} followed by remote access via {process} within {timespan}"

@@ -1,0 +1,133 @@
+# Forensics Policy Template
+# Maximum data collection for incident response and forensic analysis
+
+name: Forensics Mode
+description: Comprehensive logging and monitoring for forensic investigations
+scope: agent
+compliance_tags:
+  - forensics
+  - incident_response
+  - investigation
+
+collectors:
+  process:
+    enabled: true
+    interval_ms: 1000
+    options:
+      collect_command_line: true
+      collect_environment: true
+      collect_modules: true
+      collect_handles: true
+      collect_memory_maps: true
+      collect_threads: true
+
+  file:
+    enabled: true
+    interval_ms: 2000
+    options:
+      monitored_paths:
+        - /
+        - C:\
+      exclude_paths:
+        - /proc
+        - /sys
+      collect_file_hashes: true
+      collect_file_metadata: true
+      detect_new_executables: true
+      log_all_file_operations: true
+
+  network:
+    enabled: true
+    interval_ms: 1000
+    options:
+      collect_connections: true
+      collect_listening_ports: true
+      collect_packet_metadata: true
+      deep_packet_inspection: true
+      pcap_enabled: true
+      pcap_buffer_size_mb: 1000
+
+  dns:
+    enabled: true
+    interval_ms: 1000
+    options:
+      log_all_queries: true
+      log_suspicious_domains: true
+      cache_dns_responses: true
+
+  registry:
+    enabled: true
+    interval_ms: 5000
+    options:
+      monitored_keys:
+        - HKLM\
+        - HKCU\
+      log_all_registry_operations: true
+
+  kernel_events:
+    enabled: true
+    interval_ms: 500
+    options:
+      collect_syscalls: true
+      collect_driver_loads: true
+      collect_kernel_modules: true
+
+resource_limits:
+  max_cpu_percent: 50
+  max_memory_mb: 2048
+  max_disk_mb: 20000
+  max_network_bandwidth_mbps: 100
+
+detection:
+  yara_enabled: true
+  sigma_enabled: true
+  ml_enabled: true
+  behavioral_analysis_enabled: true
+  custom_rules: []
+  rule_sets:
+    - malware_detection
+    - ransomware_detection
+    - suspicious_behavior
+    - exploit_detection
+    - credential_theft
+    - lateral_movement
+    - data_exfiltration
+    - persistence_mechanisms
+    - privilege_escalation
+
+response:
+  allowed_actions:
+    - isolate
+    - kill_process
+    - quarantine
+    - delete_file
+    - dump_memory
+    - capture_screenshot
+  auto_response_enabled: false
+  max_actions_per_hour: 100
+  require_approval: false
+  approval_timeout_minutes: 1
+
+network:
+  allowed_domains: []
+  blocked_domains: []
+  proxy_enabled: false
+  proxy_url: null
+  ssl_inspection_enabled: false
+  capture_network_traffic: true
+
+forensics:
+  memory_dumps_enabled: true
+  disk_snapshots_enabled: true
+  timeline_reconstruction: true
+  artifact_collection: true
+  volatile_data_collection: true
+
+logging:
+  log_level: trace
+  max_log_size_mb: 5000
+  log_rotation_days: 90
+  send_logs_to_server: true
+  syslog_enabled: true
+  remote_logging_enabled: true
+  structured_logging: true

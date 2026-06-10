@@ -1,0 +1,347 @@
+title: Internal Network Reconnaissance via Native Commands
+id: a1b2c3d4-0001-recon-0001-000000000001
+status: stable
+description: Detects execution of commands commonly used for internal network reconnaissance
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/
+    - https://attack.mitre.org/techniques/T1592/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_net_discovery:
+        Image|endswith:
+            - '\ipconfig.exe'
+            - '\nslookup.exe'
+            - '\netstat.exe'
+            - '\arp.exe'
+            - '\route.exe'
+        CommandLine|contains:
+            - '/all'
+            - '-a'
+            - '-n'
+            - '-rn'
+    selection_wmi_system:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains:
+            - 'nic'
+            - 'nicconfig'
+            - 'computersystem'
+            - 'os get'
+    selection_powershell_net:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Get-NetIPAddress'
+            - 'Get-NetAdapter'
+            - 'Get-NetRoute'
+            - 'Get-DnsClientServerAddress'
+            - 'Test-NetConnection'
+            - 'Get-NetTCPConnection'
+            - 'Get-NetUDPEndpoint'
+    condition: selection_net_discovery or selection_wmi_system or selection_powershell_net
+falsepositives:
+    - System administrators
+    - Network troubleshooting tools
+    - Legitimate IT automation scripts
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1590
+    - attack.t1590.004
+    - attack.t1590.005
+    - attack.t1592
+
+---
+title: Host Information Gathering via WMI
+id: a1b2c3d4-0001-recon-0002-000000000002
+status: stable
+description: Detects WMI queries commonly used to gather host information during reconnaissance
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1592/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_wmi:
+        Image|endswith: '\wmic.exe'
+        CommandLine|contains:
+            - 'cpu get'
+            - 'memorychip'
+            - 'diskdrive'
+            - 'baseboard'
+            - 'bios get'
+            - 'product get'
+            - 'qfe'
+            - 'logicaldisk'
+    selection_systeminfo:
+        Image|endswith: '\systeminfo.exe'
+    selection_powershell_host:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Get-ComputerInfo'
+            - 'Get-WmiObject Win32_'
+            - 'Get-CimInstance Win32_'
+            - 'Win32_ComputerSystem'
+            - 'Win32_OperatingSystem'
+            - 'Win32_Processor'
+            - 'Win32_PhysicalMemory'
+    condition: selection_wmi or selection_systeminfo or selection_powershell_host
+falsepositives:
+    - System inventory tools
+    - IT asset management
+    - Legitimate administrative scripts
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1592
+    - attack.t1592.001
+    - attack.t1592.002
+    - attack.discovery
+    - attack.t1082
+
+---
+title: Active Directory Reconnaissance Commands
+id: a1b2c3d4-0001-recon-0003-000000000003
+status: stable
+description: Detects execution of commands used to enumerate Active Directory information
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/001/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_net_ad:
+        Image|endswith: '\net.exe'
+        CommandLine|contains:
+            - 'user /domain'
+            - 'group /domain'
+            - 'localgroup'
+            - 'accounts /domain'
+    selection_nltest:
+        Image|endswith: '\nltest.exe'
+        CommandLine|contains:
+            - '/dclist'
+            - '/dsgetdc'
+            - '/domain_trusts'
+            - '/trusted_domains'
+    selection_dsquery:
+        Image|endswith:
+            - '\dsquery.exe'
+            - '\dsget.exe'
+    selection_powershell_ad:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'Get-ADUser'
+            - 'Get-ADGroup'
+            - 'Get-ADComputer'
+            - 'Get-ADDomain'
+            - 'Get-ADDomainController'
+            - 'Get-ADTrust'
+            - 'Get-ADForest'
+    selection_adfind:
+        Image|endswith: '\adfind.exe'
+    condition: selection_net_ad or selection_nltest or selection_dsquery or selection_powershell_ad or selection_adfind
+falsepositives:
+    - Domain administrators
+    - Legitimate IT automation
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1590.001
+    - attack.discovery
+    - attack.t1087.002
+
+---
+title: External IP Address Discovery
+id: a1b2c3d4-0001-recon-0004-000000000004
+status: stable
+description: Detects attempts to discover external/public IP address through web services
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/005/
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        query|contains:
+            - 'ipinfo.io'
+            - 'ifconfig.me'
+            - 'ipecho.net'
+            - 'icanhazip.com'
+            - 'checkip.amazonaws.com'
+            - 'api.ipify.org'
+            - 'myexternalip.com'
+            - 'whatismyip'
+            - 'ip-api.com'
+            - 'ipapi.co'
+    condition: selection
+falsepositives:
+    - VPN applications
+    - Network troubleshooting
+    - Legitimate geographic services
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1590.005
+
+---
+title: Inbound Port Scan Detection
+id: a1b2c3d4-0001-recon-0005-000000000005
+status: stable
+description: Detects potential inbound port scanning based on connection patterns
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1595/001/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection:
+        direction: 'inbound'
+        state: 'attempt'
+    timeframe: 60s
+    condition: selection | count(DestinationPort) by SourceIp > 20
+falsepositives:
+    - Vulnerability scanners
+    - Network monitoring tools
+    - Load balancers
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1595
+    - attack.t1595.001
+
+---
+title: Linux Network Reconnaissance Commands
+id: a1b2c3d4-0001-recon-0006-000000000006
+status: stable
+description: Detects execution of network reconnaissance commands on Linux systems
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    selection_net_tools:
+        Image|endswith:
+            - '/ifconfig'
+            - '/ip'
+            - '/ss'
+            - '/netstat'
+            - '/route'
+            - '/arp'
+    selection_net_args:
+        CommandLine|contains:
+            - 'addr show'
+            - 'route show'
+            - 'neigh show'
+            - '-tulpn'
+            - '-antup'
+    selection_dig_nslookup:
+        Image|endswith:
+            - '/dig'
+            - '/nslookup'
+            - '/host'
+        CommandLine|contains:
+            - 'axfr'
+            - 'any'
+    selection_nmap:
+        Image|endswith: '/nmap'
+    condition: selection_net_tools or selection_net_args or selection_dig_nslookup or selection_nmap
+falsepositives:
+    - System administrators
+    - Network monitoring
+level: low
+tags:
+    - attack.reconnaissance
+    - attack.t1590
+
+---
+title: DNS Zone Transfer Attempt
+id: a1b2c3d4-0001-recon-0007-000000000007
+status: stable
+description: Detects DNS zone transfer (AXFR) queries which can be used for reconnaissance
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/002/
+logsource:
+    category: dns_query
+    product: any
+detection:
+    selection:
+        query_type: 'AXFR'
+    condition: selection
+falsepositives:
+    - Legitimate secondary DNS servers
+    - DNS administration
+level: high
+tags:
+    - attack.reconnaissance
+    - attack.t1590.002
+
+---
+title: LDAP Reconnaissance Query
+id: a1b2c3d4-0001-recon-0008-000000000008
+status: stable
+description: Detects LDAP queries commonly used for Active Directory reconnaissance
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1590/001/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection:
+        DestinationPort:
+            - 389
+            - 636
+            - 3268
+            - 3269
+        direction: 'outbound'
+    filter_known:
+        DestinationIp|startswith:
+            - '10.'
+            - '172.16.'
+            - '172.17.'
+            - '172.18.'
+            - '172.19.'
+            - '172.20.'
+            - '172.21.'
+            - '172.22.'
+            - '172.23.'
+            - '172.24.'
+            - '172.25.'
+            - '172.26.'
+            - '172.27.'
+            - '172.28.'
+            - '172.29.'
+            - '172.30.'
+            - '172.31.'
+            - '192.168.'
+    condition: selection and not filter_known
+falsepositives:
+    - Legitimate LDAP queries to external identity providers
+    - Cloud-based AD services
+level: medium
+tags:
+    - attack.reconnaissance
+    - attack.t1590.001

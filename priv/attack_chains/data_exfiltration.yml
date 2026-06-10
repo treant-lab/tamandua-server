@@ -1,0 +1,53 @@
+name: "Data Theft and Exfiltration"
+description: "Targeted data collection and exfiltration operation"
+severity: high
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - collection
+  - exfiltration
+  - data-theft
+
+steps:
+  - name: "Credential Access"
+    techniques:
+      - T1003       # OS Credential Dumping
+      - T1003.001   # LSASS Memory
+      - T1555       # Credentials from Password Stores
+      - T1555.003   # Credentials from Web Browsers
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    description: "Credential dumping or password store access"
+
+  - name: "File Discovery"
+    techniques:
+      - T1083  # File and Directory Discovery
+      - T1039  # Data from Network Shared Drive
+    threshold: 1
+    timeframe: 3600  # 1 hour
+    conditions:
+      same_user: true
+    description: "Search for sensitive documents"
+
+  - name: "Data Staging"
+    techniques:
+      - T1074  # Data Staged
+      - T1560  # Archive Collected Data
+    threshold: 1
+    timeframe: 3600  # 1 hour
+    conditions:
+      same_agent: true
+    description: "Archive or compress collected data"
+
+  - name: "Exfiltration"
+    techniques:
+      - T1041  # Exfiltration Over C2 Channel
+      - T1048  # Exfiltration Over Alternative Protocol
+      - T1567  # Exfiltration Over Web Service
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_agent: true
+    description: "Data transferred out of network"
+
+narrative_template: "Data theft operation: user {user} collected credentials, staged {count} files, and exfiltrated data to {source_ip} over {timespan}"

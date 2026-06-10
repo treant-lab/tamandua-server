@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <title>Tamandua Sentinel</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <%= if Application.get_env(:tamandua_server, :dev_assets, false) do %>
+      <script type="module">
+        import RefreshRuntime from 'http://localhost:5173/@react-refresh'
+        RefreshRuntime.injectIntoGlobalHook(window)
+        window.$RefreshReg$ = () => {}
+        window.$RefreshSig$ = () => (type) => type
+        window.__vite_plugin_react_preamble_installed__ = true
+      </script>
+      <script type="module" src="http://localhost:5173/@vite/client">
+      </script>
+      <script type="module" src="http://localhost:5173/src/main.tsx">
+      </script>
+    <% else %>
+      <link rel="stylesheet" href={"/assets/#{TamanduaServerWeb.Vite.css_path()}"} />
+      <script type="module" src={"/assets/#{TamanduaServerWeb.Vite.js_path()}"}>
+      </script>
+    <% end %>
+  </head>
+  <body class="sentinel-theme antialiased" style="background: var(--bg); color: var(--fg);">
+    <%= @inner_content %>
+  </body>
+</html>

@@ -1,0 +1,777 @@
+# AWS CIS Benchmark v1.5.0 - Security Policies
+# Based on Center for Internet Security AWS Foundations Benchmark
+
+policies:
+  # ============================================================================
+  # Section 1 - Identity and Access Management
+  # ============================================================================
+
+  - id: aws-iam-001
+    name: Avoid use of root account
+    description: The root account has unrestricted access to all resources. Use of root should be avoided for daily operations.
+    provider: aws
+    resource_type: aws_iam_user
+    severity: critical
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.1
+      - PCI DSS 8.1
+      - NIST 800-53 AC-6
+    condition:
+      and:
+        - field: metadata.is_root
+          operator: is_true
+        - field: metadata.last_activity_days
+          operator: less_than
+          value: 90
+    recommendation: Use IAM users with appropriate permissions instead of root. Enable MFA on root account.
+    remediation:
+      cli: |
+        # Create an IAM admin user instead of using root
+        aws iam create-user --user-name admin-user
+        aws iam attach-user-policy --user-name admin-user --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+        aws iam create-login-profile --user-name admin-user --password <password> --password-reset-required
+
+  - id: aws-iam-002
+    name: MFA enabled for IAM users with console access
+    description: Multi-factor authentication provides an additional layer of protection for IAM users with console access.
+    provider: aws
+    resource_type: aws_iam_user
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.10
+      - CIS AWS 1.14
+      - PCI DSS 8.3
+      - NIST 800-53 IA-2
+    condition:
+      and:
+        - field: metadata.has_console_access
+          operator: is_true
+        - field: metadata.mfa_devices
+          operator: is_empty
+    recommendation: Enable MFA for all IAM users with console access.
+    remediation:
+      terraform: |
+        resource "aws_iam_virtual_mfa_device" "example" {
+          virtual_mfa_device_name = "example-mfa"
+        }
+      cli: |
+        # Enable virtual MFA for user
+        aws iam create-virtual-mfa-device --virtual-mfa-device-name <device-name>
+        aws iam enable-mfa-device --user-name <user-name> --serial-number <mfa-arn> --authentication-code1 <code1> --authentication-code2 <code2>
+
+  - id: aws-iam-003
+    name: Access keys rotated within 90 days
+    description: Access keys should be rotated regularly to reduce the risk of compromised credentials.
+    provider: aws
+    resource_type: aws_iam_user
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.14
+      - PCI DSS 8.2.4
+      - NIST 800-53 IA-5
+    condition:
+      field: metadata.access_key_age_days
+      operator: greater_than
+      value: 90
+    recommendation: Rotate access keys every 90 days or less.
+    remediation:
+      cli: |
+        # Create new access key
+        aws iam create-access-key --user-name <user-name>
+        # Update applications with new key
+        # Delete old access key
+        aws iam delete-access-key --user-name <user-name> --access-key-id <old-key-id>
+
+  - id: aws-iam-004
+    name: No IAM policies with full admin privileges
+    description: IAM policies should follow the principle of least privilege and not grant full administrative access.
+    provider: aws
+    resource_type: aws_iam_policy
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.22
+      - PCI DSS 7.1.2
+      - NIST 800-53 AC-6
+    condition:
+      and:
+        - field: metadata.has_admin_access
+          operator: is_true
+        - field: metadata.is_aws_managed
+          operator: is_false
+    recommendation: Remove full admin privileges and grant only required permissions.
+    remediation:
+      terraform: |
+        # Use specific permissions instead of "*"
+        resource "aws_iam_policy" "example" {
+          name = "example-policy"
+          policy = jsonencode({
+            Version = "2012-10-17"
+            Statement = [{
+              Effect = "Allow"
+              Action = ["s3:GetObject", "s3:ListBucket"]
+              Resource = ["arn:aws:s3:::example-bucket/*"]
+            }]
+          })
+        }
+
+  - id: aws-iam-005
+    name: IAM password policy requires minimum length
+    description: IAM password policy should require a minimum password length of 14 characters.
+    provider: aws
+    resource_type: aws_iam_account_password_policy
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.8
+      - PCI DSS 8.2.3
+      - NIST 800-53 IA-5
+    condition:
+      or:
+        - field: metadata.minimum_password_length
+          operator: is_nil
+        - field: metadata.minimum_password_length
+          operator: less_than
+          value: 14
+    recommendation: Set minimum password length to 14 characters or more.
+    remediation:
+      terraform: |
+        resource "aws_iam_account_password_policy" "strict" {
+          minimum_password_length        = 14
+          require_lowercase_characters   = true
+          require_uppercase_characters   = true
+          require_numbers               = true
+          require_symbols               = true
+          allow_users_to_change_password = true
+          max_password_age              = 90
+          password_reuse_prevention     = 24
+        }
+
+  - id: aws-iam-006
+    name: IAM role with overly permissive trust policy
+    description: IAM roles should not allow any AWS principal to assume them.
+    provider: aws
+    resource_type: aws_iam_role
+    severity: critical
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.16
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.trust_policy_allows_all
+      operator: is_true
+    recommendation: Restrict the trust policy to specific AWS accounts or principals.
+    remediation:
+      terraform: |
+        resource "aws_iam_role" "example" {
+          name = "example-role"
+          assume_role_policy = jsonencode({
+            Version = "2012-10-17"
+            Statement = [{
+              Effect = "Allow"
+              Principal = {
+                AWS = "arn:aws:iam::123456789012:root"
+              }
+              Action = "sts:AssumeRole"
+            }]
+          })
+        }
+
+  # ============================================================================
+  # Section 2 - Storage (S3)
+  # ============================================================================
+
+  - id: aws-s3-001
+    name: S3 bucket public access blocked
+    description: S3 buckets should have Block Public Access settings enabled to prevent unintended public exposure.
+    provider: aws
+    resource_type: aws_s3_bucket
+    severity: critical
+    category: data_protection
+    compliance:
+      - CIS AWS 2.1.1
+      - CIS AWS 2.1.2
+      - PCI DSS 7.1
+      - HIPAA 164.312(a)(1)
+      - NIST 800-53 AC-3
+    condition:
+      or:
+        - field: metadata.public_access_block
+          operator: is_nil
+        - field: metadata.public_access_block.BlockPublicAcls
+          operator: is_false
+        - field: metadata.public_access_block.BlockPublicPolicy
+          operator: is_false
+    recommendation: Enable S3 Block Public Access settings at the bucket level.
+    remediation:
+      terraform: |
+        resource "aws_s3_bucket_public_access_block" "example" {
+          bucket = aws_s3_bucket.example.id
+
+          block_public_acls       = true
+          block_public_policy     = true
+          ignore_public_acls      = true
+          restrict_public_buckets = true
+        }
+      cloudformation: |
+        AWSTemplateFormatVersion: '2010-09-09'
+        Resources:
+          S3BucketPolicy:
+            Type: AWS::S3::BucketPolicy
+            Properties:
+              Bucket: !Ref ExampleBucket
+              PublicAccessBlockConfiguration:
+                BlockPublicAcls: true
+                BlockPublicPolicy: true
+                IgnorePublicAcls: true
+                RestrictPublicBuckets: true
+
+  - id: aws-s3-002
+    name: S3 bucket server-side encryption enabled
+    description: S3 buckets should have default server-side encryption enabled to protect data at rest.
+    provider: aws
+    resource_type: aws_s3_bucket
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS AWS 2.1.1
+      - PCI DSS 3.4
+      - HIPAA 164.312(a)(2)(iv)
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.encryption
+      operator: is_nil
+    recommendation: Enable default server-side encryption using SSE-S3 or SSE-KMS.
+    remediation:
+      terraform: |
+        resource "aws_s3_bucket_server_side_encryption_configuration" "example" {
+          bucket = aws_s3_bucket.example.id
+
+          rule {
+            apply_server_side_encryption_by_default {
+              sse_algorithm     = "aws:kms"
+              kms_master_key_id = aws_kms_key.example.arn
+            }
+          }
+        }
+
+  - id: aws-s3-003
+    name: S3 bucket versioning enabled
+    description: S3 bucket versioning provides protection against accidental deletion and enables object recovery.
+    provider: aws
+    resource_type: aws_s3_bucket
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS AWS 2.1.3
+      - NIST 800-53 CP-9
+    condition:
+      or:
+        - field: metadata.versioning
+          operator: is_nil
+        - field: metadata.versioning.Status
+          operator: not_equals
+          value: Enabled
+    recommendation: Enable versioning to protect against accidental deletion and overwrites.
+    remediation:
+      terraform: |
+        resource "aws_s3_bucket_versioning" "example" {
+          bucket = aws_s3_bucket.example.id
+          versioning_configuration {
+            status = "Enabled"
+          }
+        }
+
+  - id: aws-s3-004
+    name: S3 bucket access logging enabled
+    description: Server access logging provides records for requests made to a bucket.
+    provider: aws
+    resource_type: aws_s3_bucket
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS AWS 2.6
+      - PCI DSS 10.2
+      - NIST 800-53 AU-2
+    condition:
+      field: metadata.logging
+      operator: is_nil
+    recommendation: Enable access logging to track requests made to the bucket.
+    remediation:
+      terraform: |
+        resource "aws_s3_bucket_logging" "example" {
+          bucket = aws_s3_bucket.example.id
+
+          target_bucket = aws_s3_bucket.log_bucket.id
+          target_prefix = "log/"
+        }
+
+  - id: aws-s3-005
+    name: S3 bucket MFA delete enabled
+    description: MFA delete adds an additional layer of security for deleting objects and disabling versioning.
+    provider: aws
+    resource_type: aws_s3_bucket
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS AWS 2.1.3
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.mfa_delete_enabled
+      operator: is_false
+    recommendation: Enable MFA Delete for sensitive buckets.
+    remediation:
+      cli: |
+        # MFA Delete can only be enabled by the root account via CLI
+        aws s3api put-bucket-versioning \
+          --bucket example-bucket \
+          --versioning-configuration Status=Enabled,MFADelete=Enabled \
+          --mfa "arn:aws:iam::123456789012:mfa/root-account-mfa-device <mfa-code>"
+
+  # ============================================================================
+  # Section 3 - Logging and Monitoring
+  # ============================================================================
+
+  - id: aws-cloudtrail-001
+    name: CloudTrail enabled in all regions
+    description: CloudTrail should be enabled in all regions to capture all AWS API activity.
+    provider: aws
+    resource_type: aws_cloudtrail
+    severity: high
+    category: logging_monitoring
+    compliance:
+      - CIS AWS 3.1
+      - PCI DSS 10.2
+      - NIST 800-53 AU-2
+    condition:
+      field: metadata.is_multi_region
+      operator: is_false
+    recommendation: Configure a multi-region CloudTrail trail to capture all API activity.
+    remediation:
+      terraform: |
+        resource "aws_cloudtrail" "example" {
+          name                          = "example-trail"
+          s3_bucket_name                = aws_s3_bucket.trail.id
+          is_multi_region_trail         = true
+          include_global_service_events = true
+          enable_logging                = true
+        }
+
+  - id: aws-cloudtrail-002
+    name: CloudTrail log file validation enabled
+    description: Log file validation provides integrity checking for CloudTrail log files.
+    provider: aws
+    resource_type: aws_cloudtrail
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS AWS 3.2
+      - PCI DSS 10.5
+      - NIST 800-53 AU-10
+    condition:
+      field: metadata.log_file_validation
+      operator: is_false
+    recommendation: Enable log file validation to detect tampering.
+    remediation:
+      terraform: |
+        resource "aws_cloudtrail" "example" {
+          name                          = "example-trail"
+          s3_bucket_name                = aws_s3_bucket.trail.id
+          enable_log_file_validation    = true
+        }
+
+  - id: aws-cloudtrail-003
+    name: CloudTrail logs encrypted with KMS
+    description: CloudTrail logs should be encrypted at rest using customer-managed KMS keys.
+    provider: aws
+    resource_type: aws_cloudtrail
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS AWS 3.7
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.kms_key_id
+      operator: is_nil
+    recommendation: Enable KMS encryption for CloudTrail logs.
+    remediation:
+      terraform: |
+        resource "aws_cloudtrail" "example" {
+          name                  = "example-trail"
+          s3_bucket_name        = aws_s3_bucket.trail.id
+          kms_key_id           = aws_kms_key.cloudtrail.arn
+        }
+
+  - id: aws-cloudwatch-001
+    name: CloudWatch log group retention configured
+    description: CloudWatch log groups should have a retention policy to manage log storage costs and compliance.
+    provider: aws
+    resource_type: aws_cloudwatch_log_group
+    severity: low
+    category: logging_monitoring
+    compliance:
+      - CIS AWS 3.4
+      - PCI DSS 10.7
+      - NIST 800-53 AU-11
+    condition:
+      or:
+        - field: metadata.retention_in_days
+          operator: is_nil
+        - field: metadata.retention_in_days
+          operator: equals
+          value: 0
+    recommendation: Set appropriate retention period based on compliance requirements.
+    remediation:
+      terraform: |
+        resource "aws_cloudwatch_log_group" "example" {
+          name              = "/aws/example"
+          retention_in_days = 365
+        }
+
+  # ============================================================================
+  # Section 4 - Networking
+  # ============================================================================
+
+  - id: aws-vpc-001
+    name: VPC flow logs enabled
+    description: VPC Flow Logs capture network traffic information for monitoring and troubleshooting.
+    provider: aws
+    resource_type: aws_vpc
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS AWS 3.9
+      - PCI DSS 10.2
+      - NIST 800-53 AU-12
+    condition:
+      field: metadata.flow_logs
+      operator: is_empty
+    recommendation: Enable VPC flow logs to capture network traffic information.
+    remediation:
+      terraform: |
+        resource "aws_flow_log" "example" {
+          iam_role_arn    = aws_iam_role.flow_log.arn
+          log_destination = aws_cloudwatch_log_group.flow_log.arn
+          traffic_type    = "ALL"
+          vpc_id          = aws_vpc.example.id
+        }
+
+  - id: aws-sg-001
+    name: Security group allows unrestricted SSH
+    description: Security groups should not allow unrestricted SSH access from the internet.
+    provider: aws
+    resource_type: aws_security_group
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS AWS 5.2
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_ssh
+      operator: is_true
+    recommendation: Restrict SSH access to specific IP ranges or use a bastion host.
+    remediation:
+      terraform: |
+        resource "aws_security_group_rule" "ssh" {
+          type              = "ingress"
+          from_port         = 22
+          to_port           = 22
+          protocol          = "tcp"
+          cidr_blocks       = ["10.0.0.0/8"]  # Internal network only
+          security_group_id = aws_security_group.example.id
+        }
+
+  - id: aws-sg-002
+    name: Security group allows unrestricted RDP
+    description: Security groups should not allow unrestricted RDP access from the internet.
+    provider: aws
+    resource_type: aws_security_group
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS AWS 5.3
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_rdp
+      operator: is_true
+    recommendation: Restrict RDP access to specific IP ranges or use a bastion host.
+    remediation:
+      terraform: |
+        resource "aws_security_group_rule" "rdp" {
+          type              = "ingress"
+          from_port         = 3389
+          to_port           = 3389
+          protocol          = "tcp"
+          cidr_blocks       = ["10.0.0.0/8"]  # Internal network only
+          security_group_id = aws_security_group.example.id
+        }
+
+  - id: aws-sg-003
+    name: Security group default allows all outbound
+    description: Default security groups should be reviewed and restricted.
+    provider: aws
+    resource_type: aws_security_group
+    severity: low
+    category: network_security
+    compliance:
+      - CIS AWS 5.4
+      - NIST 800-53 AC-4
+    condition:
+      and:
+        - field: name
+          operator: equals
+          value: default
+        - field: metadata.allows_all_egress
+          operator: is_true
+    recommendation: Review default security group rules and restrict as needed.
+
+  # ============================================================================
+  # Section 5 - Database (RDS)
+  # ============================================================================
+
+  - id: aws-rds-001
+    name: RDS instance publicly accessible
+    description: RDS instances should not be publicly accessible.
+    provider: aws
+    resource_type: aws_rds_instance
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS AWS 4.1
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.publicly_accessible
+      operator: is_true
+    recommendation: Disable public accessibility and access via private subnets only.
+    remediation:
+      terraform: |
+        resource "aws_db_instance" "example" {
+          # ... other config
+          publicly_accessible = false
+        }
+
+  - id: aws-rds-002
+    name: RDS instance storage not encrypted
+    description: RDS instances should have storage encryption enabled.
+    provider: aws
+    resource_type: aws_rds_instance
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS AWS 4.3
+      - PCI DSS 3.4
+      - HIPAA 164.312(a)(2)(iv)
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.storage_encrypted
+      operator: is_false
+    recommendation: Enable encryption at rest for the RDS instance.
+    remediation:
+      terraform: |
+        resource "aws_db_instance" "example" {
+          # ... other config
+          storage_encrypted = true
+          kms_key_id       = aws_kms_key.rds.arn
+        }
+
+  - id: aws-rds-003
+    name: RDS automated backups disabled
+    description: RDS instances should have automated backups enabled.
+    provider: aws
+    resource_type: aws_rds_instance
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS AWS 4.6
+      - PCI DSS 10.7
+      - NIST 800-53 CP-9
+    condition:
+      field: metadata.backup_retention_period
+      operator: equals
+      value: 0
+    recommendation: Enable automated backups with a retention period of at least 7 days.
+    remediation:
+      terraform: |
+        resource "aws_db_instance" "example" {
+          # ... other config
+          backup_retention_period = 7
+          backup_window          = "03:00-04:00"
+        }
+
+  - id: aws-rds-004
+    name: RDS multi-AZ not enabled
+    description: Production RDS instances should use Multi-AZ deployments for high availability.
+    provider: aws
+    resource_type: aws_rds_instance
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS AWS 4.5
+      - NIST 800-53 CP-10
+    condition:
+      field: metadata.multi_az
+      operator: is_false
+    recommendation: Enable Multi-AZ for production databases.
+    remediation:
+      terraform: |
+        resource "aws_db_instance" "example" {
+          # ... other config
+          multi_az = true
+        }
+
+  # ============================================================================
+  # Section 6 - Compute (EC2)
+  # ============================================================================
+
+  - id: aws-ec2-001
+    name: EC2 instance has public IP
+    description: EC2 instances should not have public IP addresses unless necessary.
+    provider: aws
+    resource_type: aws_ec2_instance
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS AWS 5.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.public_ip
+      operator: is_not_nil
+    recommendation: Use a NAT gateway for outbound traffic or a bastion host for SSH access.
+    remediation:
+      terraform: |
+        resource "aws_instance" "example" {
+          # ... other config
+          associate_public_ip_address = false
+        }
+
+  - id: aws-ec2-002
+    name: EC2 instance missing IAM role
+    description: EC2 instances should use IAM roles instead of long-term credentials.
+    provider: aws
+    resource_type: aws_ec2_instance
+    severity: low
+    category: identity_and_access
+    compliance:
+      - CIS AWS 1.20
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.iam_profile
+      operator: is_nil
+    recommendation: Attach an IAM instance profile with minimal required permissions.
+    remediation:
+      terraform: |
+        resource "aws_instance" "example" {
+          # ... other config
+          iam_instance_profile = aws_iam_instance_profile.example.name
+        }
+
+  - id: aws-ec2-003
+    name: EC2 EBS volume not encrypted
+    description: EBS volumes should be encrypted to protect data at rest.
+    provider: aws
+    resource_type: aws_ebs_volume
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS AWS 4.2
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.encrypted
+      operator: is_false
+    recommendation: Enable encryption for EBS volumes.
+    remediation:
+      terraform: |
+        resource "aws_ebs_volume" "example" {
+          # ... other config
+          encrypted  = true
+          kms_key_id = aws_kms_key.ebs.arn
+        }
+
+  # ============================================================================
+  # Section 7 - Lambda
+  # ============================================================================
+
+  - id: aws-lambda-001
+    name: Lambda function uses deprecated runtime
+    description: Lambda functions should use supported runtime versions.
+    provider: aws
+    resource_type: aws_lambda_function
+    severity: medium
+    category: compute_security
+    compliance:
+      - AWS Best Practices
+      - NIST 800-53 SI-2
+    condition:
+      field: metadata.runtime
+      operator: in
+      value:
+        - python2.7
+        - nodejs10.x
+        - nodejs8.10
+        - ruby2.5
+        - dotnetcore2.1
+    recommendation: Upgrade to a supported runtime version.
+    remediation:
+      terraform: |
+        resource "aws_lambda_function" "example" {
+          # ... other config
+          runtime = "python3.11"  # Use supported version
+        }
+
+  - id: aws-lambda-002
+    name: Lambda function not in VPC
+    description: Lambda functions accessing private resources should be configured with VPC access.
+    provider: aws
+    resource_type: aws_lambda_function
+    severity: low
+    category: network_security
+    compliance:
+      - AWS Best Practices
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.vpc_config
+      operator: is_nil
+    recommendation: Configure VPC access if the function needs to access private resources.
+    remediation:
+      terraform: |
+        resource "aws_lambda_function" "example" {
+          # ... other config
+          vpc_config {
+            subnet_ids         = [aws_subnet.private.id]
+            security_group_ids = [aws_security_group.lambda.id]
+          }
+        }
+
+  # ============================================================================
+  # Section 8 - KMS
+  # ============================================================================
+
+  - id: aws-kms-001
+    name: KMS key rotation not enabled
+    description: KMS keys should have automatic key rotation enabled.
+    provider: aws
+    resource_type: aws_kms_key
+    severity: medium
+    category: encryption
+    compliance:
+      - CIS AWS 3.8
+      - PCI DSS 3.5.2
+      - NIST 800-53 SC-12
+    condition:
+      field: metadata.key_rotation_enabled
+      operator: is_false
+    recommendation: Enable automatic key rotation for KMS keys.
+    remediation:
+      terraform: |
+        resource "aws_kms_key" "example" {
+          description             = "Example KMS key"
+          enable_key_rotation     = true
+        }

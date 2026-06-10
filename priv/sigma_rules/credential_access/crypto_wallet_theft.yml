@@ -1,0 +1,331 @@
+title: Crypto Wallet Extension Data Access
+id: ca08a010-cryp-0001-0001-000000000001
+status: stable
+description: |
+  Detects non-browser processes accessing Chromium browser extension data for
+  cryptocurrency wallets. Infostealers like Lumma, Vidar, and RedLine target
+  wallet extensions (MetaMask, Phantom, Solflare) to steal private keys and
+  seed phrases.
+references:
+  - https://attack.mitre.org/techniques/T1528/
+  - https://malpedia.caad.fkie.fraunhofer.de/details/win.lumma
+author: Tamandua EDR
+author_pubkey: TamDevBounty1111111111111111111111111111111
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1528
+  - attack.t1555.003
+  - web3
+  - crypto
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_metamask:
+    TargetFilename|contains:
+      - '\Local Extension Settings\nkbihfbeogaeaoehlefnkodbefgpgknn'
+      - '\IndexedDB\chrome-extension_nkbihfbeogaeaoehlefnkodbefgpgknn'
+  selection_phantom:
+    TargetFilename|contains:
+      - '\Local Extension Settings\bfnaelmomeimhlpmgjnjophhpkkoljpa'
+      - '\IndexedDB\chrome-extension_bfnaelmomeimhlpmgjnjophhpkkoljpa'
+  selection_solflare:
+    TargetFilename|contains:
+      - '\Local Extension Settings\bhhhlbepdkbapadjdnnojkbgioiodbic'
+      - '\IndexedDB\chrome-extension_bhhhlbepdkbapadjdnnojkbgioiodbic'
+  selection_backpack:
+    TargetFilename|contains:
+      - '\Local Extension Settings\aflkmfhebedbjioipglgcbcmnbpgliof'
+      - '\IndexedDB\chrome-extension_aflkmfhebedbjioipglgcbcmnbpgliof'
+  selection_coinbase:
+    TargetFilename|contains:
+      - '\Local Extension Settings\hnfanknocfeofbddgcijnmhnfnkdnaad'
+      - '\IndexedDB\chrome-extension_hnfanknocfeofbddgcijnmhnfnkdnaad'
+  selection_trust:
+    TargetFilename|contains:
+      - '\Local Extension Settings\egjidjbpglichdcondbcbdnbeeppgdph'
+  selection_exodus:
+    TargetFilename|contains:
+      - '\Local Extension Settings\aholpfdialjgjfhomihkjbmgjidlcdno'
+  selection_brave_wallet:
+    TargetFilename|contains:
+      - '\Local Extension Settings\odbfpeeihdkbihmopkbjmoonfanlbfcl'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\brave.exe'
+      - '\opera.exe'
+      - '\vivaldi.exe'
+  filter_update:
+    Image|endswith: '\update.exe'
+  condition: (selection_metamask or selection_phantom or selection_solflare or selection_backpack or selection_coinbase or selection_trust or selection_exodus or selection_brave_wallet) and not (filter_browser or filter_update)
+falsepositives:
+  - Browser extensions for wallet management
+  - Legitimate backup utilities
+level: critical
+
+---
+title: Solana Wallet File Access
+id: ca08a010-cryp-0001-0002-000000000002
+status: stable
+description: |
+  Detects access to Solana wallet keypair files and configuration.
+  Solana CLI stores keypairs in ~/.config/solana/ as JSON files.
+  Theft of these files allows complete wallet compromise.
+references:
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1552.001
+  - web3
+  - solana
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_windows:
+    TargetFilename|contains:
+      - '\.config\solana\id.json'
+      - '\.config\solana\devnet.json'
+      - '\.config\solana\mainnet-beta.json'
+      - '\solana-wallet'
+      - '\solana\keypair'
+  filter_cli:
+    Image|endswith:
+      - '\solana.exe'
+      - '\anchor.exe'
+      - '\node.exe'
+      - '\cargo.exe'
+  condition: selection_windows and not filter_cli
+falsepositives:
+  - Solana CLI operations
+  - Development tools
+level: critical
+
+---
+title: Discord Token Theft via File Access
+id: ca08a010-cryp-0002-0001-000000000003
+status: stable
+description: |
+  Detects non-Discord processes accessing Discord local storage where
+  authentication tokens are stored. Common target of infostealers.
+references:
+  - https://attack.mitre.org/techniques/T1528/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1528
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\discord\Local Storage\leveldb'
+      - '\discordcanary\Local Storage\leveldb'
+      - '\discordptb\Local Storage\leveldb'
+  filter_discord:
+    Image|endswith:
+      - '\Discord.exe'
+      - '\DiscordCanary.exe'
+      - '\DiscordPTB.exe'
+      - '\Update.exe'
+  condition: selection and not filter_discord
+falsepositives:
+  - Discord backup tools
+level: high
+
+---
+title: Telegram Session Theft via tdata Access
+id: ca08a010-cryp-0002-0002-000000000004
+status: stable
+description: |
+  Detects non-Telegram processes accessing tdata folder which contains
+  session data. Theft enables session hijacking without credentials.
+references:
+  - https://attack.mitre.org/techniques/T1539/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1539
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Telegram Desktop\tdata\'
+  filter_telegram:
+    Image|endswith:
+      - '\Telegram.exe'
+      - '\Updater.exe'
+  condition: selection and not filter_telegram
+falsepositives:
+  - Telegram Desktop updater
+level: high
+
+---
+title: Infostealer SQLite Browser Query
+id: ca08a010-cryp-0003-0001-000000000005
+status: stable
+description: |
+  Detects processes loading SQLite DLLs and accessing browser credential
+  databases. Infostealers extract credentials via direct SQLite queries.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_sqlite:
+    CommandLine|contains:
+      - 'SELECT * FROM logins'
+      - 'SELECT * FROM cookies'
+      - 'SELECT * FROM autofill'
+      - 'SELECT * FROM credit_cards'
+      - 'SELECT origin_url'
+      - 'SELECT password_value'
+      - 'SELECT encrypted_value'
+  filter_backup:
+    ParentImage|endswith:
+      - '\chrome.exe'
+      - '\firefox.exe'
+      - '\msedge.exe'
+  condition: selection_sqlite and not filter_backup
+falsepositives:
+  - Browser sync utilities
+  - Password manager imports
+level: critical
+
+---
+title: Infostealer C2 Communication Pattern
+id: ca08a010-cryp-0004-0001-000000000006
+status: stable
+description: |
+  Detects network connections matching common infostealer C2 patterns
+  including data exfiltration endpoints and configuration retrieval.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - attack.command_and_control
+  - attack.t1071.001
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection_endpoints:
+    DestinationHostname|contains:
+      - '/gate.php'
+      - '/api/data'
+      - '/panel/'
+      - '/c2/'
+      - 'grabber'
+      - 'stealer'
+  selection_params:
+    DestinationHostname|contains:
+      - 'hwid='
+      - 'lid='
+      - 'build_id='
+      - 'machineId='
+  filter_legit:
+    DestinationHostname|endswith:
+      - '.microsoft.com'
+      - '.google.com'
+      - '.apple.com'
+      - '.mozilla.org'
+  condition: (selection_endpoints or selection_params) and not filter_legit
+falsepositives:
+  - Legitimate applications using similar URL patterns
+level: high
+
+---
+title: Clipboard Crypto Address Hijacking
+id: ca08a010-cryp-0005-0001-000000000007
+status: stable
+description: |
+  Detects potential clipboard hijacking behavior targeting cryptocurrency
+  addresses. Clipper malware monitors clipboard for wallet addresses and
+  replaces them with attacker-controlled addresses.
+references:
+  - https://attack.mitre.org/techniques/T1115/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.collection
+  - attack.t1115
+  - web3
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_clipboard_api:
+    CommandLine|contains:
+      - 'GetClipboardData'
+      - 'SetClipboardData'
+      - 'OpenClipboard'
+      - 'CloseClipboard'
+  selection_crypto_pattern:
+    CommandLine|re:
+      - '(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,39}'  # Bitcoin
+      - '0x[a-fA-F0-9]{40}'  # Ethereum
+      - '[1-9A-HJ-NP-Za-km-z]{32,44}'  # Solana
+  condition: selection_clipboard_api and selection_crypto_pattern
+falsepositives:
+  - Cryptocurrency applications
+  - Development tools
+level: medium
+
+---
+title: Browser Credential Decryption via DPAPI
+id: ca08a010-cryp-0006-0001-000000000008
+status: stable
+description: |
+  Detects processes calling DPAPI decryption functions while accessing
+  browser credential files. Chrome and Edge use DPAPI to protect credentials.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+author: Tamandua EDR
+date: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_dpapi:
+    CommandLine|contains:
+      - 'CryptUnprotectData'
+      - 'System.Security.Cryptography.ProtectedData'
+      - 'Unprotect'
+  selection_browser_path:
+    CommandLine|contains:
+      - 'Chrome\User Data'
+      - 'Edge\User Data'
+      - 'BraveSoftware\Brave-Browser'
+      - 'Local State'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\brave.exe'
+  condition: selection_dpapi and selection_browser_path and not filter_browser
+falsepositives:
+  - Password manager sync
+  - Browser migration tools
+level: critical

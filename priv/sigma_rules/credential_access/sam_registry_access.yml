@@ -1,0 +1,79 @@
+title: SAM Registry Hive Dump via Reg.exe
+id: ca02a001-samr-0002-0001-000000000001
+status: stable
+description: |
+  Detects the use of reg.exe to export SAM, SYSTEM, or SECURITY registry hives
+  to disk. These hives contain hashed credentials and can be cracked offline.
+  This is a common post-exploitation technique used by both manual attackers
+  and automated tools like LaZagne, secretsdump, and Mimikatz.
+references:
+  - https://attack.mitre.org/techniques/T1003/002/
+  - https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/reg-save
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_reg:
+    Image|endswith: '\reg.exe'
+    CommandLine|contains:
+      - 'save'
+      - 'export'
+  selection_hive:
+    CommandLine|contains:
+      - 'hklm\sam'
+      - 'hklm\system'
+      - 'hklm\security'
+      - 'HKLM\SAM'
+      - 'HKLM\SYSTEM'
+      - 'HKLM\SECURITY'
+  filter_backup:
+    ParentImage|endswith:
+      - '\msiexec.exe'
+      - '\svchost.exe'
+    ParentCommandLine|contains: 'backup'
+  condition: selection_reg and selection_hive and not filter_backup
+falsepositives:
+  - Legitimate system backup operations
+  - Compliance auditing scripts that read hive metadata
+level: high
+
+---
+title: SAM Registry Key Direct Access
+id: ca02a002-samr-0002-0002-000000000002
+status: stable
+description: |
+  Detects direct registry access to the SAM database via registry events.
+  Adversaries may programmatically access SAM using native APIs or PowerShell
+  instead of using reg.exe to avoid detection.
+references:
+  - https://attack.mitre.org/techniques/T1003/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.credential_access
+  - attack.t1003.002
+logsource:
+  category: registry_access
+  product: windows
+detection:
+  selection:
+    TargetObject|contains:
+      - '\SAM\SAM\Domains\Account'
+      - '\SAM\SAM\Domains\Builtin'
+  filter_system:
+    Image|endswith:
+      - '\lsass.exe'
+      - '\svchost.exe'
+      - '\services.exe'
+      - '\System'
+  condition: selection and not filter_system
+falsepositives:
+  - Security auditing tools querying SAM metadata
+level: high

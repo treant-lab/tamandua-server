@@ -1,0 +1,93 @@
+title: Data Destruction via File Deletion Commands
+id: im02a001-dest-0002-0001-000000000001
+status: stable
+description: |
+  Detects bulk file deletion commands that may indicate data destruction
+  or wiping activities. Adversaries may destroy data to deny access to
+  critical information or cause business disruption.
+references:
+  - https://attack.mitre.org/techniques/T1485/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.t1485
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_del:
+    Image|endswith: '\cmd.exe'
+    CommandLine|contains:
+      - 'del /s /q /f'
+      - 'del /f /s /q'
+      - 'rmdir /s /q'
+      - 'rd /s /q'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Remove-Item -Recurse -Force'
+      - 'Remove-Item * -Recurse'
+      - 'rm -r -fo'
+  selection_targets:
+    CommandLine|contains:
+      - '\Users\'
+      - '\Documents\'
+      - '\Desktop\'
+      - 'C:\\'
+      - 'D:\\'
+  filter_cleanup:
+    CommandLine|contains:
+      - '\Temp\'
+      - '\tmp\'
+      - '\Cache\'
+      - '\Recycle'
+  condition: (selection_del or selection_ps) and selection_targets and not filter_cleanup
+falsepositives:
+  - Legitimate cleanup scripts by administrators
+  - Disk space management automation
+level: high
+
+---
+title: SDelete Secure Deletion Tool
+id: im02a002-dest-0002-0002-000000000002
+status: stable
+description: |
+  Detects use of Sysinternals SDelete or similar secure deletion tools
+  that overwrite file data before deletion, making forensic recovery
+  impossible.
+references:
+  - https://attack.mitre.org/techniques/T1485/
+  - https://attack.mitre.org/techniques/T1070/004/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.impact
+  - attack.defense_evasion
+  - attack.t1485
+  - attack.t1070.004
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\sdelete.exe'
+      - '\sdelete64.exe'
+      - '\eraser.exe'
+    CommandLine|contains:
+      - '-s '
+      - '-r '
+      - '-p '
+      - '-z '
+      - '-c '
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Legitimate secure data disposal per compliance requirements
+level: high

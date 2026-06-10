@@ -1,0 +1,100 @@
+title: Windows Defender Real-Time Protection Disabled
+id: de01a001-defr-0001-0001-000000000001
+status: stable
+description: |
+  Detects commands that disable Windows Defender real-time protection,
+  behavior monitoring, IOAV protection, or add broad exclusions. This
+  is one of the most common defense evasion techniques used by malware
+  and attackers before deploying payloads.
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_disable:
+    CommandLine|contains:
+      - 'Set-MpPreference -DisableRealtimeMonitoring $true'
+      - 'Set-MpPreference -DisableRealtimeMonitoring 1'
+      - 'Set-MpPreference -DisableBehaviorMonitoring $true'
+      - 'Set-MpPreference -DisableIOAVProtection $true'
+      - 'Set-MpPreference -DisableScriptScanning $true'
+      - 'Set-MpPreference -DisableBlockAtFirstSeen $true'
+      - 'Set-MpPreference -MAPSReporting 0'
+      - 'Set-MpPreference -SubmitSamplesConsent 2'
+  selection_exclusion:
+    CommandLine|contains:
+      - 'Add-MpPreference -ExclusionPath'
+      - 'Add-MpPreference -ExclusionExtension'
+      - 'Add-MpPreference -ExclusionProcess'
+    CommandLine|contains:
+      - '.exe'
+      - 'C:\\'
+      - '*'
+  selection_reg:
+    Image|endswith: '\reg.exe'
+    CommandLine|contains:
+      - 'Windows Defender'
+      - 'DisableAntiSpyware'
+      - 'DisableAntiVirus'
+    CommandLine|contains:
+      - 'DWORD'
+      - '/d 1'
+  filter_defender_self:
+    Image|contains: '\Windows Defender\'
+  condition: (selection_disable or selection_exclusion or selection_reg) and not filter_defender_self
+falsepositives:
+  - Legitimate administrative Defender configuration
+  - Temporary exclusions during software deployment
+level: high
+
+---
+title: Windows Defender Service Stopped
+id: de01a002-defr-0001-0002-000000000002
+status: stable
+description: |
+  Detects attempts to stop the Windows Defender service (WinDefend) or
+  the Security Center service (wscsvc) via sc.exe, net stop, or taskkill.
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_sc:
+    Image|endswith: '\sc.exe'
+    CommandLine|contains:
+      - 'stop WinDefend'
+      - 'stop wscsvc'
+      - 'stop SecurityHealthService'
+      - 'config WinDefend start= disabled'
+  selection_net:
+    Image|endswith:
+      - '\net.exe'
+      - '\net1.exe'
+    CommandLine|contains:
+      - 'stop WinDefend'
+      - 'stop wscsvc'
+  selection_kill:
+    Image|endswith: '\taskkill.exe'
+    CommandLine|contains:
+      - 'MsMpEng'
+      - 'MpCmdRun'
+  filter_system:
+    Image|contains: '\Windows Defender\'
+  condition: (selection_sc or selection_net or selection_kill) and not filter_system
+falsepositives:
+  - Legitimate troubleshooting of Windows Defender issues
+level: critical

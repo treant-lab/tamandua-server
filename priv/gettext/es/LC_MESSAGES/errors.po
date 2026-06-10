@@ -1,0 +1,114 @@
+## Error messages for Tamandua EDR - Spanish
+msgid ""
+msgstr ""
+"Language: es\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+## Validation Errors
+msgid "can't be blank"
+msgstr "no puede estar en blanco"
+
+msgid "has already been taken"
+msgstr "ya está en uso"
+
+msgid "is invalid"
+msgstr "no es válido"
+
+msgid "must be accepted"
+msgstr "debe ser aceptado"
+
+msgid "has invalid format"
+msgstr "tiene un formato inválido"
+
+msgid "is too short"
+msgstr "es demasiado corto"
+
+msgid "is too long"
+msgstr "es demasiado largo"
+
+msgid "must be equal to %{count}"
+msgstr "debe ser igual a %{count}"
+
+msgid "must be less than %{count}"
+msgstr "debe ser menor que %{count}"
+
+msgid "must be greater than %{count}"
+msgstr "debe ser mayor que %{count}"
+
+## Authentication Errors
+msgid "Invalid email or password"
+msgstr "Correo o contraseña inválidos"
+
+msgid "Your account has been locked"
+msgstr "Su cuenta ha sido bloqueada"
+
+msgid "Your session has expired"
+msgstr "Su sesión ha expirado"
+
+msgid "You must be logged in to access this page"
+msgstr "Debe iniciar sesión para acceder a esta página"
+
+msgid "You do not have permission to access this resource"
+msgstr "No tiene permiso para acceder a este recurso"
+
+msgid "Invalid two-factor authentication code"
+msgstr "Código de autenticación de dos factores inválido"
+
+## API Errors
+msgid "Rate limit exceeded"
+msgstr "Límite de solicitudes excedido"
+
+msgid "Invalid API key"
+msgstr "Clave API inválida"
+
+msgid "API request failed"
+msgstr "Solicitud API falló"
+
+msgid "Timeout error"
+msgstr "Error de tiempo de espera"
+
+## Database Errors
+msgid "Database connection error"
+msgstr "Error de conexión a la base de datos"
+
+msgid "Record not found"
+msgstr "Registro no encontrado"
+
+msgid "Unable to save changes"
+msgstr "No se pueden guardar los cambios"
+
+msgid "Constraint violation"
+msgstr "Violación de restricción"
+
+## File Upload Errors
+msgid "File too large"
+msgstr "Archivo demasiado grande"
+
+msgid "Invalid file type"
+msgstr "Tipo de archivo inválido"
+
+msgid "Upload failed"
+msgstr "Fallo al subir el archivo"
+
+## Network Errors
+msgid "Connection timeout"
+msgstr "Tiempo de conexión agotado"
+
+msgid "Network error"
+msgstr "Error de red"
+
+msgid "Service unavailable"
+msgstr "Servicio no disponible"
+
+## General Errors
+msgid "An unexpected error occurred"
+msgstr "Ocurrió un error inesperado"
+
+msgid "Something went wrong"
+msgstr "Algo salió mal"
+
+msgid "Please try again later"
+msgstr "Por favor, inténtelo de nuevo más tarde"
+
+msgid "Operation failed"
+msgstr "Operación fallida"

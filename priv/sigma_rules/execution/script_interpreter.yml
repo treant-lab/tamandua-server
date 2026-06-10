@@ -1,0 +1,48 @@
+title: Suspicious Script Interpreter Execution
+id: ex07a001-scri-0007-0001-000000000001
+status: stable
+description: |
+  Detects execution of various script interpreters from suspicious
+  contexts, including Python, Perl, and Windows Script Host with
+  unusual parent processes or from temp directories.
+references:
+  - https://attack.mitre.org/techniques/T1059/006/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.execution
+  - attack.t1059
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\python.exe'
+      - '\python3.exe'
+      - '\pythonw.exe'
+      - '\perl.exe'
+      - '\ruby.exe'
+      - '\node.exe'
+  selection_suspicious:
+    CommandLine|contains:
+      - '-c '
+      - '-e '
+      - 'exec('
+      - 'eval('
+      - 'import socket'
+      - 'import subprocess'
+      - 'import os'
+      - 'require("child_process")'
+  filter_dev:
+    ParentImage|contains:
+      - '\Code.exe'
+      - '\pycharm'
+      - '\idea'
+      - '\eclipse'
+  condition: selection and selection_suspicious and not filter_dev
+falsepositives:
+  - Developers running scripts from IDEs
+  - Build systems executing scripts
+level: medium

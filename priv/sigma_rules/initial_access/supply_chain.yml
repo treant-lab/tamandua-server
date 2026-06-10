@@ -1,0 +1,367 @@
+title: Supply Chain Compromise - Suspicious Software Update
+id: d4e5f6a7-0004-initacc-0001-000000000001
+status: stable
+description: Detects potential supply chain compromise via suspicious software update mechanisms
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_update_parent:
+        ParentImage|contains:
+            - 'update'
+            - 'updater'
+            - 'autoupdate'
+            - 'software update'
+    selection_suspicious_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\certutil.exe'
+            - '\bitsadmin.exe'
+        CommandLine|contains:
+            - '-enc'
+            - 'http://'
+            - 'https://'
+            - 'DownloadString'
+            - 'DownloadFile'
+            - 'FromBase64'
+    condition: selection_update_parent and selection_suspicious_child
+falsepositives:
+    - Legitimate software updates
+    - Enterprise software deployment tools
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.002
+    - attack.execution
+    - attack.t1059
+
+---
+title: Supply Chain Compromise - Package Manager Abuse
+id: d4e5f6a7-0004-initacc-0002-000000000002
+status: stable
+description: Detects potential abuse of package managers for supply chain attacks
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/001/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_npm:
+        Image|endswith:
+            - '\node.exe'
+            - '\npm.cmd'
+        ParentImage|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+        CommandLine|contains:
+            - 'preinstall'
+            - 'postinstall'
+            - 'install'
+    selection_pip:
+        Image|endswith: '\python.exe'
+        CommandLine|contains:
+            - 'pip install'
+            - '-m pip'
+    selection_suspicious_spawns:
+        ParentCommandLine|contains:
+            - 'npm'
+            - 'pip'
+            - 'yarn'
+            - 'gem'
+            - 'cargo'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\bash.exe'
+        CommandLine|contains:
+            - 'curl'
+            - 'wget'
+            - 'Invoke-WebRequest'
+            - 'http://'
+            - 'https://'
+    condition: (selection_npm or selection_pip) and selection_suspicious_spawns
+falsepositives:
+    - Legitimate package installation scripts
+    - Development environments
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.t1195.002
+    - attack.execution
+    - attack.t1059
+
+---
+title: Supply Chain Compromise - Compromised Update Channel
+id: d4e5f6a7-0004-initacc-0003-000000000003
+status: stable
+description: Detects software updates from potentially compromised or suspicious update channels
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/002/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_update_process:
+        Image|contains:
+            - 'update'
+            - 'updater'
+    selection_suspicious_dest:
+        DestinationHostname|contains:
+            - '.xyz'
+            - '.top'
+            - '.work'
+            - '.click'
+            - '.link'
+            - '.info'
+            - 'pastebin'
+            - 'ghostbin'
+            - 'hastebin'
+            - 'rentry'
+    condition: selection_update_process and selection_suspicious_dest
+falsepositives:
+    - Very low - most legitimate update channels use reputable domains
+level: critical
+tags:
+    - attack.initial_access
+    - attack.t1195.002
+    - attack.command_and_control
+    - attack.t1105
+
+---
+title: Supply Chain Compromise - MSI/Installer Spawning Suspicious Process
+id: d4e5f6a7-0004-initacc-0004-000000000004
+status: stable
+description: Detects installers spawning suspicious processes that could indicate supply chain compromise
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/002/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_installer_parent:
+        ParentImage|endswith:
+            - '\msiexec.exe'
+            - '\setup.exe'
+            - '\install.exe'
+            - '\installer.exe'
+    selection_suspicious_child:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\cmd.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\certutil.exe'
+        CommandLine|contains:
+            - '-enc'
+            - 'http://'
+            - 'https://'
+            - 'DownloadString'
+            - 'FromBase64'
+            - 'hidden'
+            - 'bypass'
+    condition: selection_installer_parent and selection_suspicious_child
+falsepositives:
+    - Legitimate software installation scripts
+    - Enterprise deployment tools
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.002
+    - attack.execution
+    - attack.t1059
+
+---
+title: Supply Chain Compromise - Signed Binary Proxy Execution from Update
+id: d4e5f6a7-0004-initacc-0005-000000000005
+status: stable
+description: Detects LOLBIN usage spawned from software update processes
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/002/
+    - https://attack.mitre.org/techniques/T1218/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_update_parent:
+        ParentImage|contains:
+            - 'update'
+            - 'updater'
+            - 'setup'
+            - 'install'
+    selection_lolbin:
+        Image|endswith:
+            - '\mshta.exe'
+            - '\regsvr32.exe'
+            - '\rundll32.exe'
+            - '\certutil.exe'
+            - '\msbuild.exe'
+            - '\installutil.exe'
+            - '\cmstp.exe'
+            - '\odbcconf.exe'
+        CommandLine|contains:
+            - 'http://'
+            - 'https://'
+            - '/s'
+            - '/i:'
+            - 'scrobj'
+            - 'javascript:'
+            - 'vbscript:'
+    condition: selection_update_parent and selection_lolbin
+falsepositives:
+    - Legitimate software installations using LOLBINs
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1195.002
+    - attack.defense_evasion
+    - attack.t1218
+
+---
+title: Supply Chain Compromise - Docker Image Pull from Untrusted Registry
+id: d4e5f6a7-0004-initacc-0006-000000000006
+status: stable
+description: Detects Docker image pulls from potentially untrusted registries
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/001/
+logsource:
+    category: process_creation
+    product: linux
+detection:
+    selection_docker:
+        Image|endswith: '/docker'
+        CommandLine|contains: 'pull'
+    filter_trusted:
+        CommandLine|contains:
+            - 'docker.io/'
+            - 'gcr.io/'
+            - 'quay.io/'
+            - 'mcr.microsoft.com/'
+            - 'registry.k8s.io/'
+            - 'ghcr.io/'
+            - 'public.ecr.aws/'
+    condition: selection_docker and not filter_trusted
+falsepositives:
+    - Private enterprise registries
+    - Self-hosted registries
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.execution
+    - attack.t1610
+
+---
+title: Supply Chain Compromise - Plugin/Extension Side-Loading
+id: d4e5f6a7-0004-initacc-0007-000000000007
+status: stable
+description: Detects potential supply chain attacks via malicious plugins or extensions
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/002/
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_plugin_paths:
+        TargetFilename|contains:
+            - '\plugins\'
+            - '\extensions\'
+            - '\addons\'
+            - '\modules\'
+    selection_executables:
+        TargetFilename|endswith:
+            - '.dll'
+            - '.exe'
+            - '.so'
+    filter_legitimate:
+        Image|contains:
+            - '\chrome.exe'
+            - '\firefox.exe'
+            - '\msedge.exe'
+            - '\Code.exe'
+            - '\idea64.exe'
+    condition: selection_plugin_paths and selection_executables and not filter_legitimate
+falsepositives:
+    - Legitimate plugin installations
+    - IDE extensions
+level: low
+tags:
+    - attack.initial_access
+    - attack.t1195.002
+    - attack.persistence
+    - attack.t1176
+
+---
+title: Supply Chain Compromise - Compromised Development Tool
+id: d4e5f6a7-0004-initacc-0008-000000000008
+status: stable
+description: Detects suspicious behavior from development tools that could indicate compromise
+author: Tamandua Security Team
+date: 2025/01/15
+references:
+    - https://attack.mitre.org/techniques/T1195/001/
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_dev_tools:
+        ParentImage|endswith:
+            - '\Code.exe'
+            - '\devenv.exe'
+            - '\idea64.exe'
+            - '\eclipse.exe'
+            - '\atom.exe'
+            - '\sublime_text.exe'
+    selection_suspicious_child:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\cmd.exe'
+        CommandLine|contains:
+            - '-enc'
+            - 'hidden'
+            - 'bypass'
+            - 'http://'
+            - 'https://'
+            - 'DownloadString'
+            - 'FromBase64'
+    filter_terminals:
+        CommandLine|contains:
+            - 'Get-Help'
+            - 'git '
+            - 'npm '
+            - 'node '
+            - 'python '
+    condition: selection_dev_tools and selection_suspicious_child and not filter_terminals
+falsepositives:
+    - Legitimate IDE terminal usage
+    - Build scripts
+level: medium
+tags:
+    - attack.initial_access
+    - attack.t1195.001
+    - attack.t1195.002
+    - attack.execution
+    - attack.t1059

@@ -1,0 +1,87 @@
+{
+  "threat_intel": {
+    "misp": {
+      "enabled": true,
+      "url": "https://your-misp-instance.local",
+      "api_key": "YOUR_MISP_API_KEY_HERE",
+      "verify_ssl": true,
+      "sync_interval_hours": 4,
+      "feeds": [
+        {
+          "name": "CIRCL",
+          "url": "https://www.circl.lu/doc/misp/feed-osint/"
+        },
+        {
+          "name": "Botvrij",
+          "url": "https://www.botvrij.eu/data/feed-osint/"
+        }
+      ]
+    },
+    "alienvault_otx": {
+      "enabled": true,
+      "api_key": "YOUR_OTX_API_KEY_HERE",
+      "sync_interval_hours": 6,
+      "pulse_subscriptions": true
+    },
+    "abusech": {
+      "enabled": true,
+      "feeds": {
+        "malware_bazaar": true,
+        "feodo_tracker": true,
+        "ssl_blacklist": true,
+        "urlhaus": true,
+        "threatfox": true
+      },
+      "sync_interval_hours": 1
+    },
+    "virustotal": {
+      "enabled": true,
+      "api_key": "YOUR_VT_API_KEY_HERE",
+      "daily_quota": 500,
+      "priority_lookups_only": true
+    },
+    "shodan": {
+      "enabled": false,
+      "api_key": "YOUR_SHODAN_API_KEY_HERE",
+      "enrichment_only": true
+    },
+    "custom_feeds": [
+      {
+        "name": "Internal Block List",
+        "type": "ip_list",
+        "url": "https://internal.example.com/blocklist.txt",
+        "auth_header": "Authorization",
+        "auth_value": "Bearer YOUR_TOKEN",
+        "sync_interval_hours": 1,
+        "format": "plain_text",
+        "severity": "high",
+        "confidence": 0.9
+      },
+      {
+        "name": "External C2 Tracker",
+        "type": "mixed",
+        "url": "https://example.com/c2-tracker.json",
+        "sync_interval_hours": 2,
+        "format": "stix2",
+        "severity": "critical",
+        "confidence": 0.95
+      }
+    ],
+    "cache": {
+      "enabled": true,
+      "ttl_hours": 24,
+      "max_entries": 1000000,
+      "persist_path": "/var/lib/tamandua/cache/iocs.db"
+    },
+    "enrichment": {
+      "enabled": true,
+      "max_concurrent_lookups": 10,
+      "lookup_timeout_seconds": 10,
+      "retry_attempts": 2,
+      "age_decay": {
+        "enabled": true,
+        "half_life_days": 30
+      }
+    }
+  }
+}

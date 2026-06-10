@@ -1,0 +1,19 @@
+test_case:
+  name: "MSBuild Code Execution"
+  description: "Tests detection of msbuild abuse for code execution"
+  rule: "defense_evasion/msbuild_abuse.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\MSBuild.exe"
+        cmdline: "MSBuild.exe C:\\Users\\Public\\evil.csproj"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 7456
+        ppid: 2048
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1127.001"]
+  tags: ["defense_evasion", "msbuild", "positive"]

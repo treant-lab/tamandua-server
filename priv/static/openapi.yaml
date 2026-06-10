@@ -1,0 +1,2910 @@
+openapi: 3.0.3
+info:
+  title: Tamandua EDR API
+  description: |
+    Tamandua Endpoint Detection and Response (EDR) API.
+
+    ## Overview
+    Tamandua is a comprehensive EDR platform providing endpoint monitoring, threat detection,
+    incident response, and security analytics capabilities.
+
+    ## Authentication
+    All API endpoints require Bearer token authentication. Include the JWT token in the
+    Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+
+    ## Rate Limiting
+    API requests are limited to 1000 requests per minute per organization.
+    Rate limit headers are included in responses:
+    - `X-RateLimit-Limit`: Maximum requests per minute
+    - `X-RateLimit-Remaining`: Remaining requests in current window
+    - `X-RateLimit-Reset`: Unix timestamp when the rate limit resets
+
+    ## Error Handling
+    All errors follow a consistent format with appropriate HTTP status codes.
+
+    ## Pagination
+    List endpoints support pagination via `limit` and `offset` query parameters.
+
+  version: "1.0.0"
+  contact:
+    name: Tamandua Support
+    url: https://docs.treantlab.org/support
+    email: contato@treantlab.org
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://api.treantlab.org/api/v1
+    description: Production
+  - url: http://localhost:4000/api/v1
+    description: Development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Agents
+    description: Agent management and monitoring endpoints
+  - name: Alerts
+    description: Alert management, triage, and resolution
+  - name: Events
+    description: Telemetry event ingestion and querying
+  - name: Hunting
+    description: Threat hunting queries and templates
+  - name: Response
+    description: Incident response actions (kill, quarantine, isolate)
+  - name: Detection
+    description: Detection rules management (YARA, Sigma, IOCs)
+  - name: Prevention
+    description: Prevention policies and network containment configuration
+  - name: ThreatIntel
+    description: Threat intelligence feeds and enrichment
+  - name: Playbooks
+    description: Automated response playbooks
+  - name: AI
+    description: AI-powered security assistant and analysis
+  - name: Behavioral
+    description: User and Entity Behavior Analytics (UEBA)
+  - name: MITRE
+    description: MITRE ATT&CK framework coverage and mapping
+  - name: Timeline
+    description: Attack timeline and investigation tools
+  - name: Forensics
+    description: Digital forensics and artifact collection
+  - name: LiveResponse
+    description: Live response and remote investigation
+  - name: Cloud
+    description: Cloud workload and container security
+  - name: Compliance
+    description: Compliance frameworks and reporting
+  - name: Organizations
+    description: Multi-tenant organization management
+  - name: Users
+    description: User management and authentication
+  - name: RBAC
+    description: Role-based access control
+  - name: ML
+    description: Machine learning malware detection
+  - name: DeviceControl
+    description: USB and removable device control
+  - name: Health
+    description: System health and status endpoints
+
+paths:
+  # ============================================================================
+  # Agents
+  # ============================================================================
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List all agents
+      description: Returns a list of all registered agents with their current status
+      operationId: listAgents
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+              example:
+                data:
+                  - id: "550e8400-e29b-41d4-a716-446655440000"
+                    hostname: "workstation-001"
+                    os_type: "windows"
+                    os_version: "Windows 11 Pro"
+                    agent_version: "1.2.3"
+                    status: "online"
+                    isolated: false
+                    last_seen: "2026-01-28T10:30:00Z"
+                    created_at: "2026-01-15T08:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /agents/{id}:
+    get:
+      tags: [Agents]
+      summary: Get agent details
+      description: Returns detailed information about a specific agent
+      operationId: getAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Agents]
+      summary: Update agent
+      description: Update agent configuration or metadata
+      operationId: updateAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                group:
+                  type: string
+      responses:
+        '200':
+          description: Agent updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Agents]
+      summary: Delete agent
+      description: Remove an agent from the system
+      operationId: deleteAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '204':
+          description: Agent deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /agents/{id}/isolate:
+    post:
+      tags: [Agents]
+      summary: Isolate agent
+      description: Network-isolate an agent to prevent lateral movement
+      operationId: isolateAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent isolated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agent'
+                  message:
+                    type: string
+                    example: "Agent isolated successfully"
+
+  /agents/{id}/unisolate:
+    post:
+      tags: [Agents]
+      summary: Remove agent isolation
+      description: Restore network connectivity to an isolated agent
+      operationId: unisolateAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent unisolated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agent'
+                  message:
+                    type: string
+
+  /agents/{id}/restart:
+    post:
+      tags: [Agents]
+      summary: Restart agent
+      description: Send restart command to the agent service
+      operationId: restartAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Restart command sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /agents/{id}/events:
+    get:
+      tags: [Agents]
+      summary: Get agent events
+      description: List telemetry events for a specific agent
+      operationId: getAgentEvents
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: event_type
+          in: query
+          schema:
+            type: string
+            enum: [process, file, network, dns, registry]
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [info, low, medium, high, critical]
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+
+  /agents/{id}/processes:
+    get:
+      tags: [Agents]
+      summary: Get agent process tree
+      description: Returns the current process tree for an agent
+      operationId: getAgentProcesses
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Process tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Process'
+
+  # ============================================================================
+  # Prevention Policies
+  # ============================================================================
+  /prevention-policies:
+    get:
+      tags: [Prevention]
+      summary: List prevention policies
+      operationId: listPreventionPolicies
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PreventionPolicy'
+    post:
+      tags: [Prevention]
+      summary: Create prevention policy
+      operationId: createPreventionPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policy:
+                  type: object
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+
+  /prevention-policies/{id}:
+    get:
+      tags: [Prevention]
+      summary: Get prevention policy
+      operationId: getPreventionPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Policy details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+    put:
+      tags: [Prevention]
+      summary: Update prevention policy
+      operationId: updatePreventionPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policy:
+                  type: object
+      responses:
+        '200':
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+    delete:
+      tags: [Prevention]
+      summary: Delete prevention policy
+      operationId: deletePreventionPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Policy deleted
+
+  /prevention-policies/{id}/assign-agents:
+    post:
+      tags: [Prevention]
+      summary: Assign agents to policy
+      operationId: assignPolicyAgents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_ids]
+              properties:
+                agent_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Agents assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+
+  /prevention-policies/{id}/unassign-agents:
+    post:
+      tags: [Prevention]
+      summary: Unassign agents from policy
+      operationId: unassignPolicyAgents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_ids]
+              properties:
+                agent_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Agents unassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+
+  /prevention-policies/agent/{agent_id}:
+    get:
+      tags: [Prevention]
+      summary: Get policy effective for an agent
+      operationId: getAgentPolicy
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Effective policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PreventionPolicy'
+
+  /prevention-policies/agent/{agent_id}/ml-settings:
+    get:
+      tags: [Prevention]
+      summary: Get ML response settings for an agent
+      operationId: getAgentMLSettings
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ML Settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+
+  # ============================================================================
+  # Alerts
+  # ============================================================================
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List alerts
+      description: Returns a filtered list of security alerts
+      operationId: listAlerts
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [info, low, medium, high, critical]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, investigating, resolved, false_positive]
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+
+  /alerts/{id}:
+    get:
+      tags: [Alerts]
+      summary: Get alert details
+      operationId: getAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: Alert details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Alert'
+
+    put:
+      tags: [Alerts]
+      summary: Update alert
+      operationId: updateAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [open, investigating, resolved, false_positive]
+                assigned_to_id:
+                  type: string
+                  format: uuid
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Alert updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Alert'
+
+  /alerts/{id}/assign:
+    post:
+      tags: [Alerts]
+      summary: Assign alert to user
+      operationId: assignAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Alert assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Alert'
+                  message:
+                    type: string
+
+  /alerts/{id}/resolve:
+    post:
+      tags: [Alerts]
+      summary: Resolve alert
+      operationId: resolveAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  description: Resolution notes
+      responses:
+        '200':
+          description: Alert resolved
+
+  /alerts/{id}/false_positive:
+    post:
+      tags: [Alerts]
+      summary: Mark alert as false positive
+      operationId: markAlertFalsePositive
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Alert marked as false positive
+
+  /alerts/{id}/status:
+    patch:
+      tags: [Alerts]
+      summary: Update alert status
+      operationId: updateAlertStatus
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, investigating, resolved, false_positive]
+      responses:
+        '200':
+          description: Status updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ============================================================================
+  # Events
+  # ============================================================================
+  /events:
+    get:
+      tags: [Events]
+      summary: List events
+      operationId: listEvents
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: event_type
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+
+  /events/{id}:
+    get:
+      tags: [Events]
+      summary: Get event details
+      operationId: getEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Event'
+
+  /events/{id}/related:
+    get:
+      tags: [Events]
+      summary: Get related events
+      description: Returns events correlated with the source event
+      operationId: getRelatedEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: time_window
+          in: query
+          description: Time window in minutes
+          schema:
+            type: integer
+            default: 30
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Related events with correlation scores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  related_events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RelatedEvent'
+                  meta:
+                    type: object
+                    properties:
+                      source_event_id:
+                        type: string
+                      agent_id:
+                        type: string
+                      time_window_minutes:
+                        type: integer
+                      count:
+                        type: integer
+
+  /events/search:
+    post:
+      tags: [Events]
+      summary: Search events
+      operationId: searchEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: Search query string
+                time_range:
+                  type: string
+                  default: "24h"
+                  enum: ["1h", "6h", "24h", "7d", "30d"]
+                limit:
+                  type: integer
+                  default: 100
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  meta:
+                    type: object
+                    properties:
+                      query:
+                        type: string
+                      time_range:
+                        type: string
+
+  # ============================================================================
+  # Response Actions
+  # ============================================================================
+  /response/kill:
+    post:
+      tags: [Response]
+      summary: Kill process
+      description: Terminate a process on an agent
+      operationId: killProcess
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, pid]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                pid:
+                  type: integer
+                  description: Process ID to terminate
+      responses:
+        '200':
+          description: Kill command sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseResult'
+
+  /response/quarantine:
+    post:
+      tags: [Response]
+      summary: Quarantine file
+      description: Move a file to quarantine
+      operationId: quarantineFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, path]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                path:
+                  type: string
+                  description: Full path to the file
+      responses:
+        '200':
+          description: Quarantine command sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseResult'
+
+  /response/collect:
+    post:
+      tags: [Response]
+      summary: Collect artifact
+      description: Collect a file or artifact from an agent
+      operationId: collectArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, path]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                path:
+                  type: string
+                type:
+                  type: string
+                  default: "file"
+                  enum: [file, memory, registry]
+      responses:
+        '200':
+          description: Collection command sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseResult'
+
+  /response/scan:
+    post:
+      tags: [Response]
+      summary: Scan path
+      description: Trigger a scan of a path on an agent
+      operationId: scanPath
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, path]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                path:
+                  type: string
+                recursive:
+                  type: boolean
+                  default: true
+                max_depth:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Scan results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  files_scanned:
+                    type: integer
+                  threats_found:
+                    type: integer
+                  threats:
+                    type: array
+                    items:
+                      type: object
+
+  # ============================================================================
+  # Threat Hunting
+  # ============================================================================
+  /hunting/search:
+    post:
+      tags: [Hunting]
+      summary: Execute hunt search
+      description: |
+        Execute a search query across telemetry data.
+        Supports field:value syntax with wildcards.
+      operationId: huntSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: "Hunt query (e.g., process.name:powershell*)"
+                  example: "process.name:powershell* AND network.remote_ip:*"
+                time_range:
+                  type: string
+                  default: "24h"
+                limit:
+                  type: integer
+                  default: 100
+                agent_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '200':
+          description: Hunt results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  meta:
+                    type: object
+                    properties:
+                      query:
+                        type: string
+                      time_range:
+                        type: string
+                      total:
+                        type: integer
+
+  /hunting/query:
+    post:
+      tags: [Hunting]
+      summary: Execute structured query
+      operationId: huntQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: object
+                  description: Structured query AST
+                time_range:
+                  type: string
+                  default: "24h"
+                limit:
+                  type: integer
+                  default: 100
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+                  meta:
+                    type: object
+
+  /hunting/schema:
+    get:
+      tags: [Hunting]
+      summary: Get hunt query schema
+      description: Returns field definitions, operators, and categories for hunt queries
+      operationId: getHuntSchema
+      responses:
+        '200':
+          description: Hunt schema
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      fields:
+                        type: object
+                      operators:
+                        type: array
+                        items:
+                          type: string
+                      categories:
+                        type: array
+                        items:
+                          type: string
+
+  /hunting/templates:
+    get:
+      tags: [Hunting]
+      summary: Get hunt templates
+      description: Returns MITRE ATT&CK query templates
+      operationId: getHuntTemplates
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Hunt templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      templates:
+                        type: object
+                      categories:
+                        type: array
+                        items:
+                          type: string
+                      source:
+                        type: string
+
+  # ============================================================================
+  # Threat Intelligence
+  # ============================================================================
+  /threat-intel/status:
+    get:
+      tags: [ThreatIntel]
+      summary: Get feed status
+      operationId: getThreatIntelStatus
+      responses:
+        '200':
+          description: Feed status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      last_sync:
+                        type: string
+                        format: date-time
+                      sync_interval_hours:
+                        type: integer
+                      feeds:
+                        type: array
+                        items:
+                          type: object
+                      total_iocs:
+                        type: integer
+                      api_keys_configured:
+                        type: object
+
+  /threat-intel/sync:
+    post:
+      tags: [ThreatIntel]
+      summary: Sync all feeds
+      operationId: syncAllFeeds
+      responses:
+        '200':
+          description: Sync started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /threat-intel/enrich/hash:
+    post:
+      tags: [ThreatIntel]
+      summary: Enrich file hash
+      description: Look up reputation for a file hash
+      operationId: enrichHash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hash]
+              properties:
+                hash:
+                  type: string
+                  description: MD5, SHA1, or SHA256 hash
+      responses:
+        '200':
+          description: Hash enrichment result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/HashEnrichment'
+
+  /threat-intel/enrich/ip:
+    post:
+      tags: [ThreatIntel]
+      summary: Enrich IP address
+      operationId: enrichIP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip:
+                  type: string
+                  format: ipv4
+      responses:
+        '200':
+          description: IP enrichment result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPEnrichment'
+
+  /threat-intel/enrich/domain:
+    post:
+      tags: [ThreatIntel]
+      summary: Enrich domain
+      operationId: enrichDomain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+      responses:
+        '200':
+          description: Domain enrichment result
+
+  /threat-intel/lookup/{type}/{value}:
+    get:
+      tags: [ThreatIntel]
+      summary: Look up IOC
+      operationId: lookupIOC
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [hash, ip, domain, url]
+        - name: value
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: IOC lookup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      found:
+                        type: boolean
+                      type:
+                        type: string
+                      value:
+                        type: string
+                      source:
+                        type: string
+                      threat_type:
+                        type: string
+                      confidence:
+                        type: integer
+
+  # ============================================================================
+  # Playbooks
+  # ============================================================================
+  /playbooks:
+    get:
+      tags: [Playbooks]
+      summary: List playbooks
+      operationId: listPlaybooks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, disabled, draft]
+        - name: trigger_type
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of playbooks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Playbook'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+
+    post:
+      tags: [Playbooks]
+      summary: Create playbook
+      operationId: createPlaybook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybookCreate'
+      responses:
+        '201':
+          description: Playbook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Playbook'
+                  message:
+                    type: string
+
+  /playbooks/{id}:
+    get:
+      tags: [Playbooks]
+      summary: Get playbook
+      operationId: getPlaybook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Playbook details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Playbook'
+
+    put:
+      tags: [Playbooks]
+      summary: Update playbook
+      operationId: updatePlaybook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybookCreate'
+      responses:
+        '200':
+          description: Playbook updated
+
+    delete:
+      tags: [Playbooks]
+      summary: Delete playbook
+      operationId: deletePlaybook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Playbook deleted
+
+  /playbooks/{id}/execute:
+    post:
+      tags: [Playbooks]
+      summary: Execute playbook
+      operationId: executePlaybook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context:
+                  type: object
+                  description: Execution context (agent_id, alert_id, etc.)
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        '202':
+          description: Execution started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PlaybookExecution'
+                  message:
+                    type: string
+
+  /playbooks/templates:
+    get:
+      tags: [Playbooks]
+      summary: Get playbook templates
+      operationId: getPlaybookTemplates
+      responses:
+        '200':
+          description: Playbook templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlaybookTemplate'
+
+  # ============================================================================
+  # AI Assistant
+  # ============================================================================
+  /ai/query:
+    post:
+      tags: [AI]
+      summary: Natural language query
+      operationId: aiQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: Natural language query
+                context:
+                  type: object
+      responses:
+        '200':
+          description: Query result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  data:
+                    type: object
+
+  /ai/explain:
+    post:
+      tags: [AI]
+      summary: Explain detection
+      operationId: explainDetection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [detection_id]
+              properties:
+                detection_id:
+                  type: string
+                detail_level:
+                  type: string
+                  enum: [brief, standard, detailed]
+                  default: standard
+      responses:
+        '200':
+          description: Detection explanation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      detection_id:
+                        type: string
+                      explanation:
+                        type: string
+
+  /ai/suggest:
+    post:
+      tags: [AI]
+      summary: Suggest response actions
+      operationId: suggestActions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alert_id]
+              properties:
+                alert_id:
+                  type: string
+                incident_context:
+                  type: object
+      responses:
+        '200':
+          description: Suggested actions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      alert_id:
+                        type: string
+                      suggested_actions:
+                        type: array
+                        items:
+                          type: object
+
+  /ai/chat:
+    post:
+      tags: [AI]
+      summary: Chat with AI assistant
+      operationId: aiChat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                conversation_id:
+                  type: string
+                context:
+                  type: object
+      responses:
+        '200':
+          description: Chat response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      conversation_id:
+                        type: string
+                      suggested_actions:
+                        type: array
+                        items:
+                          type: object
+
+  # ============================================================================
+  # Behavioral Analytics (UEBA)
+  # ============================================================================
+  /behavioral/entities:
+    get:
+      tags: [Behavioral]
+      summary: List monitored entities
+      operationId: listEntities
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [user, process, host]
+        - name: min_risk_score
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: List of entities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BehavioralEntity'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+
+  /behavioral/entities/{entity_type}/{entity_id}:
+    get:
+      tags: [Behavioral]
+      summary: Get entity profile
+      operationId: getEntityProfile
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [user, process, host]
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Entity profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EntityProfile'
+
+  /behavioral/anomalies:
+    get:
+      tags: [Behavioral]
+      summary: List anomalies
+      operationId: listAnomalies
+      parameters:
+        - name: entity_type
+          in: query
+          schema:
+            type: string
+        - name: entity_id
+          in: query
+          schema:
+            type: string
+        - name: min_risk_score
+          in: query
+          schema:
+            type: integer
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: List of anomalies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BehavioralAnomaly'
+
+  /behavioral/statistics:
+    get:
+      tags: [Behavioral]
+      summary: Get UEBA statistics
+      operationId: getBehavioralStats
+      responses:
+        '200':
+          description: UEBA statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      entities:
+                        type: object
+                      anomalies:
+                        type: object
+                      risk_distribution:
+                        type: object
+
+  # ============================================================================
+  # MITRE ATT&CK
+  # ============================================================================
+  /mitre/coverage:
+    get:
+      tags: [MITRE]
+      summary: Get detection coverage
+      operationId: getMitreCoverage
+      responses:
+        '200':
+          description: MITRE coverage data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+
+  /mitre/heatmap:
+    get:
+      tags: [MITRE]
+      summary: Get MITRE heatmap
+      operationId: getMitreHeatmap
+      responses:
+        '200':
+          description: Heatmap data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /mitre/technique/{id}:
+    get:
+      tags: [MITRE]
+      summary: Get technique details
+      operationId: getMitreTechnique
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "T1059.001"
+      responses:
+        '200':
+          description: Technique details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ============================================================================
+  # ML Malware Detection
+  # ============================================================================
+  /ml/status:
+    get:
+      tags: [ML]
+      summary: Get ML service status
+      operationId: getMLStatus
+      responses:
+        '200':
+          description: ML service status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      online:
+                        type: boolean
+                      model_loaded:
+                        type: boolean
+                      model_version:
+                        type: string
+
+  /ml/predict:
+    post:
+      tags: [ML]
+      summary: Predict malware
+      description: Analyze a file sample using ML
+      operationId: predictMalware
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sha256]
+              properties:
+                sha256:
+                  type: string
+                file_path:
+                  type: string
+                agent_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Prediction result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      sha256:
+                        type: string
+                      prediction:
+                        type: string
+                        enum: [malware, benign]
+                      confidence:
+                        type: number
+                      model_version:
+                        type: string
+
+  # ============================================================================
+  # Organizations
+  # ============================================================================
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: List organizations
+      operationId: listOrganizations
+      responses:
+        '200':
+          description: List of organizations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Organization'
+
+    post:
+      tags: [Organizations]
+      summary: Create organization
+      operationId: createOrganization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                license_tier:
+                  type: string
+                  enum: [free, professional, enterprise]
+      responses:
+        '201':
+          description: Organization created
+
+  /organizations/{id}:
+    get:
+      tags: [Organizations]
+      summary: Get organization
+      operationId: getOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Organization'
+
+    put:
+      tags: [Organizations]
+      summary: Update organization
+      operationId: updateOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Organization updated
+
+    delete:
+      tags: [Organizations]
+      summary: Delete organization
+      operationId: deleteOrganization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Organization deleted
+
+  # ============================================================================
+  # Users
+  # ============================================================================
+  /users:
+    get:
+      tags: [Users]
+      summary: List users
+      operationId: listUsers
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+
+    post:
+      tags: [Users]
+      summary: Create user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                name:
+                  type: string
+                role:
+                  type: string
+      responses:
+        '201':
+          description: User created
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Current user details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user
+      operationId: getUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+
+    put:
+      tags: [Users]
+      summary: Update user
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: User updated
+
+    delete:
+      tags: [Users]
+      summary: Delete user
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deleted
+
+  # ============================================================================
+  # RBAC
+  # ============================================================================
+  /rbac/roles:
+    get:
+      tags: [RBAC]
+      summary: List roles
+      operationId: listRoles
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Role'
+
+    post:
+      tags: [RBAC]
+      summary: Create role
+      operationId: createRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, permissions]
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Role created
+
+  /rbac/permissions:
+    get:
+      tags: [RBAC]
+      summary: List all permissions
+      operationId: listPermissions
+      responses:
+        '200':
+          description: List of permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: string
+
+  /rbac/my-permissions:
+    get:
+      tags: [RBAC]
+      summary: Get current user permissions
+      operationId: getMyPermissions
+      responses:
+        '200':
+          description: User permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: string
+
+  # ============================================================================
+  # Health
+  # ============================================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      security: []
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: Service ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  checks:
+                    type: object
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      operationId: livenessCheck
+      responses:
+        '200':
+          description: Service alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+
+# ============================================================================
+# Components
+# ============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for API authentication
+
+  parameters:
+    AgentId:
+      name: id
+      in: path
+      required: true
+      description: Agent UUID
+      schema:
+        type: string
+        format: uuid
+
+    AlertId:
+      name: id
+      in: path
+      required: true
+      description: Alert UUID
+      schema:
+        type: string
+        format: uuid
+
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of results
+      schema:
+        type: integer
+        default: 100
+        maximum: 1000
+
+    Offset:
+      name: offset
+      in: query
+      description: Number of results to skip
+      schema:
+        type: integer
+        default: 0
+
+  schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        hostname:
+          type: string
+        os_type:
+          type: string
+          enum: [windows, linux, macos]
+        os_version:
+          type: string
+        agent_version:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, isolated]
+        isolated:
+          type: boolean
+        last_seen:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [open, investigating, resolved, false_positive]
+        mitre_tactics:
+          type: array
+          items:
+            type: string
+        mitre_techniques:
+          type: array
+          items:
+            type: string
+        assigned_to_id:
+          type: string
+          format: uuid
+        resolution_notes:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PreventionPolicy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        isDefault:
+          type: boolean
+        isEnabled:
+          type: boolean
+        globalMode:
+          type: string
+          enum: [monitor, detect, detect_and_prevent]
+        globalAggressiveness:
+          type: string
+          enum: [low, moderate, high, paranoid]
+        categorySettings:
+          type: object
+          description: Per-category settings (ransomware, exploit, etc.)
+        assignedGroups:
+          type: array
+          items:
+            type: string
+        assignedAgents:
+          type: array
+          items:
+            type: string
+        excludedPaths:
+          type: array
+          items:
+            type: string
+        excludedProcesses:
+          type: array
+          items:
+            type: string
+        excludedHashes:
+          type: array
+          items:
+            type: string
+        excludedUsers:
+          type: array
+          items:
+            type: string
+        autoQuarantineThreshold:
+          type: number
+          format: float
+        autoKillProcess:
+          type: boolean
+        mlResponseEnabled:
+          type: boolean
+        alertThreshold:
+          type: number
+          format: float
+        networkContainment:
+          type: object
+          properties:
+            allow_dns:
+              type: boolean
+            allowed_ips:
+              type: array
+              items:
+                type: string
+        insertedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        agent_hostname:
+          type: string
+        event_type:
+          type: string
+          enum: [process, file, network, dns, registry]
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+
+    RelatedEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        severity:
+          type: string
+        correlation_score:
+          type: number
+        correlation_reason:
+          type: string
+        pid:
+          type: integer
+        process_name:
+          type: string
+        summary:
+          type: string
+        payload:
+          type: object
+
+    Process:
+      type: object
+      properties:
+        pid:
+          type: integer
+        name:
+          type: string
+        path:
+          type: string
+        cmdline:
+          type: string
+        ppid:
+          type: integer
+        user:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        sha256:
+          type: string
+        is_elevated:
+          type: boolean
+        is_signed:
+          type: boolean
+        signer:
+          type: string
+
+    ResponseResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        error:
+          type: string
+
+    Playbook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled, draft]
+        enabled:
+          type: boolean
+        trigger_type:
+          type: string
+        trigger:
+          type: object
+          properties:
+            type:
+              type: string
+            conditions:
+              type: array
+              items:
+                type: object
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaybookStep'
+        executionCount:
+          type: integer
+        successRate:
+          type: number
+        lastExecuted:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PlaybookStep:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        stepType:
+          type: string
+          enum: [action, condition, wait, loop]
+        action:
+          type: string
+        actionType:
+          type: string
+        timeout:
+          type: integer
+        params:
+          type: object
+
+    PlaybookCreate:
+      type: object
+      required: [name, trigger_type, steps]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        trigger_type:
+          type: string
+          enum: [alert, detection, schedule, manual]
+        trigger_conditions:
+          type: object
+        steps:
+          type: array
+          items:
+            type: object
+        enabled:
+          type: boolean
+          default: true
+        require_approval:
+          type: boolean
+          default: false
+
+    PlaybookExecution:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        playbookId:
+          type: string
+          format: uuid
+        playbookName:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, dry_run]
+        dryRun:
+          type: boolean
+        startedAt:
+          type: string
+          format: date-time
+        stepsCompleted:
+          type: integer
+        totalSteps:
+          type: integer
+        log:
+          type: array
+          items:
+            type: string
+
+    PlaybookTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        trigger_type:
+          type: string
+        steps:
+          type: array
+          items:
+            type: object
+        tags:
+          type: array
+          items:
+            type: string
+
+    HashEnrichment:
+      type: object
+      properties:
+        hash:
+          type: string
+        hash_type:
+          type: string
+          enum: [md5, sha1, sha256]
+        verdict:
+          type: string
+          enum: [clean, malicious, suspicious, unknown]
+        local_match:
+          type: boolean
+        virustotal:
+          type: object
+        enriched_at:
+          type: string
+          format: date-time
+
+    IPEnrichment:
+      type: object
+      properties:
+        ip:
+          type: string
+        verdict:
+          type: string
+        local_match:
+          type: boolean
+        abuseipdb:
+          type: object
+        virustotal:
+          type: object
+        enriched_at:
+          type: string
+          format: date-time
+
+    BehavioralEntity:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [user, process, host]
+        id:
+          type: string
+        risk_score:
+          type: integer
+        total_events:
+          type: integer
+        last_activity:
+          type: string
+          format: date-time
+
+    EntityProfile:
+      type: object
+      properties:
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+        profile:
+          type: object
+        risk_score:
+          type: integer
+        risk_level:
+          type: string
+          enum: [minimal, low, medium, high, critical]
+        last_updated:
+          type: string
+          format: date-time
+        total_events:
+          type: integer
+        recent_anomalies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BehavioralAnomaly'
+        peer_comparison:
+          type: object
+
+    BehavioralAnomaly:
+      type: object
+      properties:
+        anomaly_type:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+        description:
+          type: string
+        risk_score:
+          type: integer
+        deviation_score:
+          type: number
+        baseline_value:
+          type: object
+        observed_value:
+          type: object
+        mitre_techniques:
+          type: array
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        license_tier:
+          type: string
+          enum: [free, professional, enterprise]
+        agent_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          type: string
+        organization_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        user_count:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+
+    PaginationMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+  responses:
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "unauthorized"
+            message: "Invalid or expired token"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "not_found"
+            message: "Resource not found"
+
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "bad_request"
+            message: "Invalid request parameters"
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "rate_limited"
+            message: "Rate limit exceeded. Try again later."

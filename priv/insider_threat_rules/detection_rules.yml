@@ -1,0 +1,224 @@
+---
+# Insider Threat Detection Rules
+version: "1.0"
+rules:
+  - id: "IT-001"
+    name: "Off-Hours Sensitive Data Access"
+    description: "User accessed sensitive data outside of working hours (10pm-6am)"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "file_access"
+      - time_range: ["22:00", "06:00"]
+      - file_classification: ["confidential", "secret", "sensitive"]
+    actions:
+      - type: "alert"
+        risk_score: 25
+
+  - id: "IT-002"
+    name: "Bulk Data Download"
+    description: "User downloaded more than 1GB of data in 1 hour"
+    severity: critical
+    enabled: true
+    conditions:
+      - event_type: "file_access"
+      - time_window: "1h"
+      - aggregate: "sum"
+      - field: "bytes_read"
+      - threshold: 1073741824  # 1GB
+    actions:
+      - type: "alert"
+        risk_score: 40
+
+  - id: "IT-003"
+    name: "Multiple Privilege Escalation Attempts"
+    description: "More than 3 privilege escalation attempts in 1 day"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "privilege_escalation"
+      - time_window: "24h"
+      - count: ">= 3"
+    actions:
+      - type: "alert"
+        risk_score: 35
+
+  - id: "IT-004"
+    name: "Unusual File Share Access"
+    description: "User accessed file shares not in their typical baseline"
+    severity: medium
+    enabled: true
+    conditions:
+      - event_type: "file_access"
+      - peer_group_check: true
+      - deviation_threshold: 2.0
+    actions:
+      - type: "alert"
+        risk_score: 15
+
+  - id: "IT-005"
+    name: "Authentication from Unusual Location"
+    description: "User authenticated from a location not in their typical baseline"
+    severity: medium
+    enabled: true
+    conditions:
+      - event_type: "authentication_success"
+      - location_baseline_check: true
+    actions:
+      - type: "alert"
+        risk_score: 20
+
+  - id: "IT-006"
+    name: "Failed Authentication Spike"
+    description: "More than 10 failed authentication attempts in 1 hour"
+    severity: medium
+    enabled: true
+    conditions:
+      - event_type: "authentication_failure"
+      - time_window: "1h"
+      - count: "> 10"
+    actions:
+      - type: "alert"
+        risk_score: 25
+
+  - id: "IT-007"
+    name: "Large USB Write"
+    description: "User wrote more than 100MB to USB device"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "file_write"
+      - device_type: "usb"
+      - bytes: "> 104857600"  # 100MB
+    actions:
+      - type: "alert"
+        risk_score: 30
+
+  - id: "IT-008"
+    name: "Cloud Storage Upload"
+    description: "User uploaded data to cloud storage service"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "network_connection"
+      - remote_host: ["dropbox.com", "drive.google.com", "onedrive.com", "box.com"]
+      - bytes_sent: "> 10485760"  # 10MB
+    actions:
+      - type: "alert"
+        risk_score: 30
+
+  - id: "IT-009"
+    name: "Lateral Movement Detection"
+    description: "User initiated remote connection to internal host via RDP/SSH/SMB"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "network_connection"
+      - protocol: ["rdp", "ssh", "smb", "winrm"]
+      - remote_ip_type: "internal"
+    actions:
+      - type: "alert"
+        risk_score: 28
+
+  - id: "IT-010"
+    name: "DLP Policy Violation"
+    description: "User triggered DLP policy violation"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "dlp_violation"
+    actions:
+      - type: "alert"
+        risk_score: 30
+
+  - id: "IT-011"
+    name: "Multiple Failed Logins Followed by Success"
+    description: "Pattern indicating potential credential stuffing attack"
+    severity: high
+    enabled: true
+    conditions:
+      - sequence:
+          - event_type: "authentication_failure"
+            count: ">= 5"
+            time_window: "10m"
+          - event_type: "authentication_success"
+            time_window: "1m"
+    actions:
+      - type: "alert"
+        risk_score: 35
+
+  - id: "IT-012"
+    name: "After-Hours VPN Access"
+    description: "User accessed VPN outside of working hours"
+    severity: medium
+    enabled: true
+    conditions:
+      - event_type: "vpn_connection"
+      - time_range: ["22:00", "06:00"]
+    actions:
+      - type: "alert"
+        risk_score: 18
+
+  - id: "IT-013"
+    name: "Excessive Peer Group Deviation"
+    description: "User's activity significantly deviates from peer group baseline"
+    severity: medium
+    enabled: true
+    conditions:
+      - peer_group_check: true
+      - deviation_threshold: 3.0
+      - metrics: ["data_access", "network_activity", "file_access"]
+    actions:
+      - type: "alert"
+        risk_score: 20
+
+  - id: "IT-014"
+    name: "Credential Sharing Indicator"
+    description: "Same credentials used from multiple locations simultaneously"
+    severity: critical
+    enabled: true
+    conditions:
+      - event_type: "authentication_success"
+      - same_user: true
+      - different_locations: true
+      - time_window: "5m"
+    actions:
+      - type: "alert"
+        risk_score: 40
+
+  - id: "IT-015"
+    name: "Database Query Anomaly"
+    description: "Unusual database query patterns (large result sets, sensitive tables)"
+    severity: high
+    enabled: true
+    conditions:
+      - event_type: "database_query"
+      - or:
+          - row_count: "> 10000"
+          - table_name: ["users", "customers", "financial_data", "credentials"]
+    actions:
+      - type: "alert"
+        risk_score: 25
+
+thresholds:
+  risk_score:
+    critical: 70
+    high: 40
+    medium: 20
+    low: 10
+
+peer_group_types:
+  - role
+  - department
+  - location
+  - manual
+
+baseline_calculation:
+  lookback_period_days: 30
+  minimum_data_points: 50
+  recalculation_frequency_days: 7
+
+alert_settings:
+  auto_investigate_threshold: 70
+  suppress_duplicates_hours: 24
+  correlation_window_minutes: 60

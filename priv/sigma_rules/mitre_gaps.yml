@@ -1,0 +1,720 @@
+# Tamandua EDR - MITRE ATT&CK Gap Coverage Rules
+# Addresses gaps identified in MITRE coverage analysis
+# Priority techniques without existing detection rules
+
+title: LSA Secrets Dumping via Registry
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456001
+status: experimental
+description: Detects access to LSA secrets in registry which may indicate credential dumping
+references:
+  - https://attack.mitre.org/techniques/T1003/004/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: registry_access
+detection:
+  selection:
+    TargetObject|contains:
+      - 'SECURITY\Policy\Secrets'
+      - 'SECURITY\Cache'
+      - 'SAM\SAM\Domains\Account'
+  filter:
+    Image|endswith:
+      - '\lsass.exe'
+      - '\services.exe'
+  condition: selection and not filter
+falsepositives:
+  - Legitimate backup software
+  - System administration tools
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.004
+
+---
+title: Cached Domain Credentials Access
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456002
+status: experimental
+description: Detects attempts to access cached domain credentials (DCC2 hashes)
+references:
+  - https://attack.mitre.org/techniques/T1003/005/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: registry_access
+detection:
+  selection:
+    TargetObject|contains:
+      - 'SECURITY\Cache'
+      - 'SECURITY\Policy\Secrets\NL$'
+  filter:
+    Image|endswith: '\lsass.exe'
+  condition: selection and not filter
+falsepositives:
+  - Domain controller operations
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.005
+
+---
+title: Linux Proc Filesystem Credential Access
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456003
+status: experimental
+description: Detects reading of process memory via /proc for credential extraction
+references:
+  - https://attack.mitre.org/techniques/T1003/007/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: linux
+  category: file_access
+detection:
+  selection:
+    TargetFilename|contains:
+      - '/proc/'
+    TargetFilename|endswith:
+      - '/mem'
+      - '/maps'
+      - '/environ'
+  filter:
+    Image|endswith:
+      - '/gdb'
+      - '/strace'
+      - '/ltrace'
+  condition: selection and not filter
+falsepositives:
+  - Debugging tools
+  - System monitoring
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1003.007
+
+---
+title: Linux Shadow File Access
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456004
+status: experimental
+description: Detects access to /etc/shadow file for password hash extraction
+references:
+  - https://attack.mitre.org/techniques/T1003/008/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: linux
+  category: file_access
+detection:
+  selection:
+    TargetFilename:
+      - '/etc/shadow'
+      - '/etc/shadow-'
+      - '/etc/gshadow'
+  filter:
+    Image|endswith:
+      - '/passwd'
+      - '/chpasswd'
+      - '/useradd'
+      - '/usermod'
+      - '/userdel'
+  condition: selection and not filter
+falsepositives:
+  - User management operations
+  - Authentication services
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.008
+
+---
+title: Thread Execution Hijacking
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456005
+status: experimental
+description: Detects potential thread execution hijacking via suspicious API calls
+references:
+  - https://attack.mitre.org/techniques/T1055/003/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_access
+detection:
+  selection:
+    CallTrace|contains:
+      - 'SuspendThread'
+      - 'SetThreadContext'
+      - 'ResumeThread'
+  filter:
+    SourceImage|endswith:
+      - '\MsMpEng.exe'
+      - '\csrss.exe'
+  condition: selection and not filter
+falsepositives:
+  - Debuggers
+  - Security software
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1055.003
+
+---
+title: Asynchronous Procedure Call Injection
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456006
+status: experimental
+description: Detects potential APC injection for code execution
+references:
+  - https://attack.mitre.org/techniques/T1055/004/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_access
+detection:
+  selection:
+    CallTrace|contains:
+      - 'QueueUserAPC'
+      - 'NtQueueApcThread'
+  filter:
+    SourceImage|endswith:
+      - '\MsMpEng.exe'
+  condition: selection and not filter
+falsepositives:
+  - Legitimate multithreaded applications
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1055.004
+
+---
+title: Ptrace System Call Abuse
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456007
+status: experimental
+description: Detects ptrace system call usage for process injection on Linux
+references:
+  - https://attack.mitre.org/techniques/T1055/008/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: linux
+  category: system_call
+detection:
+  selection:
+    Syscall: 'ptrace'
+    Request|contains:
+      - 'PTRACE_POKETEXT'
+      - 'PTRACE_POKEDATA'
+      - 'PTRACE_SETREGS'
+  filter:
+    Image|endswith:
+      - '/gdb'
+      - '/strace'
+      - '/ltrace'
+  condition: selection and not filter
+falsepositives:
+  - Debugging tools
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1055.008
+
+---
+title: Data Manipulation - File Integrity Violation
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456008
+status: experimental
+description: Detects potential data manipulation by monitoring critical file modifications
+references:
+  - https://attack.mitre.org/techniques/T1565/001/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: file_event
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Database\'
+      - '\Data\'
+      - '.mdf'
+      - '.ldf'
+      - '.accdb'
+    EventType: 'SetData'
+  filter:
+    Image|endswith:
+      - '\sqlservr.exe'
+      - '\MSACCESS.EXE'
+  condition: selection and not filter
+falsepositives:
+  - Legitimate database operations
+level: medium
+tags:
+  - attack.impact
+  - attack.t1565.001
+
+---
+title: Setuid/Setgid Binary Creation
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456009
+status: experimental
+description: Detects creation of setuid/setgid binaries for privilege escalation
+references:
+  - https://attack.mitre.org/techniques/T1548/001/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: linux
+  category: file_event
+detection:
+  selection:
+    EventType: 'chmod'
+    FileMode|contains:
+      - 's'
+      - '4'
+      - '2'
+  condition: selection
+falsepositives:
+  - Package installation
+  - System administration
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1548.001
+
+---
+title: Sudo Cache Timestamp Abuse
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456010
+status: experimental
+description: Detects manipulation of sudo timestamp files
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: linux
+  category: file_event
+detection:
+  selection:
+    TargetFilename|contains:
+      - '/var/run/sudo/'
+      - '/var/lib/sudo/'
+      - '/run/sudo/'
+  filter:
+    Image|endswith: '/sudo'
+  condition: selection and not filter
+falsepositives:
+  - None expected
+level: high
+tags:
+  - attack.privilege_escalation
+  - attack.t1548.003
+
+---
+title: Boot or Logon Initialization Scripts
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456011
+status: experimental
+description: Detects modification of logon scripts for persistence
+references:
+  - https://attack.mitre.org/techniques/T1037/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: registry_event
+detection:
+  selection:
+    TargetObject|contains:
+      - '\Environment\UserInitMprLogonScript'
+      - '\Winlogon\Userinit'
+      - '\Winlogon\Shell'
+  condition: selection
+falsepositives:
+  - Group Policy changes
+  - Administrative scripts
+level: high
+tags:
+  - attack.persistence
+  - attack.t1037
+
+---
+title: Account Manipulation Detection
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456012
+status: experimental
+description: Detects account manipulation for persistence
+references:
+  - https://attack.mitre.org/techniques/T1098/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_net:
+    CommandLine|contains:
+      - 'net user'
+      - 'net localgroup'
+      - 'net group'
+    CommandLine|contains:
+      - '/add'
+      - '/domain'
+  selection_powershell:
+    CommandLine|contains:
+      - 'Add-LocalGroupMember'
+      - 'Add-ADGroupMember'
+      - 'New-LocalUser'
+      - 'Set-LocalUser'
+  condition: selection_net or selection_powershell
+falsepositives:
+  - Legitimate user management
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1098
+
+---
+title: COM Object Hijacking
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456013
+status: experimental
+description: Detects COM object hijacking for persistence
+references:
+  - https://attack.mitre.org/techniques/T1546/015/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: registry_event
+detection:
+  selection:
+    TargetObject|contains:
+      - '\Software\Classes\CLSID\'
+      - '\Software\Classes\Wow6432Node\CLSID\'
+    TargetObject|endswith:
+      - '\InprocServer32'
+      - '\LocalServer32'
+      - '\TreatAs'
+  filter:
+    Image|endswith:
+      - '\msiexec.exe'
+      - '\regsvr32.exe'
+  condition: selection and not filter
+falsepositives:
+  - Software installation
+level: high
+tags:
+  - attack.persistence
+  - attack.t1546.015
+
+---
+title: Execution Guardrails Evasion
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456014
+status: experimental
+description: Detects execution guardrail evasion techniques
+references:
+  - https://attack.mitre.org/techniques/T1480/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains:
+      - 'COMPUTERNAME'
+      - 'USERNAME'
+      - 'USERDOMAIN'
+      - 'GetComputerName'
+      - 'GetUserName'
+    CommandLine|contains:
+      - 'if'
+      - 'where'
+      - '-eq'
+  condition: selection
+falsepositives:
+  - Legitimate scripts checking environment
+level: low
+tags:
+  - attack.defense_evasion
+  - attack.t1480
+
+---
+title: File Permissions Modification
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456015
+status: experimental
+description: Detects file permission modifications for defense evasion
+references:
+  - https://attack.mitre.org/techniques/T1222/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains:
+      - 'icacls'
+      - 'cacls'
+      - 'takeown'
+      - 'attrib'
+    CommandLine|contains:
+      - '/grant'
+      - '/deny'
+      - '+h'
+      - '-h'
+  condition: selection
+falsepositives:
+  - System administration
+level: medium
+tags:
+  - attack.defense_evasion
+  - attack.t1222
+
+---
+title: Kernel Callback Unregistration Attempt
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456016
+status: experimental
+description: Detects potential kernel callback unregistration (BYOVD attack preparation)
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: driver_load
+detection:
+  selection_vuln_drivers:
+    ImageLoaded|endswith:
+      - '\rwdrv.sys'
+      - '\gdrv.sys'
+      - '\dbutil_2_3.sys'
+      - '\capcom.sys'
+      - '\asio.sys'
+      - '\driver7.sys'
+      - '\aswvmm.sys'
+      - '\nvflash.sys'
+      - '\ene.sys'
+      - '\physmem.sys'
+  condition: selection_vuln_drivers
+falsepositives:
+  - Legitimate hardware utilities
+level: critical
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+
+---
+title: ETW Provider Tampering
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456017
+status: experimental
+description: Detects ETW provider tampering for telemetry evasion
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: registry_event
+detection:
+  selection:
+    TargetObject|contains:
+      - '\Control\WMI\Autologger\'
+      - '\Tracing\Providers\'
+    EventType:
+      - 'DeleteKey'
+      - 'DeleteValue'
+      - 'SetValue'
+  condition: selection
+falsepositives:
+  - System administration
+  - Security software configuration
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1562.006
+
+---
+title: Hardware Breakpoint Abuse Detection
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456018
+status: experimental
+description: Detects potential hardware breakpoint abuse for EDR evasion
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: api_call
+detection:
+  selection_veh:
+    ApiCall: 'AddVectoredExceptionHandler'
+  selection_context:
+    ApiCall:
+      - 'SetThreadContext'
+      - 'NtSetContextThread'
+  condition: selection_veh or selection_context
+falsepositives:
+  - Debuggers
+  - Anti-cheat software
+level: medium
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+
+---
+title: Network Sniffing Detection
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456019
+status: experimental
+description: Detects network sniffing tool execution
+references:
+  - https://attack.mitre.org/techniques/T1040/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains:
+      - 'pktmon'
+      - 'netsh trace'
+      - 'dumpcap'
+      - 'tshark'
+      - 'windump'
+      - 'rawcap'
+  selection_linux:
+    Image|endswith:
+      - '/tcpdump'
+      - '/tshark'
+      - '/dumpcap'
+  condition: selection or selection_linux
+falsepositives:
+  - Network troubleshooting
+  - Security monitoring
+level: medium
+tags:
+  - attack.discovery
+  - attack.t1040
+
+---
+title: Browser Credential Store Access
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456020
+status: experimental
+description: Detects access to browser credential stores
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: file_access
+detection:
+  selection_chrome:
+    TargetFilename|contains:
+      - '\Google\Chrome\User Data\Default\Login Data'
+      - '\Google\Chrome\User Data\Default\Cookies'
+      - '\Google\Chrome\User Data\Local State'
+  selection_firefox:
+    TargetFilename|contains:
+      - '\Mozilla\Firefox\Profiles\'
+    TargetFilename|endswith:
+      - '\logins.json'
+      - '\key4.db'
+      - '\cookies.sqlite'
+  selection_edge:
+    TargetFilename|contains:
+      - '\Microsoft\Edge\User Data\Default\Login Data'
+  filter:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\firefox.exe'
+      - '\msedge.exe'
+  condition: (selection_chrome or selection_firefox or selection_edge) and not filter
+falsepositives:
+  - Browser sync features
+  - Password managers
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+
+---
+title: Covert Channel via DNS
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456021
+status: experimental
+description: Detects potential DNS tunneling for data exfiltration
+references:
+  - https://attack.mitre.org/techniques/T1048/003/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: dns_query
+detection:
+  selection:
+    QueryName|re: '^[a-zA-Z0-9]{30,}\.'  # Long subdomain
+  selection_txt:
+    QueryType: 'TXT'
+    QueryName|contains: '.'
+  condition: selection or selection_txt
+falsepositives:
+  - CDN services
+  - Cloud services
+level: medium
+tags:
+  - attack.exfiltration
+  - attack.t1048.003
+
+---
+title: Internal Spearphishing Attempt
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456022
+status: experimental
+description: Detects internal spearphishing via Outlook automation
+references:
+  - https://attack.mitre.org/techniques/T1534/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith:
+      - '\OUTLOOK.EXE'
+      - '\Teams.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+  condition: selection
+falsepositives:
+  - Legitimate macros
+  - Automation scripts
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.t1534
+
+---
+title: VNC Remote Session Detection
+id: 9a1b2c3d-4e5f-6789-abcd-ef0123456023
+status: experimental
+description: Detects VNC connections for remote access
+references:
+  - https://attack.mitre.org/techniques/T1021/005/
+author: Tamandua Security
+date: 2025/05/08
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  selection:
+    DestinationPort:
+      - 5900
+      - 5901
+      - 5902
+      - 5903
+  condition: selection
+falsepositives:
+  - Legitimate remote administration
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.t1021.005

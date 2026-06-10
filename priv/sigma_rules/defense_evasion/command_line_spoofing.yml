@@ -1,0 +1,100 @@
+title: Command Line Spoofing Detected
+id: 39e0a1b2-c3d4-5e6f-7a8b-9c0d1e2f3a4b
+status: experimental
+description: |
+    Detects when a process has modified its command line after creation.
+    This technique is used by malware like Cobalt Strike (argue command) to
+    evade detection by command-line based rules. The process initially starts
+    with a benign-looking command line, then modifies the PEB->ProcessParameters->CommandLine
+    to hide its true arguments.
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1564/010/
+    - https://blog.xpnsec.com/how-to-argue-like-cobalt-strike/
+    - https://www.elastic.co/blog/process-ghosting-a-new-executable-image-tampering-attack
+logsource:
+    category: defense_evasion
+    product: tamandua
+detection:
+    selection:
+        cmdline_mismatch: true
+    condition: selection
+fields:
+    - pid
+    - process_name
+    - process_path
+    - original_cmdline
+    - current_cmdline
+falsepositives:
+    - Java and .NET applications that legitimately modify their command line display
+    - Some legitimate software using argument concealment for security
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1564.010
+    - attack.t1564
+
+---
+title: Process Command Line Argument Tampering
+id: 4a0b1c2d-3e4f-5a6b-7c8d-9e0f1a2b3c4d
+status: experimental
+description: |
+    Detects processes where the current command line significantly differs from
+    the original command line captured at process creation. This indicates
+    post-creation modification of the process arguments, commonly used for evasion.
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1564/010/
+logsource:
+    category: process_creation
+    product: tamandua
+detection:
+    selection:
+        evasion_type: 'command_line_spoofing'
+    condition: selection
+falsepositives:
+    - EDR, sandbox, or application compatibility tooling that rewrites display arguments after process creation.
+    - Managed runtimes and launchers that normalize or redact command-line arguments.
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1564.010
+
+---
+title: Cobalt Strike Argue Technique Detection
+id: 5b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e
+status: experimental
+description: |
+    Detects the Cobalt Strike "argue" command which modifies the command line
+    of spawned processes to evade command-line based detection. The technique
+    creates processes with benign arguments then patches the PEB to show
+    malicious arguments after creation.
+author: Tamandua Security Team
+date: 2024/01/15
+references:
+    - https://attack.mitre.org/techniques/T1564/010/
+    - https://hstechdocs.helpsystems.com/manuals/cobaltstrike/current/userguide/content/topics_aggressor-scripts/as-resources_functions.htm#argue
+logsource:
+    category: defense_evasion
+    product: tamandua
+detection:
+    selection:
+        detection_type: 'CommandLineSpoofing'
+    filter_java:
+        process_name|contains:
+            - 'java'
+            - 'javaw'
+    filter_dotnet:
+        process_name|contains:
+            - 'dotnet'
+    condition: selection and not (filter_java or filter_dotnet)
+falsepositives:
+    - Authorized red-team tools or controlled Cobalt Strike training labs.
+    - Runtime launchers that patch process parameters for benign argument redaction.
+level: high
+tags:
+    - attack.defense_evasion
+    - attack.t1564.010
+    - cobalt_strike

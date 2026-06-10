@@ -1,0 +1,22 @@
+title: Test Sigma Rule - Suspicious PowerShell
+id: test-rule-001
+status: test
+description: Test Sigma rule for E2E testing
+author: Tamandua Test Suite
+date: 2024/01/01
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\powershell.exe'
+    CommandLine|contains:
+      - '-enc'
+      - 'bypass'
+  condition: selection
+falsepositives:
+  - Legitimate admin scripts
+level: high
+tags:
+  - attack.execution
+  - attack.t1059.001

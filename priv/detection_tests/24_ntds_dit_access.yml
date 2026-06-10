@@ -1,0 +1,20 @@
+test_case:
+  name: "NTDS.dit Database Access"
+  description: "Tests detection of Active Directory database dumping"
+  rule: "credential_access/ntds_dit_access.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\ntdsutil.exe"
+        cmdline: "ntdsutil.exe \"ac i ntds\" \"ifm\" \"create full C:\\Temp\\dump\" q q"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "DOMAIN\\Administrator"
+        pid: 7234
+        ppid: 2048
+        is_elevated: true
+  expected: match
+  expected_severity: critical
+  expected_mitre: ["T1003.003"]
+  tags: ["credential_access", "ntds", "positive"]

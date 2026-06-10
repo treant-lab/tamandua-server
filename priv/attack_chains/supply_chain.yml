@@ -1,0 +1,41 @@
+name: "Supply Chain Compromise Pattern"
+description: "Detection of supply chain attack indicators and malicious software deployment"
+severity: critical
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - supply-chain
+  - initial-access
+  - trusted-software
+
+steps:
+  - name: "Compromised Software Installation"
+    techniques:
+      - T1195       # Supply Chain Compromise
+      - T1195.002   # Compromise Software Supply Chain
+    threshold: 1
+    timeframe: 3600  # 1 hour
+    description: "Installation of potentially compromised software package"
+
+  - name: "Unexpected Network Activity"
+    techniques:
+      - T1071  # Application Layer Protocol
+      - T1105  # Ingress Tool Transfer
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_process: true
+    description: "Outbound connection from trusted application to unexpected destination"
+
+  - name: "Payload Deployment"
+    techniques:
+      - T1059  # Command and Scripting Interpreter
+      - T1053  # Scheduled Task/Job
+      - T1547  # Boot or Logon Autostart Execution
+    threshold: 1
+    timeframe: 3600  # 1 hour
+    conditions:
+      same_agent: true
+    description: "Secondary malicious payload deployed or persistence established"
+
+narrative_template: "Supply chain attack detected: compromised software {process} made unexpected connections and deployed payload within {timespan}"

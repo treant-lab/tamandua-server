@@ -1,0 +1,73 @@
+title: CMSTP Application Whitelisting Bypass
+id: de10a001-cmst-0010-0001-000000000001
+status: stable
+description: |
+  Detects CMSTP.exe (Connection Manager Profile Installer) being used to
+  execute arbitrary commands via malicious .inf files. CMSTP is a signed
+  Microsoft binary that can be abused to bypass application whitelisting
+  and execute code with elevated privileges via auto-elevation.
+references:
+  - https://attack.mitre.org/techniques/T1218/003/
+  - https://lolbas-project.github.io/lolbas/Binaries/Cmstp/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.execution
+  - attack.t1218.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\cmstp.exe'
+    CommandLine|contains:
+      - '/s'
+      - '/ni'
+      - '.inf'
+  filter_legit_vpn:
+    ParentImage|contains:
+      - '\Program Files\'
+      - '\Windows\System32\'
+    CommandLine|contains: '\System32\cmstp.exe'
+  condition: selection and not filter_legit_vpn
+falsepositives:
+  - Legitimate VPN client installation using Connection Manager profiles
+level: high
+
+---
+title: CMSTP Spawning Suspicious Child Process
+id: de10a002-cmst-0010-0002-000000000002
+status: stable
+description: |
+  Detects CMSTP.exe spawning suspicious child processes such as cmd.exe,
+  PowerShell, or script interpreters. This indicates exploitation of
+  CMSTP for code execution rather than legitimate VPN profile installation.
+references:
+  - https://attack.mitre.org/techniques/T1218/003/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.defense_evasion
+  - attack.t1218.003
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\cmstp.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+  filter_none:
+    CommandLine: ''
+  condition: selection and not filter_none
+falsepositives:
+  - Legitimate VPN installation that triggers post-install scripts
+level: high

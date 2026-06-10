@@ -1,0 +1,108 @@
+title: AI Runtime - LLM Request Followed by Network Connection
+id: runtime-ai-015
+status: stable
+description: Detects LLM API request followed by suspicious network connection within 30 seconds
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1041/
+logsource:
+    category: network_connection
+    product: any
+detection:
+    selection_network:
+        DestinationIp|cidr:
+            - '!10.0.0.0/8'
+            - '!172.16.0.0/12'
+            - '!192.168.0.0/16'
+            - '!127.0.0.0/8'
+    filter_trusted:
+        DestinationIp|contains:
+            - 'api.openai.com'
+            - 'api.anthropic.com'
+            - 'ollama.ai'
+            - 'huggingface.co'
+    timeframe: 30s
+    condition: selection_network and not filter_trusted | count() > 2
+falsepositives:
+    - Legitimate external API calls
+    - CDN connections
+level: medium
+tags:
+    - attack.exfiltration
+    - attack.t1041
+    - ai_security
+    - correlation
+
+---
+title: AI Runtime - Data Extraction Prompt with File Access
+id: runtime-ai-016
+status: stable
+description: Detects LLM prompts containing data extraction keywords followed by file access
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1005/
+logsource:
+    category: llm_request
+    product: tamandua
+detection:
+    selection_extraction_keywords:
+        PromptPreview|contains:
+            - 'read file'
+            - 'get contents of'
+            - 'extract data from'
+            - 'fetch credentials'
+            - 'retrieve secrets'
+            - 'access configuration'
+    selection_sensitive_paths:
+        PromptPreview|contains:
+            - '/etc/'
+            - '.env'
+            - 'credentials'
+            - 'secrets'
+            - '.aws'
+            - '.ssh'
+    timeframe: 30s
+    condition: selection_extraction_keywords and selection_sensitive_paths | count() > 1
+falsepositives:
+    - Legitimate data processing workflows
+    - Configuration management tools
+level: high
+tags:
+    - attack.collection
+    - attack.t1005
+    - ai_security
+    - correlation
+
+---
+title: AI Runtime - High Volume LLM Request Enumeration
+id: runtime-ai-017
+status: stable
+description: Detects unusually high volume of LLM requests indicating potential enumeration or abuse
+author: Tamandua Security Team
+date: 2026/04/07
+references:
+    - https://attack.mitre.org/techniques/T1087/
+logsource:
+    category: llm_request
+    product: tamandua
+detection:
+    selection:
+        Provider:
+            - 'openai'
+            - 'anthropic'
+            - 'ollama'
+            - 'huggingface'
+    timeframe: 5m
+    condition: selection | count() > 50
+falsepositives:
+    - Batch processing jobs
+    - High-traffic applications
+    - Load testing
+level: medium
+tags:
+    - attack.discovery
+    - attack.t1087
+    - ai_security
+    - anomaly

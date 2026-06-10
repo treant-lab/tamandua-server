@@ -1,0 +1,758 @@
+# Azure CIS Benchmark v2.0.0 - Security Policies
+# Based on Center for Internet Security Microsoft Azure Foundations Benchmark
+
+policies:
+  # ============================================================================
+  # Section 1 - Identity and Access Management
+  # ============================================================================
+
+  - id: azure-iam-001
+    name: Multi-factor authentication enabled for privileged users
+    description: MFA should be enabled for all users with administrative roles.
+    provider: azure
+    resource_type: azure_ad_user
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS Azure 1.1
+      - CIS Azure 1.2
+      - PCI DSS 8.3
+      - NIST 800-53 IA-2
+    condition:
+      and:
+        - field: metadata.is_privileged
+          operator: is_true
+        - field: metadata.mfa_enabled
+          operator: is_false
+    recommendation: Enable MFA for all privileged users through Azure AD Conditional Access.
+    remediation:
+      cli: |
+        # Enable MFA through Azure AD
+        az ad user update --id <user-id> --force-change-password-next-sign-in true
+        # Configure Conditional Access policy requiring MFA
+
+  - id: azure-iam-002
+    name: Guest users reviewed regularly
+    description: Guest user access should be reviewed and restricted to only necessary accounts.
+    provider: azure
+    resource_type: azure_ad_user
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS Azure 1.3
+      - NIST 800-53 AC-2
+    condition:
+      and:
+        - field: metadata.user_type
+          operator: equals
+          value: Guest
+        - field: metadata.last_sign_in_days
+          operator: greater_than
+          value: 90
+    recommendation: Review and remove inactive guest accounts.
+    remediation:
+      cli: |
+        # Review guest users
+        az ad user list --filter "userType eq 'Guest'"
+        # Remove inactive guest
+        az ad user delete --id <user-id>
+
+  - id: azure-iam-003
+    name: Too many subscription owners
+    description: Subscription should have no more than 3 owners to reduce the risk of breach by a compromised owner.
+    provider: azure
+    resource_type: azure_role_assignment
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS Azure 1.3
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.owner_count
+      operator: greater_than
+      value: 3
+    recommendation: Reduce the number of subscription owners to 3 or fewer.
+    remediation:
+      cli: |
+        # List current owners
+        az role assignment list --role "Owner" --scope /subscriptions/<subscription-id>
+        # Remove unnecessary owners
+        az role assignment delete --assignee <principal-id> --role "Owner"
+
+  - id: azure-iam-004
+    name: Custom role with excessive permissions
+    description: Custom roles should follow the principle of least privilege.
+    provider: azure
+    resource_type: azure_role_definition
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS Azure 1.23
+      - NIST 800-53 AC-6
+    condition:
+      and:
+        - field: metadata.is_custom
+          operator: is_true
+        - field: metadata.has_wildcard_actions
+          operator: is_true
+    recommendation: Replace wildcard actions with specific required permissions.
+    remediation:
+      cli: |
+        # Update custom role with specific permissions
+        az role definition update --role-definition @updated-role.json
+
+  # ============================================================================
+  # Section 2 - Microsoft Defender for Cloud
+  # ============================================================================
+
+  - id: azure-defender-001
+    name: Microsoft Defender for servers enabled
+    description: Enable Microsoft Defender for servers for threat protection.
+    provider: azure
+    resource_type: azure_security_center
+    severity: high
+    category: compute_security
+    compliance:
+      - CIS Azure 2.1
+      - NIST 800-53 SI-4
+    condition:
+      field: metadata.defender_servers_enabled
+      operator: is_false
+    recommendation: Enable Microsoft Defender for servers.
+    remediation:
+      cli: |
+        az security pricing create -n VirtualMachines --tier standard
+
+  - id: azure-defender-002
+    name: Microsoft Defender for Key Vault enabled
+    description: Enable Microsoft Defender for Key Vault for threat protection.
+    provider: azure
+    resource_type: azure_security_center
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS Azure 2.4
+      - NIST 800-53 SI-4
+    condition:
+      field: metadata.defender_keyvault_enabled
+      operator: is_false
+    recommendation: Enable Microsoft Defender for Key Vault.
+    remediation:
+      cli: |
+        az security pricing create -n KeyVaults --tier standard
+
+  # ============================================================================
+  # Section 3 - Storage
+  # ============================================================================
+
+  - id: azure-storage-001
+    name: Storage account HTTPS traffic only
+    description: Storage accounts should enforce HTTPS for secure transfer.
+    provider: azure
+    resource_type: azure_storage_account
+    severity: high
+    category: network_security
+    compliance:
+      - CIS Azure 3.1
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.https_only
+      operator: is_false
+    recommendation: Enable 'Secure transfer required' setting.
+    remediation:
+      terraform: |
+        resource "azurerm_storage_account" "example" {
+          name                      = "examplestorage"
+          enable_https_traffic_only = true
+        }
+      cli: |
+        az storage account update --name <storage-account> --https-only true
+
+  - id: azure-storage-002
+    name: Storage account allows public blob access
+    description: Storage accounts should not allow public blob access.
+    provider: azure
+    resource_type: azure_storage_account
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS Azure 3.6
+      - PCI DSS 7.1
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.allow_blob_public_access
+      operator: is_true
+    recommendation: Disable 'Allow Blob public access' at the storage account level.
+    remediation:
+      terraform: |
+        resource "azurerm_storage_account" "example" {
+          name                     = "examplestorage"
+          allow_blob_public_access = false
+        }
+      cli: |
+        az storage account update --name <storage-account> --allow-blob-public-access false
+
+  - id: azure-storage-003
+    name: Storage account minimum TLS version
+    description: Storage accounts should require TLS 1.2 minimum.
+    provider: azure
+    resource_type: azure_storage_account
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS Azure 3.12
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.minimum_tls_version
+      operator: not_equals
+      value: TLS1_2
+    recommendation: Set minimum TLS version to 1.2.
+    remediation:
+      terraform: |
+        resource "azurerm_storage_account" "example" {
+          name                = "examplestorage"
+          min_tls_version     = "TLS1_2"
+        }
+      cli: |
+        az storage account update --name <storage-account> --min-tls-version TLS1_2
+
+  - id: azure-storage-004
+    name: Storage account network access unrestricted
+    description: Storage accounts should restrict network access to specific virtual networks.
+    provider: azure
+    resource_type: azure_storage_account
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS Azure 3.7
+      - PCI DSS 1.2.1
+      - NIST 800-53 AC-4
+    condition:
+      or:
+        - field: metadata.network_acls
+          operator: is_nil
+        - field: metadata.network_acls.defaultAction
+          operator: equals
+          value: Allow
+    recommendation: Configure network rules to restrict access to specific virtual networks.
+    remediation:
+      terraform: |
+        resource "azurerm_storage_account" "example" {
+          name = "examplestorage"
+
+          network_rules {
+            default_action             = "Deny"
+            virtual_network_subnet_ids = [azurerm_subnet.example.id]
+          }
+        }
+
+  - id: azure-storage-005
+    name: Storage account soft delete for blobs disabled
+    description: Soft delete for blobs enables recovery of deleted blobs.
+    provider: azure
+    resource_type: azure_storage_account
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS Azure 3.8
+      - NIST 800-53 CP-9
+    condition:
+      field: metadata.blob_soft_delete_enabled
+      operator: is_false
+    recommendation: Enable soft delete for blob data protection.
+    remediation:
+      cli: |
+        az storage account blob-service-properties update \
+          --account-name <storage-account> \
+          --enable-delete-retention true \
+          --delete-retention-days 30
+
+  # ============================================================================
+  # Section 4 - Database Services
+  # ============================================================================
+
+  - id: azure-sql-001
+    name: SQL Server auditing disabled
+    description: Auditing should be enabled on SQL Server to track database events.
+    provider: azure
+    resource_type: azure_sql_server
+    severity: high
+    category: logging_monitoring
+    compliance:
+      - CIS Azure 4.1.1
+      - PCI DSS 10.2
+      - NIST 800-53 AU-2
+    condition:
+      field: metadata.auditing_enabled
+      operator: is_false
+    recommendation: Enable auditing to track database events and maintain compliance.
+    remediation:
+      terraform: |
+        resource "azurerm_mssql_server_extended_auditing_policy" "example" {
+          server_id              = azurerm_mssql_server.example.id
+          storage_endpoint       = azurerm_storage_account.example.primary_blob_endpoint
+          retention_in_days      = 90
+        }
+
+  - id: azure-sql-002
+    name: SQL Server allows TLS below 1.2
+    description: SQL Server should require TLS 1.2 minimum for connections.
+    provider: azure
+    resource_type: azure_sql_server
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS Azure 4.1.2
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.minimal_tls_version
+      operator: not_equals
+      value: "1.2"
+    recommendation: Set minimum TLS version to 1.2.
+    remediation:
+      terraform: |
+        resource "azurerm_mssql_server" "example" {
+          name                         = "example-sqlserver"
+          minimum_tls_version          = "1.2"
+        }
+
+  - id: azure-sql-003
+    name: SQL Server publicly accessible
+    description: SQL Server should not be publicly accessible.
+    provider: azure
+    resource_type: azure_sql_server
+    severity: high
+    category: network_security
+    compliance:
+      - CIS Azure 4.1.3
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.public_network_access
+      operator: equals
+      value: Enabled
+    recommendation: Disable public network access and use Private Endpoints.
+    remediation:
+      terraform: |
+        resource "azurerm_mssql_server" "example" {
+          name                          = "example-sqlserver"
+          public_network_access_enabled = false
+        }
+
+  - id: azure-sql-004
+    name: SQL Database TDE disabled
+    description: Transparent Data Encryption should be enabled on SQL databases.
+    provider: azure
+    resource_type: azure_sql_database
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS Azure 4.1.5
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.tde_enabled
+      operator: is_false
+    recommendation: Enable Transparent Data Encryption.
+    remediation:
+      cli: |
+        az sql db tde set --database <database> --server <server> --resource-group <rg> --status Enabled
+
+  # ============================================================================
+  # Section 5 - Logging and Monitoring
+  # ============================================================================
+
+  - id: azure-monitor-001
+    name: Activity Log not exported
+    description: Activity Log should be exported to a storage account or Log Analytics workspace.
+    provider: azure
+    resource_type: azure_activity_log
+    severity: high
+    category: logging_monitoring
+    compliance:
+      - CIS Azure 5.1.1
+      - PCI DSS 10.2
+      - NIST 800-53 AU-6
+    condition:
+      field: metadata.has_export
+      operator: is_false
+    recommendation: Configure diagnostic settings to export Activity Log for long-term retention.
+    remediation:
+      cli: |
+        az monitor diagnostic-settings create \
+          --name activity-log-export \
+          --resource /subscriptions/<subscription-id> \
+          --storage-account <storage-account-id> \
+          --logs '[{"category": "Administrative", "enabled": true}]'
+
+  - id: azure-monitor-002
+    name: Log alert for security operations not configured
+    description: Alerts should be configured for critical security operations.
+    provider: azure
+    resource_type: azure_monitor_alert
+    severity: medium
+    category: logging_monitoring
+    compliance:
+      - CIS Azure 5.2.1
+      - NIST 800-53 AU-6
+    condition:
+      field: metadata.security_alerts_configured
+      operator: is_false
+    recommendation: Configure log alerts for policy assignment, NSG, and security solution changes.
+    remediation:
+      cli: |
+        az monitor activity-log alert create \
+          --name "Security-Policy-Changes" \
+          --resource-group <rg> \
+          --condition category=Security \
+          --action-group <action-group-id>
+
+  # ============================================================================
+  # Section 6 - Networking
+  # ============================================================================
+
+  - id: azure-nsg-001
+    name: NSG allows unrestricted SSH
+    description: Network Security Groups should not allow unrestricted SSH access from the internet.
+    provider: azure
+    resource_type: azure_network_security_group
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS Azure 6.1
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_ssh
+      operator: is_true
+    recommendation: Restrict SSH access to specific IP addresses or use Azure Bastion.
+    remediation:
+      cli: |
+        az network nsg rule update \
+          --nsg-name <nsg-name> \
+          --resource-group <rg> \
+          --name <rule-name> \
+          --source-address-prefixes "10.0.0.0/8"
+
+  - id: azure-nsg-002
+    name: NSG allows unrestricted RDP
+    description: Network Security Groups should not allow unrestricted RDP access from the internet.
+    provider: azure
+    resource_type: azure_network_security_group
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS Azure 6.2
+      - PCI DSS 1.3.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_unrestricted_rdp
+      operator: is_true
+    recommendation: Restrict RDP access to specific IP addresses or use Azure Bastion.
+    remediation:
+      cli: |
+        az network nsg rule update \
+          --nsg-name <nsg-name> \
+          --resource-group <rg> \
+          --name <rule-name> \
+          --source-address-prefixes "10.0.0.0/8"
+
+  - id: azure-nsg-003
+    name: NSG allows all inbound traffic
+    description: NSGs should not allow all inbound traffic from the internet.
+    provider: azure
+    resource_type: azure_network_security_group
+    severity: critical
+    category: network_security
+    compliance:
+      - CIS Azure 6.5
+      - PCI DSS 1.2.1
+      - NIST 800-53 AC-4
+    condition:
+      field: metadata.allows_all_inbound
+      operator: is_true
+    recommendation: Remove rules allowing all inbound traffic and implement least-privilege access.
+    remediation:
+      cli: |
+        az network nsg rule delete \
+          --nsg-name <nsg-name> \
+          --resource-group <rg> \
+          --name <rule-name>
+
+  # ============================================================================
+  # Section 7 - Virtual Machines
+  # ============================================================================
+
+  - id: azure-vm-001
+    name: VM disk encryption disabled
+    description: Virtual machine disks should be encrypted with Azure Disk Encryption.
+    provider: azure
+    resource_type: azure_virtual_machine
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS Azure 7.1
+      - PCI DSS 3.4
+      - NIST 800-53 SC-28
+    condition:
+      field: metadata.disk_encryption
+      operator: is_nil
+    recommendation: Enable Azure Disk Encryption for all VM disks.
+    remediation:
+      cli: |
+        az vm encryption enable \
+          --resource-group <rg> \
+          --name <vm-name> \
+          --disk-encryption-keyvault <keyvault-id>
+
+  - id: azure-vm-002
+    name: VM missing endpoint protection
+    description: Virtual machines should have endpoint protection installed.
+    provider: azure
+    resource_type: azure_virtual_machine
+    severity: medium
+    category: compute_security
+    compliance:
+      - CIS Azure 7.5
+      - NIST 800-53 SI-3
+    condition:
+      field: metadata.has_endpoint_protection
+      operator: is_false
+    recommendation: Install Microsoft Antimalware or a third-party endpoint protection solution.
+    remediation:
+      cli: |
+        az vm extension set \
+          --resource-group <rg> \
+          --vm-name <vm-name> \
+          --name IaaSAntimalware \
+          --publisher Microsoft.Azure.Security
+
+  # ============================================================================
+  # Section 8 - Key Vault
+  # ============================================================================
+
+  - id: azure-keyvault-001
+    name: Key Vault soft delete disabled
+    description: Key Vault should have soft delete enabled to protect against accidental deletion.
+    provider: azure
+    resource_type: azure_key_vault
+    severity: high
+    category: data_protection
+    compliance:
+      - CIS Azure 8.4
+      - NIST 800-53 CP-9
+    condition:
+      field: metadata.soft_delete_enabled
+      operator: is_false
+    recommendation: Enable soft delete to protect against accidental deletion.
+    remediation:
+      terraform: |
+        resource "azurerm_key_vault" "example" {
+          name                        = "example-keyvault"
+          soft_delete_retention_days  = 90
+          purge_protection_enabled    = true
+        }
+
+  - id: azure-keyvault-002
+    name: Key Vault purge protection disabled
+    description: Key Vault should have purge protection enabled to prevent permanent deletion.
+    provider: azure
+    resource_type: azure_key_vault
+    severity: medium
+    category: data_protection
+    compliance:
+      - CIS Azure 8.5
+      - NIST 800-53 CP-9
+    condition:
+      field: metadata.purge_protection
+      operator: is_false
+    recommendation: Enable purge protection to prevent permanent deletion of secrets.
+    remediation:
+      terraform: |
+        resource "azurerm_key_vault" "example" {
+          name                     = "example-keyvault"
+          purge_protection_enabled = true
+        }
+
+  - id: azure-keyvault-003
+    name: Key Vault accessible from all networks
+    description: Key Vault should restrict network access to specific virtual networks.
+    provider: azure
+    resource_type: azure_key_vault
+    severity: high
+    category: network_security
+    compliance:
+      - CIS Azure 8.6
+      - PCI DSS 1.2.1
+      - NIST 800-53 AC-4
+    condition:
+      or:
+        - field: metadata.network_acls
+          operator: is_nil
+        - field: metadata.network_acls.defaultAction
+          operator: equals
+          value: Allow
+    recommendation: Configure network rules to restrict access to specific VNets.
+    remediation:
+      terraform: |
+        resource "azurerm_key_vault" "example" {
+          name = "example-keyvault"
+
+          network_acls {
+            default_action             = "Deny"
+            virtual_network_subnet_ids = [azurerm_subnet.example.id]
+          }
+        }
+
+  # ============================================================================
+  # Section 9 - App Service
+  # ============================================================================
+
+  - id: azure-appservice-001
+    name: App Service HTTPS only disabled
+    description: App Service should enforce HTTPS-only traffic.
+    provider: azure
+    resource_type: azure_app_service
+    severity: high
+    category: network_security
+    compliance:
+      - CIS Azure 9.2
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.https_only
+      operator: is_false
+    recommendation: Enable 'HTTPS Only' setting for the App Service.
+    remediation:
+      terraform: |
+        resource "azurerm_app_service" "example" {
+          name                = "example-appservice"
+          https_only          = true
+        }
+
+  - id: azure-appservice-002
+    name: App Service TLS version below 1.2
+    description: App Service should require TLS 1.2 minimum.
+    provider: azure
+    resource_type: azure_app_service
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS Azure 9.3
+      - PCI DSS 4.1
+      - NIST 800-53 SC-8
+    condition:
+      field: metadata.min_tls_version
+      operator: not_equals
+      value: "1.2"
+    recommendation: Set minimum TLS version to 1.2.
+    remediation:
+      terraform: |
+        resource "azurerm_app_service" "example" {
+          name = "example-appservice"
+
+          site_config {
+            min_tls_version = "1.2"
+          }
+        }
+
+  - id: azure-appservice-003
+    name: App Service missing managed identity
+    description: App Service should use managed identity for secure access to Azure resources.
+    provider: azure
+    resource_type: azure_app_service
+    severity: low
+    category: identity_and_access
+    compliance:
+      - Azure Best Practices
+      - NIST 800-53 AC-6
+    condition:
+      field: metadata.identity
+      operator: is_nil
+    recommendation: Enable managed identity for secure access to Azure resources.
+    remediation:
+      terraform: |
+        resource "azurerm_app_service" "example" {
+          name = "example-appservice"
+
+          identity {
+            type = "SystemAssigned"
+          }
+        }
+
+  # ============================================================================
+  # Section 10 - AKS
+  # ============================================================================
+
+  - id: azure-aks-001
+    name: AKS RBAC disabled
+    description: AKS clusters should have Kubernetes RBAC enabled.
+    provider: azure
+    resource_type: azure_aks_cluster
+    severity: high
+    category: identity_and_access
+    compliance:
+      - CIS Azure 8.5
+      - NIST 800-53 AC-3
+    condition:
+      field: metadata.enable_rbac
+      operator: is_false
+    recommendation: Enable RBAC for the AKS cluster.
+    remediation:
+      terraform: |
+        resource "azurerm_kubernetes_cluster" "example" {
+          name                = "example-aks"
+          role_based_access_control_enabled = true
+        }
+
+  - id: azure-aks-002
+    name: AKS not integrated with Azure AD
+    description: AKS clusters should be integrated with Azure Active Directory.
+    provider: azure
+    resource_type: azure_aks_cluster
+    severity: medium
+    category: identity_and_access
+    compliance:
+      - CIS Azure 8.5
+      - NIST 800-53 AC-2
+    condition:
+      field: metadata.aad_profile
+      operator: is_nil
+    recommendation: Enable Azure AD integration for centralized identity management.
+    remediation:
+      terraform: |
+        resource "azurerm_kubernetes_cluster" "example" {
+          name = "example-aks"
+
+          azure_active_directory_role_based_access_control {
+            managed                = true
+            azure_rbac_enabled     = true
+          }
+        }
+
+  - id: azure-aks-003
+    name: AKS API server publicly accessible
+    description: AKS API server should not be publicly accessible.
+    provider: azure
+    resource_type: azure_aks_cluster
+    severity: medium
+    category: network_security
+    compliance:
+      - CIS Azure 8.5
+      - NIST 800-53 AC-4
+    condition:
+      or:
+        - field: metadata.api_server_access_profile
+          operator: is_nil
+        - field: metadata.api_server_access_profile.enablePrivateCluster
+          operator: is_false
+    recommendation: Enable private cluster to restrict API server access.
+    remediation:
+      terraform: |
+        resource "azurerm_kubernetes_cluster" "example" {
+          name                       = "example-aks"
+          private_cluster_enabled    = true
+        }

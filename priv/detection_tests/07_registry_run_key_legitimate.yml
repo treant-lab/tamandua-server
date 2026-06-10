@@ -1,0 +1,17 @@
+test_case:
+  name: "Registry Run Key - Legitimate Software"
+  description: "Ensures legitimate installer doesn't trigger false positive"
+  rule: "persistence/registry_run_keys.yml"
+  rule_type: sigma
+  events:
+    - type: registry_set
+      os_type: windows
+      data:
+        key_path: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\GoogleUpdate"
+        value_name: "GoogleUpdate"
+        value_data: "C:\\Program Files\\Google\\Update\\GoogleUpdate.exe"
+        value_type: "REG_SZ"
+        process_path: "C:\\Program Files\\Google\\Chrome\\Installer\\setup.exe"
+        process_pid: 3892
+  expected: no_match
+  tags: ["persistence", "registry", "negative"]

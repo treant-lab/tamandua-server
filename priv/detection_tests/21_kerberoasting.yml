@@ -1,0 +1,19 @@
+test_case:
+  name: "Kerberoasting Detection"
+  description: "Tests detection of Kerberoasting credential theft"
+  rule: "credential_access/kerberoasting.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        cmdline: "powershell.exe -Command Get-DomainSPNTicket -SPN MSSQLSvc/sql01.domain.local"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "DOMAIN\\user"
+        pid: 9876
+        ppid: 2048
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1558.003"]
+  tags: ["credential_access", "kerberoasting", "positive"]

@@ -1,0 +1,44 @@
+name: "Lateral Movement Response"
+description: "Response to detected lateral movement with threat hunting and containment"
+
+trigger:
+  mitre_techniques:
+    - "T1021"  # Remote Services
+    - "T1570"  # Lateral Tool Transfer
+  confidence: 0.8
+  severity: "high"
+
+actions:
+  - action: "collect_forensics"
+    collect_forensics:
+      process_list: true
+      network_connections: true
+      registry_hives: false
+      event_logs: true
+
+  - action: "block_ip"
+    block_ip:
+      reason: "Suspicious lateral movement detected"
+
+  - action: "trigger_scan"
+    trigger_scan:
+      path: "/"
+      recursive: true
+
+  - action: "wait"
+    wait:
+      duration_seconds: 30
+
+  - action: "isolate_host"
+    isolate_host: {}
+
+  - action: "create_ticket"
+    create_ticket:
+      title: "Lateral Movement Detected"
+      severity: "high"
+      priority: "P2"
+
+  - action: "send_notification"
+    send_notification:
+      channel: "email"
+      message: "Lateral movement activity detected. Host isolated and forensics collected."

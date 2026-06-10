@@ -1,0 +1,331 @@
+title: AI Runtime - Advanced Direct Injection
+id: runtime-ai-020
+status: stable
+level: high
+description: Detects sophisticated direct injection attempts using multi-step instruction override patterns
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_override:
+    PromptPreview|contains:
+      - 'ignore all previous instructions'
+      - 'disregard all prior context'
+      - 'forget everything above'
+      - 'new instructions:'
+      - 'override your rules'
+      - 'reset your context'
+  selection_system_prompt:
+    PromptPreview|contains:
+      - '[system]:'
+      - '<<SYS>>'
+      - '<|system|>'
+      - '<|im_start|>system'
+      - '[INST]'
+  condition: selection_override or selection_system_prompt
+tags:
+  - attack.initial_access
+  - attack.t1203
+  - ai.prompt_injection
+  - ai.direct_injection
+falsepositives:
+  - Legitimate prompt engineering tutorials
+  - AI research experiments with proper authorization
+
+---
+title: AI Runtime - Indirect Injection via External Content
+id: runtime-ai-021
+status: stable
+level: medium
+description: Detects injection payloads embedded in URLs, files, or API responses that manipulate LLM behavior
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_external:
+    PromptPreview|contains:
+      - 'fetch from'
+      - 'load url'
+      - 'read file'
+      - 'process this document'
+      - 'summarize this webpage'
+  selection_injection_marker:
+    PromptPreview|re: '\[INST\]|\[/INST\]|<<SYS>>|<\|im_start\|>|<!-- ignore|ADMIN_OVERRIDE|\[INJECTION\]'
+  condition: selection_external and selection_injection_marker
+tags:
+  - attack.initial_access
+  - attack.t1566
+  - ai.prompt_injection
+  - ai.indirect_injection
+falsepositives:
+  - Legitimate document processing with unusual formatting
+
+---
+title: AI Runtime - Jailbreak via Fictional Framing
+id: runtime-ai-022
+status: stable
+level: high
+description: Detects jailbreak attempts using fictional or hypothetical framing to bypass safety guardrails
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_fictional:
+    PromptPreview|contains:
+      - 'in a fictional world'
+      - 'imagine you have no restrictions'
+      - 'purely hypothetically'
+      - 'for a creative writing project'
+      - 'in this alternate universe'
+      - 'pretend this is fiction'
+  selection_harmful_request:
+    PromptPreview|contains:
+      - 'how to hack'
+      - 'create malware'
+      - 'bypass security'
+      - 'exploit vulnerability'
+      - 'steal credentials'
+      - 'unauthorized access'
+  condition: selection_fictional and selection_harmful_request
+tags:
+  - attack.execution
+  - attack.t1059
+  - ai.jailbreak
+  - ai.fictional_framing
+falsepositives:
+  - Security research with proper authorization
+  - Legitimate red team exercises
+
+---
+title: AI Runtime - Token Smuggling
+id: runtime-ai-023
+status: stable
+level: high
+description: Detects attempts to inject via special model tokens to manipulate conversation flow
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_tokens:
+    PromptPreview|re: '<\|endoftext\|>|<\|assistant\|>|<\|user\|>|<\|end\|>|<\|im_end\|>'
+  condition: selection_tokens
+tags:
+  - attack.execution
+  - attack.t1059
+  - ai.prompt_injection
+  - ai.token_smuggling
+falsepositives:
+  - Legitimate tokenization research
+  - Model debugging by authorized developers
+
+---
+title: AI Runtime - DAN Jailbreak Variants
+id: runtime-ai-024
+status: stable
+level: critical
+description: Detects DAN (Do Anything Now) jailbreak attempts and variants
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_dan:
+    PromptPreview|contains:
+      - 'DAN'
+      - 'Do Anything Now'
+      - 'jailbreak'
+      - 'jailbroken'
+      - 'developer mode'
+      - 'sudo mode'
+      - 'god mode'
+  selection_constraints:
+    PromptPreview|contains:
+      - 'without restrictions'
+      - 'bypass filters'
+      - 'disable guidelines'
+      - 'remove limitations'
+      - 'unlock capabilities'
+      - 'no ethical considerations'
+  condition: selection_dan or selection_constraints
+tags:
+  - attack.defense_evasion
+  - attack.t1562
+  - ai.jailbreak
+  - ai.dan_variant
+falsepositives:
+  - AI safety research discussions
+
+---
+title: AI Runtime - Encoded Instruction Injection
+id: runtime-ai-025
+status: stable
+level: high
+description: Detects attempts to inject instructions using encoding schemes to bypass filters
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_base64:
+    PromptPreview|contains:
+      - 'base64 decode'
+      - 'decode and execute'
+      - 'decode and follow'
+      - 'atob('
+      - 'eval(atob'
+  selection_unicode:
+    PromptPreview|re: '\\u[0-9a-fA-F]{4}.*\\u[0-9a-fA-F]{4}|&#x[0-9a-fA-F]+;.*&#x[0-9a-fA-F]+;'
+  selection_rot13:
+    PromptPreview|contains:
+      - 'rot13'
+      - 'caesar cipher'
+  condition: selection_base64 or selection_unicode or selection_rot13
+tags:
+  - attack.defense_evasion
+  - attack.t1027
+  - ai.prompt_injection
+  - ai.encoded_injection
+falsepositives:
+  - Legitimate encoding discussions or tutorials
+
+---
+title: AI Runtime - Role Manipulation Attack
+id: runtime-ai-026
+status: stable
+level: high
+description: Detects attempts to manipulate the AI's perceived role or identity
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_role:
+    PromptPreview|contains:
+      - 'you are now'
+      - 'act as if you'
+      - 'pretend to be'
+      - 'your new role is'
+      - 'from now on you'
+      - 'you will act as'
+  selection_identity:
+    PromptPreview|contains:
+      - 'evil AI'
+      - 'uncensored AI'
+      - 'unrestricted assistant'
+      - 'without safety'
+      - 'malicious assistant'
+  condition: selection_role and selection_identity
+tags:
+  - attack.execution
+  - attack.t1059
+  - ai.jailbreak
+  - ai.role_manipulation
+falsepositives:
+  - Legitimate roleplay scenarios with appropriate content
+
+---
+title: AI Runtime - Multi-Turn Escalation
+id: runtime-ai-027
+status: stable
+level: medium
+description: Detects patterns indicating multi-turn conversation escalation attacks
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_escalation:
+    PromptPreview|contains:
+      - 'now that you understand'
+      - 'based on your previous response'
+      - 'continue from where'
+      - 'take this further'
+      - 'build upon what you said'
+  selection_boundary:
+    PromptPreview|contains:
+      - 'cross the line'
+      - 'push the boundaries'
+      - 'go beyond'
+      - 'more explicit'
+      - 'less restricted'
+  condition: selection_escalation and selection_boundary
+tags:
+  - attack.execution
+  - attack.t1059
+  - ai.jailbreak
+  - ai.multi_turn_escalation
+falsepositives:
+  - Legitimate iterative problem-solving conversations
+
+---
+title: AI Runtime - Instruction Delimiter Injection
+id: runtime-ai-028
+status: stable
+level: high
+description: Detects attempts to inject instructions by abusing delimiters and formatting
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_delimiter:
+    PromptPreview|re: '\{\{.*system.*\}\}|%SYSTEM%|\[hidden instruction\]|<!-- instructions -->|\[AI instructions\]:'
+  condition: selection_delimiter
+tags:
+  - attack.execution
+  - attack.t1059
+  - ai.prompt_injection
+  - ai.delimiter_injection
+falsepositives:
+  - Legitimate templating systems
+
+---
+title: AI Runtime - Data Exfiltration via Prompt
+id: runtime-ai-029
+status: stable
+level: critical
+description: Detects attempts to exfiltrate data or secrets via prompt manipulation
+author: Tamandua Security
+date: 2024/04/15
+logsource:
+  product: tamandua
+  category: ai_runtime
+detection:
+  selection_exfil:
+    PromptPreview|contains:
+      - 'send to this url'
+      - 'transmit data to'
+      - 'upload to webhook'
+      - 'post to endpoint'
+  selection_secret:
+    PromptPreview|contains:
+      - 'system prompt'
+      - 'api key'
+      - 'secret'
+      - 'credentials'
+      - 'password'
+      - 'private key'
+  selection_extract:
+    PromptPreview|contains:
+      - 'extract'
+  condition: selection_exfil or (selection_secret and selection_extract)
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - ai.prompt_injection
+  - ai.data_exfiltration
+falsepositives:
+  - Legitimate API integration discussions

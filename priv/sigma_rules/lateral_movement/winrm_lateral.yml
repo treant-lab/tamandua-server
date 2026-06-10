@@ -1,0 +1,109 @@
+title: WinRM Remote Execution via WinRS
+id: lm03a001-winr-0003-0001-000000000001
+status: stable
+description: |
+  Detects remote command execution via winrs.exe (Windows Remote Shell client).
+  WinRS connects to WinRM service on a remote host to execute commands,
+  frequently used in lateral movement and administrative tasks.
+references:
+  - https://attack.mitre.org/techniques/T1021/006/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\winrs.exe'
+    CommandLine|contains: '-r:'
+  filter_localhost:
+    CommandLine|contains:
+      - '-r:localhost'
+      - '-r:127.0.0.1'
+  condition: selection and not filter_localhost
+falsepositives:
+  - Legitimate remote administration via WinRM
+level: medium
+
+---
+title: WinRM Remote Execution via PowerShell Remoting
+id: lm03a002-winr-0003-0002-000000000002
+status: stable
+description: |
+  Detects PowerShell remoting sessions that connect to remote hosts. This
+  includes Invoke-Command, Enter-PSSession, and New-PSSession with remote
+  ComputerName targets, which are common lateral movement vectors.
+references:
+  - https://attack.mitre.org/techniques/T1021/006/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-Command'
+      - 'Enter-PSSession'
+      - 'New-PSSession'
+  selection_remote:
+    CommandLine|contains: '-ComputerName'
+  filter_local:
+    CommandLine|contains:
+      - '-ComputerName localhost'
+      - '-ComputerName $env:'
+  condition: selection and selection_remote and not filter_local
+falsepositives:
+  - Legitimate PowerShell remoting for server management
+  - Configuration management tools (DSC, Ansible)
+level: medium
+
+---
+title: WinRM Service Spawning Suspicious Process
+id: lm03a003-winr-0003-0003-000000000003
+status: stable
+description: |
+  Detects the WinRM service (wsmprovhost.exe) spawning suspicious child
+  processes, indicating an incoming remote command execution. This fires
+  on the target host receiving the remote session.
+references:
+  - https://attack.mitre.org/techniques/T1021/006/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.006
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\wsmprovhost.exe'
+    Image|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\wscript.exe'
+      - '\cscript.exe'
+      - '\mshta.exe'
+  filter_dsc:
+    CommandLine|contains:
+      - 'DesiredStateConfiguration'
+      - '\Windows\CCM\'
+  condition: selection and not filter_dsc
+falsepositives:
+  - DSC (Desired State Configuration) push operations
+  - Legitimate remote PowerShell administration
+level: high

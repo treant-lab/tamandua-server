@@ -1,0 +1,19 @@
+test_case:
+  name: "WMI Lateral Movement"
+  description: "Tests detection of WMI-based lateral movement"
+  rule: "lateral_movement/wmi_lateral.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe"
+        cmdline: "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe"
+        parent_path: "C:\\Windows\\System32\\svchost.exe"
+        user: "NT AUTHORITY\\SYSTEM"
+        pid: 3452
+        ppid: 892
+  expected: match
+  expected_severity: medium
+  expected_mitre: ["T1047"]
+  tags: ["lateral_movement", "wmi", "positive"]

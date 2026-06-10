@@ -1,0 +1,585 @@
+## This file is a PO Template file.
+##
+## "msgid"s here are often extracted from source code.
+## Add new translations manually only if they're dynamic
+## translations that can't be statically extracted.
+##
+## Run "mix gettext.extract" to bring this file up to
+## date. Leave "msgstr"s empty as changing them here has no
+## effect: edit them in PO (.po) files instead.
+msgid ""
+msgstr ""
+"Language: en\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+## Navigation
+msgid "Home"
+msgstr "Home"
+
+msgid "Alerts"
+msgstr "Alerts"
+
+msgid "Agents"
+msgstr "Agents"
+
+msgid "Dashboard"
+msgstr "Dashboard"
+
+msgid "Detections"
+msgstr "Detections"
+
+msgid "Investigations"
+msgstr "Investigations"
+
+msgid "Settings"
+msgstr "Settings"
+
+msgid "Reports"
+msgstr "Reports"
+
+msgid "Admin"
+msgstr "Admin"
+
+msgid "Users"
+msgstr "Users"
+
+msgid "Organizations"
+msgstr "Organizations"
+
+msgid "Threat Intelligence"
+msgstr "Threat Intelligence"
+
+msgid "Compliance"
+msgstr "Compliance"
+
+msgid "Playbooks"
+msgstr "Playbooks"
+
+## Alert Status
+msgid "New"
+msgstr "New"
+
+msgid "Investigating"
+msgstr "Investigating"
+
+msgid "Resolved"
+msgstr "Resolved"
+
+msgid "False Positive"
+msgstr "False Positive"
+
+msgid "Escalated"
+msgstr "Escalated"
+
+msgid "Acknowledged"
+msgstr "Acknowledged"
+
+## Severity Levels
+msgid "Critical"
+msgstr "Critical"
+
+msgid "High"
+msgstr "High"
+
+msgid "Medium"
+msgstr "Medium"
+
+msgid "Low"
+msgstr "Low"
+
+msgid "Info"
+msgstr "Info"
+
+## Common Actions
+msgid "Save"
+msgstr "Save"
+
+msgid "Cancel"
+msgstr "Cancel"
+
+msgid "Delete"
+msgstr "Delete"
+
+msgid "Edit"
+msgstr "Edit"
+
+msgid "Create"
+msgstr "Create"
+
+msgid "Update"
+msgstr "Update"
+
+msgid "Export"
+msgstr "Export"
+
+msgid "Import"
+msgstr "Import"
+
+msgid "Download"
+msgstr "Download"
+
+msgid "Upload"
+msgstr "Upload"
+
+msgid "Search"
+msgstr "Search"
+
+msgid "Filter"
+msgstr "Filter"
+
+msgid "Clear"
+msgstr "Clear"
+
+msgid "Apply"
+msgstr "Apply"
+
+msgid "Close"
+msgstr "Close"
+
+msgid "Submit"
+msgstr "Submit"
+
+msgid "Refresh"
+msgstr "Refresh"
+
+msgid "Back"
+msgstr "Back"
+
+msgid "Next"
+msgstr "Next"
+
+msgid "Previous"
+msgstr "Previous"
+
+msgid "View"
+msgstr "View"
+
+msgid "Details"
+msgstr "Details"
+
+## Alert Management
+msgid "Alert Details"
+msgstr "Alert Details"
+
+msgid "Alert ID"
+msgstr "Alert ID"
+
+msgid "Created At"
+msgstr "Created At"
+
+msgid "Updated At"
+msgstr "Updated At"
+
+msgid "Assigned To"
+msgstr "Assigned To"
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Severity"
+msgstr "Severity"
+
+msgid "Description"
+msgstr "Description"
+
+msgid "Title"
+msgstr "Title"
+
+msgid "Source"
+msgstr "Source"
+
+msgid "Tags"
+msgstr "Tags"
+
+msgid "Comments"
+msgstr "Comments"
+
+msgid "Add Comment"
+msgstr "Add Comment"
+
+msgid "Assign"
+msgstr "Assign"
+
+msgid "Change Status"
+msgstr "Change Status"
+
+msgid "Escalate"
+msgstr "Escalate"
+
+msgid "Mark as False Positive"
+msgstr "Mark as False Positive"
+
+msgid "Take Action"
+msgstr "Take Action"
+
+msgid "Isolate Endpoint"
+msgstr "Isolate Endpoint"
+
+msgid "Kill Process"
+msgstr "Kill Process"
+
+msgid "Quarantine File"
+msgstr "Quarantine File"
+
+## Agent Management
+msgid "Agent Status"
+msgstr "Agent Status"
+
+msgid "Online"
+msgstr "Online"
+
+msgid "Offline"
+msgstr "Offline"
+
+msgid "Degraded"
+msgstr "Degraded"
+
+msgid "Hostname"
+msgstr "Hostname"
+
+msgid "IP Address"
+msgstr "IP Address"
+
+msgid "OS Type"
+msgstr "OS Type"
+
+msgid "OS Version"
+msgstr "OS Version"
+
+msgid "Agent Version"
+msgstr "Agent Version"
+
+msgid "Last Seen"
+msgstr "Last Seen"
+
+msgid "Installed At"
+msgstr "Installed At"
+
+msgid "CPU Usage"
+msgstr "CPU Usage"
+
+msgid "Memory Usage"
+msgstr "Memory Usage"
+
+msgid "Disk Usage"
+msgstr "Disk Usage"
+
+msgid "Network Status"
+msgstr "Network Status"
+
+## Filters & Search
+msgid "Advanced Filters"
+msgstr "Advanced Filters"
+
+msgid "Save Filter"
+msgstr "Save Filter"
+
+msgid "Load Filter"
+msgstr "Load Filter"
+
+msgid "Clear Filters"
+msgstr "Clear Filters"
+
+msgid "Saved Searches"
+msgstr "Saved Searches"
+
+msgid "Search Name"
+msgstr "Search Name"
+
+msgid "Share with organization"
+msgstr "Share with organization"
+
+msgid "Filter Name"
+msgstr "Filter Name"
+
+msgid "Add Condition"
+msgstr "Add Condition"
+
+msgid "Add Group"
+msgstr "Add Group"
+
+msgid "Remove"
+msgstr "Remove"
+
+msgid "AND"
+msgstr "AND"
+
+msgid "OR"
+msgstr "OR"
+
+msgid "Field"
+msgstr "Field"
+
+msgid "Operator"
+msgstr "Operator"
+
+msgid "Value"
+msgstr "Value"
+
+## Pagination
+msgid "Showing %{start} to %{end} of %{total} results"
+msgstr "Showing %{start} to %{end} of %{total} results"
+
+msgid "Page %{page} of %{total}"
+msgstr "Page %{page} of %{total}"
+
+## Time & Date
+msgid "Today"
+msgstr "Today"
+
+msgid "Yesterday"
+msgstr "Yesterday"
+
+msgid "Last 7 days"
+msgstr "Last 7 days"
+
+msgid "Last 30 days"
+msgstr "Last 30 days"
+
+msgid "Last 90 days"
+msgstr "Last 90 days"
+
+msgid "Custom Range"
+msgstr "Custom Range"
+
+msgid "Start Date"
+msgstr "Start Date"
+
+msgid "End Date"
+msgstr "End Date"
+
+msgid "Time"
+msgstr "Time"
+
+msgid "Date"
+msgstr "Date"
+
+msgid "Timezone"
+msgstr "Timezone"
+
+## User Settings
+msgid "Profile"
+msgstr "Profile"
+
+msgid "Account Settings"
+msgstr "Account Settings"
+
+msgid "Security"
+msgstr "Security"
+
+msgid "Preferences"
+msgstr "Preferences"
+
+msgid "Language"
+msgstr "Language"
+
+msgid "Email"
+msgstr "Email"
+
+msgid "Name"
+msgstr "Name"
+
+msgid "Password"
+msgstr "Password"
+
+msgid "Change Password"
+msgstr "Change Password"
+
+msgid "Current Password"
+msgstr "Current Password"
+
+msgid "New Password"
+msgstr "New Password"
+
+msgid "Confirm Password"
+msgstr "Confirm Password"
+
+msgid "Two-Factor Authentication"
+msgstr "Two-Factor Authentication"
+
+msgid "Enable 2FA"
+msgstr "Enable 2FA"
+
+msgid "Disable 2FA"
+msgstr "Disable 2FA"
+
+## Notifications
+msgid "Notifications"
+msgstr "Notifications"
+
+msgid "No new notifications"
+msgstr "No new notifications"
+
+msgid "Mark all as read"
+msgstr "Mark all as read"
+
+msgid "View all notifications"
+msgstr "View all notifications"
+
+## Errors
+msgid "Error"
+msgstr "Error"
+
+msgid "Warning"
+msgstr "Warning"
+
+msgid "Success"
+msgstr "Success"
+
+msgid "Information"
+msgstr "Information"
+
+msgid "An error occurred"
+msgstr "An error occurred"
+
+msgid "Not found"
+msgstr "Not found"
+
+msgid "Unauthorized"
+msgstr "Unauthorized"
+
+msgid "Forbidden"
+msgstr "Forbidden"
+
+msgid "Invalid input"
+msgstr "Invalid input"
+
+msgid "Required field"
+msgstr "Required field"
+
+msgid "Invalid email"
+msgstr "Invalid email"
+
+msgid "Password too short"
+msgstr "Password too short"
+
+msgid "Passwords do not match"
+msgstr "Passwords do not match"
+
+## Success Messages
+msgid "Saved successfully"
+msgstr "Saved successfully"
+
+msgid "Updated successfully"
+msgstr "Updated successfully"
+
+msgid "Deleted successfully"
+msgstr "Deleted successfully"
+
+msgid "Created successfully"
+msgstr "Created successfully"
+
+msgid "Changes saved"
+msgstr "Changes saved"
+
+## Detection Rules
+msgid "Detection Rules"
+msgstr "Detection Rules"
+
+msgid "YARA Rules"
+msgstr "YARA Rules"
+
+msgid "Sigma Rules"
+msgstr "Sigma Rules"
+
+msgid "IOC Lists"
+msgstr "IOC Lists"
+
+msgid "Rule Name"
+msgstr "Rule Name"
+
+msgid "Rule Type"
+msgstr "Rule Type"
+
+msgid "Enabled"
+msgstr "Enabled"
+
+msgid "Disabled"
+msgstr "Disabled"
+
+msgid "Enable"
+msgstr "Enable"
+
+msgid "Disable"
+msgstr "Disable"
+
+## Threat Intelligence
+msgid "Threat Actors"
+msgstr "Threat Actors"
+
+msgid "Indicators of Compromise"
+msgstr "Indicators of Compromise"
+
+msgid "Threat Feeds"
+msgstr "Threat Feeds"
+
+msgid "MITRE ATT&CK"
+msgstr "MITRE ATT&CK"
+
+msgid "Tactics"
+msgstr "Tactics"
+
+msgid "Techniques"
+msgstr "Techniques"
+
+msgid "Procedures"
+msgstr "Procedures"
+
+## Compliance
+msgid "Compliance Frameworks"
+msgstr "Compliance Frameworks"
+
+msgid "Audit Logs"
+msgstr "Audit Logs"
+
+msgid "Policy Violations"
+msgstr "Policy Violations"
+
+msgid "Remediation Tasks"
+msgstr "Remediation Tasks"
+
+## Statistics
+msgid "Total Alerts"
+msgstr "Total Alerts"
+
+msgid "Open Alerts"
+msgstr "Open Alerts"
+
+msgid "Critical Alerts"
+msgstr "Critical Alerts"
+
+msgid "Active Agents"
+msgstr "Active Agents"
+
+msgid "Offline Agents"
+msgstr "Offline Agents"
+
+msgid "Detection Rate"
+msgstr "Detection Rate"
+
+msgid "Mean Time to Detect"
+msgstr "Mean Time to Detect"
+
+msgid "Mean Time to Respond"
+msgstr "Mean Time to Respond"
+
+## Plurals
+msgid "One alert"
+msgid_plural "%{count} alerts"
+msgstr[0] "One alert"
+msgstr[1] "%{count} alerts"
+
+msgid "One agent"
+msgid_plural "%{count} agents"
+msgstr[0] "One agent"
+msgstr[1] "%{count} agents"
+
+msgid "One user"
+msgid_plural "%{count} users"
+msgstr[0] "One user"
+msgstr[1] "%{count} users"
+
+msgid "One detection"
+msgid_plural "%{count} detections"
+msgstr[0] "One detection"
+msgstr[1] "%{count} detections"

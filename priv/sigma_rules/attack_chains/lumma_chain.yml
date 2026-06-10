@@ -1,0 +1,1571 @@
+# Tamandua EDR - Lumma Stealer Attack Chain Detection Rules
+# Comprehensive detection for the full Lumma stealer kill chain
+# From initial access (ClickFix/Fake CAPTCHA) through exfiltration
+
+# =============================================================================
+# PHASE 1: INITIAL ACCESS - ClickFix / Fake CAPTCHA Social Engineering
+# =============================================================================
+
+title: Lumma Stealer - Browser Spawning PowerShell with Encoded Command
+id: lumma-ia01-brow-psen-0001-000000000001
+status: stable
+description: |
+  Detects browsers spawning PowerShell with encoded commands, a key indicator of
+  ClickFix/Fake CAPTCHA attacks. Lumma Stealer campaigns trick users into copying
+  and pasting malicious commands from fake verification pages into Run dialog or
+  PowerShell. The browser process tree shows direct child process creation.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://www.proofpoint.com/us/blog/threat-insight/security-brief-clickfix-social-engineering-technique-floods-threat-landscape
+author: Tamandua EDR
+author_pubkey: TamDevBounty1111111111111111111111111111111
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.execution
+  - attack.t1204.001
+  - attack.t1059.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\firefox.exe'
+      - '\brave.exe'
+      - '\opera.exe'
+      - '\vivaldi.exe'
+      - '\iexplore.exe'
+  selection_child:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - '-enc '
+      - '-EncodedCommand'
+      - '-e '
+      - 'FromBase64String'
+      - 'IEX'
+      - 'Invoke-Expression'
+  condition: selection_parent and selection_child
+falsepositives:
+  - Browser extensions executing legitimate PowerShell scripts
+  - Web-based IT management tools
+level: critical
+
+---
+title: Lumma Stealer - ClickFix Clipboard Execution Pattern
+id: lumma-ia02-clip-exec-0002-000000000002
+status: stable
+description: |
+  Detects the characteristic execution pattern of ClickFix attacks where users
+  paste malicious commands from clipboard. These commands typically invoke
+  mshta.exe or PowerShell with remote URLs, often using Windows+R Run dialog.
+  The command chain frequently includes download cradles and scheduled tasks.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+  - https://attack.mitre.org/techniques/T1059/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.execution
+  - attack.t1204.001
+  - attack.t1059.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_explorer_parent:
+    ParentImage|endswith: '\explorer.exe'
+  selection_execution:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+      - '\mshta.exe'
+  selection_clickfix_pattern:
+    CommandLine|contains:
+      - 'mshta'
+      - 'http'
+      - 'hxxp'
+      - 'bit.ly'
+      - 'tinyurl'
+      - 'cutt.ly'
+      - 'rebrand.ly'
+      - 't.co'
+  selection_obfuscation:
+    CommandLine|contains:
+      - '^'
+      - '%COMSPEC%'
+      - 'cmd /c'
+      - '/c start'
+      - '/min'
+  condition: selection_explorer_parent and selection_execution and (selection_clickfix_pattern or selection_obfuscation)
+falsepositives:
+  - Legitimate URL shortcuts executed from desktop
+  - IT administration scripts
+level: high
+
+---
+title: Lumma Stealer - Fake CAPTCHA JavaScript Execution
+id: lumma-ia03-capt-exec-0003-000000000003
+status: stable
+description: |
+  Detects execution patterns associated with fake CAPTCHA pages that instruct
+  users to run malicious code. These pages often use JavaScript to copy commands
+  to clipboard with instructions to paste in Windows Run or PowerShell.
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.t1204.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'verify'
+      - 'captcha'
+      - 'human'
+      - 'robot'
+      - 'check'
+    CommandLine|contains:
+      - 'powershell'
+      - 'mshta'
+      - 'wscript'
+      - 'cscript'
+  selection_download:
+    CommandLine|contains:
+      - 'http'
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'WebClient'
+      - 'Invoke-WebRequest'
+  condition: selection and selection_download
+falsepositives:
+  - Legitimate verification scripts (rare)
+level: high
+
+# =============================================================================
+# PHASE 2: EXECUTION - LOLBin Abuse
+# =============================================================================
+
+---
+title: Lumma Stealer - MSHTA Remote Script Execution
+id: lumma-ex01-msht-remt-0001-000000000004
+status: stable
+description: |
+  Detects mshta.exe executing scripts from remote URLs, a primary execution
+  technique in Lumma Stealer campaigns. MSHTA allows execution of HTA files
+  containing VBScript/JavaScript that can download and execute payloads while
+  bypassing application whitelisting.
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+  - https://lolbas-project.github.io/lolbas/Binaries/Mshta/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.execution
+  - attack.defense_evasion
+  - attack.t1218.005
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\mshta.exe'
+  selection_remote:
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+      - 'javascript:'
+      - 'vbscript:'
+      - 'about:hta'
+  filter_about_blank:
+    CommandLine|contains: 'about:blank'
+  filter_local:
+    CommandLine|re: '^"?[A-Za-z]:\\'
+  condition: selection and selection_remote and not (filter_about_blank or filter_local)
+falsepositives:
+  - Legacy enterprise HTA applications
+level: critical
+
+---
+title: Lumma Stealer - Base64 PowerShell Download Cradle
+id: lumma-ex02-psdl-b64d-0002-000000000005
+status: stable
+description: |
+  Detects Base64-encoded PowerShell download cradles commonly used by Lumma
+  Stealer for initial payload delivery. These cradles use IEX/Invoke-Expression
+  combined with DownloadString to fetch and execute second-stage payloads.
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1105/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.t1105
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_cradle:
+    CommandLine|contains:
+      - 'IEX'
+      - 'Invoke-Expression'
+      - '.Invoke('
+    CommandLine|contains:
+      - 'DownloadString'
+      - 'DownloadData'
+      - 'DownloadFile'
+      - 'WebClient'
+      - 'Invoke-WebRequest'
+      - 'Invoke-RestMethod'
+      - 'iwr '
+      - 'irm '
+      - 'wget '
+      - 'curl '
+  filter_legitimate:
+    CommandLine|contains:
+      - 'chocolatey'
+      - 'nuget'
+      - 'powershellgallery'
+      - 'github.com/PowerShell'
+  condition: selection and selection_cradle and not filter_legitimate
+falsepositives:
+  - Legitimate PowerShell module installation
+  - IT automation scripts
+level: high
+
+---
+title: Lumma Stealer - WMI Process Creation
+id: lumma-ex03-wmic-proc-0003-000000000006
+status: stable
+description: |
+  Detects WMI-based process creation used by Lumma Stealer for execution and
+  lateral movement. WMI process call create allows spawning processes with
+  SYSTEM context and can bypass application controls.
+references:
+  - https://attack.mitre.org/techniques/T1047/
+  - https://attack.mitre.org/techniques/T1546/003/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.execution
+  - attack.t1047
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_wmic:
+    Image|endswith: '\wmic.exe'
+    CommandLine|contains:
+      - 'process call create'
+      - 'process call'
+  selection_wmiprvse:
+    ParentImage|endswith: '\wmiprvse.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+      - '\mshta.exe'
+  condition: selection_wmic or selection_wmiprvse
+falsepositives:
+  - System administration scripts
+  - SCCM deployments
+level: high
+
+---
+title: Lumma Stealer - Certutil Download and Decode
+id: lumma-ex04-cert-dldec-0004-000000000007
+status: stable
+description: |
+  Detects certutil.exe abuse for downloading and decoding payloads. Lumma
+  campaigns use certutil to download encoded payloads and decode them locally,
+  bypassing network security controls looking for executable downloads.
+references:
+  - https://attack.mitre.org/techniques/T1140/
+  - https://attack.mitre.org/techniques/T1105/
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.execution
+  - attack.defense_evasion
+  - attack.t1140
+  - attack.t1105
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\certutil.exe'
+  selection_download:
+    CommandLine|contains:
+      - '-urlcache'
+      - '-split'
+      - 'http://'
+      - 'https://'
+  selection_decode:
+    CommandLine|contains:
+      - '-decode'
+      - '-decodehex'
+  filter_legitimate:
+    CommandLine|contains:
+      - 'microsoft.com'
+      - 'windows.com'
+      - 'windowsupdate'
+  condition: selection and (selection_download or selection_decode) and not filter_legitimate
+falsepositives:
+  - Certificate management operations
+level: high
+
+# =============================================================================
+# PHASE 3: DEFENSE EVASION
+# =============================================================================
+
+---
+title: Lumma Stealer - VM/Sandbox Detection Checks
+id: lumma-de01-vmdt-chck-0001-000000000008
+status: stable
+description: |
+  Detects VM and sandbox detection techniques used by Lumma Stealer to evade
+  analysis environments. The malware checks for VMware, VirtualBox, Sandboxie,
+  and other virtualization indicators via WMI queries, registry keys, and
+  process enumeration before executing malicious routines.
+references:
+  - https://attack.mitre.org/techniques/T1497/001/
+  - https://attack.mitre.org/techniques/T1082/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.discovery
+  - attack.t1497.001
+  - attack.t1082
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_wmi_vm:
+    CommandLine|contains:
+      - 'Win32_ComputerSystem'
+      - 'Win32_BIOS'
+      - 'Win32_BaseBoard'
+    CommandLine|contains:
+      - 'VMware'
+      - 'VirtualBox'
+      - 'VBOX'
+      - 'Xen'
+      - 'QEMU'
+      - 'Virtual'
+      - 'Hyper-V'
+  selection_process_check:
+    CommandLine|contains:
+      - 'vmtoolsd'
+      - 'vmwaretray'
+      - 'VBoxService'
+      - 'VBoxTray'
+      - 'sandboxie'
+      - 'SbieDll'
+      - 'cuckoomon'
+      - 'prl_tools'
+      - 'vmusrvc'
+      - 'vmsrvc'
+      - 'xenservice'
+  selection_registry_vm:
+    CommandLine|contains:
+      - 'HARDWARE\\DEVICEMAP\\Scsi'
+      - 'SYSTEM\\CurrentControlSet\\Enum\\IDE'
+      - 'SYSTEM\\CurrentControlSet\\Enum\\SCSI'
+    CommandLine|contains:
+      - 'VBOX'
+      - 'VMWARE'
+      - 'QEMU'
+      - 'Virtual'
+  condition: selection_wmi_vm or selection_process_check or selection_registry_vm
+falsepositives:
+  - System inventory tools
+  - Legitimate virtualization management
+level: medium
+
+---
+title: Lumma Stealer - Sleep Evasion Extended Delays
+id: lumma-de02-slep-evad-0002-000000000009
+status: stable
+description: |
+  Detects commands implementing extended sleep delays for sandbox evasion.
+  Lumma Stealer uses various techniques to delay execution, hoping to outlast
+  automated analysis sandbox timeouts (typically 2-5 minutes).
+references:
+  - https://attack.mitre.org/techniques/T1497/003/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1497.003
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_timeout:
+    Image|endswith: '\timeout.exe'
+    CommandLine|re: '/t\s+[3-9][0-9]{2,}'  # 300+ seconds
+  selection_ping:
+    Image|endswith: '\ping.exe'
+    CommandLine|re: '-n\s+[5-9][0-9]{2,}'  # 500+ ping count for delay
+  selection_ps_sleep:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Start-Sleep'
+      - 'sleep '
+    CommandLine|re: '(Start-Sleep|sleep)\s+-?(s|Seconds)?\s*[3-9][0-9]{2,}'
+  condition: selection_timeout or selection_ping or selection_ps_sleep
+falsepositives:
+  - Legitimate scripts with intentional delays
+  - Network testing
+level: medium
+
+---
+title: Lumma Stealer - Parent PID Spoofing Indicators
+id: lumma-de03-ppid-spof-0003-000000000010
+status: stable
+description: |
+  Detects indicators of Parent PID spoofing used by Lumma Stealer to masquerade
+  malicious processes as children of legitimate system processes. This technique
+  makes malware appear to spawn from trusted processes like explorer.exe or
+  svchost.exe to evade behavioral detection.
+references:
+  - https://attack.mitre.org/techniques/T1134/004/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.privilege_escalation
+  - attack.t1134.004
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  # Suspicious child from system process without expected arguments
+  selection_system_anomaly:
+    ParentImage|endswith:
+      - '\svchost.exe'
+      - '\services.exe'
+      - '\lsass.exe'
+      - '\csrss.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+      - '\mshta.exe'
+      - '\wscript.exe'
+  filter_svchost:
+    ParentCommandLine|contains: '-k '
+  # RuntimeBroker rarely spawns shells
+  selection_runtimebroker:
+    ParentImage|endswith: '\RuntimeBroker.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\cmd.exe'
+  condition: (selection_system_anomaly and not filter_svchost) or selection_runtimebroker
+falsepositives:
+  - Scheduled tasks with incorrect attribution
+level: high
+
+---
+title: Lumma Stealer - Process Injection via WriteProcessMemory
+id: lumma-de04-pinj-wpm-0004-000000000011
+status: stable
+description: |
+  Detects potential process injection patterns used by Lumma Stealer to execute
+  code in the context of legitimate processes. This includes hollowing, APC
+  injection, and thread hijacking detected via suspicious API call patterns.
+references:
+  - https://attack.mitre.org/techniques/T1055/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.privilege_escalation
+  - attack.t1055
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_powershell_inject:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'VirtualAlloc'
+      - 'VirtualAllocEx'
+      - 'WriteProcessMemory'
+      - 'CreateRemoteThread'
+      - 'NtCreateThreadEx'
+      - 'QueueUserAPC'
+      - 'SetThreadContext'
+      - 'ResumeThread'
+  selection_rundll32:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|re: '.*[A-Za-z0-9+/=]{50,}.*'  # Base64 encoded payload
+  condition: selection_powershell_inject or selection_rundll32
+falsepositives:
+  - Security testing tools
+  - Anti-cheat software
+level: high
+
+---
+title: Lumma Stealer - AMSI Bypass Attempts
+id: lumma-de05-amsi-byps-0005-000000000012
+status: stable
+description: |
+  Detects AMSI (Antimalware Scan Interface) bypass techniques used by Lumma
+  Stealer to disable PowerShell script block logging and malware scanning.
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'AmsiUtils'
+      - 'amsiInitFailed'
+      - 'amsiContext'
+      - 'AmsiScanBuffer'
+      - '[Ref].Assembly.GetType'
+      - 'System.Management.Automation.AmsiUtils'
+      - 'Bypass'
+      - 'SetValue($null,$true)'
+  condition: selection
+falsepositives:
+  - Security research
+level: high
+
+# =============================================================================
+# PHASE 4: CREDENTIAL ACCESS
+# =============================================================================
+
+---
+title: Lumma Stealer - Browser SQLite Database Copying
+id: lumma-ca01-bsql-copy-0001-000000000013
+status: stable
+description: |
+  Detects Lumma Stealer accessing and copying browser SQLite databases
+  containing credentials, cookies, and autofill data. Chrome, Edge, Firefox
+  and other Chromium browsers store sensitive data in SQLite files that
+  stealers copy and exfiltrate.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_chrome:
+    TargetFilename|contains:
+      - '\Google\Chrome\User Data\Default\Login Data'
+      - '\Google\Chrome\User Data\Default\Cookies'
+      - '\Google\Chrome\User Data\Default\Web Data'
+      - '\Google\Chrome\User Data\Default\History'
+      - '\Google\Chrome\User Data\Local State'
+  selection_edge:
+    TargetFilename|contains:
+      - '\Microsoft\Edge\User Data\Default\Login Data'
+      - '\Microsoft\Edge\User Data\Default\Cookies'
+      - '\Microsoft\Edge\User Data\Default\Web Data'
+  selection_firefox:
+    TargetFilename|contains:
+      - '\Mozilla\Firefox\Profiles\'
+    TargetFilename|endswith:
+      - '\logins.json'
+      - '\key4.db'
+      - '\cookies.sqlite'
+      - '\formhistory.sqlite'
+  selection_opera:
+    TargetFilename|contains:
+      - '\Opera Software\Opera Stable\Login Data'
+      - '\Opera Software\Opera GX Stable\Login Data'
+  selection_brave:
+    TargetFilename|contains:
+      - '\BraveSoftware\Brave-Browser\User Data\Default\Login Data'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\firefox.exe'
+      - '\brave.exe'
+      - '\opera.exe'
+      - '\vivaldi.exe'
+  filter_system:
+    Image|endswith:
+      - '\MsMpEng.exe'
+      - '\MpCmdRun.exe'
+  condition: (selection_chrome or selection_edge or selection_firefox or selection_opera or selection_brave) and not (filter_browser or filter_system)
+falsepositives:
+  - Password managers accessing browser data
+  - Browser migration utilities
+level: critical
+
+---
+title: Lumma Stealer - DPAPI Credential Decryption
+id: lumma-ca02-dpap-decr-0002-000000000014
+status: stable
+description: |
+  Detects DPAPI (Data Protection API) usage for decrypting browser credentials.
+  Lumma Stealer extracts the encrypted AES key from Chrome Local State and
+  calls CryptUnprotectData to decrypt it, then uses it to decrypt stored
+  passwords from the Login Data SQLite database.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+  - https://attack.mitre.org/techniques/T1555/004/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+  - attack.t1555.004
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'ProtectedData'
+      - 'Unprotect'
+      - 'CryptUnprotectData'
+      - 'DPAPI'
+      - '[System.Security.Cryptography.ProtectedData]::'
+  selection_cmdline:
+    CommandLine|contains:
+      - 'encrypted_key'
+      - 'Local State'
+      - 'Login Data'
+      - 'Cookies'
+  condition: selection_ps or selection_cmdline
+falsepositives:
+  - Legitimate credential management tools
+level: high
+
+---
+title: Lumma Stealer - Browser Extension Data Theft
+id: lumma-ca03-bext-thft-0003-000000000015
+status: stable
+description: |
+  Detects access to browser extension data directories, particularly targeting
+  cryptocurrency wallet extensions. Lumma Stealer specifically targets MetaMask,
+  Exodus, Coinbase Wallet, and other crypto wallet browser extensions.
+references:
+  - https://attack.mitre.org/techniques/T1555/003/
+  - https://attack.mitre.org/techniques/T1528/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555.003
+  - attack.t1528
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  # Chrome/Edge extension paths
+  selection_extensions:
+    TargetFilename|contains: '\User Data\Default\Local Extension Settings\'
+  selection_wallet_ids:
+    TargetFilename|contains:
+      # MetaMask
+      - 'nkbihfbeogaeaoehlefnkodbefgpgknn'
+      # Coinbase Wallet
+      - 'hnfanknocfeofbddgcijnmhnfnkdnaad'
+      # Phantom
+      - 'bfnaelmomeimhlpmgjnjophhpkkoljpa'
+      # Trust Wallet
+      - 'egjidjbpglichdcondbcbdnbeeppgdph'
+      # Exodus
+      - 'aholpfdialjgjfhomihkjbmgjidlcdno'
+      # Brave Wallet
+      - 'odbfpeeihdkbihmopkbjmoonfanlbfcl'
+      # Ronin Wallet
+      - 'fnjhmkhhmkbjkkabndcnnogagogbneec'
+      # Binance Wallet
+      - 'fhbohimaelbohpjbbldcngcnapndodjp'
+  filter_browser:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\brave.exe'
+  condition: selection_extensions and selection_wallet_ids and not filter_browser
+falsepositives:
+  - Extension backup utilities
+level: critical
+
+---
+title: Lumma Stealer - Cryptocurrency Wallet File Access
+id: lumma-ca04-cwlt-accs-0004-000000000016
+status: stable
+description: |
+  Detects access to desktop cryptocurrency wallet application data files.
+  Lumma Stealer targets wallet.dat, *.keys, and configuration files from
+  popular desktop wallets including Bitcoin Core, Electrum, Exodus, and Atomic.
+references:
+  - https://attack.mitre.org/techniques/T1005/
+  - https://attack.mitre.org/techniques/T1552/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.collection
+  - attack.t1005
+  - attack.t1552.001
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_bitcoin:
+    TargetFilename|contains:
+      - '\Bitcoin\wallet.dat'
+      - '\Bitcoin\wallets\'
+  selection_electrum:
+    TargetFilename|contains:
+      - '\Electrum\wallets\'
+      - '\Electrum-LTC\wallets\'
+  selection_exodus:
+    TargetFilename|contains:
+      - '\Exodus\exodus.wallet\'
+      - '\Exodus\exodus.conf.json'
+  selection_atomic:
+    TargetFilename|contains:
+      - '\atomic\Local Storage\'
+  selection_monero:
+    TargetFilename|endswith:
+      - '.keys'
+    TargetFilename|contains:
+      - '\Monero\wallets\'
+  selection_generic:
+    TargetFilename|endswith:
+      - 'wallet.dat'
+      - 'wallet.keys'
+      - 'seed.seco'
+  filter_legitimate:
+    Image|endswith:
+      - '\Electrum.exe'
+      - '\Exodus.exe'
+      - '\bitcoin-qt.exe'
+      - '\atomic.exe'
+  condition: (selection_bitcoin or selection_electrum or selection_exodus or selection_atomic or selection_monero or selection_generic) and not filter_legitimate
+falsepositives:
+  - Wallet backup operations
+  - Wallet migration
+level: critical
+
+---
+title: Lumma Stealer - Discord Token Theft
+id: lumma-ca05-disc-tokn-0005-000000000017
+status: stable
+description: |
+  Detects access to Discord Local Storage containing authentication tokens.
+  Lumma Stealer extracts Discord tokens from leveldb storage to hijack
+  accounts for further social engineering or spam distribution.
+references:
+  - https://attack.mitre.org/techniques/T1528/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1528
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Discord\Local Storage\leveldb\'
+      - '\discordcanary\Local Storage\leveldb\'
+      - '\discordptb\Local Storage\leveldb\'
+      - '\Discord\Cache\'
+  filter_discord:
+    Image|endswith:
+      - '\Discord.exe'
+      - '\Update.exe'
+  condition: selection and not filter_discord
+falsepositives:
+  - Discord data backup utilities
+level: high
+
+---
+title: Lumma Stealer - Telegram Session Theft
+id: lumma-ca06-tele-sess-0006-000000000018
+status: stable
+description: |
+  Detects access to Telegram Desktop session files. Lumma Stealer copies tdata
+  folder containing session keys to hijack Telegram accounts without requiring
+  credentials.
+references:
+  - https://attack.mitre.org/techniques/T1528/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1528
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Telegram Desktop\tdata\'
+      - '\Telegram Desktop\tdata\D877F783D5D3EF8C\'
+    TargetFilename|endswith:
+      - 'key_data'
+      - 'map0'
+      - 'map1'
+  filter_telegram:
+    Image|endswith: '\Telegram.exe'
+  condition: selection and not filter_telegram
+falsepositives:
+  - Telegram backup utilities
+level: high
+
+---
+title: Lumma Stealer - Steam Credential Theft
+id: lumma-ca07-stem-cred-0007-000000000019
+status: stable
+description: |
+  Detects access to Steam ssfn authentication files and config files containing
+  stored credentials. Lumma Stealer targets gaming platforms for account theft
+  and in-game item resale.
+references:
+  - https://attack.mitre.org/techniques/T1555/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.t1555
+  - lumma_stealer
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains:
+      - '\Steam\config\loginusers.vdf'
+      - '\Steam\config\config.vdf'
+    TargetFilename|re: '\\Steam\\ssfn[0-9]+'
+  filter_steam:
+    Image|endswith:
+      - '\steam.exe'
+      - '\steamwebhelper.exe'
+  condition: selection and not filter_steam
+falsepositives:
+  - Steam backup utilities
+level: high
+
+# =============================================================================
+# PHASE 5: COMMAND AND CONTROL
+# =============================================================================
+
+---
+title: Lumma Stealer - EtherHiding Blockchain C2
+id: lumma-c2-01-ethh-c2c2-0001-000000000020
+status: stable
+description: |
+  Detects EtherHiding technique where Lumma Stealer retrieves C2 addresses from
+  blockchain smart contracts. The malware queries Binance Smart Chain or
+  Ethereum contracts to resolve dynamic C2 infrastructure, evading traditional
+  domain blocklists.
+references:
+  - https://attack.mitre.org/techniques/T1102/
+  - https://attack.mitre.org/techniques/T1071/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1102
+  - attack.t1071.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_blockchain_api:
+    CommandLine|contains:
+      - 'bscscan.com/api'
+      - 'etherscan.io/api'
+      - 'polygonscan.com/api'
+      - 'api.bscscan.com'
+      - 'api.etherscan.io'
+      - 'rpc.ankr.com'
+      - 'binance.org'
+      - 'cloudflare-eth.com'
+  selection_contract_call:
+    CommandLine|contains:
+      - 'eth_call'
+      - 'eth_getStorageAt'
+      - '0x'  # Contract address prefix
+      - 'contract'
+      - 'abi.encode'
+  condition: selection_blockchain_api and selection_contract_call
+falsepositives:
+  - Legitimate blockchain/cryptocurrency applications
+  - Web3 development tools
+level: high
+
+---
+title: Lumma Stealer - DNS Query for Suspicious TLDs
+id: lumma-c2-02-dnst-susp-0002-000000000021
+status: stable
+description: |
+  Detects DNS queries to suspicious TLDs commonly used by Lumma Stealer C2
+  infrastructure. The malware favors cheap, abuse-tolerant TLDs and uses
+  recently registered domains.
+references:
+  - https://attack.mitre.org/techniques/T1071/004/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.t1071.004
+  - lumma_stealer
+logsource:
+  category: dns_query
+  product: windows
+detection:
+  selection:
+    QueryName|endswith:
+      - '.shop'
+      - '.top'
+      - '.xyz'
+      - '.club'
+      - '.work'
+      - '.click'
+      - '.link'
+      - '.online'
+      - '.site'
+      - '.icu'
+      - '.buzz'
+      - '.fun'
+      - '.pw'
+      - '.cc'
+      - '.tk'
+      - '.ml'
+      - '.ga'
+      - '.cf'
+      - '.gq'
+  selection_suspicious_pattern:
+    QueryName|re: '^[a-z0-9]{8,20}\.(shop|top|xyz|icu|buzz)'
+  condition: selection and selection_suspicious_pattern
+falsepositives:
+  - Legitimate websites using these TLDs
+level: medium
+
+---
+title: Lumma Stealer - HTTP POST Data Exfiltration
+id: lumma-c2-03-htpp-exfl-0003-000000000022
+status: stable
+description: |
+  Detects HTTP POST requests characteristic of Lumma Stealer exfiltrating stolen
+  data. The malware sends collected credentials, cookies, and wallet data to
+  C2 servers using specific User-Agent strings and POST patterns.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+  - https://attack.mitre.org/techniques/T1071/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.exfiltration
+  - attack.t1041
+  - attack.t1071.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_curl:
+    Image|endswith:
+      - '\curl.exe'
+      - '\wget.exe'
+    CommandLine|contains:
+      - '-X POST'
+      - '--data'
+      - '-d '
+      - '-F '
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Invoke-WebRequest'
+      - 'Invoke-RestMethod'
+      - 'WebClient'
+    CommandLine|contains:
+      - 'POST'
+      - 'UploadString'
+      - 'UploadData'
+      - 'UploadFile'
+  selection_data_pattern:
+    CommandLine|contains:
+      - '.zip'
+      - '.rar'
+      - '.7z'
+      - 'base64'
+      - 'passwords'
+      - 'cookies'
+      - 'wallet'
+      - 'token'
+  condition: (selection_curl or selection_ps) and selection_data_pattern
+falsepositives:
+  - Legitimate file upload operations
+  - Cloud sync applications
+level: high
+
+---
+title: Lumma Stealer - Telegram Bot C2 Communication
+id: lumma-c2-04-tgbt-c2cm-0004-000000000023
+status: stable
+description: |
+  Detects Lumma Stealer using Telegram bots for C2 communication and data
+  exfiltration. The malware sends stolen data to attacker-controlled Telegram
+  bots via the Bot API, making it difficult to block as Telegram traffic is
+  generally allowed.
+references:
+  - https://attack.mitre.org/techniques/T1102/002/
+  - https://attack.mitre.org/techniques/T1567/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.command_and_control
+  - attack.exfiltration
+  - attack.t1102.002
+  - attack.t1567
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'api.telegram.org'
+      - 'telegram.org/bot'
+      - 'sendDocument'
+      - 'sendMessage'
+      - 'sendPhoto'
+  selection_pattern:
+    CommandLine|re: 'bot[0-9]{8,12}:[A-Za-z0-9_-]{35}'  # Bot token pattern
+  condition: selection or selection_pattern
+falsepositives:
+  - Legitimate Telegram bot applications
+  - Automated notification systems
+level: high
+
+---
+title: Lumma Stealer - Discord Webhook Exfiltration
+id: lumma-c2-05-dwbh-exfl-0005-000000000024
+status: stable
+description: |
+  Detects data exfiltration via Discord webhooks, a technique used by Lumma
+  Stealer variants. Webhooks allow posting messages with attachments to Discord
+  channels without authentication, making them attractive for exfiltration.
+references:
+  - https://attack.mitre.org/techniques/T1567/
+  - https://attack.mitre.org/techniques/T1102/002/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1567
+  - attack.t1102.002
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'discord.com/api/webhooks'
+      - 'discordapp.com/api/webhooks'
+      - 'ptb.discord.com/api/webhooks'
+      - 'canary.discord.com/api/webhooks'
+  filter_discord_app:
+    Image|endswith: '\Discord.exe'
+  condition: selection and not filter_discord_app
+falsepositives:
+  - Legitimate Discord webhook integrations
+  - Development and testing
+level: high
+
+# =============================================================================
+# PHASE 6: EXFILTRATION
+# =============================================================================
+
+---
+title: Lumma Stealer - Archive Creation of Stolen Data
+id: lumma-ef01-arch-stln-0001-000000000025
+status: stable
+description: |
+  Detects archive creation operations targeting typical stealer exfiltration
+  patterns. Lumma Stealer compresses stolen browser data, wallets, and
+  credentials into ZIP/RAR archives before exfiltration.
+references:
+  - https://attack.mitre.org/techniques/T1560/001/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.collection
+  - attack.exfiltration
+  - attack.t1560.001
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_archive_tools:
+    Image|endswith:
+      - '\7z.exe'
+      - '\7za.exe'
+      - '\rar.exe'
+      - '\WinRAR.exe'
+  selection_ps_compress:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Compress-Archive'
+      - 'System.IO.Compression'
+      - 'ZipFile'
+  selection_target_data:
+    CommandLine|contains:
+      - 'Login Data'
+      - 'Cookies'
+      - 'wallet'
+      - 'Chrome'
+      - 'Edge'
+      - 'Firefox'
+      - 'Discord'
+      - 'Telegram'
+      - 'Steam'
+      - 'passwords'
+      - 'credentials'
+      - 'AppData'
+  condition: (selection_archive_tools or selection_ps_compress) and selection_target_data
+falsepositives:
+  - User data backup scripts
+  - IT migration tools
+level: high
+
+---
+title: Lumma Stealer - Screenshot Capture Before Exfiltration
+id: lumma-ef02-scrn-capt-0002-000000000026
+status: stable
+description: |
+  Detects screenshot capture operations used by Lumma Stealer to collect
+  visual information about the compromised system. Screenshots may reveal
+  open applications, cryptocurrency balances, or sensitive documents.
+references:
+  - https://attack.mitre.org/techniques/T1113/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.collection
+  - attack.t1113
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'CopyFromScreen'
+      - 'System.Drawing.Bitmap'
+      - 'Graphics.FromImage'
+      - '[Drawing.Graphics]'
+      - 'Screen.PrimaryScreen'
+  selection_tools:
+    Image|endswith:
+      - '\snippingtool.exe'
+      - '\SnippingTool.exe'
+    ParentImage|endswith:
+      - '\cmd.exe'
+      - '\powershell.exe'
+  condition: selection_ps or selection_tools
+falsepositives:
+  - Legitimate screenshot utilities
+  - Help desk tools
+level: medium
+
+---
+title: Lumma Stealer - System Information Collection
+id: lumma-ef03-sysi-coll-0003-000000000027
+status: stable
+description: |
+  Detects system information gathering commands used by Lumma Stealer to
+  profile the victim machine before exfiltration. This fingerprinting helps
+  attackers prioritize valuable targets.
+references:
+  - https://attack.mitre.org/techniques/T1082/
+  - https://attack.mitre.org/techniques/T1033/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.discovery
+  - attack.t1082
+  - attack.t1033
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_systeminfo:
+    CommandLine|contains:
+      - 'systeminfo'
+      - 'hostname'
+      - 'whoami'
+      - 'ipconfig /all'
+      - 'Get-ComputerInfo'
+      - 'Win32_OperatingSystem'
+      - 'Win32_ComputerSystem'
+  selection_hw_info:
+    CommandLine|contains:
+      - 'wmic cpu'
+      - 'wmic memorychip'
+      - 'wmic diskdrive'
+      - 'wmic baseboard'
+      - 'Get-WmiObject'
+  # Count aggregation - multiple recon commands in sequence
+  timeframe: 5m
+  condition: selection_systeminfo or selection_hw_info | count() > 3
+falsepositives:
+  - System administration scripts
+  - IT inventory tools
+level: medium
+
+---
+title: Lumma Stealer - Multi-Part File Upload Pattern
+id: lumma-ef04-mult-upld-0004-000000000028
+status: stable
+description: |
+  Detects multi-part file upload patterns used by Lumma Stealer when
+  exfiltrating large volumes of stolen data. The malware splits archives
+  into chunks for more reliable transmission to C2 servers.
+references:
+  - https://attack.mitre.org/techniques/T1041/
+  - https://attack.mitre.org/techniques/T1030/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - attack.t1030
+  - lumma_stealer
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    CommandLine|contains:
+      - 'multipart/form-data'
+      - '-F file='
+      - 'Content-Disposition'
+      - 'boundary='
+  selection_archive:
+    CommandLine|contains:
+      - '.zip'
+      - '.rar'
+      - '.7z'
+      - 'part0'
+      - 'part1'
+      - '.001'
+      - '.002'
+  condition: selection and selection_archive
+falsepositives:
+  - Legitimate file upload applications
+  - Cloud backup tools
+level: high
+
+# =============================================================================
+# BEHAVIORAL CHAIN DETECTION - Full Attack Sequence Correlation
+# =============================================================================
+
+---
+title: Lumma Stealer - Complete Attack Chain Detection
+id: lumma-chain-full-0001-000000000029
+status: experimental
+description: |
+  Detects the complete Lumma Stealer attack chain by correlating multiple
+  stages: initial access via ClickFix, LOLBin execution, credential theft,
+  and exfiltration. This rule provides high-confidence detection of active
+  Lumma campaigns.
+references:
+  - https://attack.mitre.org/software/S1060/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.initial_access
+  - attack.execution
+  - attack.credential_access
+  - attack.exfiltration
+  - attack.t1204.001
+  - attack.t1059.001
+  - attack.t1555.003
+  - attack.t1041
+  - lumma_stealer
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  # Stage 1: Initial execution from browser or explorer
+  stage1_initial:
+    ParentImage|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\firefox.exe'
+      - '\explorer.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\cmd.exe'
+      - '\mshta.exe'
+  # Stage 2: Download/execution
+  stage2_execution:
+    CommandLine|contains:
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'Invoke-Expression'
+      - 'IEX'
+      - 'http'
+  # Stage 3: Browser credential access
+  stage3_credential:
+    CommandLine|contains:
+      - 'Login Data'
+      - 'Cookies'
+      - 'Chrome\User Data'
+      - 'Edge\User Data'
+      - 'wallet'
+  # Stage 4: Archive and exfiltrate
+  stage4_exfil:
+    CommandLine|contains:
+      - 'Compress-Archive'
+      - '7z'
+      - 'rar'
+      - 'POST'
+      - 'Upload'
+  timeframe: 30m
+  condition: stage1_initial | near stage2_execution | near stage3_credential | near stage4_exfil
+falsepositives:
+  - Very unlikely to have false positives with full chain match
+level: critical
+
+---
+title: Lumma Stealer - Browser to Credential Theft Sequence
+id: lumma-chain-brow-cred-0002-000000000030
+status: experimental
+description: |
+  Detects the characteristic Lumma sequence of browser-spawned execution
+  followed by browser credential database access within a short timeframe.
+references:
+  - https://attack.mitre.org/software/S1060/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.execution
+  - attack.credential_access
+  - attack.t1059.001
+  - attack.t1555.003
+  - lumma_stealer
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  browser_spawn:
+    ParentImage|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\firefox.exe'
+      - '\brave.exe'
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+      - '\cmd.exe'
+  credential_access:
+    CommandLine|contains:
+      - 'Login Data'
+      - 'Cookies'
+      - 'Local State'
+      - 'key4.db'
+      - 'logins.json'
+  timeframe: 10m
+  condition: browser_spawn | near credential_access
+falsepositives:
+  - Browser extension performing legitimate credential management
+level: critical
+
+---
+title: Lumma Stealer - Crypto Wallet Targeting Sequence
+id: lumma-chain-cwlt-sequ-0003-000000000031
+status: experimental
+description: |
+  Detects Lumma Stealer targeting multiple cryptocurrency wallets in sequence,
+  indicating a stealer actively harvesting crypto assets.
+references:
+  - https://attack.mitre.org/techniques/T1005/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.credential_access
+  - attack.collection
+  - attack.t1005
+  - attack.t1552.001
+  - lumma_stealer
+logsource:
+  product: windows
+  category: file_event
+detection:
+  browser_wallet:
+    TargetFilename|contains:
+      - 'Local Extension Settings'
+      - 'nkbihfbeogaeaoehlefnkodbefgpgknn'  # MetaMask
+      - 'bfnaelmomeimhlpmgjnjophhpkkoljpa'  # Phantom
+  desktop_wallet:
+    TargetFilename|contains:
+      - '\Bitcoin\wallet'
+      - '\Electrum\wallets'
+      - '\Exodus\exodus.wallet'
+      - '\atomic\Local Storage'
+  filter_legitimate:
+    Image|endswith:
+      - '\chrome.exe'
+      - '\msedge.exe'
+      - '\Electrum.exe'
+      - '\Exodus.exe'
+  timeframe: 5m
+  condition: (browser_wallet or desktop_wallet) and not filter_legitimate | count() > 2
+falsepositives:
+  - Wallet migration tools
+level: critical
+
+---
+title: Lumma Stealer - VM Check Followed by Credential Theft
+id: lumma-chain-vmck-cred-0004-000000000032
+status: experimental
+description: |
+  Detects VM/sandbox detection checks immediately followed by credential
+  theft operations, a strong indicator of Lumma Stealer verifying it's on
+  a real system before stealing credentials.
+references:
+  - https://attack.mitre.org/techniques/T1497/001/
+  - https://attack.mitre.org/techniques/T1555/003/
+author: Tamandua EDR
+date: 2026/05/08
+modified: 2026/05/08
+tags:
+  - attack.defense_evasion
+  - attack.credential_access
+  - attack.t1497.001
+  - attack.t1555.003
+  - lumma_stealer
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  vm_check:
+    CommandLine|contains:
+      - 'VMware'
+      - 'VirtualBox'
+      - 'VBOX'
+      - 'Win32_ComputerSystem'
+      - 'vmtoolsd'
+      - 'VBoxService'
+  credential_theft:
+    CommandLine|contains:
+      - 'Login Data'
+      - 'Cookies'
+      - 'Chrome\User Data'
+      - 'ProtectedData'
+      - 'wallet'
+  timeframe: 5m
+  condition: vm_check | near credential_theft
+falsepositives:
+  - Security tools performing environment checks
+level: high

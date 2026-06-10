@@ -1,0 +1,246 @@
+name: SOX
+full_name: Sarbanes-Oxley Act
+version: "2002"
+description: U.S. federal law mandating financial reporting and disclosure requirements for public companies
+url: https://www.sec.gov/spotlight/sarbanes-oxley.htm
+
+requirements:
+  - "Section 302: Corporate Responsibility for Financial Reports"
+  - "Section 404: Management Assessment of Internal Controls"
+  - "Section 409: Real-Time Issuer Disclosures"
+  - "Section 802: Criminal Penalties for Document Alteration"
+
+# FIM-specific controls for financial data integrity
+fim_controls:
+  - id: sox-302-fim
+    control_id: "302"
+    title: Financial Report Integrity Monitoring
+    description: Monitor financial system files and configurations for unauthorized changes
+    category: financial_integrity
+    severity: critical
+    automated: true
+    monitored_paths:
+      - /opt/finance/*
+      - /var/lib/accounting/*
+      - /opt/erp/config/*
+      - C:\FinancialData\*
+      - C:\Program Files\ERP\config\*
+      - C:\Program Files\Accounting\*
+    allowed_changes:
+      - content_modified
+    require_approval: true
+    require_change_ticket: true
+    compliance_note: "All changes to financial systems must be authorized and documented"
+
+  - id: sox-404-audit
+    control_id: "404"
+    title: Internal Control File Monitoring
+    description: Maintain audit trail of all file changes affecting internal controls
+    category: internal_controls
+    severity: critical
+    automated: true
+    monitored_paths:
+      - /etc/audit/*
+      - /var/log/audit/*
+      - C:\Windows\System32\winevt\Logs\*
+    retention_days: 2555  # 7 years
+    compliance_note: "SOX requires 7-year retention of audit records"
+
+  - id: sox-404-access
+    control_id: "404"
+    title: Access Control Configuration Monitoring
+    description: Monitor access control configurations for segregation of duties
+    category: access_control
+    severity: high
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/sudoers
+        - /etc/sudoers.d/*
+        - /etc/security/access.conf
+      windows:
+        - C:\Windows\System32\GroupPolicy\*
+    allowed_changes: []
+    require_approval: true
+    compliance_note: "Access control changes require management approval"
+
+  - id: sox-802-preservation
+    control_id: "802"
+    title: Document Preservation Monitoring
+    description: Detect unauthorized alteration or destruction of financial documents
+    category: document_integrity
+    severity: critical
+    automated: true
+    monitored_paths:
+      - /opt/finance/documents/*
+      - /var/lib/financial-reports/*
+      - C:\FinancialDocuments\*
+    watch_for:
+      - deleted
+      - content_modified
+    auto_response: notify
+    compliance_note: "Criminal penalties apply for document alteration"
+
+  - id: sox-it-general
+    control_id: "ITGC"
+    title: IT General Controls Monitoring
+    description: Monitor IT infrastructure supporting financial systems
+    category: it_controls
+    severity: high
+    automated: true
+    monitored_paths:
+      linux:
+        - /etc/hosts
+        - /etc/resolv.conf
+        - /etc/cron.d/*
+        - /etc/crontab
+      windows:
+        - C:\Windows\System32\drivers\etc\hosts
+        - C:\Windows\Tasks\*
+    compliance_note: "Changes to IT infrastructure must be tracked"
+
+  - id: sox-database-config
+    control_id: "ITGC"
+    title: Database Configuration Monitoring
+    description: Monitor database configurations for financial systems
+    category: it_controls
+    severity: critical
+    automated: true
+    monitored_paths:
+      - /etc/postgresql/*
+      - /etc/mysql/*
+      - /var/lib/pgsql/data/*.conf
+      - /var/lib/mysql/*.cnf
+      - C:\Program Files\Microsoft SQL Server\*\MSSQL\DATA\*.mdf
+      - C:\Program Files\PostgreSQL\*\data\*.conf
+    allowed_changes:
+      - content_modified
+    require_approval: true
+    compliance_note: "Database changes require change management approval"
+
+controls:
+  - id: sox-302-cert
+    control_id: "302"
+    title: CEO/CFO Certification
+    description: Quarterly certification of financial reports
+    category: financial_reporting
+    severity: critical
+    automated: false
+    evidence_types:
+      - signed_certification
+      - internal_review
+    remediation_steps:
+      - Review financial statements
+      - Verify internal controls effectiveness
+      - Sign certification documents
+
+  - id: sox-404-assess
+    control_id: "404"
+    title: Management Assessment
+    description: Annual assessment of internal control over financial reporting
+    category: internal_controls
+    severity: critical
+    automated: false
+    evidence_types:
+      - control_testing_results
+      - auditor_report
+      - management_assertion
+    remediation_steps:
+      - Identify key controls
+      - Test control effectiveness
+      - Document and remediate deficiencies
+
+  - id: sox-404-testing
+    control_id: "404"
+    title: Control Testing
+    description: Regular testing of internal controls
+    category: internal_controls
+    severity: high
+    automated: true
+    validation_query: controls_tested
+    evidence_types:
+      - test_results
+      - exception_reports
+    remediation_steps:
+      - Define testing procedures
+      - Test controls quarterly
+      - Document exceptions
+
+  - id: sox-segregation
+    control_id: "404"
+    title: Segregation of Duties
+    description: Ensure proper segregation of duties in financial processes
+    category: access_control
+    severity: critical
+    automated: true
+    validation_query: segregation_enforced
+    evidence_types:
+      - role_matrices
+      - access_reviews
+    remediation_steps:
+      - Define incompatible duties
+      - Implement role-based access
+      - Review access quarterly
+
+  - id: sox-change-mgmt
+    control_id: "ITGC"
+    title: Change Management
+    description: Formal change management process for IT systems
+    category: change_management
+    severity: high
+    automated: false
+    evidence_types:
+      - change_requests
+      - approval_records
+      - test_results
+    remediation_steps:
+      - Define change management procedures
+      - Require CAB approval
+      - Document all changes
+
+  - id: sox-access-review
+    control_id: "ITGC"
+    title: Access Review
+    description: Periodic review of system access rights
+    category: access_control
+    severity: high
+    automated: true
+    validation_query: access_review_current
+    evidence_types:
+      - access_review_reports
+      - remediation_evidence
+    remediation_steps:
+      - Conduct quarterly access reviews
+      - Remove unnecessary access
+      - Document review outcomes
+
+  - id: sox-backup
+    control_id: "ITGC"
+    title: Backup and Recovery
+    description: Regular backup and recovery testing
+    category: it_controls
+    severity: high
+    automated: true
+    validation_query: backups_verified
+    evidence_types:
+      - backup_reports
+      - recovery_tests
+    remediation_steps:
+      - Implement automated backups
+      - Test recovery quarterly
+      - Document backup procedures
+
+  - id: sox-409-disclosure
+    control_id: "409"
+    title: Real-Time Disclosure
+    description: Real-time disclosure of material events
+    category: financial_reporting
+    severity: critical
+    automated: false
+    evidence_types:
+      - 8-K_filings
+      - disclosure_committee_minutes
+    remediation_steps:
+      - Define material events
+      - Establish disclosure procedures
+      - Monitor for material changes

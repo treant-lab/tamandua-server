@@ -1,0 +1,55 @@
+title: Permission Group Discovery
+id: di04a001-pgrp-0004-0001-000000000001
+status: stable
+description: |
+  Detects enumeration of domain and local groups and their members.
+  Attackers enumerate groups to identify high-value targets (Domain Admins,
+  Enterprise Admins) and plan privilege escalation paths.
+references:
+  - https://attack.mitre.org/techniques/T1069/001/
+  - https://attack.mitre.org/techniques/T1069/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.discovery
+  - attack.t1069.001
+  - attack.t1069.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_net:
+    Image|endswith:
+      - '\net.exe'
+      - '\net1.exe'
+    CommandLine|contains:
+      - 'group "Domain Admins"'
+      - 'group "Enterprise Admins"'
+      - 'group "Schema Admins"'
+      - 'group "Account Operators"'
+      - 'localgroup administrators'
+      - 'localgroup "Remote Desktop Users"'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'Get-ADGroupMember'
+      - 'Get-DomainGroupMember'
+      - 'Get-NetGroupMember'
+      - 'Get-LocalGroupMember'
+  selection_adfind:
+    CommandLine|contains:
+      - 'adfind'
+      - 'AdFind'
+    CommandLine|contains:
+      - '-f "(&(objectcategory=group)'
+      - 'member'
+  filter_monitoring:
+    ParentImage|contains: '\monitoring\'
+  condition: (selection_net or selection_ps or selection_adfind) and not filter_monitoring
+falsepositives:
+  - Legitimate Active Directory administration
+  - Compliance auditing scripts
+level: medium

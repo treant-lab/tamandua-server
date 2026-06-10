@@ -1,0 +1,94 @@
+{
+  "name": "Threat Hunting Dashboard",
+  "description": "Advanced threat hunting with behavioral analytics, ML predictions, and deep investigation tools",
+  "template_category": "threat_hunting",
+  "tags": ["hunting", "proactive", "ml", "anomalies"],
+  "author_name": "Tamandua EDR",
+  "widgets": [
+    {
+      "type": "behavioral_anomalies",
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "threshold": 0.8,
+        "showBaseline": true,
+        "limit": 20,
+        "anomalyTypes": ["process", "network", "file", "registry"]
+      }
+    },
+    {
+      "type": "ml_predictions",
+      "x": 6,
+      "y": 0,
+      "w": 6,
+      "h": 4,
+      "settings": {
+        "confidenceThreshold": 0.7,
+        "showFeatures": true,
+        "limit": 15
+      }
+    },
+    {
+      "type": "ioc_matches",
+      "x": 0,
+      "y": 4,
+      "w": 12,
+      "h": 4,
+      "settings": {
+        "period": "7d",
+        "groupBy": "ioc_type",
+        "showConfidence": true,
+        "showSource": true,
+        "chartType": "timeline"
+      }
+    },
+    {
+      "type": "network_connections",
+      "x": 0,
+      "y": 8,
+      "w": 6,
+      "h": 5,
+      "settings": {
+        "showExternal": true,
+        "showSuspicious": true,
+        "highlightUncommon": true,
+        "layout": "force"
+      }
+    },
+    {
+      "type": "process_tree",
+      "x": 6,
+      "y": 8,
+      "w": 6,
+      "h": 5,
+      "settings": {
+        "maxDepth": 5,
+        "showArguments": true,
+        "highlightSuspicious": true,
+        "expandAll": false
+      }
+    },
+    {
+      "type": "custom_query",
+      "x": 0,
+      "y": 13,
+      "w": 12,
+      "h": 6,
+      "settings": {
+        "query": "SELECT * FROM events WHERE suspicious = true ORDER BY timestamp DESC LIMIT 100",
+        "refreshInterval": 60,
+        "chartType": "table",
+        "exportEnabled": true
+      }
+    }
+  ],
+  "settings": {
+    "gridColumns": 12,
+    "rowHeight": 60,
+    "margins": [10, 10],
+    "animate": true,
+    "float": true
+  }
+}

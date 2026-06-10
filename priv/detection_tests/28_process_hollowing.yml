@@ -1,0 +1,20 @@
+test_case:
+  name: "Process Hollowing Detection"
+  description: "Tests detection of process hollowing technique"
+  rule: "defense_evasion/process_hollowing.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\svchost.exe"
+        cmdline: "svchost.exe"
+        parent_path: "C:\\Users\\Public\\malware.exe"
+        user: "WORKSTATION\\user"
+        pid: 6234
+        ppid: 5124
+        is_signed: false
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1055.012"]
+  tags: ["defense_evasion", "process_injection", "positive"]

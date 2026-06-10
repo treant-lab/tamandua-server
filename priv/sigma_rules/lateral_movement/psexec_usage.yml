@@ -1,0 +1,74 @@
+title: PsExec Service Installation on Remote Host
+id: lm01a001-psex-0001-0001-000000000001
+status: stable
+description: |
+  Detects PsExec lateral movement by identifying the PSEXESVC.exe service
+  installation on a target host, or PsExec command-line usage targeting remote
+  systems via UNC paths. PsExec creates a temporary service on the remote
+  host that executes commands under SYSTEM privileges.
+references:
+  - https://attack.mitre.org/techniques/T1021/002/
+  - https://attack.mitre.org/techniques/T1569/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.002
+  - attack.t1569.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_psexec:
+    Image|endswith:
+      - '\psexec.exe'
+      - '\psexec64.exe'
+      - '\PsExec.exe'
+      - '\PsExec64.exe'
+    CommandLine|contains: '\\\\'
+  selection_service:
+    Image|endswith: '\PSEXESVC.exe'
+  selection_pipe:
+    CommandLine|contains: '\\\\*\pipe\psexesvc'
+  filter_local:
+    CommandLine|contains: '\\\\localhost'
+  condition: (selection_psexec or selection_service or selection_pipe) and not filter_local
+falsepositives:
+  - Legitimate administrative use of PsExec for remote maintenance
+  - SCCM or other enterprise management tools
+level: high
+
+---
+title: PsExec Alternate Service Name
+id: lm01a002-psex-0001-0002-000000000002
+status: stable
+description: |
+  Detects PsExec usage with custom service names via the -r flag, which is a
+  common evasion technique to avoid detection rules that look for the default
+  PSEXESVC service name.
+references:
+  - https://attack.mitre.org/techniques/T1021/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.lateral_movement
+  - attack.t1021.002
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\psexec.exe'
+      - '\psexec64.exe'
+    CommandLine|contains|all:
+      - '-r '
+      - '\\\\'
+  filter_known:
+    CommandLine|contains: '-r psexesvc'
+  condition: selection and not filter_known
+falsepositives:
+  - Legitimate PsExec usage with custom service names by IT administrators
+level: high

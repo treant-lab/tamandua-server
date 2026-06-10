@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en" class="[scrollbar-gutter:stable]">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <.live_title suffix=" - Tamandua EDR">
+      <%= assigns[:page_title] || "Tamandua" %>
+    </.live_title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link phx-track-static rel="stylesheet" href={"/assets/#{TamanduaServerWeb.Vite.css_path()}"} />
+    <script defer phx-track-static type="text/javascript" src={"/assets/#{TamanduaServerWeb.Vite.js_path()}"}>
+    </script>
+  </head>
+  <body class="sentinel-theme antialiased" style="background: var(--bg); color: var(--fg);" data-theme={assigns[:theme] || "dark"}>
+    <%= @inner_content %>
+  </body>
+</html>

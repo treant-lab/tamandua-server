@@ -1,0 +1,87 @@
+title: DLL Search Order Hijacking via Suspicious DLL Drop
+id: pe07a001-dlls-0007-0001-000000000001
+status: stable
+description: |
+  Detects potential DLL search order hijacking by monitoring for DLL files
+  being written to directories alongside legitimate executables. Windows
+  searches the application directory before system directories, so placing a
+  malicious DLL with the same name as a missing or legitimate DLL allows
+  code execution when the application loads.
+references:
+  - https://attack.mitre.org/techniques/T1574/001/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.defense_evasion
+  - attack.t1574.001
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|endswith: '.dll'
+    TargetFilename|contains:
+      - '\Windows\System32\'
+      - '\Windows\SysWOW64\'
+  filter_system:
+    Image|endswith:
+      - '\TiWorker.exe'
+      - '\TrustedInstaller.exe'
+      - '\msiexec.exe'
+      - '\svchost.exe'
+      - '\wuauclt.exe'
+      - '\poqexec.exe'
+  filter_defender:
+    Image|contains: '\Windows Defender\'
+  condition: selection and not (filter_system or filter_defender)
+falsepositives:
+  - Windows Update installing system DLLs
+  - Legitimate software patches
+level: medium
+
+---
+title: DLL Side-Loading via Known Vulnerable Applications
+id: pe07a002-dlls-0007-0002-000000000002
+status: stable
+description: |
+  Detects DLL side-loading by monitoring for unsigned DLLs being loaded from
+  temporary or user-writable directories alongside copies of legitimate
+  executables that are known to be vulnerable to DLL side-loading.
+references:
+  - https://attack.mitre.org/techniques/T1574/002/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.persistence
+  - attack.defense_evasion
+  - attack.t1574.002
+logsource:
+  category: image_load
+  product: windows
+detection:
+  selection:
+    ImageLoaded|endswith: '.dll'
+    ImageLoaded|contains:
+      - '\Users\'
+      - '\Temp\'
+      - '\AppData\'
+      - '\ProgramData\'
+      - '\Public\'
+  filter_browser:
+    ImageLoaded|contains:
+      - '\Google\Chrome\'
+      - '\Microsoft\Edge\'
+      - '\Mozilla Firefox\'
+  filter_known:
+    ImageLoaded|contains:
+      - '\Temp\msi'
+      - '\AppData\Local\Microsoft\'
+      - '\WindowsApps\'
+  condition: selection and not (filter_browser or filter_known)
+falsepositives:
+  - Legitimate applications loading DLLs from user directories
+  - Portable applications
+level: medium

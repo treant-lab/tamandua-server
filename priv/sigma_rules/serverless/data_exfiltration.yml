@@ -1,0 +1,139 @@
+title: Serverless Data Exfiltration via DNS
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: stable
+description: Detects potential data exfiltration via DNS queries from serverless functions
+references:
+  - https://attack.mitre.org/techniques/T1048/003/
+  - https://attack.mitre.org/techniques/T1567/
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.exfiltration
+  - attack.t1048.003
+  - attack.t1567
+  - serverless
+logsource:
+  category: serverless
+  product: aws_lambda
+detection:
+  # Long DNS queries that could encode data
+  selection_dns:
+    DnsQuery|re: '^[a-zA-Z0-9]{30,}\.'
+
+  # Base64-like subdomain patterns
+  selection_base64:
+    DnsQuery|re: '^[A-Za-z0-9+/=]{20,}\.'
+
+  # High volume of unique DNS queries
+  selection_volume:
+    EventType: 'dns_query'
+  condition: selection_dns or selection_base64
+fields:
+  - FunctionName
+  - DnsQuery
+  - RequestId
+falsepositives:
+  - Telemetry, tracing, or synthetic monitoring systems that generate long unique DNS labels.
+  - Security validation or canary-token tests intentionally encoding benign data in DNS names.
+level: high
+---
+title: Serverless Data Exfiltration to Cloud Storage
+id: b2c3d4e5-f6a7-8901-bcde-f23456789012
+status: stable
+description: Detects serverless functions uploading data to external cloud storage
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.exfiltration
+  - attack.t1567.002
+logsource:
+  category: serverless
+  product: any
+detection:
+  # External storage uploads
+  selection_storage:
+    DestinationURL|contains:
+      - 'storage.googleapis.com'
+      - 's3.amazonaws.com'
+      - 'blob.core.windows.net'
+      - 'dropbox.com'
+      - 'drive.google.com'
+      - 'onedrive.live.com'
+      - 'transfer.sh'
+      - 'file.io'
+      - 'pastebin.com'
+      - 'hastebin.com'
+
+  # Large outbound data
+  selection_large_upload:
+    OutboundBytes|gt: 10485760  # 10MB
+    HttpMethod: 'PUT|POST'
+
+  condition: selection_storage or selection_large_upload
+fields:
+  - FunctionName
+  - DestinationURL
+  - OutboundBytes
+falsepositives:
+  - Approved backup, export, or data pipeline functions writing to known cloud-storage destinations.
+  - Integration tests that upload sanitized artifacts to temporary external storage.
+level: high
+---
+title: Serverless Exfiltration via HTTP/HTTPS
+id: c3d4e5f6-a7b8-9012-cdef-345678901234
+status: stable
+description: Detects potential data exfiltration via HTTP requests from serverless functions
+author: Tamandua EDR
+date: 2026/01/29
+tags:
+  - attack.exfiltration
+  - attack.t1041
+  - attack.t1567
+logsource:
+  category: serverless
+  product: any
+detection:
+  # Suspicious destinations
+  selection_suspicious:
+    DestinationHost|contains:
+      - 'ngrok.io'
+      - 'burpcollaborator.net'
+      - 'requestbin.com'
+      - 'webhook.site'
+      - 'pipedream.net'
+      - 'hookbin.com'
+      - 'requestcatcher.com'
+      - 'canarytokens.com'
+
+  # Unusual ports
+  selection_ports:
+    DestinationPort|in:
+      - 4444
+      - 5555
+      - 6666
+      - 7777
+      - 8888
+      - 9999
+      - 1337
+      - 31337
+
+  # Large POST requests to external hosts
+  selection_large_post:
+    HttpMethod: 'POST'
+    OutboundBytes|gt: 1048576  # 1MB
+    DestinationHost|not endswith:
+      - '.amazonaws.com'
+      - '.azure.com'
+      - '.googleapis.com'
+      - '.microsoft.com'
+
+  condition: selection_suspicious or selection_ports or selection_large_post
+fields:
+  - FunctionName
+  - DestinationHost
+  - DestinationPort
+  - OutboundBytes
+falsepositives:
+  - Approved webhook integrations or observability exporters using non-standard callback domains.
+  - Load tests or data export jobs with documented destinations and expected large POST requests.
+level: high

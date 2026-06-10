@@ -1,0 +1,83 @@
+title: Screen Capture via Built-in Tools
+id: co01a001-scrn-0001-0001-000000000001
+status: stable
+description: |
+  Detects screen capture activity using built-in Windows tools or PowerShell
+  methods. Attackers capture screenshots to gather intelligence about the
+  victim's activities, open documents, and applications.
+references:
+  - https://attack.mitre.org/techniques/T1113/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.collection
+  - attack.t1113
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_snippingtool:
+    Image|endswith:
+      - '\SnippingTool.exe'
+      - '\ScreenSketch.exe'
+      - '\ScreenClippingHost.exe'
+  selection_ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+    CommandLine|contains:
+      - 'System.Drawing.Bitmap'
+      - 'CopyFromScreen'
+      - 'Graphics.FromImage'
+      - '[System.Windows.Forms.Screen]'
+  selection_nircmd:
+    CommandLine|contains:
+      - 'nircmd'
+      - 'savescreenshot'
+      - 'screenshot'
+  filter_user:
+    ParentImage|endswith:
+      - '\explorer.exe'
+      - '\ShellExperienceHost.exe'
+  condition: (selection_ps or selection_nircmd) and not filter_user
+falsepositives:
+  - Legitimate screenshot tools used by employees
+  - Remote support software
+level: medium
+
+---
+title: Screen Capture via Third-Party Tools
+id: co01a002-scrn-0001-0002-000000000002
+status: stable
+description: |
+  Detects execution of known screenshot and screen recording tools that
+  may be used by attackers for intelligence collection.
+references:
+  - https://attack.mitre.org/techniques/T1113/
+author: Tamandua EDR
+date: 2026/01/31
+modified: 2026/01/31
+tags:
+  - attack.collection
+  - attack.t1113
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith:
+      - '\screenshot.exe'
+      - '\screencapture.exe'
+      - '\ffmpeg.exe'
+    CommandLine|contains:
+      - 'screen'
+      - 'gdigrab'
+      - 'desktop'
+  filter_obs:
+    ParentImage|endswith: '\obs64.exe'
+  condition: selection and not filter_obs
+falsepositives:
+  - Content creators using recording software
+  - Remote IT support tools
+level: medium

@@ -1,0 +1,573 @@
+## Japanese translations for Tamandua EDR
+msgid ""
+msgstr ""
+"Language: ja\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+## Navigation
+msgid "Home"
+msgstr "ホーム"
+
+msgid "Alerts"
+msgstr "アラート"
+
+msgid "Agents"
+msgstr "エージェント"
+
+msgid "Dashboard"
+msgstr "ダッシュボード"
+
+msgid "Detections"
+msgstr "検出"
+
+msgid "Investigations"
+msgstr "調査"
+
+msgid "Settings"
+msgstr "設定"
+
+msgid "Reports"
+msgstr "レポート"
+
+msgid "Admin"
+msgstr "管理"
+
+msgid "Users"
+msgstr "ユーザー"
+
+msgid "Organizations"
+msgstr "組織"
+
+msgid "Threat Intelligence"
+msgstr "脅威インテリジェンス"
+
+msgid "Compliance"
+msgstr "コンプライアンス"
+
+msgid "Playbooks"
+msgstr "プレイブック"
+
+## Alert Status
+msgid "New"
+msgstr "新規"
+
+msgid "Investigating"
+msgstr "調査中"
+
+msgid "Resolved"
+msgstr "解決済み"
+
+msgid "False Positive"
+msgstr "誤検知"
+
+msgid "Escalated"
+msgstr "エスカレート済み"
+
+msgid "Acknowledged"
+msgstr "承認済み"
+
+## Severity Levels
+msgid "Critical"
+msgstr "クリティカル"
+
+msgid "High"
+msgstr "高"
+
+msgid "Medium"
+msgstr "中"
+
+msgid "Low"
+msgstr "低"
+
+msgid "Info"
+msgstr "情報"
+
+## Common Actions
+msgid "Save"
+msgstr "保存"
+
+msgid "Cancel"
+msgstr "キャンセル"
+
+msgid "Delete"
+msgstr "削除"
+
+msgid "Edit"
+msgstr "編集"
+
+msgid "Create"
+msgstr "作成"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "Export"
+msgstr "エクスポート"
+
+msgid "Import"
+msgstr "インポート"
+
+msgid "Download"
+msgstr "ダウンロード"
+
+msgid "Upload"
+msgstr "アップロード"
+
+msgid "Search"
+msgstr "検索"
+
+msgid "Filter"
+msgstr "フィルター"
+
+msgid "Clear"
+msgstr "クリア"
+
+msgid "Apply"
+msgstr "適用"
+
+msgid "Close"
+msgstr "閉じる"
+
+msgid "Submit"
+msgstr "送信"
+
+msgid "Refresh"
+msgstr "更新"
+
+msgid "Back"
+msgstr "戻る"
+
+msgid "Next"
+msgstr "次へ"
+
+msgid "Previous"
+msgstr "前へ"
+
+msgid "View"
+msgstr "表示"
+
+msgid "Details"
+msgstr "詳細"
+
+## Alert Management
+msgid "Alert Details"
+msgstr "アラート詳細"
+
+msgid "Alert ID"
+msgstr "アラートID"
+
+msgid "Created At"
+msgstr "作成日時"
+
+msgid "Updated At"
+msgstr "更新日時"
+
+msgid "Assigned To"
+msgstr "担当者"
+
+msgid "Status"
+msgstr "ステータス"
+
+msgid "Severity"
+msgstr "重要度"
+
+msgid "Description"
+msgstr "説明"
+
+msgid "Title"
+msgstr "タイトル"
+
+msgid "Source"
+msgstr "ソース"
+
+msgid "Tags"
+msgstr "タグ"
+
+msgid "Comments"
+msgstr "コメント"
+
+msgid "Add Comment"
+msgstr "コメント追加"
+
+msgid "Assign"
+msgstr "割り当て"
+
+msgid "Change Status"
+msgstr "ステータス変更"
+
+msgid "Escalate"
+msgstr "エスカレート"
+
+msgid "Mark as False Positive"
+msgstr "誤検知としてマーク"
+
+msgid "Take Action"
+msgstr "アクション実行"
+
+msgid "Isolate Endpoint"
+msgstr "エンドポイントを隔離"
+
+msgid "Kill Process"
+msgstr "プロセス終了"
+
+msgid "Quarantine File"
+msgstr "ファイル隔離"
+
+## Agent Management
+msgid "Agent Status"
+msgstr "エージェントステータス"
+
+msgid "Online"
+msgstr "オンライン"
+
+msgid "Offline"
+msgstr "オフライン"
+
+msgid "Degraded"
+msgstr "低下"
+
+msgid "Hostname"
+msgstr "ホスト名"
+
+msgid "IP Address"
+msgstr "IPアドレス"
+
+msgid "OS Type"
+msgstr "OS種類"
+
+msgid "OS Version"
+msgstr "OSバージョン"
+
+msgid "Agent Version"
+msgstr "エージェントバージョン"
+
+msgid "Last Seen"
+msgstr "最終確認"
+
+msgid "Installed At"
+msgstr "インストール日時"
+
+msgid "CPU Usage"
+msgstr "CPU使用率"
+
+msgid "Memory Usage"
+msgstr "メモリ使用率"
+
+msgid "Disk Usage"
+msgstr "ディスク使用率"
+
+msgid "Network Status"
+msgstr "ネットワークステータス"
+
+## Filters & Search
+msgid "Advanced Filters"
+msgstr "詳細フィルター"
+
+msgid "Save Filter"
+msgstr "フィルター保存"
+
+msgid "Load Filter"
+msgstr "フィルター読込"
+
+msgid "Clear Filters"
+msgstr "フィルタークリア"
+
+msgid "Saved Searches"
+msgstr "保存済み検索"
+
+msgid "Search Name"
+msgstr "検索名"
+
+msgid "Share with organization"
+msgstr "組織と共有"
+
+msgid "Filter Name"
+msgstr "フィルター名"
+
+msgid "Add Condition"
+msgstr "条件追加"
+
+msgid "Add Group"
+msgstr "グループ追加"
+
+msgid "Remove"
+msgstr "削除"
+
+msgid "AND"
+msgstr "AND"
+
+msgid "OR"
+msgstr "OR"
+
+msgid "Field"
+msgstr "フィールド"
+
+msgid "Operator"
+msgstr "演算子"
+
+msgid "Value"
+msgstr "値"
+
+## Pagination
+msgid "Showing %{start} to %{end} of %{total} results"
+msgstr "%{total}件中 %{start}〜%{end}件を表示"
+
+msgid "Page %{page} of %{total}"
+msgstr "%{total}ページ中 %{page}ページ"
+
+## Time & Date
+msgid "Today"
+msgstr "今日"
+
+msgid "Yesterday"
+msgstr "昨日"
+
+msgid "Last 7 days"
+msgstr "過去7日間"
+
+msgid "Last 30 days"
+msgstr "過去30日間"
+
+msgid "Last 90 days"
+msgstr "過去90日間"
+
+msgid "Custom Range"
+msgstr "カスタム範囲"
+
+msgid "Start Date"
+msgstr "開始日"
+
+msgid "End Date"
+msgstr "終了日"
+
+msgid "Time"
+msgstr "時刻"
+
+msgid "Date"
+msgstr "日付"
+
+msgid "Timezone"
+msgstr "タイムゾーン"
+
+## User Settings
+msgid "Profile"
+msgstr "プロフィール"
+
+msgid "Account Settings"
+msgstr "アカウント設定"
+
+msgid "Security"
+msgstr "セキュリティ"
+
+msgid "Preferences"
+msgstr "設定"
+
+msgid "Language"
+msgstr "言語"
+
+msgid "Email"
+msgstr "メール"
+
+msgid "Name"
+msgstr "名前"
+
+msgid "Password"
+msgstr "パスワード"
+
+msgid "Change Password"
+msgstr "パスワード変更"
+
+msgid "Current Password"
+msgstr "現在のパスワード"
+
+msgid "New Password"
+msgstr "新しいパスワード"
+
+msgid "Confirm Password"
+msgstr "パスワード確認"
+
+msgid "Two-Factor Authentication"
+msgstr "二要素認証"
+
+msgid "Enable 2FA"
+msgstr "2FA有効化"
+
+msgid "Disable 2FA"
+msgstr "2FA無効化"
+
+## Notifications
+msgid "Notifications"
+msgstr "通知"
+
+msgid "No new notifications"
+msgstr "新しい通知はありません"
+
+msgid "Mark all as read"
+msgstr "全て既読にする"
+
+msgid "View all notifications"
+msgstr "全ての通知を表示"
+
+## Errors
+msgid "Error"
+msgstr "エラー"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Success"
+msgstr "成功"
+
+msgid "Information"
+msgstr "情報"
+
+msgid "An error occurred"
+msgstr "エラーが発生しました"
+
+msgid "Not found"
+msgstr "見つかりません"
+
+msgid "Unauthorized"
+msgstr "未認証"
+
+msgid "Forbidden"
+msgstr "禁止"
+
+msgid "Invalid input"
+msgstr "無効な入力"
+
+msgid "Required field"
+msgstr "必須項目"
+
+msgid "Invalid email"
+msgstr "無効なメールアドレス"
+
+msgid "Password too short"
+msgstr "パスワードが短すぎます"
+
+msgid "Passwords do not match"
+msgstr "パスワードが一致しません"
+
+## Success Messages
+msgid "Saved successfully"
+msgstr "正常に保存されました"
+
+msgid "Updated successfully"
+msgstr "正常に更新されました"
+
+msgid "Deleted successfully"
+msgstr "正常に削除されました"
+
+msgid "Created successfully"
+msgstr "正常に作成されました"
+
+msgid "Changes saved"
+msgstr "変更が保存されました"
+
+## Detection Rules
+msgid "Detection Rules"
+msgstr "検出ルール"
+
+msgid "YARA Rules"
+msgstr "YARAルール"
+
+msgid "Sigma Rules"
+msgstr "Sigmaルール"
+
+msgid "IOC Lists"
+msgstr "IOCリスト"
+
+msgid "Rule Name"
+msgstr "ルール名"
+
+msgid "Rule Type"
+msgstr "ルールタイプ"
+
+msgid "Enabled"
+msgstr "有効"
+
+msgid "Disabled"
+msgstr "無効"
+
+msgid "Enable"
+msgstr "有効化"
+
+msgid "Disable"
+msgstr "無効化"
+
+## Threat Intelligence
+msgid "Threat Actors"
+msgstr "脅威アクター"
+
+msgid "Indicators of Compromise"
+msgstr "侵害指標"
+
+msgid "Threat Feeds"
+msgstr "脅威フィード"
+
+msgid "MITRE ATT&CK"
+msgstr "MITRE ATT&CK"
+
+msgid "Tactics"
+msgstr "戦術"
+
+msgid "Techniques"
+msgstr "技術"
+
+msgid "Procedures"
+msgstr "手順"
+
+## Compliance
+msgid "Compliance Frameworks"
+msgstr "コンプライアンスフレームワーク"
+
+msgid "Audit Logs"
+msgstr "監査ログ"
+
+msgid "Policy Violations"
+msgstr "ポリシー違反"
+
+msgid "Remediation Tasks"
+msgstr "修復タスク"
+
+## Statistics
+msgid "Total Alerts"
+msgstr "総アラート数"
+
+msgid "Open Alerts"
+msgstr "未解決アラート"
+
+msgid "Critical Alerts"
+msgstr "クリティカルアラート"
+
+msgid "Active Agents"
+msgstr "アクティブエージェント"
+
+msgid "Offline Agents"
+msgstr "オフラインエージェント"
+
+msgid "Detection Rate"
+msgstr "検出率"
+
+msgid "Mean Time to Detect"
+msgstr "平均検出時間"
+
+msgid "Mean Time to Respond"
+msgstr "平均対応時間"
+
+## Plurals
+msgid "One alert"
+msgid_plural "%{count} alerts"
+msgstr[0] "%{count}件のアラート"
+
+msgid "One agent"
+msgid_plural "%{count} agents"
+msgstr[0] "%{count}台のエージェント"
+
+msgid "One user"
+msgid_plural "%{count} users"
+msgstr[0] "%{count}人のユーザー"
+
+msgid "One detection"
+msgid_plural "%{count} detections"
+msgstr[0] "%{count}件の検出"

@@ -1,0 +1,526 @@
+name: HIPAA
+full_name: Health Insurance Portability and Accountability Act Security Rule
+version: "Security Rule 2013"
+description: US legislation that provides data privacy and security provisions for safeguarding medical information
+url: https://www.hhs.gov/hipaa/
+
+categories:
+  - administrative
+  - physical
+  - technical
+  - organizational
+
+controls:
+  # Administrative Safeguards
+  - id: hipaa-164.308.a.1.i
+    control_id: 164.308(a)(1)(i)
+    title: Security Management Process - Risk Analysis
+    description: Conduct an accurate and thorough assessment of potential risks to ePHI
+    category: administrative
+    severity: critical
+    automated: false
+    evidence_types:
+      - risk_assessments
+      - threat_analysis
+      - vulnerability_reports
+    validation_query: null
+    remediation_steps:
+      - Conduct comprehensive risk analysis
+      - Identify threats to ePHI
+      - Document risk assessment findings
+
+  - id: hipaa-164.308.a.1.ii.A
+    control_id: 164.308(a)(1)(ii)(A)
+    title: Risk Management
+    description: Implement security measures to reduce risks to reasonable and appropriate level
+    category: administrative
+    severity: critical
+    automated: true
+    evidence_types:
+      - risk_mitigation_plans
+      - security_controls
+      - remediation_tracking
+    validation_query: risk_management_implemented
+    remediation_steps:
+      - Develop risk mitigation strategies
+      - Implement security controls
+      - Monitor control effectiveness
+
+  - id: hipaa-164.308.a.1.ii.B
+    control_id: 164.308(a)(1)(ii)(B)
+    title: Sanction Policy
+    description: Apply appropriate sanctions against workforce members who fail to comply
+    category: administrative
+    severity: medium
+    automated: false
+    evidence_types:
+      - sanction_policy
+      - violation_records
+      - disciplinary_actions
+    validation_query: null
+    remediation_steps:
+      - Develop sanction policy
+      - Document violations
+      - Apply consistent sanctions
+
+  - id: hipaa-164.308.a.1.ii.C
+    control_id: 164.308(a)(1)(ii)(C)
+    title: Information System Activity Review
+    description: Implement procedures to regularly review records of information system activity
+    category: administrative
+    severity: high
+    automated: true
+    evidence_types:
+      - audit_logs
+      - review_reports
+      - anomaly_detections
+    validation_query: hipaa_audit_enabled
+    remediation_steps:
+      - Enable comprehensive audit logging
+      - Review logs regularly
+      - Investigate anomalies
+
+  - id: hipaa-164.308.a.1.ii.D
+    control_id: 164.308(a)(1)(ii)(D)
+    title: Information System Activity Review
+    description: Implement procedures to regularly review activity of information systems with ePHI
+    category: administrative
+    severity: high
+    automated: true
+    evidence_types:
+      - system_logs
+      - access_reviews
+      - monitoring_reports
+    validation_query: system_activity_reviewed
+    remediation_steps:
+      - Monitor ePHI system activity
+      - Conduct regular reviews
+      - Document review findings
+
+  - id: hipaa-164.308.a.3.i
+    control_id: 164.308(a)(3)(i)
+    title: Workforce Security - Authorization/Supervision
+    description: Implement procedures for authorization and supervision of workforce members
+    category: administrative
+    severity: high
+    automated: true
+    evidence_types:
+      - access_policies
+      - authorization_records
+      - supervision_procedures
+    validation_query: access_controls_configured
+    remediation_steps:
+      - Define access authorization procedures
+      - Document workforce supervision
+      - Review access regularly
+
+  - id: hipaa-164.308.a.3.ii.A
+    control_id: 164.308(a)(3)(ii)(A)
+    title: Workforce Clearance Procedure
+    description: Implement procedures to determine appropriate access to ePHI
+    category: administrative
+    severity: high
+    automated: false
+    evidence_types:
+      - clearance_procedures
+      - access_determination
+      - approval_records
+    validation_query: null
+    remediation_steps:
+      - Define clearance procedures
+      - Determine access based on job function
+      - Document clearance decisions
+
+  - id: hipaa-164.308.a.3.ii.B
+    control_id: 164.308(a)(3)(ii)(B)
+    title: Termination Procedures
+    description: Implement procedures for terminating access to ePHI when employment ends
+    category: administrative
+    severity: critical
+    automated: true
+    evidence_types:
+      - offboarding_procedures
+      - access_revocation_logs
+      - asset_return_records
+    validation_query: termination_procedures_implemented
+    remediation_steps:
+      - Define termination procedures
+      - Revoke access immediately upon termination
+      - Document all offboarding actions
+
+  - id: hipaa-164.308.a.4.i
+    control_id: 164.308(a)(4)(i)
+    title: Information Access Management
+    description: Implement policies and procedures for authorizing access to ePHI
+    category: administrative
+    severity: critical
+    automated: true
+    evidence_types:
+      - access_policies
+      - authorization_workflows
+      - access_logs
+    validation_query: access_management_implemented
+    remediation_steps:
+      - Develop access management policies
+      - Implement authorization workflows
+      - Audit access regularly
+
+  - id: hipaa-164.308.a.5.i
+    control_id: 164.308(a)(5)(i)
+    title: Security Awareness and Training
+    description: Implement security awareness and training program for all workforce members
+    category: administrative
+    severity: high
+    automated: true
+    evidence_types:
+      - training_materials
+      - attendance_records
+      - completion_certificates
+    validation_query: security_training_completed
+    remediation_steps:
+      - Develop HIPAA security training
+      - Train all workforce members
+      - Track training completion
+
+  - id: hipaa-164.308.a.6.i
+    control_id: 164.308(a)(6)(i)
+    title: Security Incident Procedures
+    description: Implement policies and procedures to address security incidents
+    category: administrative
+    severity: critical
+    automated: true
+    evidence_types:
+      - incident_response_plan
+      - incident_reports
+      - response_logs
+    validation_query: incident_procedures_implemented
+    remediation_steps:
+      - Develop incident response procedures
+      - Identify and respond to incidents
+      - Document all security incidents
+
+  - id: hipaa-164.308.a.7.i
+    control_id: 164.308(a)(7)(i)
+    title: Contingency Plan
+    description: Establish and implement policies and procedures for responding to emergencies
+    category: administrative
+    severity: critical
+    automated: false
+    evidence_types:
+      - contingency_plan
+      - backup_procedures
+      - disaster_recovery_plan
+    validation_query: null
+    remediation_steps:
+      - Develop contingency plan
+      - Create data backup procedures
+      - Test recovery procedures
+
+  - id: hipaa-164.308.a.8
+    control_id: 164.308(a)(8)
+    title: Evaluation
+    description: Perform periodic technical and non-technical evaluation
+    category: administrative
+    severity: high
+    automated: false
+    evidence_types:
+      - evaluation_reports
+      - assessment_schedules
+      - remediation_plans
+    validation_query: null
+    remediation_steps:
+      - Schedule periodic evaluations
+      - Assess security controls
+      - Document findings and remediation
+
+  # Physical Safeguards
+  - id: hipaa-164.310.a.1
+    control_id: 164.310(a)(1)
+    title: Facility Access Controls
+    description: Implement policies and procedures to limit physical access to ePHI systems
+    category: physical
+    severity: high
+    automated: true
+    evidence_types:
+      - access_control_systems
+      - visitor_logs
+      - facility_security
+    validation_query: physical_access_controlled
+    remediation_steps:
+      - Implement physical access controls
+      - Monitor facility access
+      - Maintain access logs
+
+  - id: hipaa-164.310.b
+    control_id: 164.310(b)
+    title: Workstation Use
+    description: Implement policies specifying proper functions and physical attributes of workstations
+    category: physical
+    severity: medium
+    automated: false
+    evidence_types:
+      - workstation_policies
+      - usage_guidelines
+      - compliance_audits
+    validation_query: null
+    remediation_steps:
+      - Define workstation use policies
+      - Specify security requirements
+      - Monitor policy compliance
+
+  - id: hipaa-164.310.c
+    control_id: 164.310(c)
+    title: Workstation Security
+    description: Implement physical safeguards for workstations that access ePHI
+    category: physical
+    severity: high
+    automated: true
+    evidence_types:
+      - workstation_security
+      - screen_locks
+      - physical_controls
+    validation_query: workstation_security_implemented
+    remediation_steps:
+      - Secure workstation physical locations
+      - Implement screen locks
+      - Prevent unauthorized viewing
+
+  - id: hipaa-164.310.d.1
+    control_id: 164.310(d)(1)
+    title: Device and Media Controls
+    description: Implement policies for receipt and removal of hardware and electronic media
+    category: physical
+    severity: high
+    automated: true
+    evidence_types:
+      - media_tracking
+      - disposal_procedures
+      - sanitization_logs
+    validation_query: media_controls_implemented
+    remediation_steps:
+      - Track all media with ePHI
+      - Implement secure disposal procedures
+      - Document media movements
+
+  # Technical Safeguards
+  - id: hipaa-164.312.a.1
+    control_id: 164.312(a)(1)
+    title: Access Control - Unique User Identification
+    description: Assign unique identifier for tracking user identity
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - user_accounts
+      - identity_management
+      - access_logs
+    validation_query: ephi_access_controlled
+    remediation_steps:
+      - Implement unique user IDs
+      - Prohibit shared accounts
+      - Track all user access
+
+  - id: hipaa-164.312.a.2.i
+    control_id: 164.312(a)(2)(i)
+    title: Emergency Access Procedure
+    description: Establish procedures for obtaining ePHI during emergency
+    category: technical
+    severity: high
+    automated: false
+    evidence_types:
+      - emergency_procedures
+      - break_glass_accounts
+      - access_logs
+    validation_query: null
+    remediation_steps:
+      - Define emergency access procedures
+      - Implement break-glass access
+      - Monitor emergency access usage
+
+  - id: hipaa-164.312.a.2.ii
+    control_id: 164.312(a)(2)(ii)
+    title: Automatic Logoff
+    description: Implement electronic procedures that terminate session after inactivity
+    category: technical
+    severity: high
+    automated: true
+    evidence_types:
+      - timeout_configs
+      - session_management
+      - logoff_settings
+    validation_query: automatic_logoff_enabled
+    remediation_steps:
+      - Configure session timeouts
+      - Implement automatic logoff
+      - Set appropriate timeout periods
+
+  - id: hipaa-164.312.a.2.iii
+    control_id: 164.312(a)(2)(iii)
+    title: Encryption and Decryption
+    description: Implement mechanism to encrypt and decrypt ePHI
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - encryption_configs
+      - key_management
+      - encryption_status
+    validation_query: ephi_encrypted
+    remediation_steps:
+      - Encrypt ePHI at rest
+      - Implement strong encryption (AES-256)
+      - Manage encryption keys securely
+
+  - id: hipaa-164.312.b
+    control_id: 164.312(b)
+    title: Audit Controls
+    description: Implement hardware, software, procedures to record and examine activity
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - audit_configs
+      - audit_logs
+      - log_reviews
+    validation_query: hipaa_audit_enabled
+    remediation_steps:
+      - Enable comprehensive audit logging
+      - Log all ePHI access
+      - Review audit logs regularly
+
+  - id: hipaa-164.312.c.1
+    control_id: 164.312(c)(1)
+    title: Integrity - Mechanism to Authenticate ePHI
+    description: Implement mechanisms to corroborate ePHI has not been altered or destroyed
+    category: technical
+    severity: high
+    automated: true
+    evidence_types:
+      - integrity_configs
+      - hash_verification
+      - fim_alerts
+    validation_query: data_integrity_enabled
+    remediation_steps:
+      - Implement data integrity checks
+      - Use digital signatures or checksums
+      - Monitor for unauthorized changes
+
+  - id: hipaa-164.312.d
+    control_id: 164.312(d)
+    title: Person or Entity Authentication
+    description: Implement procedures to verify person or entity seeking access is authorized
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - authentication_configs
+      - mfa_status
+      - authentication_logs
+    validation_query: authentication_verified
+    remediation_steps:
+      - Implement strong authentication
+      - Deploy multi-factor authentication
+      - Verify identity before granting access
+
+  - id: hipaa-164.312.e.1
+    control_id: 164.312(e)(1)
+    title: Transmission Security - Integrity Controls
+    description: Implement security measures to ensure ePHI is not improperly modified during transmission
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - transmission_integrity
+      - tls_configs
+      - verification_mechanisms
+    validation_query: transmission_integrity_enabled
+    remediation_steps:
+      - Implement transmission integrity checks
+      - Use secure protocols (TLS)
+      - Verify data integrity after transmission
+
+  - id: hipaa-164.312.e.2.i
+    control_id: 164.312(e)(2)(i)
+    title: Transmission Security - Encryption
+    description: Implement mechanism to encrypt ePHI during transmission
+    category: technical
+    severity: critical
+    automated: true
+    evidence_types:
+      - tls_configs
+      - vpn_encryption
+      - encryption_status
+    validation_query: transmission_encrypted
+    remediation_steps:
+      - Encrypt all ePHI transmissions
+      - Use TLS 1.2 or higher
+      - Disable insecure protocols
+
+  # Organizational Requirements
+  - id: hipaa-164.314.a.1.i
+    control_id: 164.314(a)(1)(i)
+    title: Business Associate Contracts
+    description: Contract between covered entity and business associate must satisfy requirements
+    category: organizational
+    severity: critical
+    automated: false
+    evidence_types:
+      - baa_contracts
+      - contract_reviews
+      - compliance_attestations
+    validation_query: null
+    remediation_steps:
+      - Execute Business Associate Agreements (BAA)
+      - Ensure contracts meet HIPAA requirements
+      - Monitor business associate compliance
+
+  - id: hipaa-164.316.b.1.i
+    control_id: 164.316(b)(1)(i)
+    title: Risk Analysis Documentation
+    description: Maintain written record of actions, activities, assessments required
+    category: organizational
+    severity: critical
+    automated: false
+    evidence_types:
+      - risk_analysis_documentation
+      - assessment_records
+      - remediation_plans
+    validation_query: null
+    remediation_steps:
+      - Document all risk analyses
+      - Maintain assessment records
+      - Update documentation regularly
+
+  - id: hipaa-164.316.b.2.i
+    control_id: 164.316(b)(2)(i)
+    title: Time Limit for Retention
+    description: Retain documentation for 6 years from date of creation or last effective date
+    category: organizational
+    severity: high
+    automated: true
+    evidence_types:
+      - retention_policies
+      - document_repository
+      - retention_tracking
+    validation_query: documentation_retained
+    remediation_steps:
+      - Implement 6-year retention policy
+      - Store documentation securely
+      - Track retention periods
+
+  - id: hipaa-breach-notification
+    control_id: Breach Notification Rule
+    title: Breach Notification within 60 Days
+    description: Notify affected individuals, HHS, and potentially media within 60 days of breach discovery
+    category: organizational
+    severity: critical
+    automated: true
+    evidence_types:
+      - breach_detection_logs
+      - notification_records
+      - timeline_documentation
+    validation_query: breach_notification_enabled
+    remediation_steps:
+      - Implement breach detection
+      - Define notification procedures
+      - Meet 60-day notification requirement

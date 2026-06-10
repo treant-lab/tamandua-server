@@ -1,0 +1,24 @@
+# Elixir
+/_build
+/deps
+/*.ez
+
+# Rust
+/native/*/target/
+Cargo.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Precompiled binaries
+/priv/native/*.so
+/priv/native/*.dll
+/priv/native/*.dylib
+
+# Test artifacts
+*.tmp
