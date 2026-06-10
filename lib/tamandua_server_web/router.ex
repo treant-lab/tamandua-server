@@ -2295,7 +2295,11 @@ defmodule TamanduaServerWeb.Router do
 
     forward("/graphql", Absinthe.Plug,
       schema: TamanduaServerWeb.GraphQL.Schema,
-      json_codec: Jason
+      json_codec: Jason,
+      # Bound query cost so a single deeply-nested/expensive query cannot exhaust
+      # the server (GraphQL resource-exhaustion DoS).
+      analyze_complexity: true,
+      max_complexity: 200
     )
   end
 

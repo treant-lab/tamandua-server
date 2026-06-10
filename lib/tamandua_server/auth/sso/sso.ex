@@ -1091,7 +1091,7 @@ defmodule TamanduaServer.Auth.SSO do
     # Try to decode ID token claims first (for OIDC providers)
     id_claims =
       if id_token do
-        case decode_jwt_claims(id_token) do
+        case decode_jwt_claims(id_token, endpoints) do
           {:ok, claims} ->
             # Validate nonce if present
             if pending[:nonce] && claims["nonce"] != pending[:nonce] do
@@ -1146,21 +1146,65 @@ defmodule TamanduaServer.Auth.SSO do
     end
   end
 
-  defp decode_jwt_claims(jwt) do
-    # JWT is header.payload.signature - we just decode the payload
-    case String.split(jwt, ".") do
-      [_header, payload | _rest] ->
-        # Add padding if needed
-        padded =
-          case rem(byte_size(payload), 4) do
-            2 -> payload <> "=="
-            3 -> payload <> "="
-            _ -> payload
-          end
+  # Asymmetric signature algorithms we are willing to trust for ID tokens.
+  # `none` and HMAC (HS*) are deliberately excluded: an unsigned token must
+  # never be accepted, and HS* would turn the (often low-entropy / shared)
+  # client_secret into a signing key, enabling algorithm-confusion downgrades.
+  @allowed_jwt_algs ~w(RS256 RS384 RS512 ES256 ES384 ES512 PS256 PS384 PS512)
 
-        case Base.url_decode64(padded) do
-          {:ok, json} -> Jason.decode(json)
-          :error -> {:error, :invalid_jwt_encoding}
+  # Verify an OIDC ID token's signature against the provider's JWKS before
+  # trusting any of its claims. Fails closed: if the JWKS cannot be fetched, no
+  # key matches, the algorithm is not allowlisted, or the signature is invalid,
+  # we return an error and the caller falls back to the (server-to-server,
+  # TLS-protected) UserInfo endpoint instead of trusting unverified claims.
+  defp decode_jwt_claims(jwt, endpoints) when is_binary(jwt) do
+    with {:ok, jwks_uri} <- jwks_uri(endpoints),
+         {:ok, header} <- jwt_header(jwt),
+         alg when alg in @allowed_jwt_algs <- header["alg"],
+         {:ok, keys} <- fetch_jwks(jwks_uri),
+         {:ok, jwk} <- select_jwk(keys, header["kid"]) do
+      case JOSE.JWT.verify_strict(jwk, @allowed_jwt_algs, jwt) do
+        {true, %JOSE.JWT{fields: claims}, _jws} ->
+          {:ok, claims}
+
+        _ ->
+          Logger.warning("[SSO] ID token signature verification failed")
+          {:error, :invalid_jwt_signature}
+      end
+    else
+      alg when is_binary(alg) ->
+        Logger.warning("[SSO] ID token uses disallowed alg: #{alg}")
+        {:error, :disallowed_jwt_alg}
+
+      {:error, reason} = err ->
+        Logger.warning("[SSO] ID token verification aborted: #{inspect(reason)}")
+        err
+
+      other ->
+        Logger.warning("[SSO] ID token verification aborted: #{inspect(other)}")
+        {:error, :invalid_jwt}
+    end
+  end
+
+  defp decode_jwt_claims(_jwt, _endpoints), do: {:error, :invalid_jwt_format}
+
+  defp jwks_uri(endpoints) do
+    case endpoints[:jwks_uri] do
+      uri when is_binary(uri) and uri != "" -> {:ok, uri}
+      _ -> {:error, :no_jwks_uri}
+    end
+  end
+
+  # Decode the protected JWS header without trusting it yet (used only to pick
+  # the verification key + algorithm; the signature is still checked afterwards).
+  defp jwt_header(jwt) do
+    case String.split(jwt, ".") do
+      [header_b64 | _] ->
+        with {:ok, json} <- base64url_decode(header_b64),
+             {:ok, header} when is_map(header) <- Jason.decode(json) do
+          {:ok, header}
+        else
+          _ -> {:error, :invalid_jwt_header}
         end
 
       _ ->
@@ -1168,44 +1212,92 @@ defmodule TamanduaServer.Auth.SSO do
     end
   end
 
+  defp base64url_decode(segment) do
+    padded =
+      case rem(byte_size(segment), 4) do
+        2 -> segment <> "=="
+        3 -> segment <> "="
+        _ -> segment
+      end
+
+    case Base.url_decode64(padded) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, :invalid_base64url}
+    end
+  end
+
+  # Select the JWK matching the token's `kid`. When the token omits `kid`,
+  # the JWKS is required to contain exactly one key (otherwise the choice is
+  # ambiguous and we fail closed).
+  defp select_jwk(keys, kid) when is_binary(kid) do
+    case Enum.find(keys, fn k -> k["kid"] == kid end) do
+      nil -> {:error, :no_matching_jwk}
+      key -> {:ok, JOSE.JWK.from_map(key)}
+    end
+  end
+
+  defp select_jwk([key], _kid), do: {:ok, JOSE.JWK.from_map(key)}
+  defp select_jwk(_keys, _kid), do: {:error, :ambiguous_jwk}
+
+  # Fetch + cache a provider's JWKS (TTL-bounded) in the shared provider cache.
+  defp fetch_jwks(jwks_uri) do
+    cache_key = {:jwks, jwks_uri}
+    now = System.system_time(:second)
+
+    case :ets.lookup(@provider_cache, cache_key) do
+      [{^cache_key, keys, ts}] when is_list(keys) and now - ts < @config_ttl ->
+        {:ok, keys}
+
+      _ ->
+        with {:ok, body} <- http_get(jwks_uri),
+             {:ok, %{"keys" => keys}} when is_list(keys) <- Jason.decode(body) do
+          :ets.insert(@provider_cache, {cache_key, keys, now})
+          {:ok, keys}
+        else
+          _ -> {:error, :jwks_fetch_failed}
+        end
+    end
+  end
+
+  # Enforce (not just log) the standard OIDC ID token checks. Any failed check
+  # returns empty claims so the caller falls back to UserInfo instead of trusting
+  # an expired / wrong-issuer / wrong-audience token.
   defp validate_id_token_claims(config, endpoints, claims) do
     settings = config.settings
     now = System.system_time(:second)
 
-    # Check expiry
-    exp = claims["exp"]
-    if exp && is_integer(exp) && now > exp + 120 do
-      Logger.warning("[SSO] ID token expired")
-      return_empty_on_expired()
-    end
-
-    # Check issuer
     expected_issuer = endpoints[:issuer] || settings["issuer"]
     token_issuer = claims["iss"]
-
-    if expected_issuer && token_issuer && token_issuer != expected_issuer do
-      Logger.warning("[SSO] ID token issuer mismatch: #{token_issuer} != #{expected_issuer}")
-    end
-
-    # Check audience
-    aud = claims["aud"]
     client_id = settings["client_id"]
 
-    aud_ok =
-      cond do
-        is_binary(aud) -> aud == client_id
-        is_list(aud) -> client_id in aud
-        true -> true
-      end
+    cond do
+      token_expired?(claims["exp"], now) ->
+        Logger.warning("[SSO] ID token expired")
+        %{}
 
-    unless aud_ok do
-      Logger.warning("[SSO] ID token audience mismatch")
+      expected_issuer && token_issuer && token_issuer != expected_issuer ->
+        Logger.warning("[SSO] ID token issuer mismatch: #{token_issuer} != #{expected_issuer}")
+        %{}
+
+      not audience_ok?(claims["aud"], client_id) ->
+        Logger.warning("[SSO] ID token audience mismatch")
+        %{}
+
+      true ->
+        claims
     end
-
-    claims
   end
 
-  defp return_empty_on_expired, do: %{}
+  defp token_expired?(exp, now) when is_integer(exp), do: now > exp + 120
+  defp token_expired?(_exp, _now), do: false
+
+  # When a client_id is configured, the token audience must match it. If no
+  # client_id is configured we cannot enforce audience, so we accept.
+  defp audience_ok?(_aud, nil), do: true
+  defp audience_ok?(_aud, ""), do: true
+  defp audience_ok?(aud, client_id) when is_binary(aud), do: aud == client_id
+  defp audience_ok?(aud, client_id) when is_list(aud), do: client_id in aud
+  defp audience_ok?(_aud, _client_id), do: false
 
   defp fetch_userinfo(endpoints, access_token, config) do
     url = endpoints.userinfo_endpoint

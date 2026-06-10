@@ -805,7 +805,9 @@ defmodule TamanduaServerWeb.API.V1.AlertController do
   GET /api/v1/alerts/suppression-rules
   """
   def list_suppression_rules(conn, params) do
-    organization_id = conn.assigns[:organization_id] || params["organization_id"]
+    # Tenant scope comes only from the authenticated context; never trust a
+    # client-supplied organization_id (would allow cross-tenant access / writes).
+    organization_id = conn.assigns[:organization_id]
     enabled_only = params["enabled_only"] == "true"
 
     rules = Alerts.list_suppression_rules(
@@ -822,7 +824,9 @@ defmodule TamanduaServerWeb.API.V1.AlertController do
   POST /api/v1/alerts/suppression-rules
   """
   def create_suppression_rule(conn, params) do
-    organization_id = conn.assigns[:organization_id] || params["organization_id"]
+    # Tenant scope comes only from the authenticated context; never trust a
+    # client-supplied organization_id (would allow cross-tenant access / writes).
+    organization_id = conn.assigns[:organization_id]
     user_id = conn.assigns[:current_user] && conn.assigns[:current_user].id
 
     attrs = params

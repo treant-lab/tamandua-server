@@ -420,9 +420,9 @@ defmodule TamanduaServer.Alerts.Suppression do
     process = get_evidence_process_name(alert_data) || ""
     rule_name = get_detection_rule_name(alert_data) || ""
 
-    # Use a hash for compact ETS keys
+    # Use a hash for compact ETS keys (SHA-256; MD5 is avoided project-wide)
     key_str = "#{agent_id}:#{title}:#{process}:#{rule_name}"
-    :crypto.hash(:md5, key_str) |> Base.encode16(case: :lower)
+    :crypto.hash(:sha256, key_str) |> Base.encode16(case: :lower)
   end
 
   # ---------------------------------------------------------------------------

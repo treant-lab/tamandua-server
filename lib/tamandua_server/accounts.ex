@@ -377,6 +377,11 @@ defmodule TamanduaServer.Accounts do
   @session_tokens_table :user_session_tokens
   @api_tokens_table :user_api_tokens
 
+  # Token lifetimes. Tokens carry their issue time; lookups reject (and evict)
+  # anything older so a stolen/forgotten token cannot be replayed indefinitely.
+  @session_token_ttl_seconds 7 * 24 * 60 * 60
+  @api_token_ttl_seconds 90 * 24 * 60 * 60
+
   @doc """
   Generate a session token for a user.
   """
@@ -394,8 +399,13 @@ defmodule TamanduaServer.Accounts do
     ensure_token_table(@session_tokens_table)
 
     case :ets.lookup(@session_tokens_table, token) do
-      [{^token, user_id, _created_at}] ->
-        get_user(user_id)
+      [{^token, user_id, created_at}] ->
+        if token_expired?(created_at, @session_token_ttl_seconds) do
+          :ets.delete(@session_tokens_table, token)
+          nil
+        else
+          get_user(user_id)
+        end
 
       [] ->
         nil
@@ -422,8 +432,13 @@ defmodule TamanduaServer.Accounts do
     ensure_token_table(@api_tokens_table)
 
     case :ets.lookup(@api_tokens_table, token) do
-      [{^token, user_id, _created_at}] ->
-        get_user(user_id)
+      [{^token, user_id, created_at}] ->
+        if token_expired?(created_at, @api_token_ttl_seconds) do
+          :ets.delete(@api_tokens_table, token)
+          nil
+        else
+          get_user(user_id)
+        end
 
       [] ->
         nil
@@ -452,6 +467,12 @@ defmodule TamanduaServer.Accounts do
     :ets.insert(@api_tokens_table, {token, user.id, DateTime.utc_now()})
     token
   end
+
+  defp token_expired?(%DateTime{} = created_at, ttl_seconds) do
+    DateTime.diff(DateTime.utc_now(), created_at, :second) > ttl_seconds
+  end
+
+  defp token_expired?(_created_at, _ttl_seconds), do: true
 
   defp ensure_token_table(table) do
     case :ets.whereis(table) do

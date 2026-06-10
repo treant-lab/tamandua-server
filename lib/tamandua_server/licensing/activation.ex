@@ -30,11 +30,10 @@ defmodule TamanduaServer.Licensing.Activation do
   alias TamanduaServer.Licensing.{License, LicenseKey}
   alias TamanduaServer.Repo
 
-  @activation_secret Application.compile_env(
-    :tamandua_server,
-    :activation_secret,
-    "tamandua_activation_secret_2026"
-  )
+  # Dev-only fallback. Production MUST configure :activation_secret (sourced from
+  # the ACTIVATION_SECRET env var in runtime.exs); otherwise signature generation
+  # fails closed instead of using this publicly-known constant.
+  @activation_secret_dev "tamandua_activation_secret_2026"
 
   # Online Activation
 
@@ -319,8 +318,22 @@ defmodule TamanduaServer.Licensing.Activation do
   end
 
   defp generate_signature(data) do
-    :crypto.mac(:hmac, :sha256, @activation_secret, data)
+    :crypto.mac(:hmac, :sha256, activation_secret(), data)
     |> Base.encode64()
+  end
+
+  defp activation_secret do
+    case Application.get_env(:tamandua_server, :activation_secret) do
+      secret when is_binary(secret) and secret != "" ->
+        secret
+
+      _ ->
+        if Application.get_env(:tamandua_server, :env) == :prod do
+          raise "activation_secret must be configured in production (set ACTIVATION_SECRET)"
+        else
+          @activation_secret_dev
+        end
+    end
   end
 
   defp verify_signature(data, signature) do

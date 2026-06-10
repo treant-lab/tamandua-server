@@ -47,6 +47,21 @@ if config_env() == :prod do
   config :tamandua_server,
     agent_secret: agent_secret
 
+  # License activation HMAC secret (required in production)
+  activation_secret =
+    System.get_env("ACTIVATION_SECRET") ||
+      raise """
+      environment variable ACTIVATION_SECRET is missing.
+      Must be a high-entropy random string (>= 32 characters).
+      """
+
+  if byte_size(activation_secret) < 32 do
+    raise "ACTIVATION_SECRET must be at least 32 characters"
+  end
+
+  config :tamandua_server,
+    activation_secret: activation_secret
+
   # Endpoint configuration
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||

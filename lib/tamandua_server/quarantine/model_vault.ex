@@ -389,8 +389,25 @@ defmodule TamanduaServer.Quarantine.ModelVault do
   ## Private Functions
 
   defp get_server_secret do
-    System.get_env(@server_secret_env, @default_secret)
+    @server_secret_env
+    |> System.get_env()
+    |> case do
+      secret when is_binary(secret) and secret != "" -> secret
+      _ -> require_dev_secret!()
+    end
     |> then(&:crypto.hash(:sha256, &1))
+  end
+
+  # Fail closed in production: a missing MODEL_VAULT_SECRET must never silently
+  # fall back to a publicly-known constant (which would let anyone decrypt the
+  # recovery keys protecting quarantined models). The dev default is only used
+  # outside :prod.
+  defp require_dev_secret! do
+    if Application.get_env(:tamandua_server, :env) == :prod do
+      raise "#{@server_secret_env} environment variable must be set in production"
+    else
+      @default_secret
+    end
   end
 
   defp encrypt_recovery_key(key, receipt_id, server_secret) do
