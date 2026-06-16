@@ -72,6 +72,14 @@ config :inertia,
 # IMPORTANT: In production, GUARDIAN_SECRET_KEY must be set via environment variable
 # Generate with: mix guardian.gen.secret
 # Note: Actual secret is configured in dev.exs/prod.exs/runtime.exs
+#
+# Pin the signing/verification algorithm to a single symmetric algorithm.
+# This is explicit defense against JWT algorithm-confusion / "alg: none"
+# attacks: the verifier will reject any token whose header advertises a
+# different algorithm, regardless of Guardian's library defaults.
+config :tamandua_server, TamanduaServer.Guardian,
+  issuer: "tamandua_server",
+  allowed_algos: ["HS512"]
 
 # Oban configuration
 config :tamandua_server, Oban,

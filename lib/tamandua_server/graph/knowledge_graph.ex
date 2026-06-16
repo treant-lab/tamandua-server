@@ -922,7 +922,7 @@ defmodule TamanduaServer.Graph.KnowledgeGraph do
     pid = payload[:pid] || payload["pid"]
 
     if file_path do
-      file_id = "#{agent_id}:#{Base.encode16(:crypto.hash(:md5, file_path), case: :lower)}"
+      file_id = "#{agent_id}:#{Base.encode16(:crypto.hash(:sha256, file_path), case: :lower)}"
       do_upsert_node(:file, file_id, %{
         path: file_path,
         hash: payload[:sha256] || payload["sha256"],

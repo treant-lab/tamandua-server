@@ -624,6 +624,7 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   def collect_artifacts(conn, %{"agent_id" => agent_id, "artifacts" => artifacts}) do
     case Collector.create_collection(%{
            agent_id: agent_id,
+           organization_id: get_current_organization_id(conn),
            type: "custom",
            paths: [],
            options: %{artifacts: artifacts},

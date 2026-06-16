@@ -344,7 +344,7 @@ defmodule TamanduaServer.Updates do
 
   defp in_percentage?(agent_id, percentage) do
     # Deterministic hash-based selection: same agent always gets same bucket
-    <<hash_int::unsigned-32, _rest::binary>> = :crypto.hash(:md5, to_string(agent_id))
+    <<hash_int::unsigned-32, _rest::binary>> = :crypto.hash(:sha256, to_string(agent_id))
     bucket = rem(hash_int, 10_000) / 100.0
     bucket < percentage
   end

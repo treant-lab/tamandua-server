@@ -468,7 +468,7 @@ defmodule TamanduaServer.AISecurity.AttackSurface do
       prompt_length: String.length(prompt),
       scan_timestamp: DateTime.utc_now(),
       context_provided: context != %{},
-      cached: Map.has_key?(state.injection_cache, :crypto.hash(:md5, prompt))
+      cached: Map.has_key?(state.injection_cache, :crypto.hash(:sha256, prompt))
     })
 
     {:reply, {:ok, detailed_result}, new_state}

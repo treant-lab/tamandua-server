@@ -18,8 +18,12 @@ defmodule TamanduaServer.Agents.Registry do
 
   @table_name :tamandua_agents
   @health_table :tamandua_agent_health
+  @lock_table :tamandua_agent_locks
   @cleanup_interval :timer.minutes(1)
   @offline_threshold :timer.seconds(90)
+  @lock_acquire_timeout 15_000
+  @lock_spin_interval 25
+  @lock_stale_after 30_000
   # Keep 24 data points of history (24 minutes at 60s intervals, or 24 hours at 1h intervals)
   @max_health_history 24
 
@@ -39,7 +43,63 @@ defmodule TamanduaServer.Agents.Registry do
   """
   @spec with_agent_lock(String.t(), (() -> term())) :: term()
   def with_agent_lock(agent_id, fun) when is_binary(agent_id) and is_function(fun, 0) do
-    GenServer.call(__MODULE__, {:with_agent_lock, agent_id, fun}, 15_000)
+    ensure_table(@lock_table)
+    acquire_agent_lock(agent_id)
+
+    try do
+      fun.()
+    after
+      release_agent_lock(agent_id)
+    end
+  end
+
+  # Per-agent mutual exclusion backed by an ETS lock row, executed in the
+  # caller process so the critical section never blocks the registry GenServer
+  # (and so independent agents never serialize against each other).
+  defp acquire_agent_lock(agent_id, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + @lock_acquire_timeout
+    now = System.monotonic_time(:millisecond)
+
+    if :ets.insert_new(@lock_table, {agent_id, self(), now}) do
+      :ok
+    else
+      case :ets.lookup(@lock_table, agent_id) do
+        [{^agent_id, holder, acquired_at}] ->
+          cond do
+            # Reclaim a lock whose holder process has died.
+            is_pid(holder) and not Process.alive?(holder) ->
+              :ets.delete_object(@lock_table, {agent_id, holder, acquired_at})
+              acquire_agent_lock(agent_id, deadline)
+
+            # Reclaim a stale lock to avoid a permanently wedged critical section.
+            now - acquired_at > @lock_stale_after ->
+              :ets.delete_object(@lock_table, {agent_id, holder, acquired_at})
+              acquire_agent_lock(agent_id, deadline)
+
+            # Last resort after the acquire timeout: take over so the worker
+            # swap still runs (the previous holder is almost certainly stuck).
+            now >= deadline ->
+              :ets.insert(@lock_table, {agent_id, self(), now})
+              :ok
+
+            true ->
+              Process.sleep(@lock_spin_interval)
+              acquire_agent_lock(agent_id, deadline)
+          end
+
+        [] ->
+          acquire_agent_lock(agent_id, deadline)
+      end
+    end
+  end
+
+  defp release_agent_lock(agent_id) do
+    self_pid = self()
+
+    case :ets.lookup(@lock_table, agent_id) do
+      [{^agent_id, ^self_pid, _acquired_at} = object] -> :ets.delete_object(@lock_table, object)
+      _ -> :ok
+    end
   end
 
   @doc """
@@ -727,14 +787,10 @@ defmodule TamanduaServer.Agents.Registry do
   def init(_opts) do
     table = ensure_table(@table_name)
     health_table = ensure_table(@health_table)
+    ensure_table(@lock_table)
     cleanup_stale_database_presence()
     schedule_cleanup()
     {:ok, %{table: table, health_table: health_table}}
-  end
-
-  @impl true
-  def handle_call({:with_agent_lock, _agent_id, fun}, _from, state) when is_function(fun, 0) do
-    {:reply, fun.(), state}
   end
 
   @impl true

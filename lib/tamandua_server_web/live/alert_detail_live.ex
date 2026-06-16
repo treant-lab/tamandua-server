@@ -36,7 +36,12 @@ defmodule TamanduaServerWeb.AlertDetailLive do
          |> assign(:alert, alert)
          |> assign(:alert_id, alert_id)
          |> assign(:actions, actions)
-         |> assign(:show_evidence_details, false)}
+         |> assign(:show_evidence_details, false)
+         |> assign(:show_verdict_modal, false)
+         |> assign(:pending_verdict, nil)
+         |> assign(:verdict_notes, "")
+         |> assign(:create_suppression_rule, true)
+         |> assign(:suppression_ttl_days, 30)}
 
       {:error, :not_found} ->
         {:ok,
@@ -75,6 +80,14 @@ defmodule TamanduaServerWeb.AlertDetailLive do
           <span class={"px-3 py-1 text-sm font-semibold rounded-full #{status_badge_color(@alert.status)}"}>
             <%= format_status(@alert.status) %>
           </span>
+          <%= if @alert.verdict && @alert.verdict != "unconfirmed" do %>
+            <span
+              class={"px-3 py-1 text-sm font-semibold rounded-full #{verdict_badge_color(@alert.verdict)}"}
+              title="Analyst verdict (set via Mark as ... buttons below)"
+            >
+              <%= format_verdict(@alert.verdict) %>
+            </span>
+          <% end %>
         </div>
       </div>
 
@@ -340,19 +353,144 @@ defmodule TamanduaServerWeb.AlertDetailLive do
                 Mark as Resolved
               </button>
               <button
-                phx-click="update_status"
-                phx-value-status="false_positive"
+                phx-click="open_verdict_modal"
+                phx-value-verdict="false_positive"
                 class="w-full px-4 py-2 text-sm bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                title="Records analyst feedback, updates the agent baseline, and (by default) creates a 30-day suppression rule."
               >
                 Mark as False Positive
               </button>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                False-positive marking writes to the verdict feedback log, weakens the baseline match, and optionally creates a suppression rule.
+              </p>
+              <button
+                phx-click="open_verdict_modal"
+                phx-value-verdict="true_positive"
+                class="w-full px-4 py-2 text-sm bg-red-700 text-white rounded hover:bg-red-800 transition-colors"
+                title="Confirms a real threat. Strengthens the baseline so similar future events are more likely to alert. Suppression rule is off by default but can be enabled in the modal."
+              >
+                Mark as True Positive
+              </button>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Confirms threat; strengthens baseline so similar future events are more likely to alert.
+              </p>
+              <button
+                phx-click="open_verdict_modal"
+                phx-value-verdict="benign"
+                class="w-full px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                title="Marks the event as harmless. Weakens the baseline and (by default) creates a suppression rule so similar future events are auto-suppressed."
+              >
+                Mark as Benign
+              </button>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Marks event as harmless; weakens baseline, optionally creates suppression rule.
+              </p>
             </div>
           </div>
         </div>
       </div>
+
+      <%= if @show_verdict_modal do %>
+        <%= render_verdict_modal(assigns) %>
+      <% end %>
     </div>
     """
   end
+
+  defp render_verdict_modal(assigns) do
+    ~H"""
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      phx-window-keydown="cancel_verdict_modal"
+      phx-key="escape"
+    >
+      <div
+        class="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full mx-4 p-6"
+        phx-click-away="cancel_verdict_modal"
+      >
+        <h3 class="text-lg font-semibold mb-2 text-gray-900 dark:text-white">
+          Mark as <%= format_verdict(@pending_verdict) %>
+        </h3>
+        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          This will record your verdict in the audit log, update the agent baseline,
+          and optionally create a suppression rule so similar future events are
+          auto-suppressed.
+        </p>
+
+        <form phx-submit="confirm_verdict" phx-change="update_verdict_form">
+          <input type="hidden" name="verdict" value={@pending_verdict} />
+
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Analyst notes (rationale)
+          </label>
+          <textarea
+            name="notes"
+            rows="4"
+            class="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
+            placeholder="Why is this a false positive? (e.g., known admin tool, scheduled job, etc.)"
+          ><%= @verdict_notes %></textarea>
+
+          <div class="mt-4 flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="create_suppression_rule"
+              name="create_suppression_rule"
+              value="true"
+              checked={@create_suppression_rule}
+              class="rounded border-gray-300 dark:border-gray-600"
+            />
+            <label for="create_suppression_rule" class="text-sm text-gray-700 dark:text-gray-300">
+              Also create a suppression rule
+            </label>
+          </div>
+
+          <div class="mt-3 flex items-center gap-2">
+            <label for="suppression_ttl_days" class="text-sm text-gray-700 dark:text-gray-300">
+              Suppression TTL (days):
+            </label>
+            <input
+              type="number"
+              id="suppression_ttl_days"
+              name="suppression_ttl_days"
+              value={@suppression_ttl_days}
+              min="1"
+              max="365"
+              class="w-20 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
+            />
+          </div>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Typical TTLs: 7d for temporary admin activity, 30d for recurring benign events,
+            365d for permanent exceptions. The rule matches future events with the same rule name,
+            payload pattern, and process chain on this agent.
+          </p>
+
+          <div class="mt-6 flex justify-end gap-2">
+            <button
+              type="button"
+              phx-click="cancel_verdict_modal"
+              class="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+            >
+              Confirm verdict
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+  end
+
+  defp format_verdict("false_positive"), do: "False Positive"
+  defp format_verdict("true_positive"), do: "True Positive"
+  defp format_verdict("benign"), do: "Benign"
+  defp format_verdict("suspicious"), do: "Suspicious"
+  defp format_verdict(other) when is_binary(other), do: format_status(other)
+  defp format_verdict(_), do: "Verdict"
 
   @impl true
   def handle_event("toggle_evidence_details", _params, socket) do
@@ -374,6 +512,122 @@ defmodule TamanduaServerWeb.AlertDetailLive do
         {:noreply, put_flash(socket, :error, "Failed to update alert status")}
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Analyst verdict flow
+  #
+  # `verdict` is the analyst's judgement (true_positive / false_positive /
+  # benign / suspicious) and is distinct from `status` (the workflow stage:
+  # new / investigating / resolved / false_positive). Setting a verdict goes
+  # through Alerts.set_verdict/4 which is transactional: it writes a
+  # VerdictFeedbackLog row, updates the agent baseline, and optionally
+  # creates a suppression rule that auto-suppresses similar future events.
+  # The existing "update_status" handler intentionally remains for the
+  # workflow-only path (e.g., "investigating"/"resolved" without a verdict).
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def handle_event("open_verdict_modal", %{"verdict" => verdict}, socket) do
+    # True-positive = confirmed real threat; do NOT auto-suggest a suppression
+    # rule (it would mute future real detections). Analyst can still opt in via
+    # the checkbox. All other verdicts default to creating a suppression rule.
+    default_create_suppression = verdict != "true_positive"
+
+    {:noreply,
+     socket
+     |> assign(:show_verdict_modal, true)
+     |> assign(:pending_verdict, verdict)
+     |> assign(:verdict_notes, "")
+     |> assign(:create_suppression_rule, default_create_suppression)
+     |> assign(:suppression_ttl_days, 30)}
+  end
+
+  @impl true
+  def handle_event("cancel_verdict_modal", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_verdict_modal, false)
+     |> assign(:pending_verdict, nil)
+     |> assign(:verdict_notes, "")}
+  end
+
+  @impl true
+  def handle_event("update_verdict_form", params, socket) do
+    notes = Map.get(params, "notes", "")
+    create_rule = Map.get(params, "create_suppression_rule") == "true"
+    ttl = parse_ttl(Map.get(params, "suppression_ttl_days"))
+
+    {:noreply,
+     socket
+     |> assign(:verdict_notes, notes)
+     |> assign(:create_suppression_rule, create_rule)
+     |> assign(:suppression_ttl_days, ttl)}
+  end
+
+  @impl true
+  def handle_event("confirm_verdict", params, socket) do
+    alert = socket.assigns.alert
+    verdict = Map.get(params, "verdict") || socket.assigns.pending_verdict
+    notes = Map.get(params, "notes", socket.assigns.verdict_notes)
+    create_rule = Map.get(params, "create_suppression_rule") == "true"
+
+    ttl =
+      params
+      |> Map.get("suppression_ttl_days")
+      |> parse_ttl(socket.assigns.suppression_ttl_days)
+
+    user_id =
+      case socket.assigns[:current_user] do
+        %{id: id} -> id
+        _ -> nil
+      end
+
+    opts = [
+      notes: notes,
+      create_suppression_rule: create_rule,
+      suppression_ttl_days: ttl
+    ]
+
+    case Alerts.set_verdict(alert.id, verdict, user_id, opts) do
+      {:ok, %{alert: updated_alert, suppression_rule: rule}} ->
+        flash_msg =
+          if rule do
+            "Verdict recorded: #{format_verdict(verdict)} (suppression rule created, TTL #{ttl}d)"
+          else
+            "Verdict recorded: #{format_verdict(verdict)}"
+          end
+
+        {:noreply,
+         socket
+         |> assign(:alert, updated_alert)
+         |> assign(:show_verdict_modal, false)
+         |> assign(:pending_verdict, nil)
+         |> assign(:verdict_notes, "")
+         |> put_flash(:info, flash_msg)}
+
+      {:error, :invalid_verdict} ->
+        {:noreply, put_flash(socket, :error, "Invalid verdict value")}
+
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Alert not found")}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Failed to set verdict: #{inspect(reason)}")}
+    end
+  end
+
+  defp parse_ttl(value, default \\ 30)
+  defp parse_ttl(value, _default) when is_integer(value) and value > 0, do: value
+
+  defp parse_ttl(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} when int > 0 -> int
+      _ -> default
+    end
+  end
+
+  defp parse_ttl(_, default), do: default
 
   @impl true
   def handle_info({:action_completed, _action_type}, socket) do
@@ -962,6 +1216,21 @@ defmodule TamanduaServerWeb.AlertDetailLive do
     do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
 
   defp status_badge_color(_), do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
+
+  defp verdict_badge_color("true_positive"),
+    do: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+
+  defp verdict_badge_color("false_positive"),
+    do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
+
+  defp verdict_badge_color("benign"),
+    do: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+
+  defp verdict_badge_color("suspicious"),
+    do: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+
+  defp verdict_badge_color(_),
+    do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
 
   defp action_border_color("success"), do: "border-green-500"
   defp action_border_color("failed"), do: "border-red-500"

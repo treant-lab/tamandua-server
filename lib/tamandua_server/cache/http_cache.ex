@@ -55,11 +55,11 @@ defmodule TamanduaServer.Cache.HTTPCache do
 
   @doc """
   Generates an ETag from content.
-  Uses MD5 hash wrapped in quotes for HTTP header format.
+  Uses a SHA-256 hash wrapped in quotes for HTTP header format.
   """
   def generate_etag(content) when is_binary(content) do
     hash =
-      :crypto.hash(:md5, content)
+      :crypto.hash(:sha256, content)
       |> Base.encode16(case: :lower)
 
     ~s("#{hash}")

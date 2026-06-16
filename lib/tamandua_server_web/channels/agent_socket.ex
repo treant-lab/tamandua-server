@@ -993,8 +993,24 @@ defmodule TamanduaServerWeb.AgentChannel do
     end
   end
 
+  # Upper bound on events accepted in a single telemetry frame. Protects the
+  # ingestion pipeline from an authenticated-but-misbehaving (or compromised)
+  # agent flooding an unbounded batch.
+  @max_telemetry_batch_size 10_000
+
   @impl true
-  def handle_in("telemetry", %{"events" => events} = payload, socket) do
+  def handle_in("telemetry", %{"events" => events}, socket)
+      when is_list(events) and length(events) > @max_telemetry_batch_size do
+    Logger.warning(
+      "AgentChannel: telemetry batch too large (#{length(events)} > #{@max_telemetry_batch_size}) " <>
+        "from #{socket.assigns.agent_id}; rejecting"
+    )
+
+    {:reply, {:error, %{reason: "batch_too_large", max: @max_telemetry_batch_size}}, socket}
+  end
+
+  @impl true
+  def handle_in("telemetry", %{"events" => events} = payload, socket) when is_list(events) do
     with {:ok, socket} <- ensure_worker(socket) do
       Logger.info(
         "AgentChannel: Received telemetry batch with #{length(events)} events from #{socket.assigns.agent_id}"
@@ -1032,6 +1048,17 @@ defmodule TamanduaServerWeb.AgentChannel do
 
         {:reply, {:error, %{reason: "worker_unavailable"}}, socket}
     end
+  end
+
+  # Reject malformed telemetry frames (missing or non-list "events") with an
+  # explicit error instead of crashing the channel on length/1 of a non-list.
+  @impl true
+  def handle_in("telemetry", _payload, socket) do
+    Logger.warning(
+      "AgentChannel: malformed telemetry payload from #{socket.assigns.agent_id}; expected a list of events"
+    )
+
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
   end
 
   defp log_telemetry_batch_summary(agent_id, events) when is_list(events) do

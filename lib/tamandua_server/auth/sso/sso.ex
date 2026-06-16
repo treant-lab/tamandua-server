@@ -706,8 +706,11 @@ defmodule TamanduaServer.Auth.SSO do
               false -> {:error, :signature_verification_failed}
             end
           else
-            # If we cannot extract SignedInfo, fall back to issuer check
-            verify_saml_issuer(xml, public_key)
+            # Fail closed: if the SignedInfo element cannot be extracted we
+            # cannot cryptographically verify the assertion. Never degrade to
+            # an issuer-presence-only check — that would let a forged response
+            # with no verifiable signature pass authentication.
+            {:error, :signed_info_extraction_failed}
           end
         else
           :error -> {:error, :invalid_signature_encoding}
@@ -719,17 +722,6 @@ defmodule TamanduaServer.Auth.SSO do
     case Regex.run(~r/<(?:ds:)?SignedInfo[^>]*>.*?<\/(?:ds:)?SignedInfo>/s, xml) do
       [signed_info] -> signed_info
       _ -> nil
-    end
-  end
-
-  defp verify_saml_issuer(xml, _public_key) do
-    # Fallback: just verify the Issuer is present
-    issuer = extract_xml_element(xml, "Issuer")
-
-    if issuer do
-      :ok
-    else
-      {:error, :missing_issuer}
     end
   end
 

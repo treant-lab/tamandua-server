@@ -3066,10 +3066,14 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Forensics
   def forensics(conn, _params) do
-    # Get all collections from the Forensics.Collector module
+    # Scope collections to the caller's organization to prevent cross-tenant
+    # exposure on the dashboard.
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+
     all_collections =
       try do
-        case ForensicsCollector.list_collections(%{}) do
+        case ForensicsCollector.list_collections(%{organization_id: org_id}) do
           {:ok, list} -> list
           _ -> []
         end
@@ -3084,7 +3088,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     pending_collections =
       try do
-        case ForensicsCollector.list_collections(%{status: "pending"}) do
+        case ForensicsCollector.list_collections(%{organization_id: org_id, status: "pending"}) do
           {:ok, list} -> list
           _ -> []
         end

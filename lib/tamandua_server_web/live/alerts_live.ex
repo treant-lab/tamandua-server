@@ -280,6 +280,7 @@ defmodule TamanduaServerWeb.AlertsLive do
     |> maybe_add_filter(:mitre_technique, params["mitre_technique"])
     |> maybe_add_filter(:patch_pattern, params["patch_pattern"])
     |> maybe_add_filter(:target_function, params["target_function"])
+    |> maybe_add_filter(:verdict, params["verdict"])
   end
 
   defp maybe_add_filter(filters, _key, nil), do: filters
@@ -354,6 +355,21 @@ defmodule TamanduaServerWeb.AlertsLive do
                 <option value="investigating" selected={Map.get(@filters, :status) == "investigating"}>Investigating</option>
                 <option value="resolved" selected={Map.get(@filters, :status) == "resolved"}>Resolved</option>
                 <option value="false_positive" selected={Map.get(@filters, :status) == "false_positive"}>False Positive</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Verdict</label>
+              <select
+                name="verdict"
+                class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+              >
+                <option value="">All Verdicts</option>
+                <option value="unconfirmed" selected={Map.get(@filters, :verdict) == "unconfirmed"}>Unconfirmed</option>
+                <option value="true_positive" selected={Map.get(@filters, :verdict) == "true_positive"}>True Positive</option>
+                <option value="false_positive" selected={Map.get(@filters, :verdict) == "false_positive"}>False Positive</option>
+                <option value="benign" selected={Map.get(@filters, :verdict) == "benign"}>Benign</option>
+                <option value="suspicious" selected={Map.get(@filters, :verdict) == "suspicious"}>Suspicious</option>
               </select>
             </div>
 
@@ -713,17 +729,17 @@ defmodule TamanduaServerWeb.AlertsLive do
     """
   end
 
-  defp severity_color("critical"), do: "bg-red-100 text-red-800"
-  defp severity_color("high"), do: "bg-orange-100 text-orange-800"
-  defp severity_color("medium"), do: "bg-yellow-100 text-yellow-800"
-  defp severity_color("low"), do: "bg-blue-100 text-blue-800"
-  defp severity_color(_), do: "bg-gray-100 text-gray-800"
+  defp severity_color("critical"), do: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+  defp severity_color("high"), do: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200"
+  defp severity_color("medium"), do: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+  defp severity_color("low"), do: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+  defp severity_color(_), do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
 
-  defp status_color("new"), do: "bg-red-100 text-red-800"
-  defp status_color("investigating"), do: "bg-yellow-100 text-yellow-800"
-  defp status_color("resolved"), do: "bg-green-100 text-green-800"
-  defp status_color("false_positive"), do: "bg-gray-100 text-gray-800"
-  defp status_color(_), do: "bg-gray-100 text-gray-800"
+  defp status_color("new"), do: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+  defp status_color("investigating"), do: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+  defp status_color("resolved"), do: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+  defp status_color("false_positive"), do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
+  defp status_color(_), do: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
 
   defp confirmation_title("update_status"), do: "Update Alert Status"
   defp confirmation_title("assign"), do: "Assign Alerts"

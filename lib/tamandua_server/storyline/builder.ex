@@ -962,7 +962,7 @@ defmodule TamanduaServer.Storyline.Builder do
   end
 
   defp hash_path(path) when is_binary(path) do
-    :crypto.hash(:md5, path) |> Base.encode16(case: :lower) |> String.slice(0, 12)
+    :crypto.hash(:sha256, path) |> Base.encode16(case: :lower) |> String.slice(0, 12)
   end
   defp hash_path(_), do: "unknown"
 

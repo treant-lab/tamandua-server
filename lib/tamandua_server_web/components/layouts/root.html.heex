@@ -15,6 +15,29 @@
     </script>
   </head>
   <body class="sentinel-theme antialiased" style="background: var(--bg); color: var(--fg);" data-theme={assigns[:theme] || "dark"}>
+    <div
+      id="product-status-banner"
+      role="status"
+      aria-label="Product validation status"
+      class="w-full bg-amber-100 border-b border-amber-400 text-amber-900 dark:bg-amber-900/40 dark:border-amber-700 dark:text-amber-100 text-xs sm:text-sm px-4 py-1.5 flex items-center justify-center gap-2 font-medium"
+      style="min-height: 28px;"
+    >
+      <span class="inline-flex items-center gap-1">
+        <span aria-hidden="true">&#9888;</span>
+        <strong><%= TamanduaServer.ProductStatus.status().label %></strong>
+      </span>
+      <span aria-hidden="true">&middot;</span>
+      <span>Validation gate: <%= TamanduaServer.ProductStatus.gate_summary() %></span>
+      <span aria-hidden="true">&middot;</span>
+      <a
+        href={TamanduaServer.ProductStatus.gaps_url()}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="underline hover:no-underline focus:outline-none focus:ring-1 focus:ring-amber-500 rounded"
+      >
+        View gaps
+      </a>
+    </div>
     <%= @inner_content %>
   </body>
 </html>

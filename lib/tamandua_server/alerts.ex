@@ -3251,6 +3251,7 @@ defmodule TamanduaServer.Alerts do
     |> filter_by_mitre_technique(filters[:mitre_technique] || filters["mitre_technique"])
     |> filter_by_patch_pattern(filters[:patch_pattern] || filters["patch_pattern"])
     |> filter_by_target_function(filters[:target_function] || filters["target_function"])
+    |> filter_by_verdict(filters[:verdict] || filters["verdict"])
   end
 
   defp filter_by_search(query, nil), do: query
@@ -3276,6 +3277,15 @@ defmodule TamanduaServer.Alerts do
   end
   defp filter_by_status(query, status) when is_binary(status) do
     from(a in query, where: a.status == ^status)
+  end
+
+  defp filter_by_verdict(query, nil), do: query
+  defp filter_by_verdict(query, ""), do: query
+  defp filter_by_verdict(query, verdict) when is_list(verdict) do
+    from(a in query, where: a.verdict in ^verdict)
+  end
+  defp filter_by_verdict(query, verdict) when is_binary(verdict) do
+    from(a in query, where: a.verdict == ^verdict)
   end
 
   defp filter_by_agent_id(query, nil), do: query
@@ -4163,7 +4173,7 @@ defmodule TamanduaServer.Alerts do
       _ -> verdict_attrs
     end
 
-    Repo.transaction(fn ->
+    result = Repo.transaction(fn ->
       # 1. Update the alert
       {:ok, updated_alert} = update_alert(alert, verdict_attrs)
 
@@ -4232,6 +4242,35 @@ defmodule TamanduaServer.Alerts do
         feedback_log: feedback_log
       }
     end)
+
+    # Broadcast post-commit so the analyst dashboard FP Review card
+    # and any subscribed alert-detail views refresh immediately.
+    # Mirrors the topic/event shape used by `webhook_receiver.ex`
+    # (`broadcast_alert_update/1`).
+    case result do
+      {:ok, %{alert: updated_alert}} ->
+        broadcast_verdict_update(updated_alert)
+        result
+
+      _ ->
+        result
+    end
+  end
+
+  defp broadcast_verdict_update(alert) do
+    Phoenix.PubSub.broadcast(
+      TamanduaServer.PubSub,
+      "alerts:#{alert.organization_id}",
+      {:alert_updated, alert}
+    )
+
+    Phoenix.PubSub.broadcast(
+      TamanduaServer.PubSub,
+      "alert:#{alert.id}",
+      {:alert_updated, alert}
+    )
+
+    :ok
   end
 
   @doc """

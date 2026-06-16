@@ -23,7 +23,10 @@ defmodule TamanduaServer.MixProject do
       # Docs
       name: "Tamandua Server",
       source_url: @source_url,
-      docs: docs()
+      docs: docs(),
+
+      # License
+      licenses: ["Apache-2.0"]
     ]
   end
 

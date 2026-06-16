@@ -24,6 +24,7 @@ defmodule TamanduaServer.BatchOperations do
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Response
   alias TamanduaServer.Workers.BatchJobWorker
+  alias TamanduaServer.Connectors.Helpers.RateLimiter
 
   @max_batch_size 1000
   @max_batches_per_minute 10
@@ -544,13 +545,23 @@ defmodule TamanduaServer.BatchOperations do
   end
 
   defp check_rate_limit(organization_id, operation) do
-    # Use Redis to track rate limits
-    # Key: "batch_rate_limit:#{organization_id}:#{operation}"
-    # We allow @max_batches_per_minute per organization
+    # Per-organization, per-operation throttle backed by the supervised
+    # token-bucket limiter (ETS state, atomic via its GenServer). Allows
+    # @max_batches_per_minute batches per organization in a 60s window.
+    key = "batch:#{organization_id}:#{operation}"
 
-    # For now, return :ok - implement Redis-based rate limiting in production
-    Logger.debug("[BatchOperations] Rate limit check for #{organization_id}/#{operation}")
-    :ok
+    case RateLimiter.check_rate(key, limit: @max_batches_per_minute, window: 60) do
+      :ok ->
+        :ok
+
+      {:error, {:rate_limited, _wait_seconds}} ->
+        Logger.warning(
+          "[BatchOperations] Rate limit exceeded for #{organization_id}/#{operation} " <>
+            "(max #{@max_batches_per_minute}/min)"
+        )
+
+        {:error, {:rate_limited, operation}}
+    end
   end
 
   defp execute_batch_transaction(multi, item_ids) do

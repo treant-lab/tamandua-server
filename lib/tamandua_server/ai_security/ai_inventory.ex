@@ -681,7 +681,7 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   # ------------------------------------------------------------------
 
   defp generate_component_id(agent_id, name, type) do
-    hash = :crypto.hash(:md5, "#{agent_id}:#{name}:#{type}")
+    hash = :crypto.hash(:sha256, "#{agent_id}:#{name}:#{type}")
     |> Base.encode16(case: :lower)
     |> String.slice(0, 16)
     "ai_#{hash}"

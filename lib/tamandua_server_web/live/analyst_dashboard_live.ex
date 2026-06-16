@@ -190,6 +190,17 @@ defmodule TamanduaServerWeb.AnalystDashboardLive do
     |> assign(:my_sla_metrics, %{})
     |> assign(:approaching_sla, [])
     |> assign(:recent_activity, [])
+    |> assign(:verdict_stats, %{
+      total_alerts: 0,
+      by_verdict: %{},
+      false_positive_rate: 0.0,
+      reviewed_count: 0,
+      unreviewed_count: 0,
+      top_fp_rules: [],
+      active_suppression_rules: 0,
+      total_suppressed: 0,
+      days: 30
+    })
   end
 
   defp load_dashboard_data(socket) do
@@ -223,6 +234,9 @@ defmodule TamanduaServerWeb.AnalystDashboardLive do
     # Get recent activity (state transitions)
     recent_activity = get_recent_activity(user.id)
 
+    # Verdict statistics (FP rate, unreviewed count, top FP rules) — last 30 days
+    verdict_stats = Alerts.get_verdict_stats(organization_id: user.organization_id, days: 30)
+
     socket
     |> assign(:assigned_alerts, assigned_alerts)
     |> assign(:alerts_by_state, alerts_by_state)
@@ -231,6 +245,7 @@ defmodule TamanduaServerWeb.AnalystDashboardLive do
     |> assign(:my_sla_metrics, my_sla_metrics)
     |> assign(:approaching_sla, approaching_sla)
     |> assign(:recent_activity, recent_activity)
+    |> assign(:verdict_stats, verdict_stats)
   end
 
   defp get_alerts_approaching_sla(alerts) do
@@ -337,6 +352,32 @@ defmodule TamanduaServerWeb.AnalystDashboardLive do
           <h3>SLA Warnings</h3>
           <div class="metric-value critical"><%= length(@approaching_sla) %></div>
           <div class="metric-label">Approaching Deadline</div>
+        </div>
+
+        <div class="metric-card">
+          <h3>False Positive Review</h3>
+          <%= if @verdict_stats.total_alerts == 0 do %>
+            <div class="metric-value">—</div>
+            <div class="metric-label">No alerts in last 30 days</div>
+          <% else %>
+            <div class="metric-value"><%= @verdict_stats.false_positive_rate %>%</div>
+            <div class="metric-label">False positive rate</div>
+            <div class="sla-details">
+              <div>
+                <.link navigate={~p"/alerts?verdict=unconfirmed"}>Unreviewed: <%= @verdict_stats.unreviewed_count %></.link>
+              </div>
+              <div>Reviewed: <%= @verdict_stats.reviewed_count %></div>
+              <div>Active suppressions: <%= @verdict_stats.active_suppression_rules %></div>
+            </div>
+            <%= if length(@verdict_stats.top_fp_rules) > 0 do %>
+              <ul class="sla-details">
+                <li :for={rule <- Enum.take(@verdict_stats.top_fp_rules, 5)}>
+                  <%= rule.rule_name || "(unnamed rule)" %> · <%= rule.fp_count %>
+                </li>
+              </ul>
+            <% end %>
+            <div class="metric-label">Last 30 days · FP rate from analyst verdicts only</div>
+          <% end %>
         </div>
       </div>
 

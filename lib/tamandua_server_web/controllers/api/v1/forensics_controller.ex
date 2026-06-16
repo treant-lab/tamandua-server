@@ -25,22 +25,19 @@ defmodule TamanduaServerWeb.API.V1.ForensicsController do
     - agent_id: Filter by agent
   """
   def index(conn, params) do
-    options = %{
-      page: Map.get(params, "page", 1),
-      per_page: Map.get(params, "per_page", 20),
-      status: Map.get(params, "status"),
-      type: Map.get(params, "type"),
-      agent_id: Map.get(params, "agent_id"),
-      alert_id: Map.get(params, "alert_id"),
-      start_date: Map.get(params, "start_date"),
-      end_date: Map.get(params, "end_date")
-    }
+    # Always scope to the caller's organization to prevent cross-tenant
+    # enumeration of forensic collections.
+    filters =
+      %{organization_id: get_current_organization_id(conn)}
+      |> maybe_put(:status, Map.get(params, "status"))
+      |> maybe_put(:type, Map.get(params, "type"))
+      |> maybe_put(:agent_id, Map.get(params, "agent_id"))
 
-    case Collector.list_collections(options) do
-      {:ok, collections, pagination} ->
+    case Collector.list_collections(filters) do
+      {:ok, collections} ->
         json(conn, %{
           data: Enum.map(collections, &serialize_collection/1),
-          meta: pagination
+          meta: %{count: length(collections)}
         })
 
       {:error, reason} ->
@@ -55,11 +52,19 @@ defmodule TamanduaServerWeb.API.V1.ForensicsController do
   all artifacts, chain of custody, and analysis results.
   """
   def show(conn, %{"id" => id}) do
+    org_id = get_current_organization_id(conn)
+
     case Collector.get_collection(id) do
       {:ok, collection} ->
-        json(conn, %{
-          data: serialize_collection_detail(collection)
-        })
+        # Enforce tenant ownership; return not_found (not forbidden) so the
+        # endpoint does not confirm existence of other tenants' collections.
+        if Map.get(collection, :organization_id) == org_id do
+          json(conn, %{
+            data: serialize_collection_detail(collection)
+          })
+        else
+          {:error, :not_found}
+        end
 
       {:error, :not_found} ->
         {:error, :not_found}
@@ -87,6 +92,7 @@ defmodule TamanduaServerWeb.API.V1.ForensicsController do
   def create(conn, %{"agent_id" => agent_id, "type" => type} = params) do
     collection_params = %{
       agent_id: agent_id,
+      organization_id: get_current_organization_id(conn),
       type: type,
       paths: Map.get(params, "paths", []),
       options: Map.get(params, "options", %{}),
@@ -319,6 +325,18 @@ defmodule TamanduaServerWeb.API.V1.ForensicsController do
       user -> user.id
     end
   end
+
+  defp get_current_organization_id(conn) do
+    conn.assigns[:current_organization_id] ||
+      case conn.assigns[:current_user] do
+        nil -> nil
+        user -> Map.get(user, :organization_id)
+      end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)

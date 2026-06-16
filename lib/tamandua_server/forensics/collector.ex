@@ -28,6 +28,7 @@ defmodule TamanduaServer.Forensics.Collector do
     collection = %{
       id: generate_id(),
       agent_id: Map.get(params, :agent_id) || Map.get(params, "agent_id"),
+      organization_id: Map.get(params, :organization_id) || Map.get(params, "organization_id"),
       type: Map.get(params, :type) || Map.get(params, "type") || "full",
       artifacts: Map.get(params, :artifacts) || Map.get(params, "artifacts") || ["all"],
       status: "pending",
@@ -316,6 +317,8 @@ defmodule TamanduaServer.Forensics.Collector do
 
   defp filter_match?(collection, filters) do
     Enum.all?(filters, fn
+      {:organization_id, org_id} -> Map.get(collection, :organization_id) == org_id
+      {"organization_id", org_id} -> Map.get(collection, :organization_id) == org_id
       {:agent_id, agent_id} -> collection.agent_id == agent_id
       {:status, status} -> collection.status == status
       {:type, type} -> collection.type == type

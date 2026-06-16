@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Tamandua EDR Team"]
 description = "Rust NIFs for high-performance operations in Tamandua EDR"
-license = "MIT"
+license = "Apache-2.0"
 
 [lib]
 name = "tamandua_nif"

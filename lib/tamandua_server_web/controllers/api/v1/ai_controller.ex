@@ -758,16 +758,21 @@ defmodule TamanduaServerWeb.API.V1.AIController do
       end
 
     nearby =
-      case alert_time(alert) do
-        nil ->
+      case {alert_time(alert), alert.agent_id} do
+        {nil, _} ->
           []
 
-        ts ->
+        {_, nil} ->
+          # Alerts without an agent (e.g. storyline/correlation alerts) have no
+          # endpoint to scope nearby events to; pinning nil would crash Ecto.
+          []
+
+        {ts, agent_id} ->
           start_time = DateTime.add(ts, -30 * 60, :second)
           end_time = DateTime.add(ts, 30 * 60, :second)
 
           Event
-          |> where([e], e.agent_id == ^alert.agent_id)
+          |> where([e], e.agent_id == ^agent_id)
           |> maybe_event_org_scope(organization_id)
           |> where([e], e.timestamp >= ^start_time and e.timestamp <= ^end_time)
           |> order_by([e], desc: e.timestamp)
@@ -782,14 +787,32 @@ defmodule TamanduaServerWeb.API.V1.AIController do
   end
 
   defp related_alerts_for_alert(alert, organization_id, limit) do
-    Alert
-    |> where([a], a.id != ^alert.id)
-    |> where([a], a.agent_id == ^alert.agent_id or a.source_event_id == ^alert.source_event_id)
-    |> maybe_alert_org_scope(organization_id)
-    |> preload(:agent)
-    |> order_by([a], desc: a.inserted_at)
-    |> limit(^limit)
-    |> Repo.all()
+    # source_event_id and agent_id can be nil (e.g. storyline alerts have no
+    # source event); pinning nil into `==` makes Ecto raise, so build the
+    # relation criteria dynamically from the non-nil fields only.
+    conditions =
+      [
+        alert.agent_id && dynamic([a], a.agent_id == ^alert.agent_id),
+        alert.source_event_id && dynamic([a], a.source_event_id == ^alert.source_event_id)
+      ]
+      |> Enum.filter(& &1)
+
+    case conditions do
+      [] ->
+        []
+
+      [first | rest] ->
+        relation = Enum.reduce(rest, first, fn d, acc -> dynamic([a], ^acc or ^d) end)
+
+        Alert
+        |> where([a], a.id != ^alert.id)
+        |> where(^relation)
+        |> maybe_alert_org_scope(organization_id)
+        |> preload(:agent)
+        |> order_by([a], desc: a.inserted_at)
+        |> limit(^limit)
+        |> Repo.all()
+    end
   end
 
   defp deep_alert_explanation_message(alert, events, related_alerts, suspicious_networks) do

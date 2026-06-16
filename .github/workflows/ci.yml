@@ -7,9 +7,14 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
+      - 'release/**'
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
   workflow_dispatch:
 
 env:
@@ -20,7 +25,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # ==============================================================================
+  # BUILD & TEST
+  # ==============================================================================
+  backend-test:
     name: Build & Test (Elixir)
     runs-on: ubuntu-latest
     services:
@@ -58,11 +66,13 @@ jobs:
           --health-retries 5
         ports:
           - 5672:5672
+          - 15672:15672
     env:
       MIX_ENV: test
       DATABASE_URL: ecto://tamandua:tamandua_test_password@localhost/tamandua_test
       REDIS_URL: redis://localhost:6379
       RABBITMQ_URL: amqp://tamandua:tamandua_test_password@localhost:5672
+
     steps:
       - uses: actions/checkout@v4
 
@@ -101,56 +111,137 @@ jobs:
 
       - name: Credo
         run: mix credo --strict
-        continue-on-error: true
 
       - name: Create & migrate database
         run: |
           mix ecto.create
           mix ecto.migrate
 
-      - name: Test
-        run: mix test
+      - name: Test with coverage
+        run: mix test --cover
 
-  dialyzer:
+      - name: Generate coverage report
+        run: mix coveralls.json
+        continue-on-error: true
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: cover/excoveralls.json
+          flags: elixir-server
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  # ==============================================================================
+  # DIALYZER TYPE CHECKING
+  # ==============================================================================
+  backend-dialyzer:
     name: Dialyzer
     runs-on: ubuntu-latest
     env:
       MIX_ENV: dev
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.15'
           otp-version: '26'
           version-type: strict
+
       - name: Setup Rust (for the bundled NIF)
         uses: dtolnay/rust-toolchain@stable
+
       - name: Cache PLT
         uses: actions/cache@v4
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-plt-
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-dev-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-dev-
+
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: _build
+          key: ${{ runner.os }}-build-dev-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-build-dev-
+
       - name: Install dependencies
         run: mix deps.get
+
       - name: Dialyzer
         run: mix dialyzer
 
-  audit:
+  # ==============================================================================
+  # SECURITY AUDIT
+  # ==============================================================================
+  backend-security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Elixir
         uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.15'
           otp-version: '26'
+
       - name: Install dependencies
         run: |
           mix local.hex --force
           mix deps.get
+
       - name: mix deps.audit
         run: mix deps.audit
         continue-on-error: true
+
+      - name: Sobelow security scan
+        run: |
+          mix archive.install hex sobelow --force
+          mix sobelow --config
+        continue-on-error: true
+
+  # ==============================================================================
+  # CI COMPLETE
+  # ==============================================================================
+  ci-complete:
+    name: CI Complete
+    runs-on: ubuntu-latest
+    needs:
+      - backend-test
+      - backend-dialyzer
+      - backend-security-audit
+    if: always()
+
+    steps:
+      - name: Check pipeline status
+        run: |
+          echo "Build & Test: ${{ needs.backend-test.result }}"
+          echo "Dialyzer: ${{ needs.backend-dialyzer.result }}"
+          echo "Security Audit: ${{ needs.backend-security-audit.result }}"
+
+          if [ "${{ needs.backend-test.result }}" != "success" ]; then
+            echo "::error::Build & Test job failed"
+            exit 1
+          fi
+
+      - name: Create summary
+        run: |
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build & Test | ${{ needs.backend-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dialyzer | ${{ needs.backend-dialyzer.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Audit | ${{ needs.backend-security-audit.result }} |" >> $GITHUB_STEP_SUMMARY
