@@ -80,7 +80,8 @@ defmodule TamanduaServer.Agents.TokenManagerTest do
 
       # Wait to enter refresh window (60% of 30 day TTL = 18 days)
       # For testing, we'll manipulate the issued_at timestamp
-      token_record = Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+      token_record =
+        Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
 
       # Set issued_at to 19 days ago (past 60% of 30 day TTL)
       past_issued_at = DateTime.add(DateTime.utc_now(), -19 * 24 * 3600, :second)
@@ -108,6 +109,53 @@ defmodule TamanduaServer.Agents.TokenManagerTest do
 
       # Token was just issued, so it's at 0% of TTL (outside the refresh window)
       assert {:error, :too_early_to_refresh} = TokenManager.refresh_token(jwt)
+    end
+
+    test "refreshes expired DB-backed token inside grace without refresh-window deadlock", %{
+      agent_id: agent_id
+    } do
+      agent = Repo.get!(TamanduaServer.Agents.Agent, agent_id)
+      now = DateTime.utc_now()
+      issued_at = DateTime.add(now, -120, :second)
+      jwt_expired_at = DateTime.add(now, -60, :second)
+      record_expires_at = DateTime.add(now, 720 * 3600, :second)
+      generation = 1
+      jti = "expired-refresh-window-regression"
+
+      claims = %{
+        agent_id: agent_id,
+        org_id: agent.organization_id,
+        organization_id: agent.organization_id,
+        generation: generation,
+        credential_jti: jti,
+        jti: jti,
+        type: "agent",
+        iat: DateTime.to_unix(issued_at),
+        exp: DateTime.to_unix(jwt_expired_at)
+      }
+
+      {:ok, expired_jwt, _claims} =
+        TamanduaServer.Guardian.encode_and_sign(%{id: agent_id}, claims, ttl: {-60, :second})
+
+      token_hash = :crypto.hash(:sha256, expired_jwt) |> Base.encode16(case: :lower)
+
+      Repo.get!(TamanduaServer.Agents.Agent, agent_id)
+      |> Ecto.Changeset.change(current_token_generation: generation)
+      |> Repo.update!()
+
+      %TokenManager.AgentToken{}
+      |> TokenManager.AgentToken.changeset(%{
+        agent_id: agent_id,
+        token_generation: generation,
+        token_hash: token_hash,
+        issued_at: issued_at,
+        expires_at: record_expires_at
+      })
+      |> Repo.insert!()
+
+      assert {:ok, new_jwt, refreshed_token} = TokenManager.refresh_token(expired_jwt)
+      assert new_jwt != expired_jwt
+      assert refreshed_token.refresh_count == 1
     end
 
     test "returns error when token is revoked", %{agent_id: agent_id} do
@@ -167,7 +215,8 @@ defmodule TamanduaServer.Agents.TokenManagerTest do
     test "revokes current generation token", %{agent_id: agent_id} do
       {:ok, jwt, _token} = TokenManager.issue_token(agent_id)
 
-      assert {:ok, %{revoked_count: 1}} = TokenManager.revoke_token(agent_id, reason: "test_revocation")
+      assert {:ok, %{revoked_count: 1}} =
+               TokenManager.revoke_token(agent_id, reason: "test_revocation")
 
       # Verify token is revoked
       assert {:error, :revoked} = TokenManager.validate_token(jwt)
@@ -247,7 +296,9 @@ defmodule TamanduaServer.Agents.TokenManagerTest do
       {:ok, jwt, _token} = TokenManager.issue_token(agent_id)
 
       # Set token to be in refresh window
-      token_record = Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+      token_record =
+        Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+
       past_issued_at = DateTime.add(DateTime.utc_now(), -19 * 24 * 3600, :second)
       expires_at = DateTime.add(past_issued_at, 720 * 3600, :second)
 

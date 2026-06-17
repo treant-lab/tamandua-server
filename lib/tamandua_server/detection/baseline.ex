@@ -82,6 +82,19 @@ defmodule TamanduaServer.Detection.Baseline do
   # Minimum observations before z-score is meaningful
   @min_observations 10
 
+  # Maturity gate: minimum total events processed during learning before
+  # the baseline is allowed to vote at full confidence. Without this gate
+  # a baseline trained on 1-2 events can suppress real alerts. See
+  # KNOWN_PRODUCTION_GAPS.md item 23.
+  @min_events_for_maturity 100
+
+  # Score cap applied when the baseline is "immature" (events_processed
+  # below @min_events_for_maturity). 0.4 falls below the 0.5 reduction
+  # bucket in engine_worker.ex apply_baseline_adjustment/3, so an immature
+  # baseline can at most produce a small (10%) threat-score reduction
+  # instead of the full 50%.
+  @immature_score_cap 0.4
+
   # Z-score thresholds for scoring
   @z_very_common 0.5    # within half a std-dev -> very normal
   @z_common 1.5         # within 1.5 std-devs -> normal
@@ -456,7 +469,8 @@ defmodule TamanduaServer.Detection.Baseline do
           end)
           # Average the feature scores, weighting process features higher
           avg = Enum.sum(scores) / max(length(scores), 1)
-          {:ok, Float.round(min(max(avg, 0.0), 0.8), 3)}
+          raw = Float.round(min(max(avg, 0.0), 0.8), 3)
+          {:ok, apply_maturity_cap(agent_id, raw)}
         end
 
       _ ->
@@ -464,6 +478,37 @@ defmodule TamanduaServer.Detection.Baseline do
     end
   rescue
     _ -> :unavailable
+  end
+
+  # Cap the score when the baseline is immature. Reads events_processed
+  # directly from the @config_table ETS row (5th field) — already populated
+  # at learning_status sync (see line ~738 below).
+  defp apply_maturity_cap(agent_id, score) do
+    case baseline_maturity(agent_id) do
+      :mature -> score
+      :immature -> min(score, @immature_score_cap)
+      :unknown -> min(score, @immature_score_cap)
+    end
+  end
+
+  # Read the events_processed counter from the cached ETS config row and
+  # classify the baseline as :mature / :immature / :unknown. No DB query
+  # in the hot path — the row is populated when learning completes.
+  defp baseline_maturity(agent_id) do
+    case :ets.lookup(@config_table, agent_id) do
+      [{^agent_id, _status, _started, _days, events_processed}]
+        when is_integer(events_processed) and events_processed >= @min_events_for_maturity ->
+        :mature
+
+      [{^agent_id, _status, _started, _days, events_processed}]
+        when is_integer(events_processed) ->
+        :immature
+
+      _ ->
+        :unknown
+    end
+  rescue
+    _ -> :unknown
   end
 
   # Compute a single feature's baseline score using z-score against the

@@ -568,6 +568,60 @@ defmodule TamanduaServer.Detection.EngineWorker do
           detections
         end
 
+      detections =
+        if safe_lsass_probe?(process, path_lower, command_lower) do
+          [
+            %{
+              type: :command_line_lsass_safe_probe,
+              detection_type: "credential_access",
+              category: "credential_theft",
+              rule_name: "Safe LSASS Credential Access Probe",
+              confidence: 0.8,
+              severity: "high",
+              description:
+                "Process command line queries LSASS process metadata as a safe credential-access validation probe",
+              evidence: %{
+                process_name: process_name,
+                path: path,
+                command_line: command_line
+              },
+              mitre_tactics: ["credential-access"],
+              mitre_techniques: ["T1003.001"],
+              tags: ["credential", "lsass", "enterprise-safe"]
+            }
+            | detections
+          ]
+        else
+          detections
+        end
+
+      detections =
+        if safe_credential_canary_probe?(command_lower) do
+          [
+            %{
+              type: :command_line_credential_canary_probe,
+              detection_type: "credential_access",
+              category: "credential_theft",
+              rule_name: "Safe Credential Canary Probe",
+              confidence: 0.78,
+              severity: "high",
+              description:
+                "Process command line creates or searches a Tamandua credential canary used for safe credential-access validation",
+              evidence: %{
+                process_name: process_name,
+                path: path,
+                command_line: command_line
+              },
+              mitre_tactics: ["credential-access"],
+              mitre_techniques: ["T1552.001"],
+              tags: ["credential", "enterprise-safe"]
+            }
+            | detections
+          ]
+        else
+          detections
+        end
+
       if windows_temp_masquerade?(process, path_lower, command_lower) do
         [
           %{
@@ -593,6 +647,22 @@ defmodule TamanduaServer.Detection.EngineWorker do
     else
       []
     end
+  end
+
+  defp safe_lsass_probe?(process, path, command) do
+    powershell? =
+      String.contains?(process, "powershell") or
+        String.contains?(process, "pwsh") or
+        String.contains?(path, "powershell") or
+        String.contains?(command, "get-process")
+
+    powershell? and String.contains?(command, "get-process") and String.contains?(command, "lsass")
+  end
+
+  defp safe_credential_canary_probe?(command) do
+    String.contains?(command, "tamanduacanary") or
+      String.contains?(command, "tamandua-credential-canary") or
+      (String.contains?(command, "password=") and String.contains?(command, "findstr"))
   end
 
   defp powershell_encoded_command?(process, path, command) do

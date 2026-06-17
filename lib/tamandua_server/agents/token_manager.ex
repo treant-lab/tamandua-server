@@ -326,7 +326,7 @@ defmodule TamanduaServer.Agents.TokenManager do
     with {:ok, claims} <- decode_token_for_refresh(current_token),
          {:ok, agent_id, generation} <- extract_token_info(claims),
          {:ok, token_record} <- get_token_record(agent_id, generation),
-         :ok <- validate_refresh_window(token_record),
+         :ok <- maybe_validate_refresh_window(token_record, claims),
          :ok <- validate_not_revoked(token_record),
          :ok <- validate_refresh_grace(token_record),
          :ok <- validate_current_generation(agent_id, generation) do
@@ -605,7 +605,7 @@ defmodule TamanduaServer.Agents.TokenManager do
             "Recovered expired refresh token for agent #{agent_id}, generation #{generation} via DB hash match"
           )
 
-          {:ok, claims}
+          {:ok, Map.put(claims, "_tamandua_expired_refresh_recovered", true)}
         else
           false -> {:error, :generation_mismatch}
           {:error, reason} -> {:error, reason}
@@ -640,6 +640,15 @@ defmodule TamanduaServer.Agents.TokenManager do
       token -> {:ok, token}
     end
   end
+
+  defp maybe_validate_refresh_window(_token_record, %{
+         "_tamandua_expired_refresh_recovered" => true
+       }) do
+    :ok
+  end
+
+  defp maybe_validate_refresh_window(token_record, _claims),
+    do: validate_refresh_window(token_record)
 
   defp validate_refresh_window(token_record) do
     agent = get_agent(token_record.agent_id)
