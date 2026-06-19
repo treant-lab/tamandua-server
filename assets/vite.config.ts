@@ -8,7 +8,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
-      'phoenix': resolve(__dirname, '../deps/phoenix/priv/static/phoenix.mjs'),
     },
   },
   build: {
