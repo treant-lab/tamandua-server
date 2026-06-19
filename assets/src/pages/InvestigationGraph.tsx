@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import InvestigationGraph from '@/components/InvestigationGraph';
 import EntityPivot from '@/components/EntityPivot';
+import { Select, SelectItem } from '@/components/ui/baseui';
 import { logger } from '@/lib/logger';
 import {
   InvestigationGraphPageProps,
@@ -229,17 +230,16 @@ export default function InvestigationGraphPage({
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <Clock size={16} style={{ color: 'var(--muted)' }} />
-                  <select
+                  <Select
                     value={timeRange}
-                    onChange={(e) => setTimeRange(e.target.value)}
+                    onValueChange={setTimeRange}
                     className="rounded px-3 py-1.5 text-sm"
-                    style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}
                   >
-                    <option value="60">1 hour</option>
-                    <option value="360">6 hours</option>
-                    <option value="1440">24 hours</option>
-                    <option value="10080">7 days</option>
-                  </select>
+                    <SelectItem value="60">1 hour</SelectItem>
+                    <SelectItem value="360">6 hours</SelectItem>
+                    <SelectItem value="1440">24 hours</SelectItem>
+                    <SelectItem value="10080">7 days</SelectItem>
+                  </Select>
                 </div>
 
                 <button

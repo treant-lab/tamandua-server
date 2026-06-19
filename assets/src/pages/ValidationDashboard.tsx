@@ -4,6 +4,7 @@ import { Head, Link, router } from '@inertiajs/react';
 import { logger } from '@/lib/logger';
 import { cn, formatDate, safeCapitalize } from '@/lib/utils';
 import { DemoFlow } from '@/components/hackathon/DemoFlow';
+import { Select, SelectItem } from '@/components/ui/baseui';
 import {
   Monitor,
   Shield,
@@ -793,31 +794,39 @@ export default function ValidationDashboard({ tests: _tests, testsByCategory: in
             <div className="flex flex-wrap gap-4 items-center">
               <div className="flex-1 min-w-[200px]">
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Target Agent</label>
-                <select
+                <Select
                   value={selectedAgent}
-                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  onValueChange={setSelectedAgent}
+                  placeholder="Select an agent..."
                   className="input-sentinel w-full rounded px-3 py-2"
+                  fullWidth
                 >
-                  <option value="">Select an agent...</option>
+                  <SelectItem value="">Select an agent...</SelectItem>
                   {onlineAgents.length > 0 ? (
-                    <optgroup label="Online">
+                    <>
+                      <div className="px-3 py-1 text-xs uppercase tracking-wider" style={{ color: 'var(--subtle)' }}>
+                        Online
+                      </div>
                       {onlineAgents.map(agent => (
-                        <option key={agent.id} value={agent.id}>
+                        <SelectItem key={agent.id} value={agent.id}>
                           {agent.hostname} ({agent.os})
-                        </option>
+                        </SelectItem>
                       ))}
-                    </optgroup>
+                    </>
                   ) : null}
                   {offlineAgents.length > 0 ? (
-                    <optgroup label="Offline">
+                    <>
+                      <div className="px-3 py-1 text-xs uppercase tracking-wider" style={{ color: 'var(--subtle)' }}>
+                        Offline
+                      </div>
                       {offlineAgents.map(agent => (
-                        <option key={agent.id} value={agent.id} disabled>
+                        <SelectItem key={agent.id} value={agent.id} disabled>
                           {agent.hostname} ({agent.os}) - {agent.status}
-                        </option>
+                        </SelectItem>
                       ))}
-                    </optgroup>
+                    </>
                   ) : null}
-                </select>
+                </Select>
                 {agents.length === 0 && (
                   <p className="text-xs text-yellow-400 mt-1">No agents connected</p>
                 )}
@@ -825,18 +834,19 @@ export default function ValidationDashboard({ tests: _tests, testsByCategory: in
 
               <div className="flex-1 min-w-[200px]">
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Category Filter</label>
-                <select
+                <Select
                   value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  onValueChange={setSelectedCategory}
                   className="input-sentinel w-full rounded px-3 py-2"
+                  fullWidth
                 >
-                  <option value="all">All Categories</option>
+                  <SelectItem value="all">All Categories</SelectItem>
                   {testsByCategory.map(cat => (
-                    <option key={cat.category} value={cat.category}>
+                    <SelectItem key={cat.category} value={cat.category}>
                       {cat.categoryName} ({cat.count})
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <div className="flex gap-2 items-end">

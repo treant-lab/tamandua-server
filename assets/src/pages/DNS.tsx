@@ -29,6 +29,7 @@ import { cn, formatDate, safeCapitalize } from '@/lib/utils'
 import { useEventStream } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
 import { ExportDropdown } from '@/components/ExportDropdown'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import type { WebSocketConnectionState } from '@/types'
 
 // ============================================================================
@@ -865,28 +866,30 @@ function LiveDNSFeed({
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-[var(--muted)]" />
-            <select
+            <Select
               value={queryTypeFilter}
-              onChange={e => setQueryTypeFilter(e.target.value)}
+              onValueChange={setQueryTypeFilter}
+              placeholder="All Query Types"
               className="bg-[var(--surface-alt)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--fg)] focus:ring-2 focus:ring-[var(--sol-cyan)]"
             >
-              <option value="all">All Query Types</option>
+              <SelectItem value="all">All Query Types</SelectItem>
               {queryTypes.map(t => (
-                <option key={t} value={t}>{t}</option>
+                <SelectItem key={t} value={t}>{t}</SelectItem>
               ))}
-            </select>
+            </Select>
           </div>
 
-          <select
+          <Select
             value={agentFilter}
-            onChange={e => setAgentFilter(e.target.value)}
+            onValueChange={setAgentFilter}
+            placeholder="All Agents"
             className="bg-[var(--surface-alt)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--fg)] focus:ring-2 focus:ring-[var(--sol-cyan)]"
           >
-            <option value="all">All Agents</option>
+            <SelectItem value="all">All Agents</SelectItem>
             {agents.map(a => (
-              <option key={a.id} value={a.id}>{a.hostname}</option>
+              <SelectItem key={a.id} value={a.id}>{a.hostname}</SelectItem>
             ))}
-          </select>
+          </Select>
 
           <span className="text-sm text-[var(--muted)]">
             {queries.length} queries

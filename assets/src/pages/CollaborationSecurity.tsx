@@ -15,6 +15,7 @@ import { useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 interface DLPAlert {
   id: string
@@ -289,28 +290,30 @@ export default function Collaboration({
                   />
                 </div>
 
-                <select
+                <Select
                   value={selectedPlatform}
-                  onChange={(e) => setSelectedPlatform(e.target.value)}
+                  onValueChange={setSelectedPlatform}
+                  placeholder="All Platforms"
                   className="bg-[var(--surface-raised)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-primary-500"
                 >
-                  <option value="all">All Platforms</option>
-                  <option value="slack">Slack</option>
-                  <option value="teams">Teams</option>
-                  <option value="discord">Discord</option>
-                </select>
+                  <SelectItem value="all">All Platforms</SelectItem>
+                  <SelectItem value="slack">Slack</SelectItem>
+                  <SelectItem value="teams">Teams</SelectItem>
+                  <SelectItem value="discord">Discord</SelectItem>
+                </Select>
 
-                <select
+                <Select
                   value={selectedSeverity}
-                  onChange={(e) => setSelectedSeverity(e.target.value)}
+                  onValueChange={setSelectedSeverity}
+                  placeholder="All Severities"
                   className="bg-[var(--surface-raised)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-primary-500"
                 >
-                  <option value="all">All Severities</option>
-                  <option value="critical">Critical</option>
-                  <option value="high">High</option>
-                  <option value="medium">Medium</option>
-                  <option value="low">Low</option>
-                </select>
+                  <SelectItem value="all">All Severities</SelectItem>
+                  <SelectItem value="critical">Critical</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                </Select>
               </div>
             </div>
 

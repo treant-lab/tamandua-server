@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { ExportDropdown } from '@/components/ExportDropdown'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import axios from 'axios'
 import { logger } from '@/lib/logger'
 
@@ -198,32 +199,31 @@ export default function AuditLog({ entries: initialEntries, pagination: initialP
             {/* Action Type */}
             <div>
               <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Action Type</label>
-              <select
+              <Select
                 value={actionTypeFilter}
-                onChange={(e) => { setActionTypeFilter(e.target.value); setPage(1) }}
+                onValueChange={(value) => { setActionTypeFilter(value); setPage(1) }}
                 className="input-sentinel"
-                style={{ minWidth: '140px' }}
               >
                 {ACTION_TYPE_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                 ))}
-              </select>
+              </Select>
             </div>
 
             {/* User */}
             <div>
               <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>User</label>
-              <select
+              <Select
                 value={userFilter}
-                onChange={(e) => { setUserFilter(e.target.value); setPage(1) }}
+                onValueChange={(value) => { setUserFilter(value); setPage(1) }}
+                placeholder="All Users"
                 className="input-sentinel"
-                style={{ minWidth: '120px' }}
               >
-                <option value="">All Users</option>
+                <SelectItem value="">All Users</SelectItem>
                 {uniqueUsers.map(user => (
-                  <option key={user} value={user}>{user}</option>
+                  <SelectItem key={user} value={user}>{user}</SelectItem>
                 ))}
-              </select>
+              </Select>
             </div>
 
             {/* Date From */}

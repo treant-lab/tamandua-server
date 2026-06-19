@@ -11,6 +11,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useEventStream } from '@/hooks/useSocket'
 import { ExportDropdown } from '@/components/ExportDropdown'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import type { WebSocketConnectionState } from '@/types'
 import { logger } from '@/lib/logger'
 
@@ -1259,24 +1260,15 @@ function FilterSelect({ label, value, onChange, options }: {
   return (
     <div className="flex items-center gap-1.5">
       <label className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--subtle)' }}>{label}</label>
-      <select
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onValueChange={onChange}
         className="rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 appearance-none pr-6 cursor-pointer"
-        style={{
-          backgroundColor: 'var(--surface-2)',
-          border: '1px solid var(--border)',
-          color: 'var(--fg-2)',
-          backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%238a9aa1' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-          backgroundPosition: 'right 0.35rem center',
-          backgroundRepeat: 'no-repeat',
-          backgroundSize: '1.1em 1.1em',
-        }}
       >
         {options.map(opt => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
+          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
         ))}
-      </select>
+      </Select>
     </div>
   )
 }

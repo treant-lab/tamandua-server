@@ -8,6 +8,7 @@ import {
   Shield, Layers, ArrowLeft, ArrowRight, Crosshair,
   Info, Filter, Clock
 } from 'lucide-react'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -777,19 +778,18 @@ export default function ProvenanceGraph({ agents }: ProvenanceGraphProps) {
             {/* Agent selector */}
             <div className="flex items-center gap-2">
               <label className="text-xs font-medium" style={{ color: 'var(--muted)' }}>Agent</label>
-              <select
+              <Select
                 value={selectedAgentId}
-                onChange={e => setSelectedAgentId(e.target.value)}
+                onValueChange={setSelectedAgentId}
                 className="rounded px-3 py-1.5 text-sm min-w-[180px]"
-                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg)' }}
               >
-                {agents.length === 0 && <option value="">No agents</option>}
+                {agents.length === 0 && <SelectItem value="">No agents</SelectItem>}
                 {agents.map(a => (
-                  <option key={a.id} value={a.id}>
+                  <SelectItem key={a.id} value={a.id}>
                     {a.hostname} ({a.status})
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+              </Select>
             </div>
 
             {/* Entity search */}

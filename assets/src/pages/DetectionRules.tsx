@@ -7,6 +7,7 @@ import {
   Check, X, Copy, Trash2, Edit3, Play, Filter, Loader2,
   Eye, EyeOff, Clock, Tag, Zap, Info, CheckCircle, XCircle,
 } from 'lucide-react'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -634,31 +635,31 @@ export default function DetectionRules() {
                 />
               </div>
 
-              <select
+              <Select
                 value={sigmaLevelFilter}
-                onChange={e => setSigmaLevelFilter(e.target.value)}
+                onValueChange={setSigmaLevelFilter}
                 className="bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] px-3 py-2 text-sm text-[var(--muted)] focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Levels</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-                <option value="informational">Informational</option>
-              </select>
+                <SelectItem value="all">All Levels</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="informational">Informational</SelectItem>
+              </Select>
 
-              <select
+              <Select
                 value={sigmaStatusFilter}
-                onChange={e => setSigmaStatusFilter(e.target.value)}
+                onValueChange={setSigmaStatusFilter}
                 className="bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] px-3 py-2 text-sm text-[var(--muted)] focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Status</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-                <option value="stable">Stable</option>
-                <option value="test">Test</option>
-                <option value="experimental">Experimental</option>
-              </select>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="enabled">Enabled</SelectItem>
+                <SelectItem value="disabled">Disabled</SelectItem>
+                <SelectItem value="stable">Stable</SelectItem>
+                <SelectItem value="test">Test</SelectItem>
+                <SelectItem value="experimental">Experimental</SelectItem>
+              </Select>
 
               <span className="text-xs text-[var(--subtle)]">
                 {filteredSigmaRules.length} of {sigmaRules.length} rules
@@ -727,49 +728,49 @@ export default function DetectionRules() {
                 />
               </div>
 
-              <select
+              <Select
                 value={yaraSeverityFilter}
-                onChange={e => setYaraSeverityFilter(e.target.value)}
+                onValueChange={setYaraSeverityFilter}
                 className="px-3 py-2 bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] text-[var(--fg)] text-sm focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Severities</option>
+                <SelectItem value="all">All Severities</SelectItem>
                 {yaraSeverities.map(severity => (
-                  <option key={severity} value={severity}>{severity}</option>
+                  <SelectItem key={severity} value={severity}>{severity}</SelectItem>
                 ))}
-              </select>
+              </Select>
 
-              <select
+              <Select
                 value={yaraCategoryFilter}
-                onChange={e => setYaraCategoryFilter(e.target.value)}
+                onValueChange={setYaraCategoryFilter}
                 className="px-3 py-2 bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] text-[var(--fg)] text-sm focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Categories</option>
+                <SelectItem value="all">All Categories</SelectItem>
                 {yaraCategories.map(category => (
-                  <option key={category} value={category}>{category}</option>
+                  <SelectItem key={category} value={category}>{category}</SelectItem>
                 ))}
-              </select>
+              </Select>
 
-              <select
+              <Select
                 value={yaraSourceFilter}
-                onChange={e => setYaraSourceFilter(e.target.value)}
+                onValueChange={setYaraSourceFilter}
                 className="px-3 py-2 bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] text-[var(--fg)] text-sm focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Sources</option>
-                <option value="builtin_file">Built-in files</option>
-                <option value="database">Database rules</option>
-              </select>
+                <SelectItem value="all">All Sources</SelectItem>
+                <SelectItem value="builtin_file">Built-in files</SelectItem>
+                <SelectItem value="database">Database rules</SelectItem>
+              </Select>
 
-              <select
+              <Select
                 value={yaraStatusFilter}
-                onChange={e => setYaraStatusFilter(e.target.value)}
+                onValueChange={setYaraStatusFilter}
                 className="px-3 py-2 bg-[var(--surface-2)] border border-[var(--border)] rounded-[var(--r-md)] text-[var(--fg)] text-sm focus:outline-none focus:border-[var(--emerald-500)]"
               >
-                <option value="all">All Status</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-                <option value="readonly">Built-in/Read-only</option>
-                <option value="editable">Editable</option>
-              </select>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="enabled">Enabled</SelectItem>
+                <SelectItem value="disabled">Disabled</SelectItem>
+                <SelectItem value="readonly">Built-in/Read-only</SelectItem>
+                <SelectItem value="editable">Editable</SelectItem>
+              </Select>
 
               <span className="text-xs text-[var(--subtle)]">
                 {filteredYaraRules.length} of {yaraRules.length} rules

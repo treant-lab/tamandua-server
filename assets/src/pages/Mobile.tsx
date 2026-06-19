@@ -35,6 +35,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Android icon component since lucide doesn't have one
 function AndroidIcon({ className }: { className?: string }) {
@@ -932,20 +933,20 @@ function SetupGuideTab() {
             <div className="space-y-3">
               <div>
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Enrollment Profile</label>
-                <select className="input-sentinel w-full">
-                  <option>Default - Standard Security</option>
-                  <option>High Security - Executive Devices</option>
-                  <option>BYOD - Personal Devices</option>
-                </select>
+                <Select defaultValue="default" className="input-sentinel w-full" fullWidth>
+                  <SelectItem value="default">Default - Standard Security</SelectItem>
+                  <SelectItem value="high">High Security - Executive Devices</SelectItem>
+                  <SelectItem value="byod">BYOD - Personal Devices</SelectItem>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Expiration</label>
-                <select className="input-sentinel w-full">
-                  <option>1 hour</option>
-                  <option>24 hours</option>
-                  <option>7 days</option>
-                  <option>Never</option>
-                </select>
+                <Select defaultValue="1h" className="input-sentinel w-full" fullWidth>
+                  <SelectItem value="1h">1 hour</SelectItem>
+                  <SelectItem value="24h">24 hours</SelectItem>
+                  <SelectItem value="7d">7 days</SelectItem>
+                  <SelectItem value="never">Never</SelectItem>
+                </Select>
               </div>
               <button
                 className="btn-sentinel btn-sentinel-primary w-full cursor-not-allowed opacity-50"

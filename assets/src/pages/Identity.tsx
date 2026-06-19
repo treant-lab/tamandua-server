@@ -33,6 +33,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState, useEffect } from 'react'
 
 // Types
@@ -408,17 +409,18 @@ export default function Identity({
                       className="input-sentinel w-48 pl-10"
                     />
                   </div>
-                  <select
+                  <Select
                     value={riskFilter}
-                    onChange={(e) => setRiskFilter(e.target.value as typeof riskFilter)}
+                    onValueChange={(value) => setRiskFilter(value as typeof riskFilter)}
+                    placeholder="All Risks"
                     className="input-sentinel px-3 py-1.5"
                   >
-                    <option value="all">All Risks</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
+                    <SelectItem value="all">All Risks</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                  </Select>
                 </div>
               </div>
               <div className="divide-y divide-[var(--hairline)] max-h-[600px] overflow-y-auto">

@@ -24,6 +24,7 @@ import {
 import { cn, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useRef } from 'react'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import type { TenantSettingsPageProps, APIKey, TenantSettings as TenantSettingsType } from '@/types'
 
 const tabs = [
@@ -317,18 +318,20 @@ function SecurityTab({ settings, availableProviders, onSave }: {
           <div className="space-y-4 pt-4 border-t border-[var(--surface-border)]">
             <div>
               <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-2">Identity Provider</label>
-              <select
+              <Select
                 value={ssoProvider}
-                onChange={(e) => setSsoProvider(e.target.value)}
+                onValueChange={setSsoProvider}
                 className="w-full bg-[var(--surface-hover)] border border-[var(--surface-border)] rounded-lg px-4 py-2 text-[var(--fg)] focus:ring-2 focus:ring-primary-500"
+                fullWidth
+                placeholder="Select provider..."
               >
-                <option value="">Select provider...</option>
+                <SelectItem value="">Select provider...</SelectItem>
                 {availableProviders.map(provider => (
-                  <option key={provider} value={provider}>
+                  <SelectItem key={provider} value={provider}>
                     {providerLabels[provider] || provider}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+              </Select>
             </div>
 
             {/* SAML Config */}

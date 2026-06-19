@@ -19,6 +19,7 @@ import {
   Minus
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState } from 'react'
 
 // Types
@@ -282,17 +283,18 @@ export default function Exposure({
               {activeTab !== 'recommendations' && (
                 <div className="flex items-center gap-2">
                   <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-                  <select
+                  <Select
                     value={severityFilter}
-                    onChange={(e) => setSeverityFilter(e.target.value)}
+                    onValueChange={setSeverityFilter}
+                    placeholder="All Severities"
                     className="input-sentinel px-3 py-2 text-sm"
                   >
-                    <option value="all">All Severities</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
+                    <SelectItem value="all">All Severities</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                  </Select>
                 </div>
               )}
             </div>

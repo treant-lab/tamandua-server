@@ -40,6 +40,7 @@ import {
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { ExportDropdown } from '@/components/ExportDropdown'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import axios from 'axios'
 import { toast } from 'sonner'
 
@@ -1129,17 +1130,16 @@ export default function ThreatIntel({
                           Alert sources are evaluated with confidence, policy and tenant scope before enforcement.
                         </p>
                       </div>
-                      <select
+                      <Select
                         value={visibilityFilter}
-                        onChange={(e) => setVisibilityFilter(e.target.value)}
+                        onValueChange={setVisibilityFilter}
                         className="input-sentinel"
-                        style={{ width: 'auto' }}
                       >
-                        <option value="all">All visibility</option>
-                        <option value="open">Open</option>
-                        <option value="tenant">Tenant-scoped</option>
-                        <option value="managed">Managed</option>
-                      </select>
+                        <SelectItem value="all">All visibility</SelectItem>
+                        <SelectItem value="open">Open</SelectItem>
+                        <SelectItem value="tenant">Tenant-scoped</SelectItem>
+                        <SelectItem value="managed">Managed</SelectItem>
+                      </Select>
                     </div>
                   </div>
                   <div className="divide-y" style={{ borderColor: 'var(--hairline)' }}>
@@ -1194,30 +1194,28 @@ export default function ThreatIntel({
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
                     <h3 className="text-base font-semibold" style={{ color: 'var(--fg)' }}>Intel source summary</h3>
                     <div className="flex items-center gap-2">
-                      <select
+                      <Select
                         value={sourceStatusFilter}
-                        onChange={(e) => setSourceStatusFilter(e.target.value)}
+                        onValueChange={setSourceStatusFilter}
                         className="input-sentinel"
-                        style={{ width: 'auto' }}
                       >
-                        <option value="all">All status</option>
-                        <option value="online">Online</option>
-                        <option value="configured">Configured</option>
-                        <option value="degraded">Degraded</option>
-                        <option value="offline">Offline</option>
-                      </select>
-                      <select
+                        <SelectItem value="all">All status</SelectItem>
+                        <SelectItem value="online">Online</SelectItem>
+                        <SelectItem value="configured">Configured</SelectItem>
+                        <SelectItem value="degraded">Degraded</SelectItem>
+                        <SelectItem value="offline">Offline</SelectItem>
+                      </Select>
+                      <Select
                         value={sourceTypeFilter}
-                        onChange={(e) => setSourceTypeFilter(e.target.value)}
+                        onValueChange={setSourceTypeFilter}
                         className="input-sentinel"
-                        style={{ width: 'auto' }}
                       >
-                        <option value="all">All types</option>
-                        <option value="feed">Feed</option>
-                        <option value="osint">OSINT</option>
-                        <option value="commercial">Commercial</option>
-                        <option value="internal">Internal</option>
-                      </select>
+                        <SelectItem value="all">All types</SelectItem>
+                        <SelectItem value="feed">Feed</SelectItem>
+                        <SelectItem value="osint">OSINT</SelectItem>
+                        <SelectItem value="commercial">Commercial</SelectItem>
+                        <SelectItem value="internal">Internal</SelectItem>
+                      </Select>
                     </div>
                   </div>
                   {sources.length === 0 ? (
@@ -1277,51 +1275,47 @@ export default function ThreatIntel({
                   </div>
                   <div className="flex items-center gap-2">
                     <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-                    <select
+                    <Select
                       value={typeFilter}
-                      onChange={(e) => setTypeFilter(e.target.value)}
+                      onValueChange={setTypeFilter}
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Types</option>
-                      <option value="ip">IP Address</option>
-                      <option value="domain">Domain</option>
-                      <option value="hash">Hash</option>
-                      <option value="url">URL</option>
-                      <option value="email">Email</option>
-                    </select>
-                    <select
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="ip">IP Address</SelectItem>
+                      <SelectItem value="domain">Domain</SelectItem>
+                      <SelectItem value="hash">Hash</SelectItem>
+                      <SelectItem value="url">URL</SelectItem>
+                      <SelectItem value="email">Email</SelectItem>
+                    </Select>
+                    <Select
                       value={iocSourceFilter}
-                      onChange={(e) => setIocSourceFilter(e.target.value)}
+                      onValueChange={setIocSourceFilter}
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Sources</option>
+                      <SelectItem value="all">All Sources</SelectItem>
                       {iocSourceOptions.map(source => (
-                        <option key={source} value={source}>{source}</option>
+                        <SelectItem key={source} value={source}>{source}</SelectItem>
                       ))}
-                    </select>
-                    <select
+                    </Select>
+                    <Select
                       value={scoreFilter}
-                      onChange={(e) => setScoreFilter(e.target.value)}
+                      onValueChange={setScoreFilter}
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Scores</option>
-                      <option value="50">Score &gt;= 50</option>
-                      <option value="70">Score &gt;= 70</option>
-                      <option value="90">Score &gt;= 90</option>
-                    </select>
-                    <select
+                      <SelectItem value="all">All Scores</SelectItem>
+                      <SelectItem value="50">Score &gt;= 50</SelectItem>
+                      <SelectItem value="70">Score &gt;= 70</SelectItem>
+                      <SelectItem value="90">Score &gt;= 90</SelectItem>
+                    </Select>
+                    <Select
                       value={blockableFilter}
-                      onChange={(e) => setBlockableFilter(e.target.value)}
+                      onValueChange={setBlockableFilter}
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Enforcement</option>
-                      <option value="blockable">DNS-blockable</option>
-                      <option value="not_blockable">Not DNS-blockable</option>
-                    </select>
+                      <SelectItem value="all">All Enforcement</SelectItem>
+                      <SelectItem value="blockable">DNS-blockable</SelectItem>
+                      <SelectItem value="not_blockable">Not DNS-blockable</SelectItem>
+                    </Select>
                   </div>
                   <button
                     onClick={() => setShowAddIOCModal(true)}
@@ -2057,17 +2051,17 @@ function AddIOCModal({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Type</label>
-            <select
+            <Select
               value={formData.type}
-              onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+              onValueChange={(value) => setFormData({ ...formData, type: value })}
               className="input-sentinel"
             >
-              <option value="ip">IP Address</option>
-              <option value="domain">Domain</option>
-              <option value="hash">Hash (SHA256)</option>
-              <option value="url">URL</option>
-              <option value="email">Email</option>
-            </select>
+              <SelectItem value="ip">IP Address</SelectItem>
+              <SelectItem value="domain">Domain</SelectItem>
+              <SelectItem value="hash">Hash (SHA256)</SelectItem>
+              <SelectItem value="url">URL</SelectItem>
+              <SelectItem value="email">Email</SelectItem>
+            </Select>
           </div>
           <div>
             <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Value</label>
@@ -2205,17 +2199,18 @@ function ConfigureModal({
             <div className="space-y-3">
               <div>
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Provider</label>
-                <select
+                <Select
                   value={selectedProvider}
-                  onChange={(e) => setSelectedProvider(e.target.value)}
+                  onValueChange={setSelectedProvider}
+                  placeholder="Select provider..."
                   className="input-sentinel"
                 >
-                  <option value="">Select provider...</option>
-                  <option value="misp">MISP</option>
-                  <option value="otx">AlienVault OTX</option>
-                  <option value="virustotal">VirusTotal</option>
-                  <option value="shodan">Shodan</option>
-                </select>
+                  <SelectItem value="">Select provider...</SelectItem>
+                  <SelectItem value="misp">MISP</SelectItem>
+                  <SelectItem value="otx">AlienVault OTX</SelectItem>
+                  <SelectItem value="virustotal">VirusTotal</SelectItem>
+                  <SelectItem value="shodan">Shodan</SelectItem>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>API Key</label>
@@ -2599,31 +2594,32 @@ function ThreatActorModal({
             </div>
             <div>
               <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Motivation</label>
-              <select
+              <Select
                 value={formData.motivation}
-                onChange={(e) => setFormData({ ...formData, motivation: e.target.value })}
+                onValueChange={(value) => setFormData({ ...formData, motivation: value })}
                 className="input-sentinel"
               >
-                <option value="unknown">Unknown</option>
-                <option value="financial">Financial</option>
-                <option value="espionage">Espionage</option>
-                <option value="hacktivism">Hacktivism</option>
-                <option value="sabotage">Sabotage</option>
-              </select>
+                <SelectItem value="unknown">Unknown</SelectItem>
+                <SelectItem value="financial">Financial</SelectItem>
+                <SelectItem value="espionage">Espionage</SelectItem>
+                <SelectItem value="hacktivism">Hacktivism</SelectItem>
+                <SelectItem value="sabotage">Sabotage</SelectItem>
+              </Select>
             </div>
             <div>
               <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Sophistication</label>
-              <select
+              <Select
                 value={formData.sophistication}
-                onChange={(e) => setFormData({ ...formData, sophistication: e.target.value })}
+                onValueChange={(value) => setFormData({ ...formData, sophistication: value })}
+                placeholder="Not specified"
                 className="input-sentinel"
               >
-                <option value="">Not specified</option>
-                <option value="novice">Novice</option>
-                <option value="intermediate">Intermediate</option>
-                <option value="advanced">Advanced</option>
-                <option value="expert">Expert</option>
-              </select>
+                <SelectItem value="">Not specified</SelectItem>
+                <SelectItem value="novice">Novice</SelectItem>
+                <SelectItem value="intermediate">Intermediate</SelectItem>
+                <SelectItem value="advanced">Advanced</SelectItem>
+                <SelectItem value="expert">Expert</SelectItem>
+              </Select>
             </div>
             <div className="col-span-2">
               <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Target Sectors (comma-separated)</label>

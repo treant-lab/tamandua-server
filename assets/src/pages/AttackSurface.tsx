@@ -37,7 +37,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useState, useEffect } from 'react'
 import { logger } from '@/lib/logger'
-import { Checkbox, Dialog } from '@/components/ui/baseui'
+import { Checkbox, Dialog, Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface Asset {
@@ -401,30 +401,30 @@ export default function AttackSurface({
                   </div>
                   <div className="flex items-center gap-2">
                     <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-                    <select
+                    <Select
                       value={riskFilter}
-                      onChange={(e) => setRiskFilter(e.target.value)}
+                      onValueChange={setRiskFilter}
+                      placeholder="All Risk Levels"
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Risk Levels</option>
-                      <option value="critical">Critical</option>
-                      <option value="high">High</option>
-                      <option value="medium">Medium</option>
-                      <option value="low">Low</option>
-                    </select>
-                    <select
+                      <SelectItem value="all">All Risk Levels</SelectItem>
+                      <SelectItem value="critical">Critical</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
+                    </Select>
+                    <Select
                       value={typeFilter}
-                      onChange={(e) => setTypeFilter(e.target.value)}
+                      onValueChange={setTypeFilter}
+                      placeholder="All Types"
                       className="input-sentinel"
-                      style={{ width: 'auto' }}
                     >
-                      <option value="all">All Types</option>
-                      <option value="subdomain">Subdomains</option>
-                      <option value="ip">IP Addresses</option>
-                      <option value="cloud">Cloud Resources</option>
-                      <option value="external">External</option>
-                    </select>
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="subdomain">Subdomains</SelectItem>
+                      <SelectItem value="ip">IP Addresses</SelectItem>
+                      <SelectItem value="cloud">Cloud Resources</SelectItem>
+                      <SelectItem value="external">External</SelectItem>
+                    </Select>
                   </div>
                 </div>
               </div>

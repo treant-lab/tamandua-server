@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { MainLayout } from '@/layouts/MainLayout'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate, safeCapitalize } from '@/lib/utils'
 
 interface AIArtifact {
@@ -117,29 +118,29 @@ export default function AIArtifactInventory({ artifacts = [], stats, dataSource 
               />
             </div>
 
-            <select
+            <Select
               value={source}
-              onChange={(event) => setSource(event.target.value)}
+              onValueChange={setSource}
+              placeholder="All Sources"
               className="rounded-lg px-3 py-2 text-sm"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg)' }}
             >
               {SOURCE_OPTIONS.map((option) => (
-                <option key={option} value={option}>{option === 'all' ? 'All Sources' : option}</option>
+                <SelectItem key={option} value={option}>{option === 'all' ? 'All Sources' : option}</SelectItem>
               ))}
-            </select>
+            </Select>
 
-            <select
+            <Select
               value={severity}
-              onChange={(event) => setSeverity(event.target.value)}
+              onValueChange={setSeverity}
+              placeholder="All Severity"
               className="rounded-lg px-3 py-2 text-sm"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg)' }}
             >
-              <option value="all">All Severity</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
+              <SelectItem value="all">All Severity</SelectItem>
+              <SelectItem value="critical">Critical</SelectItem>
+              <SelectItem value="high">High</SelectItem>
+              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="low">Low</SelectItem>
+            </Select>
 
             <button
               onClick={() => router.reload()}

@@ -28,6 +28,7 @@ import {
   ToggleRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState } from 'react'
 
 // Types
@@ -238,17 +239,17 @@ export default function Automation({
               />
             </div>
 
-            <select
+            <Select
               value={selectedTrigger}
-              onChange={(e) => setSelectedTrigger(e.target.value as AutomationWorkflow['triggerType'] | 'all')}
+              onValueChange={(value) => setSelectedTrigger(value as AutomationWorkflow['triggerType'] | 'all')}
+              placeholder="All Triggers"
               className="input-sentinel rounded-lg px-3 py-2 text-sm"
-              style={{ color: 'var(--fg-2)' }}
             >
-              <option value="all">All Triggers</option>
+              <SelectItem value="all">All Triggers</SelectItem>
               {Object.entries(triggerTypeConfig).map(([key, config]) => (
-                <option key={key} value={key}>{config.label}</option>
+                <SelectItem key={key} value={key}>{config.label}</SelectItem>
               ))}
-            </select>
+            </Select>
 
             <button
               onClick={() => setShowEnabledOnly(!showEnabledOnly)}

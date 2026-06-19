@@ -17,7 +17,6 @@ import {
   XCircle,
   Clock,
   AlertCircle,
-  ChevronDown,
   ExternalLink,
   Settings,
   Trash2,
@@ -25,7 +24,8 @@ import {
   Ban,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useState, useRef, useEffect } from 'react'
+import { useState } from 'react'
+import { Menu, MenuItem, MenuSeparator, Select, SelectItem } from '@/components/ui/baseui'
 import type { TenantsPageProps, Tenant, TenantPlan, TenantStatus } from '@/types'
 
 const planIcons: Record<TenantPlan, React.ComponentType<{ className?: string }>> = {
@@ -87,21 +87,7 @@ function TenantLogo({ tenant, className }: { tenant: Tenant; className?: string 
 }
 
 function TenantRowMenu({ tenant }: { tenant: Tenant }) {
-  const [isOpen, setIsOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
-
   const handleAction = (action: string) => {
-    setIsOpen(false)
     switch (action) {
       case 'view':
         router.visit(`/app/admin/tenants/${tenant.id}`)
@@ -126,58 +112,42 @@ function TenantRowMenu({ tenant }: { tenant: Tenant }) {
   }
 
   return (
-    <div ref={menuRef} className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="p-1 rounded hover:bg-slate-600 text-slate-400 hover:text-white"
-      >
-        <MoreVertical className="h-4 w-4" />
-      </button>
-
-      {isOpen && (
-        <div className="absolute right-0 top-full mt-1 w-48 bg-slate-700 border border-slate-600 rounded-lg shadow-xl z-10 py-1">
-          <button
-            onClick={() => handleAction('view')}
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-600 hover:text-white"
-          >
-            <Eye className="h-4 w-4" />
-            View Details
-          </button>
-          <button
-            onClick={() => handleAction('settings')}
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-600 hover:text-white"
-          >
-            <Settings className="h-4 w-4" />
-            Settings
-          </button>
-          <div className="border-t border-slate-600 my-1" />
-          {tenant.status === 'active' ? (
-            <button
-              onClick={() => handleAction('suspend')}
-              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-yellow-400 hover:bg-slate-600"
-            >
-              <Ban className="h-4 w-4" />
-              Suspend Tenant
-            </button>
-          ) : tenant.status === 'suspended' ? (
-            <button
-              onClick={() => handleAction('activate')}
-              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-green-400 hover:bg-slate-600"
-            >
-              <CheckCircle className="h-4 w-4" />
-              Activate Tenant
-            </button>
-          ) : null}
-          <button
-            onClick={() => handleAction('delete')}
-            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-slate-600"
-          >
-            <Trash2 className="h-4 w-4" />
-            Delete Tenant
-          </button>
-        </div>
-      )}
-    </div>
+    <Menu
+      align="end"
+      trigger={
+        <button
+          aria-label={`Open actions for ${tenant.name}`}
+          className="p-1 rounded hover:bg-slate-600 text-slate-400 hover:text-white"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      }
+    >
+      <MenuItem onSelect={() => handleAction('view')}>
+        <Eye className="h-4 w-4" />
+        View Details
+      </MenuItem>
+      <MenuItem onSelect={() => handleAction('settings')}>
+        <Settings className="h-4 w-4" />
+        Settings
+      </MenuItem>
+      <MenuSeparator />
+      {tenant.status === 'active' ? (
+        <MenuItem onSelect={() => handleAction('suspend')}>
+          <Ban className="h-4 w-4" />
+          Suspend Tenant
+        </MenuItem>
+      ) : tenant.status === 'suspended' ? (
+        <MenuItem onSelect={() => handleAction('activate')}>
+          <CheckCircle className="h-4 w-4" />
+          Activate Tenant
+        </MenuItem>
+      ) : null}
+      <MenuItem destructive onSelect={() => handleAction('delete')}>
+        <Trash2 className="h-4 w-4" />
+        Delete Tenant
+      </MenuItem>
+    </Menu>
   )
 }
 
@@ -325,32 +295,32 @@ export default function Tenants({ tenants, stats, filters }: TenantsPageProps) {
             <div className="flex items-center gap-4">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Plan</label>
-                <select
+                <Select
                   value={selectedPlan}
-                  onChange={(e) => setSelectedPlan(e.target.value as TenantPlan | '')}
-                  className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white focus:ring-2 focus:ring-primary-500"
+                  onValueChange={(value) => setSelectedPlan(value as TenantPlan | '')}
+                  placeholder="All Plans"
                 >
-                  <option value="">All Plans</option>
-                  <option value="trial">Trial</option>
-                  <option value="starter">Starter</option>
-                  <option value="professional">Professional</option>
-                  <option value="enterprise">Enterprise</option>
-                </select>
+                  <SelectItem value="">All Plans</SelectItem>
+                  <SelectItem value="trial">Trial</SelectItem>
+                  <SelectItem value="starter">Starter</SelectItem>
+                  <SelectItem value="professional">Professional</SelectItem>
+                  <SelectItem value="enterprise">Enterprise</SelectItem>
+                </Select>
               </div>
 
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Status</label>
-                <select
+                <Select
                   value={selectedStatus}
-                  onChange={(e) => setSelectedStatus(e.target.value as TenantStatus | '')}
-                  className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white focus:ring-2 focus:ring-primary-500"
+                  onValueChange={(value) => setSelectedStatus(value as TenantStatus | '')}
+                  placeholder="All Statuses"
                 >
-                  <option value="">All Statuses</option>
-                  <option value="active">Active</option>
-                  <option value="suspended">Suspended</option>
-                  <option value="pending">Pending</option>
-                  <option value="deactivated">Deactivated</option>
-                </select>
+                  <SelectItem value="">All Statuses</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="suspended">Suspended</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="deactivated">Deactivated</SelectItem>
+                </Select>
               </div>
 
               <div className="flex items-end gap-2">

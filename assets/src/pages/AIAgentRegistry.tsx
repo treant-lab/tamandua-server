@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { cn, safeCapitalize } from '@/lib/utils'
 import { useState } from 'react'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface AIAgent {
@@ -134,18 +135,18 @@ export default function AgentRegistry({ agents, permissions: _permissions, activ
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg)' }}
             />
           </div>
-          <select
+          <Select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onValueChange={setStatusFilter}
+            placeholder="All Status"
             className="rounded-lg px-4 py-2 focus:ring-2 focus:ring-primary-500"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg)' }}
           >
-            <option value="all">All Status</option>
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-            <option value="suspended">Suspended</option>
-            <option value="error">Error</option>
-          </select>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="inactive">Inactive</SelectItem>
+            <SelectItem value="suspended">Suspended</SelectItem>
+            <SelectItem value="error">Error</SelectItem>
+          </Select>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

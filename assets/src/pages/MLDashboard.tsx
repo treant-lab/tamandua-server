@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { logger } from '@/lib/logger'
 import {
   Brain,
@@ -485,27 +486,24 @@ export default function MLDashboard({
                 >
                   Dataset
                 </label>
-                <select
+                <Select
                   value={trainingDataset}
-                  onChange={(e) => setTrainingDataset(e.target.value)}
+                  onValueChange={setTrainingDataset}
                   disabled={isTraining}
-                  className="w-full rounded-lg px-4 py-2 focus:ring-2 focus:ring-offset-0 disabled:opacity-50"
-                  style={{
-                    backgroundColor: 'var(--surface-elevated)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--fg)',
-                  }}
+                  placeholder="Dataset"
+                  className="rounded-lg px-4 py-2 focus:ring-2 focus:ring-offset-0"
+                  fullWidth
                 >
                   {(training?.available_datasets || []).length === 0 ? (
-                    <option value="">No datasets available</option>
+                    <SelectItem value="">No datasets available</SelectItem>
                   ) : (
                     (training?.available_datasets || []).map((ds) => (
-                      <option key={ds} value={ds}>
+                      <SelectItem key={ds} value={ds}>
                         {ds}
-                      </option>
+                      </SelectItem>
                     ))
                   )}
-                </select>
+                </Select>
               </div>
               <div>
                 <label

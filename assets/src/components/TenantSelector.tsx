@@ -12,6 +12,7 @@ import {
   Rocket,
   Sparkles,
 } from 'lucide-react'
+import { Popover } from '@/components/ui/baseui'
 import { cn } from '@/lib/utils'
 import type { Tenant, TenantPlan } from '@/types'
 
@@ -78,20 +79,7 @@ export function TenantSelector({ className, compact = false }: TenantSelectorPro
 
   const [isOpen, setIsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const dropdownRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false)
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
 
   // Focus search input when dropdown opens
   useEffect(() => {
@@ -126,53 +114,56 @@ export function TenantSelector({ className, compact = false }: TenantSelectorPro
   const PlanIcon = currentTenant ? planIcons[currentTenant.plan] : Building2
 
   return (
-    <div ref={dropdownRef} className={cn('relative', className)}>
-      {/* Trigger Button */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        disabled={isLoading}
-        className={cn(
-          'flex items-center gap-3 rounded-lg transition-colors',
-          'border border-slate-600 bg-slate-700/50 hover:bg-slate-700',
-          compact ? 'px-2 py-1.5' : 'px-3 py-2',
-          isLoading && 'opacity-50 cursor-not-allowed'
-        )}
-      >
-        {isLoading ? (
-          <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-        ) : currentTenant ? (
-          <>
-            <TenantLogo tenant={currentTenant} className={compact ? 'h-6 w-6 text-xs' : 'h-8 w-8 text-sm'} />
-            {!compact && (
-              <div className="flex-1 min-w-0 text-left">
-                <div className="text-sm font-medium text-white truncate max-w-[120px]">
-                  {currentTenant.name}
-                </div>
-                <div className="flex items-center gap-1">
-                  <PlanIcon className={cn('h-3 w-3', planColors[currentTenant.plan])} />
-                  <span className={cn('text-xs capitalize', planColors[currentTenant.plan])}>
-                    {currentTenant.plan}
-                  </span>
-                </div>
-              </div>
+    <div className={className}>
+      <Popover
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        side="bottom"
+        trigger={
+          <button
+            type="button"
+            disabled={isLoading}
+            className={cn(
+              'flex items-center gap-3 rounded-lg transition-colors',
+              'border border-slate-600 bg-slate-700/50 hover:bg-slate-700',
+              compact ? 'px-2 py-1.5' : 'px-3 py-2',
+              isLoading && 'cursor-not-allowed opacity-50'
             )}
-            <ChevronDown className={cn(
-              'h-4 w-4 text-slate-400 transition-transform',
-              isOpen && 'rotate-180'
-            )} />
-          </>
-        ) : (
-          <>
-            <Building2 className="h-5 w-5 text-slate-400" />
-            {!compact && <span className="text-sm text-slate-400">Select tenant</span>}
-            <ChevronDown className="h-4 w-4 text-slate-400" />
-          </>
-        )}
-      </button>
-
-      {/* Dropdown */}
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-2 w-72 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 overflow-hidden">
+          >
+            {isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+            ) : currentTenant ? (
+              <>
+                <TenantLogo tenant={currentTenant} className={compact ? 'h-6 w-6 text-xs' : 'h-8 w-8 text-sm'} />
+                {!compact && (
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="max-w-[120px] truncate text-sm font-medium text-white">
+                      {currentTenant.name}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <PlanIcon className={cn('h-3 w-3', planColors[currentTenant.plan])} />
+                      <span className={cn('text-xs capitalize', planColors[currentTenant.plan])}>
+                        {currentTenant.plan}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                <ChevronDown className={cn(
+                  'h-4 w-4 text-slate-400 transition-transform',
+                  isOpen && 'rotate-180'
+                )} />
+              </>
+            ) : (
+              <>
+                <Building2 className="h-5 w-5 text-slate-400" />
+                {!compact && <span className="text-sm text-slate-400">Select tenant</span>}
+                <ChevronDown className="h-4 w-4 text-slate-400" />
+              </>
+            )}
+          </button>
+        }
+      >
+        <div className="w-72 overflow-hidden rounded-lg bg-slate-800">
           {/* Search */}
           <div className="p-2 border-b border-slate-700">
             <div className="relative">
@@ -265,7 +256,7 @@ export function TenantSelector({ className, compact = false }: TenantSelectorPro
             </div>
           </div>
         </div>
-      )}
+      </Popover>
     </div>
   )
 }

@@ -9,7 +9,6 @@ import {
   ChevronRight,
   Pencil,
   Trash2,
-  X,
   Copy,
   FileText,
   Users,
@@ -17,6 +16,7 @@ import {
   Check,
   Info
 } from 'lucide-react'
+import { Dialog, DialogFooter } from '@/components/ui/baseui'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -481,20 +481,14 @@ export default function RBACRoles({
         </div>
 
         {/* Create Role Modal */}
-        {showCreateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="card-sentinel w-full max-w-md rounded-xl border p-6 shadow-2xl" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Create Custom Role</h3>
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="rounded p-1 transition-colors hover:opacity-80"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={showCreateModal}
+          onOpenChange={setShowCreateModal}
+          title="Create Custom Role"
+          maxWidth="30rem"
+        >
+          {showCreateModal && (
+            <>
               <div className="space-y-4">
                 <div>
                   <label className="mb-1 block text-sm font-medium" style={{ color: 'var(--muted)' }}>Role Name</label>
@@ -592,7 +586,7 @@ export default function RBACRoles({
                   </div>
                 </div>
               </div>
-              <div className="mt-6 flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
@@ -610,26 +604,23 @@ export default function RBACRoles({
                 >
                   {isLoading ? 'Creating...' : 'Create Role'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* Template Selection Modal */}
-        {showTemplateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="card-sentinel w-full max-w-2xl rounded-xl border p-6 shadow-2xl" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Create Role from Template</h3>
-                <button
-                  type="button"
-                  onClick={() => setShowTemplateModal(false)}
-                  className="rounded p-1 transition-colors hover:opacity-80"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={showTemplateModal}
+          onOpenChange={(open) => {
+            setShowTemplateModal(open)
+            if (!open) setSelectedTemplate(null)
+          }}
+          title="Create Role from Template"
+          maxWidth="42rem"
+        >
+          {showTemplateModal && (
+            <>
               <div className="mb-4">
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
                   Select a template to quickly create a role with pre-configured permissions.
@@ -706,7 +697,7 @@ export default function RBACRoles({
                   </div>
                 </div>
               )}
-              <div className="mt-6 flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => {
@@ -727,29 +718,23 @@ export default function RBACRoles({
                 >
                   {isLoading ? 'Creating...' : 'Create from Template'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* Clone Role Modal */}
-        {showCloneModal && cloneSource && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="card-sentinel w-full max-w-md rounded-xl border p-6 shadow-2xl" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Clone Role</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCloneModal(false)
-                    setCloneSource(null)
-                  }}
-                  className="rounded p-1 transition-colors hover:opacity-80"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={showCloneModal && Boolean(cloneSource)}
+          onOpenChange={(open) => {
+            setShowCloneModal(open)
+            if (!open) setCloneSource(null)
+          }}
+          title="Clone Role"
+          maxWidth="30rem"
+        >
+          {showCloneModal && cloneSource && (
+            <>
               <div className="mb-4 rounded-lg border p-3" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
                   Cloning from:{' '}
@@ -805,7 +790,7 @@ export default function RBACRoles({
                   />
                 </div>
               </div>
-              <div className="mt-6 flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => {
@@ -826,35 +811,31 @@ export default function RBACRoles({
                 >
                   {isLoading ? 'Cloning...' : 'Clone Role'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* Delete Confirmation Modal */}
-        {deleteConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="card-sentinel w-full max-w-md rounded-xl border p-6 shadow-2xl" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-5 w-5 text-red-400" />
-                  <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Delete Role</h3>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setDeleteConfirm(null)}
-                  className="rounded p-1 transition-colors hover:opacity-80"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={Boolean(deleteConfirm)}
+          onOpenChange={(open) => !open && setDeleteConfirm(null)}
+          title={
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-400" />
+              Delete Role
+            </span>
+          }
+          maxWidth="30rem"
+        >
+          {deleteConfirm && (
+            <>
               <p className="mb-6" style={{ color: 'var(--fg)' }}>
                 Are you sure you want to delete the role{' '}
                 <span className="font-semibold" style={{ color: 'var(--fg)' }}>{deleteConfirm.name}</span>? This will remove the
                 role from all users who currently have it assigned. This action cannot be undone.
               </p>
-              <div className="flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5">
                 <button
                   type="button"
                   onClick={() => setDeleteConfirm(null)}
@@ -871,10 +852,10 @@ export default function RBACRoles({
                 >
                   {isLoading ? 'Deleting...' : 'Delete Role'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
       </div>
     </MainLayout>
   )

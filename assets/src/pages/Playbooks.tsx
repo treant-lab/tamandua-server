@@ -145,6 +145,26 @@ const executionStatusConfig: Record<PlaybookExecution['status'], { color: string
   dry_run: { color: 'var(--sol-cyan)', bgColor: 'rgba(25, 251, 155, 0.12)', icon: Eye },
 }
 
+const normalizeCategory = (category: unknown): Playbook['category'] => {
+  if (category === 'data_exfil' || category === 'exfiltration') return 'data_exfiltration'
+  if (typeof category === 'string' && category in categoryConfig) return category as Playbook['category']
+  return 'custom'
+}
+
+const getCategoryConfig = (category: unknown) => categoryConfig[normalizeCategory(category)]
+
+const getStatusConfig = (status: unknown) => {
+  if (typeof status === 'string' && status in statusConfig) return statusConfig[status as Playbook['status']]
+  return statusConfig.draft
+}
+
+const getExecutionStatusConfig = (status: unknown) => {
+  if (typeof status === 'string' && status in executionStatusConfig) {
+    return executionStatusConfig[status as PlaybookExecution['status']]
+  }
+  return executionStatusConfig.cancelled
+}
+
 const actionTypes = [
   { value: 'isolate', label: 'Isolate Host', description: 'Isolate the agent from the network' },
   { value: 'kill_process', label: 'Kill Process', description: 'Terminate the suspicious process' },
@@ -160,6 +180,11 @@ const stepTypeConfig: Record<StepType, { icon: typeof Zap; color: string; bgColo
   condition: { icon: GitBranch, color: 'var(--high)', bgColor: 'var(--high-bg)', borderColor: 'rgba(245, 165, 36, 0.3)', label: 'Condition' },
   wait: { icon: Timer, color: 'var(--muted)', bgColor: 'var(--surface-2)', borderColor: 'var(--border)', label: 'Wait / Delay' },
   loop: { icon: Repeat, color: 'var(--sol-magenta)', bgColor: 'rgba(217, 70, 239, 0.12)', borderColor: 'rgba(217, 70, 239, 0.3)', label: 'Loop' },
+}
+
+const getStepTypeConfig = (stepType: unknown) => {
+  if (typeof stepType === 'string' && stepType in stepTypeConfig) return stepTypeConfig[stepType as StepType]
+  return stepTypeConfig.action
 }
 
 const triggerFieldOptions = [
@@ -210,7 +235,10 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
     setTemplatesError(null)
     try {
       const [playbooksRes, executionsRes, templatesRes] = await Promise.all([
-        axios.get('/api/v1/playbooks'),
+        axios.get('/api/v1/playbooks').catch((error) => {
+          logger.error('Failed to fetch playbooks:', error)
+          return { data: { data: initialPlaybooks } }
+        }),
         axios.get('/api/v1/playbooks/recent-executions').catch(() => ({ data: { data: [] } })),
         axios.get('/api/v1/playbooks/templates').catch((error) => {
           logger.error('Failed to fetch playbook templates:', error)
@@ -245,8 +273,8 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
         setTemplates(backendTemplates)
       }
     } catch (error) {
-      logger.error('Failed to fetch playbooks:', error)
-      setLoadError(error instanceof Error ? error.message : 'Failed to load playbooks')
+      logger.error('Failed to refresh playbook data:', error)
+      setLoadError('Failed to refresh playbook data')
     } finally {
       setLoading(false)
     }
@@ -617,7 +645,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
           ) : (
           <div className="flex gap-3">
             {templates.map((template) => {
-              const category = categoryConfig[template.category]
+              const category = getCategoryConfig(template.category)
               const CategoryIcon = category.icon
               return (
                 <button
@@ -673,8 +701,8 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
             ) : viewMode === 'grid' ? (
               <div className="grid grid-cols-2 gap-4">
                 {filteredPlaybooks.map((playbook) => {
-                  const category = categoryConfig[playbook.category]
-                  const status = statusConfig[playbook.status]
+                  const category = getCategoryConfig(playbook.category)
+                  const status = getStatusConfig(playbook.status)
                   const CategoryIcon = category.icon
 
                   return (
@@ -741,7 +769,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
                       {/* Step type summary */}
                       <div className="flex items-center gap-2 mb-3">
                         {playbook.steps.map((step, i) => {
-                          const stConf = stepTypeConfig[step.stepType || 'action']
+                          const stConf = getStepTypeConfig(step.stepType)
                           const StIcon = stConf.icon
                           return (
                             <div key={step.id} className="flex items-center">
@@ -792,8 +820,8 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
                 style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', '--tw-divide-color': 'var(--hairline)' } as React.CSSProperties}
               >
                 {filteredPlaybooks.map((playbook) => {
-                  const category = categoryConfig[playbook.category]
-                  const status = statusConfig[playbook.status]
+                  const category = getCategoryConfig(playbook.category)
+                  const status = getStatusConfig(playbook.status)
                   const CategoryIcon = category.icon
 
                   return (
@@ -910,7 +938,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
                     <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--subtle)' }}>Step Flow</h4>
                     <div className="space-y-1">
                       {selectedPlaybook.steps.map((step, index) => {
-                        const stConf = stepTypeConfig[step.stepType || 'action']
+                        const stConf = getStepTypeConfig(step.stepType)
                         const StIcon = stConf.icon
                         return (
                           <div key={step.id}>
@@ -1048,7 +1076,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
                 ) : (
                   executions.map((execution) => {
                     const playbook = playbooks.find((p) => p.id === execution.playbookId)
-                    const statusConf = executionStatusConfig[execution.status]
+                    const statusConf = getExecutionStatusConfig(execution.status)
                     const StatusIcon = statusConf.icon
 
                     return (
@@ -1519,7 +1547,7 @@ function PlaybookEditor({
               {/* Visual Flow Builder */}
               <div className="space-y-1">
                 {(playbook.steps || []).map((step, index) => {
-                  const stConf = stepTypeConfig[step.stepType || 'action']
+                  const stConf = getStepTypeConfig(step.stepType)
                   const StIcon = stConf.icon
 
                   return (
@@ -1835,7 +1863,7 @@ function ExecutionLogModal({
   playbookName: string
   onClose: () => void
 }) {
-  const statusConf = executionStatusConfig[execution.status]
+  const statusConf = getExecutionStatusConfig(execution.status)
   const StatusIcon = statusConf.icon
 
   return (

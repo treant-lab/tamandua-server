@@ -12,7 +12,6 @@ import {
   CheckCircle,
   XCircle,
   X,
-  Plus,
   Trash2,
   Eye,
   ArrowUpCircle,
@@ -20,6 +19,7 @@ import {
   AlertTriangle,
   Filter
 } from 'lucide-react'
+import { Checkbox, Dialog, DialogFooter, Menu, MenuItem, MenuSeparator, Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -71,7 +71,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
   const [searchQuery, setSearchQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
-  const [activeMenu, setActiveMenu] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState<string | null>(null)
 
   // Modals
@@ -107,7 +106,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
   // Toggle MFA for a user
   const handleToggleMFA = useCallback(async (user: User) => {
     setIsLoading(user.id)
-    setActiveMenu(null)
     try {
       const response = await fetch(`/api/v1/users/${user.id}/mfa`, {
         method: 'POST',
@@ -130,7 +128,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
   // Toggle user status (activate/deactivate)
   const handleToggleStatus = useCallback(async (user: User) => {
     setIsLoading(user.id)
-    setActiveMenu(null)
     const newStatus = user.isActive === false ? 'active' : 'inactive'
     try {
       const response = await fetch(`/api/v1/users/${user.id}/status`, {
@@ -153,7 +150,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
 
   // Open edit role modal
   const handleOpenEditRole = useCallback((user: User) => {
-    setActiveMenu(null)
     setSelectedRoles(new Set(user.roles.map((r) => r.id)))
     setEditRoleModal({ user })
   }, [])
@@ -194,7 +190,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
 
   // View effective permissions
   const handleViewPermissions = useCallback(async (user: User) => {
-    setActiveMenu(null)
     setPermissionsModal({ user, permissions: null })
 
     try {
@@ -217,7 +212,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
 
   // Open elevate modal
   const handleOpenElevate = useCallback((user: User) => {
-    setActiveMenu(null)
     setElevateRoleId('')
     setElevateDuration(4)
     setElevateReason('')
@@ -256,7 +250,6 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
 
   // View user audit log
   const handleViewAudit = useCallback(async (user: User) => {
-    setActiveMenu(null)
     setAuditModal({ user, entries: [] })
 
     try {
@@ -382,37 +375,29 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
           </div>
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-            <select
+            <Select
               value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
+              onValueChange={setRoleFilter}
+              placeholder="All Roles"
               className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-              style={{
-                backgroundColor: 'var(--surface)',
-                borderColor: 'var(--border)',
-                color: 'var(--fg)'
-              }}
             >
-              <option value="">All Roles</option>
+              <SelectItem value="">All Roles</SelectItem>
               {availableRoles.map((role) => (
-                <option key={role.id} value={role.id}>
+                <SelectItem key={role.id} value={role.id}>
                   {role.name}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onValueChange={setStatusFilter}
+              placeholder="All Status"
               className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-              style={{
-                backgroundColor: 'var(--surface)',
-                borderColor: 'var(--border)',
-                color: 'var(--fg)'
-              }}
             >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
+              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="inactive">Inactive</SelectItem>
+            </Select>
           </div>
         </div>
 
@@ -528,97 +513,58 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                         )}
                       </td>
                       <td className="p-4">
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() => setActiveMenu(activeMenu === user.id ? null : user.id)}
-                            className="rounded-lg p-1.5 transition-colors hover:bg-white/10"
-                            style={{ color: 'var(--muted)' }}
-                          >
-                            <MoreVertical className="h-4 w-4" />
-                          </button>
-                          {activeMenu === user.id && (
-                            <div
-                              className="absolute right-0 top-full z-10 mt-1 w-52 rounded-lg border shadow-xl"
-                              style={{
-                                backgroundColor: 'var(--surface)',
-                                borderColor: 'var(--border)'
-                              }}
+                        <Menu
+                          align="end"
+                          className="w-52"
+                          trigger={
+                            <button
+                              type="button"
+                              aria-label={`Open actions for ${user.email}`}
+                              className="rounded-lg p-1.5 transition-colors hover:bg-white/10"
+                              style={{ color: 'var(--muted)' }}
                             >
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 rounded-t-lg px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{ color: 'var(--muted)' }}
-                                onClick={() => handleOpenEditRole(user)}
-                                disabled={isLoading === user.id}
-                              >
+                              <MoreVertical className="h-4 w-4" />
+                            </button>
+                          }
+                        >
+                          <MenuItem onSelect={() => handleOpenEditRole(user)} disabled={isLoading === user.id}>
+                            <Shield className="h-4 w-4" />
+                            Manage Roles
+                          </MenuItem>
+                          <MenuItem onSelect={() => handleViewPermissions(user)} disabled={isLoading === user.id}>
+                            <Eye className="h-4 w-4" />
+                            View Permissions
+                          </MenuItem>
+                          <MenuItem onSelect={() => handleOpenElevate(user)} disabled={isLoading === user.id}>
+                            <ArrowUpCircle className="h-4 w-4" />
+                            Temporary Elevation
+                          </MenuItem>
+                          <MenuItem onSelect={() => handleViewAudit(user)} disabled={isLoading === user.id}>
+                            <History className="h-4 w-4" />
+                            View Audit Log
+                          </MenuItem>
+                          <MenuSeparator />
+                          <MenuItem onSelect={() => handleToggleMFA(user)} disabled={isLoading === user.id}>
+                            {user.mfaEnabled ? (
+                              <>
+                                <ShieldOff className="h-4 w-4" />
+                                Disable MFA
+                              </>
+                            ) : (
+                              <>
                                 <Shield className="h-4 w-4" />
-                                Manage Roles
-                              </button>
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{ color: 'var(--muted)' }}
-                                onClick={() => handleViewPermissions(user)}
-                                disabled={isLoading === user.id}
-                              >
-                                <Eye className="h-4 w-4" />
-                                View Permissions
-                              </button>
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{ color: 'var(--muted)' }}
-                                onClick={() => handleOpenElevate(user)}
-                                disabled={isLoading === user.id}
-                              >
-                                <ArrowUpCircle className="h-4 w-4" />
-                                Temporary Elevation
-                              </button>
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{ color: 'var(--muted)' }}
-                                onClick={() => handleViewAudit(user)}
-                                disabled={isLoading === user.id}
-                              >
-                                <History className="h-4 w-4" />
-                                View Audit Log
-                              </button>
-                              <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{ color: 'var(--muted)' }}
-                                onClick={() => handleToggleMFA(user)}
-                                disabled={isLoading === user.id}
-                              >
-                                {user.mfaEnabled ? (
-                                  <>
-                                    <ShieldOff className="h-4 w-4" />
-                                    Disable MFA
-                                  </>
-                                ) : (
-                                  <>
-                                    <Shield className="h-4 w-4" />
-                                    Enable MFA
-                                  </>
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 rounded-b-lg px-4 py-2 text-left text-sm transition-colors hover:bg-white/10"
-                                style={{
-                                  color: user.isActive === false ? 'var(--emerald-400)' : 'var(--rose-400)'
-                                }}
-                                onClick={() => handleToggleStatus(user)}
-                                disabled={isLoading === user.id}
-                              >
-                                {user.isActive === false ? 'Activate User' : 'Deactivate User'}
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                                Enable MFA
+                              </>
+                            )}
+                          </MenuItem>
+                          <MenuItem
+                            onSelect={() => handleToggleStatus(user)}
+                            disabled={isLoading === user.id}
+                            destructive={user.isActive !== false}
+                          >
+                            {user.isActive === false ? 'Activate User' : 'Deactivate User'}
+                          </MenuItem>
+                        </Menu>
                       </td>
                     </tr>
                   ))
@@ -629,22 +575,14 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
         </div>
 
         {/* Edit Roles Modal (Multi-role) */}
-        {editRoleModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div
-              className="card-sentinel w-full max-w-lg rounded-xl p-6 shadow-2xl"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Manage User Roles</h3>
-                <button
-                  type="button"
-                  onClick={() => setEditRoleModal(null)}
-                  className="rounded p-1 transition-colors hover:bg-white/10"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={Boolean(editRoleModal)}
+          onOpenChange={(open) => !open && setEditRoleModal(null)}
+          title="Manage User Roles"
+          maxWidth="34rem"
+        >
+          {editRoleModal && (
+            <>
               <div className="mb-4">
                 <p className="mb-1 text-sm" style={{ color: 'var(--muted)' }}>User</p>
                 <p className="font-medium" style={{ color: 'var(--fg)' }}>{editRoleModal.user.email}</p>
@@ -676,11 +614,10 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                         borderColor: selectedRoles.has(role.id) ? undefined : 'var(--border)'
                       }}
                     >
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={selectedRoles.has(role.id)}
-                        onChange={() => toggleRoleSelection(role.id)}
-                        className="h-4 w-4 rounded border-slate-500 bg-slate-600 text-primary-600 focus:ring-primary-500"
+                        onCheckedChange={() => toggleRoleSelection(role.id)}
+                        aria-label={`Assign ${role.name}`}
                       />
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
@@ -697,7 +634,7 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                   ))}
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5">
                 <button
                   type="button"
                   onClick={() => setEditRoleModal(null)}
@@ -714,28 +651,20 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                 >
                   {isLoading === editRoleModal.user.id ? 'Updating...' : 'Update Roles'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* View Permissions Modal */}
-        {permissionsModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div
-              className="card-sentinel w-full max-w-2xl rounded-xl p-6 shadow-2xl"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Effective Permissions</h3>
-                <button
-                  type="button"
-                  onClick={() => setPermissionsModal(null)}
-                  className="rounded p-1 transition-colors hover:bg-white/10"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={Boolean(permissionsModal)}
+          onOpenChange={(open) => !open && setPermissionsModal(null)}
+          title="Effective Permissions"
+          maxWidth="42rem"
+        >
+          {permissionsModal && (
+            <>
               <div className="mb-4">
                 <p className="mb-1 text-sm" style={{ color: 'var(--muted)' }}>User</p>
                 <p className="font-medium" style={{ color: 'var(--fg)' }}>{permissionsModal.user.email}</p>
@@ -787,7 +716,7 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                   </div>
                 </>
               )}
-              <div className="mt-6 flex justify-end">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => setPermissionsModal(null)}
@@ -795,31 +724,25 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                 >
                   Close
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* Temporary Elevation Modal */}
-        {elevateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div
-              className="card-sentinel w-full max-w-md rounded-xl p-6 shadow-2xl"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ArrowUpCircle className="h-5 w-5" style={{ color: 'var(--amber-400)' }} />
-                  <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Temporary Role Elevation</h3>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setElevateModal(null)}
-                  className="rounded p-1 transition-colors hover:bg-white/10"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={Boolean(elevateModal)}
+          onOpenChange={(open) => !open && setElevateModal(null)}
+          title={
+            <span className="flex items-center gap-2">
+              <ArrowUpCircle className="h-5 w-5" style={{ color: 'var(--amber-400)' }} />
+              Temporary Role Elevation
+            </span>
+          }
+          maxWidth="30rem"
+        >
+          {elevateModal && (
+            <>
               <div
                 className="mb-4 rounded-lg border p-3"
                 style={{
@@ -844,47 +767,40 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                   <label className="mb-2 block text-sm font-medium" style={{ color: 'var(--muted)' }}>
                     Elevated Role
                   </label>
-                  <select
+                  <Select
                     value={elevateRoleId}
-                    onChange={(e) => setElevateRoleId(e.target.value)}
+                    onValueChange={setElevateRoleId}
+                    placeholder="Select a role..."
+                    fullWidth
                     className="w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    style={{
-                      backgroundColor: 'var(--surface)',
-                      borderColor: 'var(--border)',
-                      color: 'var(--fg)'
-                    }}
                   >
-                    <option value="">Select a role...</option>
+                    <SelectItem value="">Select a role...</SelectItem>
                     {availableRoles
                       .filter((r) => !elevateModal.user.roles.some((ur) => ur.id === r.id))
                       .map((role) => (
-                        <option key={role.id} value={role.id}>
+                        <SelectItem key={role.id} value={role.id}>
                           {role.name} (Priority: {role.priority})
-                        </option>
+                        </SelectItem>
                       ))}
-                  </select>
+                  </Select>
                 </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium" style={{ color: 'var(--muted)' }}>
                     Duration (hours)
                   </label>
-                  <select
-                    value={elevateDuration}
-                    onChange={(e) => setElevateDuration(parseInt(e.target.value))}
+                  <Select
+                    value={String(elevateDuration)}
+                    onValueChange={(value) => setElevateDuration(parseInt(value, 10))}
+                    fullWidth
                     className="w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    style={{
-                      backgroundColor: 'var(--surface)',
-                      borderColor: 'var(--border)',
-                      color: 'var(--fg)'
-                    }}
                   >
-                    <option value={1}>1 hour</option>
-                    <option value={4}>4 hours</option>
-                    <option value={8}>8 hours</option>
-                    <option value={24}>24 hours</option>
-                    <option value={48}>48 hours</option>
-                    <option value={72}>72 hours (max)</option>
-                  </select>
+                    <SelectItem value="1">1 hour</SelectItem>
+                    <SelectItem value="4">4 hours</SelectItem>
+                    <SelectItem value="8">8 hours</SelectItem>
+                    <SelectItem value="24">24 hours</SelectItem>
+                    <SelectItem value="48">48 hours</SelectItem>
+                    <SelectItem value="72">72 hours (max)</SelectItem>
+                  </Select>
                 </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium" style={{ color: 'var(--muted)' }}>
@@ -904,7 +820,7 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                   />
                 </div>
               </div>
-              <div className="mt-6 flex items-center justify-end gap-3">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => setElevateModal(null)}
@@ -925,28 +841,20 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                 >
                   {isLoading === elevateModal.user.id ? 'Granting...' : 'Grant Elevation'}
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
 
         {/* Audit Log Modal */}
-        {auditModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div
-              className="card-sentinel w-full max-w-2xl rounded-xl p-6 shadow-2xl"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>User Permission Audit Log</h3>
-                <button
-                  type="button"
-                  onClick={() => setAuditModal(null)}
-                  className="rounded p-1 transition-colors hover:bg-white/10"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <Dialog
+          open={Boolean(auditModal)}
+          onOpenChange={(open) => !open && setAuditModal(null)}
+          title="User Permission Audit Log"
+          maxWidth="42rem"
+        >
+          {auditModal && (
+            <>
               <div className="mb-4">
                 <p className="mb-1 text-sm" style={{ color: 'var(--muted)' }}>User</p>
                 <p className="font-medium" style={{ color: 'var(--fg)' }}>{auditModal.user.email}</p>
@@ -995,7 +903,7 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                   </div>
                 )}
               </div>
-              <div className="mt-6 flex justify-end">
+              <DialogFooter className="-mx-6 -mb-5 mt-6">
                 <button
                   type="button"
                   onClick={() => setAuditModal(null)}
@@ -1003,10 +911,10 @@ export default function UserManagement({ users: rawUsers, availableRoles: rawRol
                 >
                   Close
                 </button>
-              </div>
-            </div>
-          </div>
-        )}
+              </DialogFooter>
+            </>
+          )}
+        </Dialog>
       </div>
     </MainLayout>
   )

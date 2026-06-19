@@ -20,6 +20,7 @@ import {
   Eye,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
@@ -334,17 +335,18 @@ export default function PhishingTriage({
                     </div>
                     <div className="flex items-center gap-2">
                       <Filter className="h-4 w-4 text-[var(--muted)]" />
-                      <select
+                      <Select
                         value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value)}
+                        onValueChange={setStatusFilter}
+                        placeholder="All Status"
                         className="bg-[var(--surface-raised)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-primary-500"
                       >
-                        <option value="all">All Status</option>
-                        <option value="pending">Pending</option>
-                        <option value="analyzing">Analyzing</option>
-                        <option value="reviewed">Reviewed</option>
-                        <option value="resolved">Resolved</option>
-                      </select>
+                        <SelectItem value="all">All Status</SelectItem>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="analyzing">Analyzing</SelectItem>
+                        <SelectItem value="reviewed">Reviewed</SelectItem>
+                        <SelectItem value="resolved">Resolved</SelectItem>
+                      </Select>
                     </div>
                   </div>
 

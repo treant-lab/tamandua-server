@@ -1,5 +1,6 @@
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import {
   Cloud,
   Server,
@@ -462,16 +463,17 @@ export default function Serverless({
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-[var(--muted)]" />
-              <select
+              <Select
                 value={providerFilter}
-                onChange={(e) => setProviderFilter(e.target.value)}
-                className="bg-[var(--surface-raised)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--muted)] focus:outline-none focus:ring-2 focus:ring-primary-500"
+                onValueChange={setProviderFilter}
+                placeholder="All Providers"
+                className="rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
               >
-                <option value="all">All Providers</option>
-                <option value="aws">AWS Lambda</option>
-                <option value="azure">Azure Functions</option>
-                <option value="gcp">GCP Cloud Functions</option>
-              </select>
+                <SelectItem value="all">All Providers</SelectItem>
+                <SelectItem value="aws">AWS Lambda</SelectItem>
+                <SelectItem value="azure">Azure Functions</SelectItem>
+                <SelectItem value="gcp">GCP Cloud Functions</SelectItem>
+              </Select>
             </div>
           </div>
 

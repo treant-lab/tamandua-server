@@ -8,6 +8,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { cn, safeCapitalize } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import {
   Calendar,
   Clock,
@@ -346,17 +347,17 @@ export function ThreatHeatmap({
           </div>
 
           {/* Time Range Selector */}
-          <select
+          <Select
             value={timeRange}
-            onChange={(e) => onTimeRangeChange?.(e.target.value)}
+            onValueChange={(value) => onTimeRangeChange?.(value)}
             className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
           >
             {timeRangeOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
+              <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
-              </option>
+              </SelectItem>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
 

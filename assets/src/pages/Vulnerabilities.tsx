@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 interface VulnerabilityStats {
   total_cves: number
@@ -297,22 +298,18 @@ export default function Vulnerabilities() {
                     } as React.CSSProperties}
                   />
                 </div>
-                <select
+                <Select
                   value={severityFilter}
-                  onChange={(e) => setSeverityFilter(e.target.value)}
+                  onValueChange={setSeverityFilter}
+                  placeholder="All Severities"
                   className="px-3 py-2 rounded-lg focus:outline-none focus:ring-2"
-                  style={{
-                    background: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--fg)'
-                  }}
                 >
-                  <option value="">All Severities</option>
-                  <option value="critical">Critical</option>
-                  <option value="high">High</option>
-                  <option value="medium">Medium</option>
-                  <option value="low">Low</option>
-                </select>
+                  <SelectItem value="">All Severities</SelectItem>
+                  <SelectItem value="critical">Critical</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                </Select>
                 <button
                   onClick={() => setKevFilter(!kevFilter)}
                   className="px-3 py-2 rounded-lg transition-colors flex items-center gap-2"

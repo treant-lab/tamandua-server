@@ -27,6 +27,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 interface InstallationToken {
   id: string
@@ -192,9 +193,9 @@ Start-Process -FilePath $AgentPath -Wait -Verb RunAs -ArgumentList @(
 )
 # Installs the service and the embedded Windows driver when supported.`,
       macos: `# macOS product installer is not published on this server yet.
-# Use the signed and notarized Tamandua EDR DMG/Cask release that includes
-# the EndpointSecurity System Extension, then approve the extension and
-# Full Disk Access on the target Mac before enrollment.`,
+# Product readiness requires the signed and notarized Tamandua EDR DMG/Cask.
+# The installer must include the EndpointSecurity System Extension and pass Gatekeeper.
+# Do not use /downloads/agents/tamandua-agent-macos-arm64 as product evidence.`,
       linux: linuxBinary ? `# Bash (root)
 curl -fsSL "${linuxBinary}" -o /tmp/tamandua-agent
 chmod +x /tmp/tamandua-agent
@@ -411,31 +412,33 @@ sudo /tmp/tamandua-agent install \\
                     <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: 'var(--subtle)' }}>
                       Role
                     </label>
-                    <select
+                    <Select
                       value={agentRole}
-                      onChange={(e) => setAgentRole(e.target.value as AgentRole)}
+                      onValueChange={(value) => setAgentRole(value as AgentRole)}
                       className="input-sentinel w-full"
                       disabled={!!newToken}
+                      fullWidth
                     >
                       {ROLE_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium uppercase tracking-wider mb-2" style={{ color: 'var(--subtle)' }}>
                       Token TTL
                     </label>
-                    <select
+                    <Select
                       value={tokenTtl}
-                      onChange={(e) => setTokenTtl(e.target.value as TokenTtl)}
+                      onValueChange={(value) => setTokenTtl(value as TokenTtl)}
                       className="input-sentinel w-full"
                       disabled={!!newToken}
+                      fullWidth
                     >
                       {TTL_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                 </div>
 
@@ -525,7 +528,7 @@ sudo /tmp/tamandua-agent install \\
                 {/* Instructions */}
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
                   {activeOsTab === 'windows' && 'Run from an elevated PowerShell on the target host:'}
-                  {activeOsTab === 'macos' && 'macOS requires the signed DMG/Cask release with System Extension approval.'}
+                  {activeOsTab === 'macos' && 'macOS requires the signed/notarized Tamandua EDR DMG or Cask with System Extension approval.'}
                   {activeOsTab === 'linux' && (downloadUrls.linuxX64 ? 'Run as root on the target Linux host:' : 'Linux binary is not published on this server yet.')}
                 </p>
 

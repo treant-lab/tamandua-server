@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useState } from 'react'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface Asset {
@@ -186,56 +187,44 @@ export default function Assets({
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-              <select
+              <Select
                 value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
+                onValueChange={setTypeFilter}
+                placeholder="All Types"
                 className="rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                style={{
-                  backgroundColor: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--fg)'
-                }}
               >
-                <option value="all">All Types</option>
-                <option value="server">Server</option>
-                <option value="workstation">Workstation</option>
-                <option value="laptop">Laptop</option>
-                <option value="network">Network</option>
-                <option value="cloud">Cloud</option>
-                <option value="database">Database</option>
-              </select>
-              <select
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="server">Server</SelectItem>
+                <SelectItem value="workstation">Workstation</SelectItem>
+                <SelectItem value="laptop">Laptop</SelectItem>
+                <SelectItem value="network">Network</SelectItem>
+                <SelectItem value="cloud">Cloud</SelectItem>
+                <SelectItem value="database">Database</SelectItem>
+              </Select>
+              <Select
                 value={criticalityFilter}
-                onChange={(e) => setCriticalityFilter(e.target.value)}
+                onValueChange={setCriticalityFilter}
+                placeholder="All Criticality"
                 className="rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                style={{
-                  backgroundColor: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--fg)'
-                }}
               >
-                <option value="all">All Criticality</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-              </select>
-              <select
+                <SelectItem value="all">All Criticality</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+              </Select>
+              <Select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+                onValueChange={setStatusFilter}
+                placeholder="All Status"
                 className="rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                style={{
-                  backgroundColor: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--fg)'
-                }}
               >
-                <option value="all">All Status</option>
-                <option value="managed">Managed</option>
-                <option value="unmanaged">Unmanaged</option>
-                <option value="discovered">Discovered</option>
-                <option value="decommissioned">Decommissioned</option>
-              </select>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="managed">Managed</SelectItem>
+                <SelectItem value="unmanaged">Unmanaged</SelectItem>
+                <SelectItem value="discovered">Discovered</SelectItem>
+                <SelectItem value="decommissioned">Decommissioned</SelectItem>
+              </Select>
             </div>
             <button
               onClick={handleRefresh}

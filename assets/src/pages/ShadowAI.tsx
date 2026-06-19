@@ -1,5 +1,6 @@
 import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import {
   Eye,
   AlertTriangle,
@@ -588,17 +589,18 @@ function GatewayPolicyEditor({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <label className="space-y-2 text-sm">
           <span style={{ color: 'var(--fg)' }}>Default Decision</span>
-          <select
+          <Select
             value={policy.default_decision || 'monitor'}
-            onChange={(event) => setPolicy({ ...policy, default_decision: event.target.value as AIGatewayPolicy['default_decision'] })}
-            className="w-full rounded-lg px-3 py-2"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg)' }}
+            onValueChange={(value) => setPolicy({ ...policy, default_decision: value as AIGatewayPolicy['default_decision'] })}
+            placeholder="monitor"
+            className="rounded-lg px-3 py-2"
+            fullWidth
           >
-            <option value="allow">allow</option>
-            <option value="monitor">monitor</option>
-            <option value="review">review</option>
-            <option value="block">block</option>
-          </select>
+            <SelectItem value="allow">allow</SelectItem>
+            <SelectItem value="monitor">monitor</SelectItem>
+            <SelectItem value="review">review</SelectItem>
+            <SelectItem value="block">block</SelectItem>
+          </Select>
         </label>
         <NumberPolicyInput label="Allow Threshold" value={policy.max_risk_score_allow ?? 25} onChange={(value) => setPolicy({ ...policy, max_risk_score_allow: value })} />
         <NumberPolicyInput label="Review Threshold" value={policy.max_risk_score_monitor ?? 70} onChange={(value) => setPolicy({ ...policy, max_risk_score_monitor: value })} />

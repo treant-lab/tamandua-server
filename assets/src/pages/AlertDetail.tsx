@@ -96,6 +96,7 @@ interface ResponseActionRecord {
 }
 
 type AlertTab = 'graph' | 'timeline' | 'events' | 'related' | 'evidence' | 'process-chain';
+const ALERT_TABS: AlertTab[] = ['graph', 'evidence', 'process-chain', 'timeline', 'events', 'related'];
 
 interface StoryStep {
   id: string;
@@ -149,6 +150,12 @@ function parsePid(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function normalizeCorrelationScore(value: unknown): number {
+  const score = Number(value || 0);
+  if (!Number.isFinite(score) || score <= 0) return 0;
+  return Math.min(100, Math.round(score <= 1 ? score * 100 : score));
 }
 
 function basename(path?: string): string | undefined {
@@ -294,11 +301,12 @@ function buildFallbackProcessChain(
   if (evidenceProcess) candidates.push(evidenceProcess);
 
   relatedEvents.forEach(event => {
+    const correlationScore = normalizeCorrelationScore(event.correlation_score);
     const process = processFromPayload(event.payload || {}, {
       pid: event.pid,
       name: event.process_name,
       start_time: event.timestamp,
-      is_malicious: event.id === alert.sourceEventId || Number(event.correlation_score || 0) >= 0.8,
+      is_malicious: event.id === alert.sourceEventId || correlationScore >= 80,
     });
     if (process) candidates.push(process);
   });
@@ -368,13 +376,22 @@ export default function AlertDetail({
   timeline,
 }: AlertDetailPageProps) {
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [activeTab, setActiveTab] = useState<AlertTab>('graph');
+  const [activeTab, setActiveTab] = useState<AlertTab>(() => {
+    if (typeof window === 'undefined') return 'graph';
+    const tab = new URLSearchParams(window.location.search).get('tab') as AlertTab | null;
+    return tab && ALERT_TABS.includes(tab) ? tab : 'graph';
+  });
   const [showResponseActions, setShowResponseActions] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // State for dynamically fetched related events
-  const [relatedEvents, setRelatedEvents] = useState<RelatedEvent[]>(initialRelatedEvents);
+  const [relatedEvents, setRelatedEvents] = useState<RelatedEvent[]>(
+    initialRelatedEvents.map(event => ({
+      ...event,
+      correlation_score: normalizeCorrelationScore(event.correlation_score),
+    }))
+  );
   const [isLoadingRelatedEvents, setIsLoadingRelatedEvents] = useState(false);
   const [relatedEventsError, setRelatedEventsError] = useState<string | null>(null);
 
@@ -418,7 +435,7 @@ export default function AlertDetail({
         process_name: event.process_name,
         severity: event.severity || 'info',
         payload: event.payload || {},
-        correlation_score: event.correlation_score || 0,
+        correlation_score: normalizeCorrelationScore(event.correlation_score),
         correlation_reason: event.correlation_reason || '',
         correlation_kind: event.correlation_kind || (event.correlation_score > 0 ? 'engine' : 'context_only'),
         score_explanation: event.score_explanation || '',
@@ -436,6 +453,15 @@ export default function AlertDetail({
     } finally {
       setIsLoadingRelatedEvents(false);
     }
+  };
+
+  const selectTab = (tab: AlertTab) => {
+    setActiveTab(tab);
+    if (typeof window === 'undefined') return;
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
   };
 
   // Auto-fetch related events when component mounts or when switching to events tab
@@ -923,7 +949,7 @@ export default function AlertDetail({
 
   const getEventCorrelationDetails = (event: RelatedEvent | TimelineEntry, index = 0) => {
     const payload = (event.payload || {}) as Record<string, any>;
-    const score = 'correlation_score' in event ? Number(event.correlation_score || 0) : 0;
+    const score = 'correlation_score' in event ? normalizeCorrelationScore(event.correlation_score) : 0;
     const kind = 'correlation_kind' in event ? event.correlation_kind : undefined;
     const processName = 'process_name' in event ? event.process_name : payload.process_name || payload.name;
     const pid = event.pid || payload.pid;
@@ -1015,7 +1041,7 @@ export default function AlertDetail({
     return 'no gaps returned';
   };
 
-  const strongestCorrelationScore = relatedEvents.reduce((max, event) => Math.max(max, Number(event.correlation_score || 0)), 0);
+  const strongestCorrelationScore = relatedEvents.reduce((max, event) => Math.max(max, normalizeCorrelationScore(event.correlation_score)), 0);
   const correlationOverview = [
     agent?.hostname ? `same endpoint ${agent.hostname}` : null,
     primaryProcess?.name ? `primary process ${primaryProcess.name}${primaryProcess.pid ? ` PID ${primaryProcess.pid}` : ''}` : null,
@@ -1023,6 +1049,79 @@ export default function AlertDetail({
     strongestCorrelationScore ? `top score ${strongestCorrelationScore}/100` : null,
     alert.sourceEventId ? 'source event anchored' : null
   ].filter(Boolean).join(' | ') || 'Correlation is based on the alert source event, endpoint context and nearby telemetry.';
+  const evidenceCount = [
+    alert.evidence?.detection,
+    alert.evidence?.process,
+    ...(alert.evidence?.network || []),
+    ...(alert.evidence?.file_hashes || []),
+    ...(alert.evidence?.registry || []),
+  ].filter(Boolean).length;
+  const graphNodeCount = graphData?.nodes.length || 0;
+  const graphEdgeCount = graphData?.edges.length || 0;
+  const tabInsights: Array<{
+    id: AlertTab;
+    label: string;
+    icon: typeof Activity;
+    count?: number;
+    description: string;
+    metric: string;
+    state: 'ready' | 'partial' | 'empty';
+  }> = [
+    {
+      id: 'graph',
+      label: 'Correlation Graph',
+      icon: Share2,
+      count: graphNodeCount,
+      description: 'Entity graph across process, network, file and DNS pivots',
+      metric: graphNodeCount > 0 ? `${graphNodeCount} nodes / ${graphEdgeCount} edges` : 'No graph built',
+      state: graphNodeCount > 0 ? 'ready' : relatedEvents.length > 0 ? 'partial' : 'empty',
+    },
+    {
+      id: 'evidence',
+      label: 'Evidence',
+      icon: FileText,
+      count: evidenceCount,
+      description: 'Raw detection context, command lines, hashes and policy metadata',
+      metric: evidenceCount > 0 ? `${evidenceCount} evidence fields` : 'Evidence bundle empty',
+      state: evidenceCount > 0 ? 'ready' : 'empty',
+    },
+    {
+      id: 'process-chain',
+      label: 'Process Chain',
+      icon: Terminal,
+      count: displayProcessChain.length,
+      description: 'Parent/child process ancestry and suspicious execution markers',
+      metric: displayProcessChain.length > 0 ? `${displayProcessChain.length} processes` : 'No process chain',
+      state: displayProcessChain.length > 1 ? 'ready' : displayProcessChain.length === 1 ? 'partial' : 'empty',
+    },
+    {
+      id: 'timeline',
+      label: 'Timeline',
+      icon: Clock,
+      count: timeline.length,
+      description: 'Chronological attack narrative around the source alert',
+      metric: timeline.length > 0 ? `${timeline.length} timeline events` : 'No timeline events',
+      state: timeline.length > 0 ? 'ready' : relatedEvents.length > 0 ? 'partial' : 'empty',
+    },
+    {
+      id: 'events',
+      label: 'Related Events',
+      icon: Activity,
+      count: relatedEvents.length,
+      description: 'Nearby telemetry scored by endpoint, process and time proximity',
+      metric: relatedEvents.length > 0 ? `${relatedEvents.length} events / top ${strongestCorrelationScore || 0}` : 'No related events',
+      state: relatedEvents.length > 0 ? 'ready' : 'empty',
+    },
+    {
+      id: 'related',
+      label: 'Related Alerts',
+      icon: AlertTriangle,
+      count: relatedAlerts.length,
+      description: 'Other detections sharing endpoint, technique or time window',
+      metric: relatedAlerts.length > 0 ? `${relatedAlerts.length} related alerts` : 'No related alerts',
+      state: relatedAlerts.length > 0 ? 'ready' : 'empty',
+    },
+  ];
 
   return (
     <>
@@ -1410,42 +1509,75 @@ export default function AlertDetail({
         </div>
 
         {/* Tab Navigation */}
-        <div className="border-b" style={{ backgroundColor: 'color-mix(in srgb, var(--surface) 30%, var(--bg))', borderColor: 'var(--border)' }}>
-          <div className="max-w-full mx-auto px-4">
-            <div className="flex gap-1">
-              {[
-                { id: 'graph', label: 'Correlation Graph', icon: Share2 },
-                { id: 'evidence', label: 'Evidence', icon: FileText },
-                { id: 'process-chain', label: 'Process Chain', icon: Terminal, count: displayProcessChain.length },
-                { id: 'timeline', label: 'Timeline', icon: Clock },
-                { id: 'events', label: 'Related Events', icon: Activity, count: relatedEvents.length },
-                { id: 'related', label: 'Related Alerts', icon: AlertTriangle, count: relatedAlerts.length },
-              ].map(tab => {
+        <div className="border-b" style={{ backgroundColor: 'color-mix(in srgb, var(--surface) 38%, var(--bg))', borderColor: 'var(--border)' }}>
+          <div className="max-w-full mx-auto px-4 py-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-2" role="tablist" aria-label="Alert investigation sections">
+              {tabInsights.map(tab => {
                 const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                const stateColor =
+                  tab.state === 'ready' ? 'var(--low)' :
+                  tab.state === 'partial' ? 'var(--high)' :
+                  'var(--muted)';
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                    id={`alert-tab-${tab.id}`}
+                    role="tab"
+                    type="button"
+                    aria-selected={isActive}
+                    aria-controls={`alert-panel-${tab.id}`}
+                    tabIndex={isActive ? 0 : -1}
+                    onClick={() => selectTab(tab.id)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+                      event.preventDefault();
+                      const currentIndex = ALERT_TABS.indexOf(tab.id);
+                      const direction = event.key === 'ArrowRight' ? 1 : -1;
+                      const nextTab = ALERT_TABS[(currentIndex + direction + ALERT_TABS.length) % ALERT_TABS.length];
+                      selectTab(nextTab);
+                      window.requestAnimationFrame(() => document.getElementById(`alert-tab-${nextTab}`)?.focus());
+                    }}
                     className={cn(
-                      'flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors',
-                      activeTab === tab.id
-                        ? 'border-[var(--accent)]'
-                        : 'border-transparent'
+                      'group min-h-[92px] rounded-lg border p-3 text-left transition-all',
+                      isActive && 'ring-2 ring-[var(--accent)]'
                     )}
                     style={{
-                      color: activeTab === tab.id ? 'var(--accent)' : 'var(--muted)'
+                      backgroundColor: isActive ? 'color-mix(in srgb, var(--accent) 10%, var(--surface))' : 'var(--surface)',
+                      borderColor: isActive ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)',
+                      color: isActive ? 'var(--fg)' : 'var(--fg-2)'
                     }}
                   >
-                    <Icon size={16} />
-                    {tab.label}
-                    {tab.count !== undefined && tab.count > 0 && (
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+                          style={{
+                            backgroundColor: isActive ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'var(--surface-2)',
+                            color: isActive ? 'var(--accent)' : 'var(--muted)'
+                          }}
+                        >
+                          <Icon size={16} />
+                        </span>
+                        <span className="truncate text-sm font-semibold">{tab.label}</span>
+                      </div>
                       <span
-                        className="px-1.5 py-0.5 rounded text-xs"
-                        style={{ backgroundColor: 'var(--surface-alt, var(--surface))' }}
+                        className="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold"
+                        style={{
+                          backgroundColor: 'color-mix(in srgb, var(--surface-3) 75%, transparent)',
+                          color: tab.count && tab.count > 0 ? 'var(--fg)' : 'var(--muted)'
+                        }}
                       >
-                        {tab.count}
+                        {tab.count ?? 0}
                       </span>
-                    )}
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-xs leading-snug" style={{ color: 'var(--muted)' }}>
+                      {tab.description}
+                    </p>
+                    <div className="mt-3 flex items-center gap-2 text-xs">
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: stateColor }} />
+                      <span className="truncate" style={{ color: stateColor }}>{tab.metric}</span>
+                    </div>
                   </button>
                 );
               })}
@@ -1732,7 +1864,7 @@ export default function AlertDetail({
                       <div className="space-y-3">
                         {relatedEvents.map((event, index) => {
                           const Icon = NODE_ICONS[event.event_type as GraphNodeType] || Activity;
-                          const score = event.correlation_score || 0;
+                          const score = normalizeCorrelationScore(event.correlation_score);
                           const scoreColor = score >= 80 ? 'var(--low)' : score >= 40 ? 'var(--med)' : 'var(--muted)';
                           const isNetwork = event.event_type?.includes('network');
                           const payload = event.payload || {};

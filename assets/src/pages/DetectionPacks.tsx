@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { MainLayout } from '@/layouts/MainLayout'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // MITRE ATT&CK Tactics mapping
 const MITRE_TACTICS = [
@@ -752,39 +753,31 @@ export default function DetectionPacks({
           {/* Price filter */}
           <div className="flex items-center gap-2">
             <span className="text-sm" style={{ color: 'var(--muted)' }}>Price:</span>
-            <select
+            <Select
               value={priceFilter}
-              onChange={e => setPriceFilter(e.target.value as PriceFilter)}
+              onValueChange={(value) => setPriceFilter(value as PriceFilter)}
+              placeholder="All"
               className="rounded-lg border px-3 py-2 text-sm"
-              style={{
-                backgroundColor: 'var(--surface)',
-                borderColor: 'var(--border)',
-                color: 'var(--fg)',
-              }}
             >
-              <option value="all">All</option>
-              <option value="free">Free</option>
-              <option value="paid">Paid</option>
-            </select>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="free">Free</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+            </Select>
           </div>
 
           {/* Sort */}
           <div className="flex items-center gap-2">
             <span className="text-sm" style={{ color: 'var(--muted)' }}>Sort:</span>
-            <select
+            <Select
               value={sortBy}
-              onChange={e => setSortBy(e.target.value as SortBy)}
+              onValueChange={(value) => setSortBy(value as SortBy)}
+              placeholder="By reputation"
               className="rounded-lg border px-3 py-2 text-sm"
-              style={{
-                backgroundColor: 'var(--surface)',
-                borderColor: 'var(--border)',
-                color: 'var(--fg)',
-              }}
             >
-              <option value="reputation">By reputation</option>
-              <option value="coverage">By coverage</option>
-              <option value="recency">By recency</option>
-            </select>
+              <SelectItem value="reputation">By reputation</SelectItem>
+              <SelectItem value="coverage">By coverage</SelectItem>
+              <SelectItem value="recency">By recency</SelectItem>
+            </Select>
           </div>
         </div>
 

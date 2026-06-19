@@ -35,7 +35,7 @@ import {
 import { cn, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useRef, useEffect } from 'react'
-import { Dialog } from '@/components/ui/baseui'
+import { Dialog, Select, SelectItem } from '@/components/ui/baseui'
 import type {
   TenantDetailPageProps,
   TenantUser,
@@ -275,16 +275,17 @@ function UsersTab({ users, invitations, tenantId }: { users: TenantUser[]; invit
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1">Role</label>
-            <select
+            <Select
               value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as TenantUser['role'])}
+              onValueChange={(value) => setInviteRole(value as TenantUser['role'])}
               className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
+              fullWidth
             >
-              <option value="tenant_admin">Tenant Admin</option>
-              <option value="analyst">Analyst</option>
-              <option value="viewer">Viewer</option>
-              <option value="api_only">API Only</option>
-            </select>
+              <SelectItem value="tenant_admin">Tenant Admin</SelectItem>
+              <SelectItem value="analyst">Analyst</SelectItem>
+              <SelectItem value="viewer">Viewer</SelectItem>
+              <SelectItem value="api_only">API Only</SelectItem>
+            </Select>
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button

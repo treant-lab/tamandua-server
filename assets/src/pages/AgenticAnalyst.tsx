@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface Investigation {
@@ -986,15 +987,15 @@ export default function Analyst({
                   {/* Evidence Search */}
                   <div className="space-y-2">
                     <div className="flex gap-2">
-                      <select
+                      <Select
                         value={evidenceType}
-                        onChange={(e) => setEvidenceType(e.target.value as EvidenceItem['type'])}
+                        onValueChange={(value) => setEvidenceType(value as EvidenceItem['type'])}
                         className="bg-[var(--surface)] border border-[var(--surface)] rounded-lg px-2 py-1.5 text-xs text-[var(--fg)] focus:outline-none focus:ring-1 focus:ring-primary-500"
                       >
                         {Object.entries(evidenceTypeLabels).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
+                          <SelectItem key={value} value={value}>{label}</SelectItem>
                         ))}
-                      </select>
+                      </Select>
                       <input
                         type="text"
                         value={evidenceSearchQuery}

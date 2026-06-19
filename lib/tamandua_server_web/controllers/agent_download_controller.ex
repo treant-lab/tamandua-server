@@ -6,31 +6,44 @@ defmodule TamanduaServerWeb.AgentDownloadController do
                    "tamandua-agent-windows-x64.exe",
                    "tamandua-gui-windows-x64-setup.exe",
                    "tamandua-gui-windows-x64.msi",
-                   "tamandua-agent-linux-x64",
-                   "tamandua-agent-macos-arm64",
-                   "tamandua-agent-macos-arm64.sha256"
+                   "tamandua-agent-linux-x64"
                  ])
 
+  @blocked_macos_files MapSet.new([
+                         "tamandua-agent-macos-arm64",
+                         "tamandua-agent-macos-arm64.sha256"
+                       ])
+
   def show(conn, %{"filename" => filename}) do
-    if MapSet.member?(@allowed_files, filename) do
-      path =
-        binary_dir()
-        |> Path.join(filename)
-        |> Path.expand()
+    cond do
+      MapSet.member?(@blocked_macos_files, filename) ->
+        conn
+        |> put_status(:gone)
+        |> json(%{
+          error:
+            "macOS product installs require the signed/notarized Tamandua EDR DMG or Cask with EndpointSecurity System Extension"
+        })
 
-      root = Path.expand(binary_dir())
+      MapSet.member?(@allowed_files, filename) ->
+        path =
+          binary_dir()
+          |> Path.join(filename)
+          |> Path.expand()
 
-      if String.starts_with?(path, root) and File.regular?(path) do
-        send_download(conn, {:file, path}, filename: filename)
-      else
+        root = Path.expand(binary_dir())
+
+        if String.starts_with?(path, root) and File.regular?(path) do
+          send_download(conn, {:file, path}, filename: filename)
+        else
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Agent binary is not available on this server"})
+        end
+
+      true ->
         conn
         |> put_status(:not_found)
-        |> json(%{error: "Agent binary is not available on this server"})
-      end
-    else
-      conn
-      |> put_status(:not_found)
-      |> json(%{error: "Unknown agent binary"})
+        |> json(%{error: "Unknown agent binary"})
     end
   end
 

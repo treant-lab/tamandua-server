@@ -21,6 +21,7 @@ import { cn, formatDate } from '@/lib/utils'
 import { useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface CloudProvider {
@@ -325,17 +326,17 @@ export default function CloudWorkloads({
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-              <select
+              <Select
                 value={providerFilter}
-                onChange={(e) => setProviderFilter(e.target.value)}
+                onValueChange={setProviderFilter}
+                placeholder="All Providers"
                 className="rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
               >
-                <option value="all">All Providers</option>
-                <option value="aws">AWS</option>
-                <option value="azure">Azure</option>
-                <option value="gcp">GCP</option>
-              </select>
+                <SelectItem value="all">All Providers</SelectItem>
+                <SelectItem value="aws">AWS</SelectItem>
+                <SelectItem value="azure">Azure</SelectItem>
+                <SelectItem value="gcp">GCP</SelectItem>
+              </Select>
               <button
                 onClick={() => handleSync()}
                 disabled={loading === 'sync-all'}

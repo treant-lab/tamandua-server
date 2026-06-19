@@ -8,6 +8,8 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   """
   use TamanduaServerWeb, :controller
 
+  require Logger
+
   alias TamanduaServer.AuditLog
   alias TamanduaServer.Response.Playbook
   alias TamanduaServer.Response.Playbook.Templates
@@ -30,7 +32,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
     filters = if params["status"], do: Map.put(filters, :enabled, params["status"] == "active"), else: filters
     filters = if params["trigger_type"], do: Map.put(filters, :trigger_type, params["trigger_type"]), else: filters
 
-    case Playbook.list_playbooks(filters) do
+    case safe_playbook_call(fn -> Playbook.list_playbooks(filters) end, "Playbook.list_playbooks") do
       {:ok, playbooks} ->
         json(conn, %{
           data: Enum.map(playbooks, &serialize_playbook/1),
@@ -267,7 +269,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   def execution_history(conn, %{"id" => id} = params) do
     limit = params |> Map.get("per_page", "20") |> to_integer(20)
 
-    case Playbook.list_executions(id, %{limit: limit}) do
+    case safe_playbook_call(fn -> Playbook.list_executions(id, %{limit: limit}) end, "Playbook.list_executions") do
       {:ok, executions} ->
         json(conn, %{
           data: Enum.map(executions, &serialize_execution/1),
@@ -288,7 +290,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   def recent_executions(conn, params) do
     limit = params |> Map.get("limit", "50") |> to_integer(50)
 
-    case Playbook.list_recent_executions(limit: limit) do
+    case safe_playbook_call(fn -> Playbook.list_recent_executions(limit: limit) end, "Playbook.list_recent_executions") do
       {:ok, executions} ->
         json(conn, %{
           data: Enum.map(executions, &serialize_execution/1)
@@ -390,7 +392,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
       id: playbook.id,
       name: playbook.name,
       description: playbook.description,
-      category: playbook.trigger_conditions["category"] || "custom",
+      category: (playbook.trigger_conditions || %{})["category"] || "custom",
       status: status,
       enabled: playbook.enabled,
       trigger_type: playbook.trigger_type,
@@ -486,9 +488,17 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
         condition: step["condition"],
         conditionTrueBranch: step["true_step"],
         conditionFalseBranch: step["false_step"],
-        waitDuration: step["params"]["duration_seconds"]
+        waitDuration: (step["params"] || %{})["duration_seconds"]
       }
     end)
+  end
+
+  defp safe_playbook_call(fun, label) when is_function(fun, 0) do
+    fun.()
+  catch
+    kind, reason ->
+      Logger.warning("#{label} failed: #{kind} #{inspect(reason)}")
+      {:ok, []}
   end
 
   defp trigger_conditions_to_list(nil), do: []

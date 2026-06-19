@@ -23,6 +23,7 @@ import { cn, formatDate } from '@/lib/utils'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
+import { Select, SelectItem } from '@/components/ui/baseui'
 
 // ============================================================================
 // Types
@@ -574,23 +575,17 @@ export default function Compliance() {
                           }}
                         />
                       </div>
-                      <select
+                      <Select
                         value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value)}
+                        onValueChange={setStatusFilter}
                         className="px-3 py-2 rounded-lg text-sm focus:ring-2 focus:ring-primary-500"
-                        style={{
-                          backgroundColor: 'var(--surface-alt)',
-                          borderColor: 'var(--border)',
-                          color: 'var(--fg)',
-                          border: '1px solid var(--border)'
-                        }}
                       >
-                        <option value="all">All Status</option>
-                        <option value="compliant">Compliant</option>
-                        <option value="partial">Partial</option>
-                        <option value="non_compliant">Non-Compliant</option>
-                        <option value="not_assessed">Not Assessed</option>
-                      </select>
+                        <SelectItem value="all">All Status</SelectItem>
+                        <SelectItem value="compliant">Compliant</SelectItem>
+                        <SelectItem value="partial">Partial</SelectItem>
+                        <SelectItem value="non_compliant">Non-Compliant</SelectItem>
+                        <SelectItem value="not_assessed">Not Assessed</SelectItem>
+                      </Select>
                     </div>
                   </div>
                   <div className="overflow-auto max-h-[600px]">
