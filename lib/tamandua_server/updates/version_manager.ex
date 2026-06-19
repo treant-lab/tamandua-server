@@ -276,12 +276,66 @@ defmodule Tamandua.Updates.VersionManager do
     required_keys = [:version, :platform, :arch, :binary_url, :checksum_sha256,
                      :signature_ed25519, :size_bytes, :released_at]
 
-    missing = Enum.filter(required_keys, fn key -> not Map.has_key?(manifest, key) end)
+    missing = Enum.filter(required_keys, fn key -> not manifest_has_key?(manifest, key) end)
 
-    if Enum.empty?(missing) do
-      :ok
+    cond do
+      not Enum.empty?(missing) ->
+        {:error, {:missing_fields, missing}}
+
+      macos_standalone_manifest_url?(manifest) ->
+        {:error, :macos_requires_signed_notarized_dmg_or_cask}
+
+      macos_manifest_without_product_installer?(manifest) ->
+        {:error, :macos_requires_signed_notarized_dmg_or_cask}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp macos_standalone_manifest_url?(manifest) do
+    if macos_manifest_platform?(manifest) do
+      url = manifest_value(manifest, :binary_url) |> to_string() |> String.downcase()
+
+      String.contains?(url, "tamandua-agent-macos") or
+        String.contains?(url, "aarch64-apple-darwin") or
+        String.contains?(url, "x86_64-apple-darwin") or
+        String.contains?(url, "tamandua-watchdog") or
+        String.contains?(url, "tamandua%20edr_0.1.0") or
+        String.contains?(url, "tamandua edr_0.1.0") or
+        String.contains?(url, "tamandua_edr_0.1.0") or
+        String.contains?(url, "macos-sha256sums")
     else
-      {:error, {:missing_fields, missing}}
+      false
+    end
+  end
+
+  defp macos_manifest_without_product_installer?(manifest) do
+    if macos_manifest_platform?(manifest) do
+      url = manifest_value(manifest, :binary_url) |> to_string() |> String.downcase()
+
+      not (String.contains?(url, ".dmg") or
+             (String.contains?(url, "cask") and String.contains?(url, "tamandua-edr")))
+    else
+      false
+    end
+  end
+
+  defp macos_manifest_platform?(manifest) do
+    manifest_value(manifest, :platform)
+    |> to_string()
+    |> String.downcase()
+    |> Kernel.==("macos")
+  end
+
+  defp manifest_has_key?(manifest, key) do
+    Map.has_key?(manifest, key) or Map.has_key?(manifest, to_string(key))
+  end
+
+  defp manifest_value(manifest, key) do
+    case Map.fetch(manifest, key) do
+      {:ok, value} -> value
+      :error -> Map.get(manifest, to_string(key))
     end
   end
 

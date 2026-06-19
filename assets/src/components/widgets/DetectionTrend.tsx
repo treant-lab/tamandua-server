@@ -7,6 +7,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
+import { Popover } from '@/components/ui/baseui'
 import {
   TrendingUp,
   TrendingDown,
@@ -352,35 +353,36 @@ export function DetectionTrend({
         </div>
 
         {/* Period selector */}
-        <div className="relative">
-          <button
-            onClick={() => setShowDropdown(!showDropdown)}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-colors"
-          >
-            {periodOptions.find(o => o.value === period)?.label}
-            <ChevronDown className={cn('h-4 w-4 transition-transform', showDropdown && 'rotate-180')} />
-          </button>
-
-          {showDropdown && (
-            <div className="absolute right-0 mt-1 w-40 bg-slate-700 border border-slate-600 rounded-lg shadow-xl z-10">
-              {periodOptions.map(opt => (
-                <button
-                  key={opt.value}
-                  className={cn(
-                    'w-full px-3 py-2 text-sm text-left hover:bg-slate-600 first:rounded-t-lg last:rounded-b-lg',
-                    period === opt.value && 'bg-primary-600/20 text-primary-400'
-                  )}
-                  onClick={() => {
-                    onPeriodChange?.(opt.value)
-                    setShowDropdown(false)
-                  }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <Popover
+          open={showDropdown}
+          onOpenChange={setShowDropdown}
+          trigger={
+            <button
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-colors"
+            >
+              {periodOptions.find(o => o.value === period)?.label}
+              <ChevronDown className={cn('h-4 w-4 transition-transform', showDropdown && 'rotate-180')} />
+            </button>
+          }
+        >
+          <div className="flex flex-col gap-1 min-w-[8rem]">
+            {periodOptions.map(opt => (
+              <button
+                key={opt.value}
+                className={cn(
+                  'w-full px-3 py-2 text-sm text-left rounded hover:bg-slate-600',
+                  period === opt.value && 'bg-primary-600/20 text-primary-400'
+                )}
+                onClick={() => {
+                  onPeriodChange?.(opt.value)
+                  setShowDropdown(false)
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </Popover>
       </div>
 
       {/* Stats Summary */}

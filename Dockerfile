@@ -21,7 +21,7 @@ COPY mix.exs ./
 COPY mix.lock ./
 COPY config ./config/
 
-RUN mix deps.get
+RUN mix deps.get --only prod
 RUN mix deps.compile
 
 # Copy priv (migrations, etc)

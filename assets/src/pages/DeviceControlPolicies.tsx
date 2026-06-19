@@ -4,6 +4,7 @@ import { Shield, Plus, Usb, Bluetooth, Wifi, HardDrive, ArrowLeft, FileX, Loader
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { logger } from '@/lib/logger'
+import { Dialog } from '@/components/ui/baseui'
 
 interface DeviceControlPoliciesProps {
   page_title: string
@@ -496,22 +497,13 @@ export default function DeviceControlPolicies({ page_title }: DeviceControlPolic
       </div>
 
       {/* Create/Edit Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-[var(--surface)] rounded-xl border border-[var(--surface-border)] w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-[var(--surface-border)] flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-[var(--fg)]">
-                {editingPolicy ? 'Edit Policy' : 'Create Policy'}
-              </h2>
-              <button
-                onClick={closeModal}
-                className="p-2 rounded-lg hover:bg-[var(--surface-hover)] text-[var(--muted)] hover:text-[var(--fg)] transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-6">
+      <Dialog
+        open={showModal}
+        onOpenChange={(open) => { if (!open) closeModal() }}
+        title={editingPolicy ? 'Edit Policy' : 'Create Policy'}
+        maxWidth="42rem"
+      >
+        <div className="space-y-6">
               {/* Policy Name */}
               <div>
                 <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-2">
@@ -667,29 +659,27 @@ export default function DeviceControlPolicies({ page_title }: DeviceControlPolic
                   />
                 </div>
               </div>
-            </div>
-
-            <div className="p-6 border-t border-[var(--surface-border)] flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={closeModal}
-                className="px-4 py-2 text-[var(--muted)] hover:text-[var(--fg)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving || !formData.group.trim()}
-                className="flex items-center gap-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition-colors"
-              >
-                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                {editingPolicy ? 'Save Changes' : 'Create Policy'}
-              </button>
-            </div>
-          </div>
         </div>
-      )}
+
+        <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-[var(--surface-border)]">
+          <button
+            type="button"
+            onClick={closeModal}
+            className="px-4 py-2 text-[var(--muted)] hover:text-[var(--fg)] transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || !formData.group.trim()}
+            className="flex items-center gap-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+          >
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            {editingPolicy ? 'Save Changes' : 'Create Policy'}
+          </button>
+        </div>
+      </Dialog>
     </MainLayout>
   )
 }

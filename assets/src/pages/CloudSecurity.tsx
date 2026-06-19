@@ -70,6 +70,7 @@ import {
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useEffect, useCallback } from 'react'
+import { Dialog } from '@/components/ui/baseui'
 
 // Types
 interface CloudAccount {
@@ -2867,61 +2868,56 @@ export default function CloudSecurity({
       </div>
 
       {/* Add Account Modal */}
-      {showAddAccountModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="card-sentinel rounded-xl p-6 w-full max-w-md" style={{ backgroundColor: 'var(--surface)' }}>
-            <h2 className="text-xl font-semibold mb-4" style={{ color: 'var(--fg)' }}>Add Cloud Account</h2>
-            <form className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Provider</label>
-                <select
-                  className="w-full rounded-lg px-3 py-2"
-                  style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
-                >
-                  <option value="aws">AWS</option>
-                  <option value="azure">Azure</option>
-                  <option value="gcp">GCP</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Account Name</label>
-                <input
-                  type="text"
-                  placeholder="Production AWS"
-                  className="w-full rounded-lg px-3 py-2"
-                  style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Account ID</label>
-                <input
-                  type="text"
-                  placeholder="123456789012"
-                  className="w-full rounded-lg px-3 py-2"
-                  style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
-                />
-              </div>
-              <div className="flex gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setShowAddAccountModal(false)}
-                  className="flex-1 rounded-lg px-4 py-2 transition-colors"
-                  style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg-2)', border: '1px solid var(--border)' }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 rounded-lg px-4 py-2 text-white transition-colors"
-                  style={{ backgroundColor: 'var(--emerald-600)' }}
-                >
-                  Add Account
-                </button>
-              </div>
-            </form>
+      <Dialog open={showAddAccountModal} onOpenChange={setShowAddAccountModal} title="Add Cloud Account">
+        <form className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Provider</label>
+            <select
+              className="w-full rounded-lg px-3 py-2"
+              style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
+            >
+              <option value="aws">AWS</option>
+              <option value="azure">Azure</option>
+              <option value="gcp">GCP</option>
+            </select>
           </div>
-        </div>
-      )}
+          <div>
+            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Account Name</label>
+            <input
+              type="text"
+              placeholder="Production AWS"
+              className="w-full rounded-lg px-3 py-2"
+              style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Account ID</label>
+            <input
+              type="text"
+              placeholder="123456789012"
+              className="w-full rounded-lg px-3 py-2"
+              style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--fg-2)' }}
+            />
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={() => setShowAddAccountModal(false)}
+              className="flex-1 rounded-lg px-4 py-2 transition-colors"
+              style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg-2)', border: '1px solid var(--border)' }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 rounded-lg px-4 py-2 text-white transition-colors"
+              style={{ backgroundColor: 'var(--emerald-600)' }}
+            >
+              Add Account
+            </button>
+          </div>
+        </form>
+      </Dialog>
 
       {/* Remediation Code Modal */}
       {showRemediationModal && selectedFinding && (

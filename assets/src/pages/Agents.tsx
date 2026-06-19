@@ -9,6 +9,7 @@ import {
 import { cn, formatDate, formatRelativeTime, safeCapitalize } from '@/lib/utils'
 import { ExportDropdown } from '@/components/ExportDropdown'
 import { NoAgentsEmptyState, NoResultsEmptyState } from '@/components/ui/EmptyState'
+import { Tooltip } from '@/components/ui/baseui'
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import type { Agent } from '@/types'
 
@@ -650,28 +651,32 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
             <div className="flex items-center gap-2 ml-auto">
               {/* View Mode Toggle */}
               <div className="flex items-center rounded-lg border" style={{ borderColor: 'var(--border)' }}>
-                <button
-                  onClick={() => setViewMode('table')}
-                  className={cn(
-                    'p-2 rounded-l-lg transition-colors',
-                    viewMode === 'table' ? 'bg-primary-500 text-white' : 'hover:bg-[var(--surface-2)]'
-                  )}
-                  style={viewMode !== 'table' ? { color: 'var(--muted)' } : undefined}
-                  title="Table view"
-                >
-                  <LayoutList className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => setViewMode('grid')}
-                  className={cn(
-                    'p-2 rounded-r-lg transition-colors',
-                    viewMode === 'grid' ? 'bg-primary-500 text-white' : 'hover:bg-[var(--surface-2)]'
-                  )}
-                  style={viewMode !== 'grid' ? { color: 'var(--muted)' } : undefined}
-                  title="Grid view"
-                >
-                  <LayoutGrid className="h-4 w-4" />
-                </button>
+                <Tooltip content="Table view">
+                  <button
+                    onClick={() => setViewMode('table')}
+                    className={cn(
+                      'p-2 rounded-l-lg transition-colors',
+                      viewMode === 'table' ? 'bg-primary-500 text-white' : 'hover:bg-[var(--surface-2)]'
+                    )}
+                    style={viewMode !== 'table' ? { color: 'var(--muted)' } : undefined}
+                    aria-label="Table view"
+                  >
+                    <LayoutList className="h-4 w-4" />
+                  </button>
+                </Tooltip>
+                <Tooltip content="Grid view">
+                  <button
+                    onClick={() => setViewMode('grid')}
+                    className={cn(
+                      'p-2 rounded-r-lg transition-colors',
+                      viewMode === 'grid' ? 'bg-primary-500 text-white' : 'hover:bg-[var(--surface-2)]'
+                    )}
+                    style={viewMode !== 'grid' ? { color: 'var(--muted)' } : undefined}
+                    aria-label="Grid view"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                  </button>
+                </Tooltip>
               </div>
 
               <button
@@ -842,35 +847,41 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
                         </td>
                         <td className="p-4">
                           <div className="flex items-center justify-end gap-1">
-                            <Link
-                              href={`/app/agents/${agent.id}`}
-                              className="p-1.5 rounded-lg transition-colors hover:bg-[var(--surface-2)]"
-                              style={{ color: 'var(--muted)' }}
-                              title="View Details"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Link>
+                            <Tooltip content="View Details">
+                              <Link
+                                href={`/app/agents/${agent.id}`}
+                                className="p-1.5 rounded-lg transition-colors hover:bg-[var(--surface-2)]"
+                                style={{ color: 'var(--muted)' }}
+                                aria-label="View Details"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Link>
+                            </Tooltip>
                             {agent.isolated ? (
-                              <button
-                                onClick={(e) => unisolateAgent(agent.id, e)}
-                                disabled={actionLoading === agent.id}
-                                className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
-                                style={{ color: 'var(--emerald-400)' }}
-                                title="Remove Isolation"
-                              >
-                                <ShieldOff className="h-4 w-4" />
-                              </button>
+                              <Tooltip content="Remove Isolation">
+                                <button
+                                  onClick={(e) => unisolateAgent(agent.id, e)}
+                                  disabled={actionLoading === agent.id}
+                                  className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
+                                  style={{ color: 'var(--emerald-400)' }}
+                                  aria-label="Remove Isolation"
+                                >
+                                  <ShieldOff className="h-4 w-4" />
+                                </button>
+                              </Tooltip>
                             ) : (
-                              <button
-                                onClick={(e) => isolateAgent(agent.id, e)}
-                                disabled={actionLoading === agent.id || agent.status === 'offline'}
-                                className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
-                                style={{ color: 'var(--high)' }}
-                                title="Network Isolate"
-                              >
-                                <Shield className="h-4 w-4" />
-                              </button>
+                              <Tooltip content="Network Isolate">
+                                <button
+                                  onClick={(e) => isolateAgent(agent.id, e)}
+                                  disabled={actionLoading === agent.id || agent.status === 'offline'}
+                                  className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
+                                  style={{ color: 'var(--high)' }}
+                                  aria-label="Network Isolate"
+                                >
+                                  <Shield className="h-4 w-4" />
+                                </button>
+                              </Tooltip>
                             )}
                           </div>
                         </td>

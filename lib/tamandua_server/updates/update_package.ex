@@ -58,6 +58,7 @@ defmodule TamanduaServer.Updates.UpdatePackage do
       message: "must be a 64-character hex SHA-256 hash"
     )
     |> validate_min_agent_version()
+    |> validate_macos_product_installer_download_url()
     |> validate_number(:size_bytes, greater_than: 0)
     |> unique_constraint([:version, :platform, :architecture],
       name: :update_packages_version_platform_arch_idx,
@@ -76,7 +77,60 @@ defmodule TamanduaServer.Updates.UpdatePackage do
           changeset
         else
           add_error(changeset, :min_agent_version, "must be valid semver (e.g. 1.0.0)")
-        end
+      end
     end
+  end
+
+  defp validate_macos_product_installer_download_url(changeset) do
+    platform = changeset |> get_field(:platform) |> to_string() |> String.downcase()
+
+    if platform == "macos" do
+      download_url = get_field(changeset, :download_url)
+      normalized_url = download_url |> to_string() |> String.downcase()
+
+      cond do
+        is_nil(download_url) or String.trim(to_string(download_url)) == "" ->
+          add_error(
+            changeset,
+            :download_url,
+            "is required for macOS packages and must point to a signed/notarized DMG or Cask with EndpointSecurity System Extension"
+          )
+
+        macos_standalone_download_url?(normalized_url) ->
+          add_error(
+            changeset,
+            :download_url,
+            "must not point to a bare macOS agent/watchdog binary; use a signed/notarized DMG or Cask with EndpointSecurity System Extension"
+          )
+
+        not macos_product_installer_download_url?(normalized_url) ->
+          add_error(
+            changeset,
+            :download_url,
+            "must point to a signed/notarized macOS DMG or Tamandua EDR Cask"
+          )
+
+        true ->
+          changeset
+      end
+    else
+      changeset
+    end
+  end
+
+  defp macos_standalone_download_url?(url) do
+    String.contains?(url, "tamandua-agent-macos") or
+      String.contains?(url, "aarch64-apple-darwin") or
+      String.contains?(url, "x86_64-apple-darwin") or
+      String.contains?(url, "tamandua-watchdog") or
+      String.contains?(url, "tamandua%20edr_0.1.0") or
+      String.contains?(url, "tamandua edr_0.1.0") or
+      String.contains?(url, "tamandua_edr_0.1.0") or
+      String.contains?(url, "macos-sha256sums")
+  end
+
+  defp macos_product_installer_download_url?(url) do
+    String.contains?(url, ".dmg") or
+      (String.contains?(url, "cask") and String.contains?(url, "tamandua-edr"))
   end
 end

@@ -176,7 +176,6 @@ export default function DeployAgent({
   const commands = useMemo(() => {
     const windowsExe = downloadUrls.windowsExe || `${enrollmentUrl.replace(/\/$/, '')}/downloads/agents/tamandua-agent-windows-x64.exe`
     const linuxBinary = downloadUrls.linuxX64
-    const macosBinary = downloadUrls.macosUniversal
 
     return {
       windows: `# PowerShell (Admin)
@@ -192,15 +191,10 @@ Start-Process -FilePath $AgentPath -Wait -Verb RunAs -ArgumentList @(
   "--token", $Token
 )
 # Installs the service and the embedded Windows driver when supported.`,
-      macos: macosBinary ? `# Terminal (sudo)
-curl -fsSL "${macosBinary}" -o /tmp/tamandua-agent
-chmod +x /tmp/tamandua-agent
-sudo /tmp/tamandua-agent install \\
-  --enrollment-url "${enrollmentUrl}" \\
-  --server "${agentServerUrl}" \\
-  --token "${newToken || '<enrollment-token>'}" \\
-  --no-driver` : `# macOS installer is not published on this server yet.
-# Publish tamandua-agent-macos-universal to /downloads/agents first.`,
+      macos: `# macOS product installer is not published on this server yet.
+# Use the signed and notarized Tamandua EDR DMG/Cask release that includes
+# the EndpointSecurity System Extension, then approve the extension and
+# Full Disk Access on the target Mac before enrollment.`,
       linux: linuxBinary ? `# Bash (root)
 curl -fsSL "${linuxBinary}" -o /tmp/tamandua-agent
 chmod +x /tmp/tamandua-agent
@@ -211,7 +205,7 @@ sudo /tmp/tamandua-agent install \\
   --no-driver` : `# Linux installer is not published on this server yet.
 # Publish tamandua-agent-linux-x64 to /downloads/agents first.`,
     }
-  }, [agentServerUrl, downloadUrls.linuxX64, downloadUrls.macosUniversal, downloadUrls.windowsExe, enrollmentUrl, newToken])
+  }, [agentServerUrl, downloadUrls.linuxX64, downloadUrls.windowsExe, enrollmentUrl, newToken])
 
   // Load existing tokens
   const loadTokens = async () => {
@@ -531,7 +525,7 @@ sudo /tmp/tamandua-agent install \\
                 {/* Instructions */}
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
                   {activeOsTab === 'windows' && 'Run from an elevated PowerShell on the target host:'}
-                  {activeOsTab === 'macos' && (downloadUrls.macosUniversal ? 'Run from Terminal with sudo on the target Mac:' : 'macOS binary is not published on this server yet.')}
+                  {activeOsTab === 'macos' && 'macOS requires the signed DMG/Cask release with System Extension approval.'}
                   {activeOsTab === 'linux' && (downloadUrls.linuxX64 ? 'Run as root on the target Linux host:' : 'Linux binary is not published on this server yet.')}
                 </p>
 
@@ -549,7 +543,7 @@ sudo /tmp/tamandua-agent install \\
                 <div className="flex items-center gap-3">
                   <button
                     onClick={() => copy('command', commands[activeOsTab])}
-                    disabled={(activeOsTab === 'macos' && !downloadUrls.macosUniversal) || (activeOsTab === 'linux' && !downloadUrls.linuxX64)}
+                    disabled={activeOsTab === 'macos' || (activeOsTab === 'linux' && !downloadUrls.linuxX64)}
                     className="btn-sentinel btn-sentinel-secondary"
                   >
                     {copied === 'command' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
@@ -571,15 +565,6 @@ sudo /tmp/tamandua-agent install \\
                     >
                       <Download className="h-4 w-4" />
                       Download MSI
-                    </a>
-                  )}
-                  {activeOsTab === 'macos' && downloadUrls.macosUniversal && (
-                    <a
-                      href={downloadUrls.macosUniversal}
-                      className="btn-sentinel btn-sentinel-secondary"
-                    >
-                      <Download className="h-4 w-4" />
-                      Download macOS
                     </a>
                   )}
                   {activeOsTab === 'linux' && downloadUrls.linuxX64 && (

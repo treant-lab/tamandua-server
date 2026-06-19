@@ -67,12 +67,21 @@ defmodule TamanduaServerWeb.API.V1.UpdateController do
         # If the package has no download_url, build one from the current conn
         manifest = maybe_build_download_url(conn, manifest)
 
-        Logger.info(
-          "Offering update #{manifest.version} to agent #{agent_id} " <>
-            "(from #{current_version})"
-        )
+        if macos_manifest_without_deployable_download?(manifest) do
+          Logger.warning(
+            "Suppressing macOS update #{manifest.version} for agent #{agent_id}; " <>
+              "macOS updates require signed/notarized DMG/Cask with EndpointSecurity System Extension"
+          )
 
-        json(conn, manifest)
+          send_resp(conn, 204, "")
+        else
+          Logger.info(
+            "Offering update #{manifest.version} to agent #{agent_id} " <>
+              "(from #{current_version})"
+          )
+
+          json(conn, manifest)
+        end
 
       :up_to_date ->
         Logger.debug("Agent #{agent_id} is up to date (#{current_version})")
@@ -97,24 +106,38 @@ defmodule TamanduaServerWeb.API.V1.UpdateController do
   def download(conn, %{"version" => version, "platform" => platform}) do
     Logger.info("Update download request: version=#{version}, platform=#{platform}")
 
-    updates_dir = get_updates_dir()
-    binary_name = build_binary_name(version, platform)
-    file_path = Path.join(updates_dir, binary_name)
-
-    if File.exists?(file_path) do
-      conn
-      |> put_resp_header("content-type", "application/octet-stream")
-      |> put_resp_header(
-        "content-disposition",
-        ~s(attachment; filename="#{binary_name}")
+    if macos_update_platform?(platform) do
+      Logger.warning(
+        "Refusing macOS standalone update download for #{platform} v#{version}; " <>
+          "macOS updates require signed/notarized DMG/Cask with EndpointSecurity System Extension"
       )
-      |> send_file(200, file_path)
-    else
-      Logger.warning("Update binary not found: #{file_path}")
 
       conn
-      |> put_status(404)
-      |> json(%{error: "Update binary not found for #{platform} v#{version}"})
+      |> put_status(:gone)
+      |> json(%{
+        error:
+          "macOS updates require a signed/notarized DMG or Cask with EndpointSecurity System Extension"
+      })
+    else
+      updates_dir = get_updates_dir()
+      binary_name = build_binary_name(version, platform)
+      file_path = Path.join(updates_dir, binary_name)
+
+      if File.exists?(file_path) do
+        conn
+        |> put_resp_header("content-type", "application/octet-stream")
+        |> put_resp_header(
+          "content-disposition",
+          ~s(attachment; filename="#{binary_name}")
+        )
+        |> send_file(200, file_path)
+      else
+        Logger.warning("Update binary not found: #{file_path}")
+
+        conn
+        |> put_status(404)
+        |> json(%{error: "Update binary not found for #{platform} v#{version}"})
+      end
     end
   end
 
@@ -352,12 +375,38 @@ defmodule TamanduaServerWeb.API.V1.UpdateController do
   # ===========================================================================
 
   defp maybe_build_download_url(conn, %{download_url: nil} = manifest) do
-    platform = "#{manifest.platform}-#{manifest.architecture}"
-    url = build_download_url(conn, manifest.version, platform)
-    Map.put(manifest, :download_url, url)
+    if macos_update_platform?(manifest.platform) do
+      Map.put(manifest, :download_url, nil)
+    else
+      platform = "#{manifest.platform}-#{manifest.architecture}"
+      url = build_download_url(conn, manifest.version, platform)
+      Map.put(manifest, :download_url, url)
+    end
   end
 
   defp maybe_build_download_url(_conn, manifest), do: manifest
+
+  defp macos_manifest_without_deployable_download?(%{download_url: nil, platform: platform}) do
+    macos_update_platform?(platform)
+  end
+
+  defp macos_manifest_without_deployable_download?(_manifest), do: false
+
+  defp macos_update_platform?(platform) when is_atom(platform) do
+    platform
+    |> Atom.to_string()
+    |> macos_update_platform?()
+  end
+
+  defp macos_update_platform?(platform) when is_binary(platform) do
+    platform = String.downcase(platform)
+
+    String.starts_with?(platform, "macos") or
+      String.starts_with?(platform, "darwin") or
+      String.contains?(platform, "apple-darwin")
+  end
+
+  defp macos_update_platform?(_platform), do: false
 
   defp build_download_url(conn, version, platform) do
     case Application.get_env(:tamandua_server, :update_cdn_base_url) do

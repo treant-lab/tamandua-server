@@ -50,7 +50,59 @@ defmodule Tamandua.Updates.Version do
       :size_bytes,
       :released_at
     ])
+    |> validate_macos_product_installer_binary_url()
     |> unique_constraint([:version, :platform, :arch])
+  end
+
+  defp validate_macos_product_installer_binary_url(changeset) do
+    if get_field(changeset, :platform) == :macos do
+      binary_url = get_field(changeset, :binary_url)
+      normalized_url = binary_url |> to_string() |> String.downcase()
+
+      cond do
+        is_nil(binary_url) or String.trim(to_string(binary_url)) == "" ->
+          add_error(
+            changeset,
+            :binary_url,
+            "is required for macOS versions and must point to a signed/notarized DMG or Cask with EndpointSecurity System Extension"
+          )
+
+        macos_standalone_binary_url?(normalized_url) ->
+          add_error(
+            changeset,
+            :binary_url,
+            "must not point to a bare macOS agent/watchdog binary; use a signed/notarized DMG or Cask with EndpointSecurity System Extension"
+          )
+
+        not macos_product_installer_binary_url?(normalized_url) ->
+          add_error(
+            changeset,
+            :binary_url,
+            "must point to a signed/notarized macOS DMG or Tamandua EDR Cask"
+          )
+
+        true ->
+          changeset
+      end
+    else
+      changeset
+    end
+  end
+
+  defp macos_standalone_binary_url?(url) do
+    String.contains?(url, "tamandua-agent-macos") or
+      String.contains?(url, "aarch64-apple-darwin") or
+      String.contains?(url, "x86_64-apple-darwin") or
+      String.contains?(url, "tamandua-watchdog") or
+      String.contains?(url, "tamandua%20edr_0.1.0") or
+      String.contains?(url, "tamandua edr_0.1.0") or
+      String.contains?(url, "tamandua_edr_0.1.0") or
+      String.contains?(url, "macos-sha256sums")
+  end
+
+  defp macos_product_installer_binary_url?(url) do
+    String.contains?(url, ".dmg") or
+      (String.contains?(url, "cask") and String.contains?(url, "tamandua-edr"))
   end
 
   @doc """

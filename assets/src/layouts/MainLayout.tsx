@@ -88,6 +88,7 @@ function NavigationProgress() {
 }
 import { TenantSelector } from '@/components/TenantSelector'
 import { useTenant } from '@/contexts/TenantContext'
+import { Tooltip } from '@/components/ui/baseui'
 
 // --- localStorage persistence helpers ---
 
@@ -432,22 +433,24 @@ export function MainLayout({ children, title }: MainLayoutProps) {
         {/* Search */}
         <div className={cn('flex-shrink-0', sidebarCollapsed ? 'p-2' : 'p-4')}>
           {sidebarCollapsed ? (
-            <button
-              onClick={() => setIsSearchOpen(true)}
-              className="w-full flex items-center justify-center p-2 rounded-lg transition-colors"
-              style={{ color: 'var(--muted)' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--fg)'
-                e.currentTarget.style.backgroundColor = 'var(--surface-2)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--muted)'
-                e.currentTarget.style.backgroundColor = 'transparent'
-              }}
-              title="Search (Ctrl+K)"
-            >
-              <Search className="h-4 w-4" />
-            </button>
+            <Tooltip content="Search (Ctrl+K)" side="right">
+              <button
+                onClick={() => setIsSearchOpen(true)}
+                className="w-full flex items-center justify-center p-2 rounded-lg transition-colors"
+                style={{ color: 'var(--muted)' }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--fg)'
+                  e.currentTarget.style.backgroundColor = 'var(--surface-2)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--muted)'
+                  e.currentTarget.style.backgroundColor = 'transparent'
+                }}
+                aria-label="Search (Ctrl+K)"
+              >
+                <Search className="h-4 w-4" />
+              </button>
+            </Tooltip>
           ) : (
             <button
               onClick={() => setIsSearchOpen(true)}
@@ -505,31 +508,33 @@ export function MainLayout({ children, title }: MainLayoutProps) {
 
                       if (item.external) {
                         return (
-                          <a
-                            key={item.name}
+                          <Tooltip key={item.name} content={item.name} side="right">
+                            <a
+                              href={item.href}
+                              aria-label={item.name}
+                              className={linkClassName}
+                              style={linkStyle}
+                              {...hoverHandlers}
+                            >
+                              <item.icon className="h-4 w-4" />
+                            </a>
+                          </Tooltip>
+                        )
+                      }
+
+                      return (
+                        <Tooltip key={item.name} content={item.name} side="right">
+                          <Link
                             href={item.href}
-                            title={item.name}
+                            aria-label={item.name}
+                            prefetch="hover"
                             className={linkClassName}
                             style={linkStyle}
                             {...hoverHandlers}
                           >
                             <item.icon className="h-4 w-4" />
-                          </a>
-                        )
-                      }
-
-                      return (
-                        <Link
-                          key={item.name}
-                          href={item.href}
-                          title={item.name}
-                          prefetch="hover"
-                          className={linkClassName}
-                          style={linkStyle}
-                          {...hoverHandlers}
-                        >
-                          <item.icon className="h-4 w-4" />
-                        </Link>
+                          </Link>
+                        </Tooltip>
                       )
                     })}
                   </div>
@@ -625,9 +630,10 @@ export function MainLayout({ children, title }: MainLayoutProps) {
           className={cn('flex-shrink-0', sidebarCollapsed ? 'p-2' : 'px-4 py-2')}
           style={{ borderTop: '1px solid var(--hairline)' }}
         >
+          <Tooltip content={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} side={sidebarCollapsed ? 'right' : 'top'}>
           <button
             onClick={toggleSidebarCollapsed}
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             className={cn(
               'flex items-center gap-2 w-full rounded-lg p-2 text-sm transition-colors',
               sidebarCollapsed ? 'justify-center' : ''
@@ -651,6 +657,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
               </>
             )}
           </button>
+          </Tooltip>
         </div>
 
         {/* User Section */}
@@ -787,22 +794,24 @@ export function MainLayout({ children, title }: MainLayoutProps) {
 
           {/* Tenant Settings Link (for tenant admins) */}
           {currentTenant && isAdmin && (
-            <Link
-              href="/app/tenant-settings"
-              className="p-2 rounded-lg"
-              style={{ color: 'var(--muted)' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--fg)'
-                e.currentTarget.style.backgroundColor = 'var(--surface-2)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--muted)'
-                e.currentTarget.style.backgroundColor = 'transparent'
-              }}
-              title="Tenant Settings"
-            >
-              <Building2 className="h-5 w-5" />
-            </Link>
+            <Tooltip content="Tenant Settings">
+              <Link
+                href="/app/tenant-settings"
+                className="p-2 rounded-lg"
+                style={{ color: 'var(--muted)' }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--fg)'
+                  e.currentTarget.style.backgroundColor = 'var(--surface-2)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--muted)'
+                  e.currentTarget.style.backgroundColor = 'transparent'
+                }}
+                aria-label="Tenant Settings"
+              >
+                <Building2 className="h-5 w-5" />
+              </Link>
+            </Tooltip>
           )}
 
           {/* Devnet Badge */}

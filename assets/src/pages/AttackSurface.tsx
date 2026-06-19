@@ -37,6 +37,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useState, useEffect } from 'react'
 import { logger } from '@/lib/logger'
+import { Checkbox, Dialog } from '@/components/ui/baseui'
 
 // Types
 interface Asset {
@@ -508,46 +509,35 @@ export default function AttackSurface({
         </div>
 
         {/* Add Domain Modal */}
-        {showAddDomain && (
-          <div className="fixed inset-0 flex items-center justify-center z-50" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-            <div className="card-sentinel-elevated p-6 w-full max-w-md">
-              <h3 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Add Domain to Monitor</h3>
-              <input
-                type="text"
-                value={newDomain}
-                onChange={(e) => setNewDomain(e.target.value)}
-                placeholder="example.com"
-                className="input-sentinel mb-4"
-              />
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
-                  <input type="checkbox" defaultChecked className="rounded" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-2)' }} />
-                  Auto-discover subdomains
-                </label>
-              </div>
-              <div className="flex items-center gap-3 mt-2">
-                <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
-                  <input type="checkbox" defaultChecked className="rounded" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-2)' }} />
-                  Notify on changes
-                </label>
-              </div>
-              <div className="flex justify-end gap-3 mt-6">
-                <button
-                  onClick={() => setShowAddDomain(false)}
-                  className="btn-sentinel btn-sentinel-ghost"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleAddDomain}
-                  className="btn-sentinel btn-sentinel-primary"
-                >
-                  Add Domain
-                </button>
-              </div>
-            </div>
+        <Dialog open={showAddDomain} onOpenChange={setShowAddDomain} title="Add Domain to Monitor">
+          <input
+            type="text"
+            value={newDomain}
+            onChange={(e) => setNewDomain(e.target.value)}
+            placeholder="example.com"
+            className="input-sentinel mb-4"
+          />
+          <div className="flex items-center gap-3">
+            <Checkbox defaultChecked label="Auto-discover subdomains" />
           </div>
-        )}
+          <div className="flex items-center gap-3 mt-2">
+            <Checkbox defaultChecked label="Notify on changes" />
+          </div>
+          <div className="flex justify-end gap-3 mt-6">
+            <button
+              onClick={() => setShowAddDomain(false)}
+              className="btn-sentinel btn-sentinel-ghost"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleAddDomain}
+              className="btn-sentinel btn-sentinel-primary"
+            >
+              Add Domain
+            </button>
+          </div>
+        </Dialog>
 
         {/* Asset Detail Modal */}
         {selectedAsset && (

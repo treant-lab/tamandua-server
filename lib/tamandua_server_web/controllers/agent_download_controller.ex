@@ -7,12 +7,8 @@ defmodule TamanduaServerWeb.AgentDownloadController do
                    "tamandua-gui-windows-x64-setup.exe",
                    "tamandua-gui-windows-x64.msi",
                    "tamandua-agent-linux-x64",
-                   "tamandua-agent-macos-universal",
-                   "tamandua-agent-aarch64-apple-darwin",
-                   "tamandua-watchdog-aarch64-apple-darwin",
-                   "Tamandua EDR_0.1.0_aarch64.dmg",
-                   "Tamandua_EDR_0.1.0_aarch64.app.zip",
-                   "macos-SHA256SUMS"
+                   "tamandua-agent-macos-arm64",
+                   "tamandua-agent-macos-arm64.sha256"
                  ])
 
   def show(conn, %{"filename" => filename}) do

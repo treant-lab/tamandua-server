@@ -35,6 +35,7 @@ import {
 import { cn, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useRef, useEffect } from 'react'
+import { Dialog } from '@/components/ui/baseui'
 import type {
   TenantDetailPageProps,
   TenantUser,
@@ -259,55 +260,50 @@ function UsersTab({ users, invitations, tenantId }: { users: TenantUser[]; invit
       )}
 
       {/* Invite Modal */}
-      {showInviteModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-md p-6">
-            <h3 className="text-lg font-semibold text-white mb-4">Invite User</h3>
-            <form onSubmit={handleInvite} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  required
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
-                  placeholder="user@example.com"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Role</label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as TenantUser['role'])}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
-                >
-                  <option value="tenant_admin">Tenant Admin</option>
-                  <option value="analyst">Analyst</option>
-                  <option value="viewer">Viewer</option>
-                  <option value="api_only">API Only</option>
-                </select>
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowInviteModal(false)}
-                  className="px-4 py-2 text-slate-300 hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={inviting}
-                  className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
-                >
-                  {inviting ? 'Sending...' : 'Send Invitation'}
-                </button>
-              </div>
-            </form>
+      <Dialog open={showInviteModal} onOpenChange={setShowInviteModal} title="Invite User">
+        <form onSubmit={handleInvite} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">Email</label>
+            <input
+              type="email"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              required
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
+              placeholder="user@example.com"
+            />
           </div>
-        </div>
-      )}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">Role</label>
+            <select
+              value={inviteRole}
+              onChange={(e) => setInviteRole(e.target.value as TenantUser['role'])}
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
+            >
+              <option value="tenant_admin">Tenant Admin</option>
+              <option value="analyst">Analyst</option>
+              <option value="viewer">Viewer</option>
+              <option value="api_only">API Only</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setShowInviteModal(false)}
+              className="px-4 py-2 text-slate-300 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={inviting}
+              className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
+            >
+              {inviting ? 'Sending...' : 'Send Invitation'}
+            </button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   )
 }
@@ -447,99 +443,103 @@ function APIKeysTab({ apiKeys, tenantId }: { apiKeys: APIKey[]; tenantId: string
       </div>
 
       {/* Create Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-md p-6">
-            {createdKey ? (
-              <>
-                <h3 className="text-lg font-semibold text-white mb-4">API Key Created</h3>
-                <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
-                  <p className="text-sm text-green-300 mb-2">
-                    Copy this key now. You won't be able to see it again.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 text-sm bg-slate-900 px-3 py-2 rounded text-white font-mono break-all">
-                      {createdKey}
-                    </code>
-                    <button
-                      onClick={() => copyToClipboard(createdKey)}
-                      className="p-2 bg-slate-700 hover:bg-slate-600 rounded"
-                    >
-                      <Copy className="h-4 w-4 text-white" />
-                    </button>
-                  </div>
-                </div>
+      <Dialog
+        open={showCreateModal}
+        onOpenChange={(open) => {
+          if (!open) {
+            const hadCreatedKey = !!createdKey
+            setShowCreateModal(false)
+            setCreatedKey(null)
+            setNewKeyName('')
+            if (hadCreatedKey) router.reload()
+          }
+        }}
+        title={createdKey ? 'API Key Created' : 'Create API Key'}
+      >
+        {createdKey ? (
+          <>
+            <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
+              <p className="text-sm text-green-300 mb-2">
+                Copy this key now. You won't be able to see it again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-sm bg-slate-900 px-3 py-2 rounded text-white font-mono break-all">
+                  {createdKey}
+                </code>
                 <button
-                  onClick={() => {
-                    setShowCreateModal(false)
-                    setCreatedKey(null)
-                    setNewKeyName('')
-                    router.reload()
-                  }}
-                  className="w-full bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium"
+                  onClick={() => copyToClipboard(createdKey)}
+                  className="p-2 bg-slate-700 hover:bg-slate-600 rounded"
                 >
-                  Done
+                  <Copy className="h-4 w-4 text-white" />
                 </button>
-              </>
-            ) : (
-              <>
-                <h3 className="text-lg font-semibold text-white mb-4">Create API Key</h3>
-                <form onSubmit={handleCreateKey} className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-1">Name</label>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setShowCreateModal(false)
+                setCreatedKey(null)
+                setNewKeyName('')
+                router.reload()
+              }}
+              className="w-full bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium"
+            >
+              Done
+            </button>
+          </>
+        ) : (
+          <form onSubmit={handleCreateKey} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1">Name</label>
+              <input
+                type="text"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                required
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
+                placeholder="My API Key"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Scopes</label>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {availableScopes.map(scope => (
+                  <label key={scope} className="flex items-center gap-2">
                     <input
-                      type="text"
-                      value={newKeyName}
-                      onChange={(e) => setNewKeyName(e.target.value)}
-                      required
-                      className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-primary-500"
-                      placeholder="My API Key"
+                      type="checkbox"
+                      checked={newKeyScopes.includes(scope)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setNewKeyScopes([...newKeyScopes, scope])
+                        } else {
+                          setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-primary-600"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Scopes</label>
-                    <div className="space-y-2 max-h-48 overflow-y-auto">
-                      {availableScopes.map(scope => (
-                        <label key={scope} className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={newKeyScopes.includes(scope)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setNewKeyScopes([...newKeyScopes, scope])
-                              } else {
-                                setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
-                              }
-                            }}
-                            className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-primary-600"
-                          />
-                          <span className="text-sm text-slate-300 font-mono">{scope}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowCreateModal(false)}
-                      className="px-4 py-2 text-slate-300 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={creating || !newKeyName || newKeyScopes.length === 0}
-                      className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
-                    >
-                      {creating ? 'Creating...' : 'Create Key'}
-                    </button>
-                  </div>
-                </form>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+                    <span className="text-sm text-slate-300 font-mono">{scope}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                className="px-4 py-2 text-slate-300 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creating || !newKeyName || newKeyScopes.length === 0}
+                className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
+              >
+                {creating ? 'Creating...' : 'Create Key'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Dialog>
     </div>
   )
 }

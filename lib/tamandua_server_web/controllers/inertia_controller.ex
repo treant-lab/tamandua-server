@@ -236,8 +236,7 @@ defmodule TamanduaServerWeb.InertiaController do
         windowsExe:
           binary_download_url_if_present(binary_base_url, "tamandua-agent-windows-x64.exe"),
         linuxX64: binary_download_url_if_present(binary_base_url, "tamandua-agent-linux-x64"),
-        macosUniversal:
-          binary_download_url_if_present(binary_base_url, "tamandua-agent-macos-universal")
+        macosUniversal: nil
       },
       recentAgents: recent_agents
     })
