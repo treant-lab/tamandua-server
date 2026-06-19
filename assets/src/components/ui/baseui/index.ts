@@ -1,5 +1,5 @@
 /**
- * @base-ui-components/react wrappers
+ * @base-ui/react wrappers
  *
  * Each wrapper fixes Tamandua design tokens (var(--surface), var(--border),
  * --r-md, --spacing-*, --z-*) so the unstyled BaseUI primitives render with

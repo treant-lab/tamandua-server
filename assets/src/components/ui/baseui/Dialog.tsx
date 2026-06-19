@@ -1,5 +1,5 @@
 /**
- * Dialog - Accessible modal dialog wrapping @base-ui-components/react
+ * Dialog - Accessible modal dialog wrapping @base-ui/react
  *
  * Why this wrapper:
  * - Centralizes design tokens (var(--surface), var(--border), --r-md, --z-modal*)
@@ -18,7 +18,7 @@
  */
 
 import * as React from 'react'
-import { Dialog as BaseDialog } from '@base-ui-components/react/dialog'
+import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { cn } from '@/lib/utils'
 
 interface DialogProps {

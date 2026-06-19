@@ -1,7 +1,7 @@
 /**
  * Popover - Floating panel anchored to a trigger
  *
- * Wraps @base-ui-components/react/popover.
+ * Wraps @base-ui/react/popover.
  * Use for: rich tooltips with interactive content, action panels, filter
  * builders. For simple menus prefer <Menu>. For pure text on hover prefer
  * <Tooltip>.
@@ -13,7 +13,7 @@
  */
 
 import * as React from 'react'
-import { Popover as BasePopover } from '@base-ui-components/react/popover'
+import { Popover as BasePopover } from '@base-ui/react/popover'
 import { cn } from '@/lib/utils'
 
 interface PopoverProps {

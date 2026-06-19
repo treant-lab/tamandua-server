@@ -1,7 +1,7 @@
 /**
  * Switch - Boolean toggle control
  *
- * Wraps @base-ui-components/react/switch. Use for binary settings
+ * Wraps @base-ui/react/switch. Use for binary settings
  * (availability toggle, feature flags). Prefer this over <Checkbox>
  * when the action takes effect immediately and is reversible.
  *
@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react'
-import { Switch as BaseSwitch } from '@base-ui-components/react/switch'
+import { Switch as BaseSwitch } from '@base-ui/react/switch'
 
 interface SwitchProps {
   checked?: boolean

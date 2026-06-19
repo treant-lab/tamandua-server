@@ -1,7 +1,7 @@
 /**
  * Select - Accessible single-choice dropdown
  *
- * Wraps @base-ui-components/react/select. Replaces native <select> in
+ * Wraps @base-ui/react/select. Replaces native <select> in
  * forms where we want consistent styling, keyboard nav, and dark-mode
  * compatibility (native <select> in dark mode is OS-styled and ugly).
  *
@@ -14,7 +14,7 @@
  */
 
 import * as React from 'react'
-import { Select as BaseSelect } from '@base-ui-components/react/select'
+import { Select as BaseSelect } from '@base-ui/react/select'
 import { cn } from '@/lib/utils'
 
 interface SelectProps {

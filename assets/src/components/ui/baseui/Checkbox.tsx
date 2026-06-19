@@ -1,7 +1,7 @@
 /**
  * Checkbox - Multi-select / opt-in control
  *
- * Wraps @base-ui-components/react/checkbox. Use for forms where the
+ * Wraps @base-ui/react/checkbox. Use for forms where the
  * user must confirm/opt-in or multi-select. For an immediate-effect
  * binary toggle, prefer <Switch>.
  *
@@ -11,7 +11,7 @@
  */
 
 import * as React from 'react'
-import { Checkbox as BaseCheckbox } from '@base-ui-components/react/checkbox'
+import { Checkbox as BaseCheckbox } from '@base-ui/react/checkbox'
 
 interface CheckboxProps {
   checked?: boolean

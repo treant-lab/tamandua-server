@@ -1,7 +1,7 @@
 /**
  * Menu - Accessible dropdown menu (button + list of actions)
  *
- * Wraps @base-ui-components/react/menu. Provides keyboard navigation,
+ * Wraps @base-ui/react/menu. Provides keyboard navigation,
  * type-ahead, escape-to-close, and aria-menu semantics.
  *
  * Usage:
@@ -14,7 +14,7 @@
  */
 
 import * as React from 'react'
-import { Menu as BaseMenu } from '@base-ui-components/react/menu'
+import { Menu as BaseMenu } from '@base-ui/react/menu'
 import { cn } from '@/lib/utils'
 
 interface MenuProps {

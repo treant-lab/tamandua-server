@@ -1,7 +1,7 @@
 /**
  * Tooltip - Short hover/focus text label
  *
- * Wraps @base-ui-components/react/tooltip. Use for explanatory short text
+ * Wraps @base-ui/react/tooltip. Use for explanatory short text
  * (1 line ideally, 2 max). For interactive content use <Popover>.
  *
  * Usage:
@@ -11,7 +11,7 @@
  */
 
 import * as React from 'react'
-import { Tooltip as BaseTooltip } from '@base-ui-components/react/tooltip'
+import { Tooltip as BaseTooltip } from '@base-ui/react/tooltip'
 
 interface TooltipProps {
   content: React.ReactNode
