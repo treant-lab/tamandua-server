@@ -1484,8 +1484,6 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def dns(conn, _params) do
-    alias TamanduaServer.Telemetry
-
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -1495,8 +1493,10 @@ defmodule TamanduaServerWeb.InertiaController do
         %{id: Map.get(a, :id) || Map.get(a, :agent_id), hostname: a.hostname}
       end)
 
-    # Get recent DNS query events from telemetry
-    dns_events = Telemetry.list_events(%{event_type: "dns_query", limit: 200})
+    # Keep the Inertia render cheap. The DNS table hydrates through the
+    # paginated /api/v1/dns/queries endpoint after mount; doing the broad
+    # payload-shape query here can time out on large telemetry tables.
+    dns_events = []
 
     queries =
       Enum.map(dns_events, fn event ->
@@ -1519,7 +1519,25 @@ defmodule TamanduaServerWeb.InertiaController do
         domain =
           first_present(
             [
-              get_val.([:query, :query_name, :domain, "query", "query_name", "domain"], nil),
+              get_val.(
+                [
+                  :query,
+                  :query_name,
+                  :domain,
+                  :dns_query,
+                  :"dns.domain",
+                  :host,
+                  :hostname,
+                  "query",
+                  "query_name",
+                  "domain",
+                  "dns_query",
+                  "dns.domain",
+                  "host",
+                  "hostname"
+                ],
+                nil
+              ),
               nested_val.(
                 dns_payload,
                 [:query, :query_name, :domain, "query", "query_name", "domain"],
@@ -1548,7 +1566,18 @@ defmodule TamanduaServerWeb.InertiaController do
             first_present(
               [
                 get_val.(
-                  [:query_type, :record_type, :type, "query_type", "record_type", "type"],
+                  [
+                    :query_type,
+                    :record_type,
+                    :type,
+                    :"dns.query_type",
+                    :"dns.record_type",
+                    "query_type",
+                    "record_type",
+                    "type",
+                    "dns.query_type",
+                    "dns.record_type"
+                  ],
                   nil
                 ),
                 nested_val.(
@@ -1563,13 +1592,33 @@ defmodule TamanduaServerWeb.InertiaController do
             first_present(
               [
                 get_val.(
-                  [:response, :resolved_ip, :answer, "response", "resolved_ip", "answer"],
+                  [
+                    :response,
+                    :resolved_ip,
+                    :answer,
+                    :response_data,
+                    :dns_response,
+                    :"dns.response",
+                    "response",
+                    "resolved_ip",
+                    "answer",
+                    "response_data",
+                    "dns_response",
+                    "dns.response"
+                  ],
+                  nil
+                ),
+                nested_val.(
+                  dns_payload,
+                  [:response, :response_data, "response", "response_data"],
                   nil
                 ),
                 format_response_list(payload[:responses] || payload["responses"]),
                 format_response_list(payload[:resolved_ips] || payload["resolved_ips"]),
+                format_response_list(payload[:response_data] || payload["response_data"]),
                 format_response_list(dns_payload[:responses] || dns_payload["responses"]),
-                format_response_list(dns_payload[:resolved_ips] || dns_payload["resolved_ips"])
+                format_response_list(dns_payload[:resolved_ips] || dns_payload["resolved_ips"]),
+                format_response_list(dns_payload[:response_data] || dns_payload["response_data"])
               ],
               ""
             ),
@@ -6139,8 +6188,16 @@ defmodule TamanduaServerWeb.InertiaController do
     actions =
       try do
         case Hyperautomation.list_available_actions() do
-          {:ok, list} when is_list(list) -> list
-          _ -> []
+          {:ok, list} when is_list(list) ->
+            list
+
+          actions when is_map(actions) ->
+            Enum.map(actions, fn {name, _config} ->
+              %{action: to_string(name), total: 0, successful: 0, failed: 0, avgDuration: 0}
+            end)
+
+          _ ->
+            []
         end
       catch
         kind, reason ->
@@ -6210,9 +6267,11 @@ defmodule TamanduaServerWeb.InertiaController do
       templates: templates,
       recentExecutions: recent_executions,
       executionStats: %{
+        totalWorkflows: length(workflows),
+        enabledWorkflows: Enum.count(workflows, & &1.isEnabled),
         totalExecutions: stats[:total_executions] || 0,
-        successRate: stats[:success_rate] || 0,
-        avgResponseTime: stats[:avg_response_time_ms] || 0
+        totalSuccessful: stats[:successful] || stats[:total_successful] || 0,
+        runningNow: stats[:running_now] || 0
       }
     })
   end
@@ -9079,16 +9138,34 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp serialize_workflow(workflow) do
+    execution_count = workflow.execution_count || 0
+    success_count = workflow.success_count || 0
+
     %{
       id: workflow.id,
       name: workflow.name,
-      description: workflow.description,
+      description: workflow.description || "",
       triggerType: workflow.trigger_type,
-      steps: workflow.steps,
+      triggerConditions: workflow.trigger_config |> workflow_trigger_conditions(),
+      steps: workflow.steps || [],
+      isEnabled: workflow.enabled,
       enabled: workflow.enabled,
-      createdAt: format_datetime(workflow.inserted_at)
+      executions: %{
+        total: execution_count,
+        successful: success_count,
+        failed: max(execution_count - success_count, 0),
+        avgDuration: workflow.avg_duration_seconds || 0
+      },
+      lastExecuted: format_datetime(workflow.last_executed_at),
+      createdAt: format_datetime(workflow.inserted_at),
+      updatedAt: format_datetime(workflow.updated_at),
+      createdBy: workflow.created_by || "system"
     }
   end
+
+  defp workflow_trigger_conditions(%{"conditions" => conditions}) when is_list(conditions), do: conditions
+  defp workflow_trigger_conditions(config) when is_map(config), do: Enum.map(config, fn {key, value} -> "#{key}: #{inspect(value)}" end)
+  defp workflow_trigger_conditions(_), do: []
 
   defp serialize_vulnerability(vuln) do
     %{

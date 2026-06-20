@@ -21,6 +21,34 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @dns_event_types ["dns_query", "dns", "dns_response", "name_resolution", "domain_lookup"]
+  @dns_transport_ports ["53", "5353"]
+  @dot_ports ["853"]
+  @doh_ports ["443", "8443"]
+  @known_doh_ips [
+    "1.1.1.1",
+    "1.0.0.1",
+    "8.8.8.8",
+    "8.8.4.4",
+    "9.9.9.9",
+    "149.112.112.112",
+    "94.140.14.14",
+    "94.140.15.15",
+    "76.76.2.0",
+    "76.76.10.0",
+    "185.228.168.9",
+    "185.228.169.9"
+  ]
+  @known_doh_domains [
+    "cloudflare-dns.com",
+    "dns.google",
+    "dns.quad9.net",
+    "dns.adguard.com",
+    "doh.opendns.com",
+    "dns.nextdns.io",
+    "dns.cleanbrowsing.org"
+  ]
+
   # ==========================================================================
   # GET /api/v1/dns/stats
   # ==========================================================================
@@ -48,37 +76,47 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> DateTime.truncate(:second)
 
     base_query =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        where: e.timestamp >= ^today_start
-      )
+      Event
+      |> dns_events_query()
+      |> where([e], e.timestamp >= ^today_start)
 
     total_queries_today = Repo.aggregate(base_query, :count, :id)
 
     unique_domains =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        where: e.timestamp >= ^today_start,
-        select: fragment("COUNT(DISTINCT ?->>'query')", e.payload)
+      Event
+      |> dns_events_query()
+      |> where([e], e.timestamp >= ^today_start)
+      |> select([e],
+        fragment(
+          "COUNT(DISTINCT COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain'))",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        )
       )
       |> Repo.one() || 0
 
     # Blocked count: DNS events that matched a blocklist detection
     blocked_count =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        where: e.timestamp >= ^today_start,
-        where: fragment("?->>'blocked' = 'true'", e.payload)
-      )
+      Event
+      |> dns_events_query()
+      |> where([e], e.timestamp >= ^today_start)
+      |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
       |> Repo.aggregate(:count, :id)
 
     # Suspicious count: events with severity above info
     suspicious_count =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        where: e.timestamp >= ^today_start,
-        where: e.severity in ["medium", "high", "critical"]
-      )
+      Event
+      |> dns_events_query()
+      |> where([e], e.timestamp >= ^today_start)
+      |> where([e], e.severity in ["medium", "high", "critical"])
       |> Repo.aggregate(:count, :id)
 
     json(conn, %{
@@ -122,19 +160,66 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       end
 
     base =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        order_by: [desc: e.timestamp]
-      )
+      Event
+      |> dns_events_query()
+      |> order_by([e], desc: e.timestamp)
 
-    # Domain search (ILIKE on payload->>'query')
+    # Domain search (ILIKE on known DNS domain fields)
     base =
       case params["domain"] do
         nil -> base
         "" -> base
         domain ->
           pattern = "%#{domain}%"
-          where(base, [e], fragment("?->>'query' ILIKE ?", e.payload, ^pattern))
+          where(
+            base,
+            [e],
+            fragment(
+              "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain') ILIKE ?",
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              ^pattern
+            )
+          )
+      end
+
+    # Process filter
+    base =
+      case params["process"] do
+        nil ->
+          base
+
+        "" ->
+          base
+
+        process ->
+          pattern = "%#{process}%"
+
+          where(
+            base,
+            [e],
+            fragment(
+              "COALESCE(?->>'process_name', ?->>'processName', ?->>'process_path', ?->>'processPath', ?->>'pid', ?->>'process_pid', ?->'process'->>'name', ?->'process'->>'path', ?->'process'->>'pid') ILIKE ?",
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              ^pattern
+            )
+          )
       end
 
     # Query type filter
@@ -142,8 +227,24 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       case params["query_type"] do
         nil -> base
         "" -> base
+        "TRANSPORT" -> where(base, ^dns_transport_dynamic())
+        "DOH" -> where(base, ^doh_dynamic())
+        "DOT" -> where(base, ^dot_dynamic())
         qt ->
-          where(base, [e], fragment("?->>'query_type' = ?", e.payload, ^qt))
+          where(
+            base,
+            [e],
+            fragment(
+              "COALESCE(?->>'query_type', ?->>'record_type', ?->>'dns.query_type', ?->>'dns.record_type', ?->'dns'->>'query_type', ?->'dns'->>'record_type') = ?",
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              e.payload,
+              ^qt
+            )
+          )
       end
 
     # Agent filter
@@ -200,23 +301,114 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     start_time = parse_time_range(time_range)
 
     results =
-      from(e in Event,
-        where: e.event_type == "dns_query",
-        where: e.timestamp >= ^start_time,
-        group_by: fragment("?->>'query'", e.payload),
-        select: %{
-          domain: fragment("?->>'query'", e.payload),
-          count: count(e.id)
-        },
-        order_by: [desc: count(e.id)],
-        limit: 20
+      Event
+      |> dns_events_query()
+      |> where([e], e.timestamp >= ^start_time)
+      |> group_by([e],
+        fragment(
+          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain')",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        )
       )
+      |> select([e], %{
+        domain:
+          fragment(
+            "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain')",
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload,
+            e.payload
+          ),
+        count: count(e.id)
+      })
+      |> order_by([e], desc: count(e.id))
+      |> limit(20)
       |> Repo.all()
 
     json(conn, %{
       data: results,
       meta: %{time_range: time_range}
     })
+  end
+
+  # The agent has emitted DNS telemetry under a few historical shapes. Keep the
+  # dashboard query inclusive so live and retained events do not disappear.
+  defp dns_events_query(queryable) do
+    where(queryable, ^dns_event_dynamic())
+  end
+
+  defp dns_event_dynamic do
+    dynamic(
+      [e],
+      e.event_type in ^@dns_event_types or
+        like(e.event_type, "dns%") or
+        ^dns_transport_dynamic() or
+        ^doh_dynamic() or
+        ^dot_dynamic() or
+        fragment(
+          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain') IS NOT NULL",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        )
+    )
+  end
+
+  defp dns_transport_dynamic do
+    dynamic(
+      [e],
+      e.event_type == "network_connect" and
+        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@dns_transport_ports)
+    )
+  end
+
+  defp dot_dynamic do
+    dynamic(
+      [e],
+      e.event_type == "network_connect" and
+        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@dot_ports)
+    )
+  end
+
+  defp doh_dynamic do
+    dynamic(
+      [e],
+      e.event_type == "network_connect" and
+        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@doh_ports) and
+        (fragment("?->>'remote_ip' = ANY(?::text[])", e.payload, ^@known_doh_ips) or
+           fragment(
+             "lower(COALESCE(?->>'domain', ?->>'remote_domain', ?->>'sni', ?->>'tls_sni', ?->>'host', ?->>'hostname')) = ANY(?::text[])",
+             e.payload,
+             e.payload,
+             e.payload,
+             e.payload,
+             e.payload,
+             e.payload,
+             ^@known_doh_domains
+           ))
+    )
   end
 
   # ==========================================================================
@@ -383,7 +575,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
             ilike(a.description, ^"%domain%") or
             fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%dns%") or
             fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%dga%") or
-            fragment("?->>'event_type' = ?", a.detection_metadata, "dns_query"),
+            fragment("?->>'event_type' LIKE ?", a.detection_metadata, "dns%"),
         order_by: [desc: a.inserted_at],
         select: %{
           id: a.id,
@@ -498,12 +690,16 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     payload = event.payload || %{}
     process_payload = payload["process"] || payload[:process] || %{}
     dns_payload = payload["dns"] || payload[:dns] || %{}
+    classification = classify_dns_event(event.event_type, payload)
+    remote_ip = payload["remote_ip"] || payload[:remote_ip]
+    remote_port = payload["remote_port"] || payload[:remote_port]
+    transport_target = format_transport_target(remote_ip, remote_port, classification)
 
     %{
       id: event.id,
       agent_id: event.agent_id,
       timestamp: format_timestamp(event.timestamp),
-      severity: event.severity,
+      severity: dns_event_severity(event.severity, classification),
       domain: first_present([
         payload["query"],
         payload[:query],
@@ -511,18 +707,38 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         payload[:query_name],
         payload["domain"],
         payload[:domain],
+        payload["dns_query"],
+        payload[:dns_query],
+        payload["dns.domain"],
+        payload[:"dns.domain"],
+        payload["host"],
+        payload[:host],
+        payload["hostname"],
+        payload[:hostname],
         dns_payload["query"],
         dns_payload[:query],
         dns_payload["query_name"],
-        dns_payload[:query_name]
+        dns_payload[:query_name],
+        dns_payload["domain"],
+        dns_payload[:domain],
+        payload["sni"],
+        payload[:sni],
+        payload["tls_sni"],
+        payload[:tls_sni],
+        transport_target
       ]),
       query_type: first_present([
+        dns_classification_query_type(classification),
         payload["query_type"],
         payload[:query_type],
         payload["record_type"],
         payload[:record_type],
         payload["type"],
         payload[:type],
+        payload["dns.query_type"],
+        payload[:"dns.query_type"],
+        payload["dns.record_type"],
+        payload[:"dns.record_type"],
         dns_payload["query_type"],
         dns_payload[:query_type],
         dns_payload["record_type"],
@@ -535,6 +751,16 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         payload[:resolved_ip],
         payload["answer"],
         payload[:answer],
+        payload["response_data"],
+        payload[:response_data],
+        payload["dns_response"],
+        payload[:dns_response],
+        payload["dns.response"],
+        payload[:"dns.response"],
+        dns_payload["response"],
+        dns_payload[:response],
+        dns_payload["response_data"],
+        dns_payload[:response_data],
         format_responses(payload["responses"] || payload[:responses]),
         format_responses(dns_payload["responses"] || dns_payload[:responses]),
         format_responses(payload["resolved_ips"] || payload[:resolved_ips]),
@@ -575,9 +801,97 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         process_payload[:process_path]
       ]),
       blocked: payload["blocked"] || payload[:blocked] || false,
+      status: dns_event_status(payload, classification),
+      transport: classification,
       payload: payload
     }
   end
+
+  defp classify_dns_event(event_type, payload) do
+    cond do
+      event_type in @dns_event_types or String.starts_with?(to_string(event_type), "dns") ->
+        "query"
+
+      payload_port?(payload, @dot_ports) ->
+        "dot"
+
+      payload_port?(payload, @doh_ports) and known_doh_target?(payload) ->
+        "doh"
+
+      payload_port?(payload, @dns_transport_ports) ->
+        "transport"
+
+      true ->
+        "query"
+    end
+  end
+
+  defp payload_port?(payload, ports) do
+    to_string(payload["remote_port"] || payload[:remote_port] || "") in ports
+  end
+
+  defp known_doh_target?(payload) do
+    remote_ip = to_string(payload["remote_ip"] || payload[:remote_ip] || "")
+
+    domain =
+      first_present([
+        payload["domain"],
+        payload[:domain],
+        payload["remote_domain"],
+        payload[:remote_domain],
+        payload["sni"],
+        payload[:sni],
+        payload["tls_sni"],
+        payload[:tls_sni],
+        payload["host"],
+        payload[:host],
+        payload["hostname"],
+        payload[:hostname]
+      ])
+      |> to_string()
+      |> String.downcase()
+
+    remote_ip in @known_doh_ips or domain in @known_doh_domains
+  end
+
+  defp format_transport_target(nil, nil, _classification), do: nil
+  defp format_transport_target(nil, "", _classification), do: nil
+  defp format_transport_target("", nil, _classification), do: nil
+
+  defp format_transport_target(remote_ip, remote_port, classification) do
+    label =
+      case classification do
+        "doh" -> "DoH resolver"
+        "dot" -> "DoT resolver"
+        "transport" -> "DNS resolver"
+        _ -> "Resolver"
+      end
+
+    port = if remote_port in [nil, ""], do: "", else: ":#{remote_port}"
+    "#{label} #{remote_ip}#{port}"
+  end
+
+  defp dns_classification_query_type("doh"), do: "DOH"
+  defp dns_classification_query_type("dot"), do: "DOT"
+  defp dns_classification_query_type("transport"), do: "TRANSPORT"
+  defp dns_classification_query_type(_), do: nil
+
+  defp dns_event_status(payload, classification) do
+    cond do
+      payload["blocked"] == true or payload[:blocked] == true -> "blocked"
+      classification in ["doh", "dot"] -> "suspicious"
+      true -> "allowed"
+    end
+  end
+
+  defp dns_event_severity(severity, classification) when classification in ["doh", "dot"] do
+    case severity do
+      s when s in ["high", "critical"] -> s
+      _ -> "medium"
+    end
+  end
+
+  defp dns_event_severity(severity, _classification), do: severity || "info"
 
   defp first_present(values, default \\ nil) do
     Enum.find_value(values, default, fn

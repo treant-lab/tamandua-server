@@ -311,6 +311,156 @@ const ATTACK_PHASE_COLORS: Record<string, string> = {
   unknown: 'var(--muted)',
 };
 
+const EDGE_PRIORITY: Record<string, number> = {
+  spawned: 0,
+  executed: 1,
+  contacted: 2,
+  resolved: 2,
+  modified: 3,
+  accessed: 3,
+};
+
+function nodeTime(node: StorylineNode): number {
+  const raw = node.timestamp_raw || node.timestamp || asText(node.data.timestamp);
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], mode = 'timeline'): Map<string, { x: number; y: number }> {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, StorylineEdge[]>();
+  const outgoing = new Map<string, StorylineEdge[]>();
+
+  edges.forEach((edge) => {
+    if (!byId.has(edge.source) || !byId.has(edge.target)) return;
+    incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge]);
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge]);
+  });
+
+  const roots = nodes
+    .filter((node) => !incoming.has(node.id) || node.highlighted)
+    .sort((a, b) => Number(b.highlighted) - Number(a.highlighted) || nodeTime(a) - nodeTime(b));
+
+  const level = new Map<string, number>();
+  const queue = [...(roots.length ? roots : nodes.slice(0, 1))];
+  queue.forEach((node) => level.set(node.id, 0));
+
+  while (queue.length) {
+    const node = queue.shift()!;
+    const currentLevel = level.get(node.id) || 0;
+    const nextEdges = [...(outgoing.get(node.id) || [])].sort((a, b) => (EDGE_PRIORITY[a.type] ?? 9) - (EDGE_PRIORITY[b.type] ?? 9));
+
+    nextEdges.forEach((edge) => {
+      const nextLevel = currentLevel + 1;
+      if (!level.has(edge.target) || nextLevel > (level.get(edge.target) || 0)) {
+        level.set(edge.target, nextLevel);
+        const target = byId.get(edge.target);
+        if (target) queue.push(target);
+      }
+    });
+  }
+
+  nodes.forEach((node) => {
+    if (!level.has(node.id)) level.set(node.id, Math.max(1, Math.floor(nodeTime(node) / 60000) % 4));
+  });
+
+  const lanes: Record<StorylineNode['type'], number> = {
+    process: 0,
+    user: 1,
+    file: 2,
+    registry: 3,
+    dns: 4,
+    network: 5,
+  };
+
+  const grouped = new Map<number, StorylineNode[]>();
+  nodes.forEach((node) => {
+    const key = level.get(node.id) || 0;
+    grouped.set(key, [...(grouped.get(key) || []), node]);
+  });
+
+  const positions = new Map<string, { x: number; y: number }>();
+
+  if (mode === 'force') {
+    const centerX = 560;
+    const centerY = 430;
+    const rootsSet = new Set(roots.map((node) => node.id));
+    const ordered = [...nodes].sort((a, b) => Number(rootsSet.has(b.id)) - Number(rootsSet.has(a.id)) || nodeTime(a) - nodeTime(b));
+    const radiusBase = Math.max(210, Math.min(520, nodes.length * 18));
+
+    ordered.forEach((node, index) => {
+      if (index === 0 || node.highlighted) {
+        positions.set(node.id, { x: centerX, y: centerY });
+        return;
+      }
+      const ring = 1 + Math.floor(index / 10);
+      const angle = ((index % 10) / 10) * Math.PI * 2 - Math.PI / 2;
+      const radius = radiusBase + (ring - 1) * 150;
+      positions.set(node.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      });
+    });
+
+    return positions;
+  }
+
+  const xSpacing = 300;
+  const ySpacing = 118;
+  const laneHeight = 155;
+
+  Array.from(grouped.entries())
+    .sort(([a], [b]) => a - b)
+    .forEach(([lvl, group]) => {
+      const ordered = [...group].sort((a, b) => {
+        const typeDelta = (lanes[a.type] ?? 9) - (lanes[b.type] ?? 9);
+        return typeDelta || Number(b.highlighted || b.suspicious) - Number(a.highlighted || a.suspicious) || nodeTime(a) - nodeTime(b);
+      });
+      const laneCounts = new Map<number, number>();
+
+      ordered.forEach((node) => {
+        const lane = lanes[node.type] ?? 0;
+        const index = laneCounts.get(lane) || 0;
+        laneCounts.set(lane, index + 1);
+        if (mode === 'hierarchical') {
+          positions.set(node.id, {
+            x: 160 + lane * 250 + index * 80,
+            y: 110 + lvl * 175,
+          });
+        } else {
+          positions.set(node.id, {
+            x: 140 + lvl * xSpacing,
+            y: 110 + lane * laneHeight + index * ySpacing,
+          });
+        }
+      });
+    });
+
+  return positions;
+}
+
+function formatNodeValue(value: unknown): string {
+  if (value === undefined || value === null || value === '') return 'Not captured';
+  if (Array.isArray(value)) return value.length ? value.map((item) => asText(item)).join(', ') : 'None';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function firstNodeData(node: StorylineNode, keys: string[], fallback = 'Not captured'): string {
+  for (const key of keys) {
+    const value = node.data[key] ?? (node as unknown as Record<string, unknown>)[key];
+    const formatted = formatNodeValue(value);
+    if (formatted !== 'Not captured') return formatted;
+  }
+  return fallback;
+}
+
+function countConnected(edges: StorylineEdge[], nodeId: string, direction: 'in' | 'out' | 'all' = 'all') {
+  return edges.filter((edge) =>
+    direction === 'in' ? edge.target === nodeId : direction === 'out' ? edge.source === nodeId : edge.source === nodeId || edge.target === nodeId
+  ).length;
+}
+
 // ============================================================================
 // Helper Components
 // ============================================================================
@@ -463,6 +613,102 @@ function ActionButton({ icon: Icon, label, onClick, variant = 'secondary', disab
       )}
       {label}
     </button>
+  );
+}
+
+function NodeIntelligenceCards({
+  node,
+  edges,
+  allNodes,
+}: {
+  node: StorylineNode;
+  edges: StorylineEdge[];
+  allNodes: StorylineNode[];
+}) {
+  const inbound = countConnected(edges, node.id, 'in');
+  const outbound = countConnected(edges, node.id, 'out');
+  const connectedTypes = edges
+    .filter((edge) => edge.source === node.id || edge.target === node.id)
+    .map((edge) => allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source))?.type)
+    .filter(Boolean);
+  const uniqueConnectedTypes = Array.from(new Set(connectedTypes)).join(', ') || 'None';
+
+  const common = [
+    { label: 'Inbound links', value: inbound },
+    { label: 'Outbound links', value: outbound },
+    { label: 'Related entity types', value: uniqueConnectedTypes },
+  ];
+
+  const typed =
+    node.type === 'process'
+      ? [
+          { label: 'Executable path', value: firstNodeData(node, ['path', 'process_path', 'image_path']) },
+          { label: 'User context', value: firstNodeData(node, ['user', 'username', 'account']) },
+          { label: 'Parent PID', value: firstNodeData(node, ['ppid', 'parent_pid']) },
+          { label: 'Signer', value: firstNodeData(node, ['signer', 'company_name', 'publisher']) },
+          { label: 'SHA-256', value: firstNodeData(node, ['sha256', 'hash', 'file_hash']) },
+        ]
+      : node.type === 'network'
+        ? [
+            { label: 'Destination', value: firstNodeData(node, ['remote_ip', 'destination_ip', 'ip', 'host']) },
+            { label: 'Port / protocol', value: `${firstNodeData(node, ['remote_port', 'destination_port', 'port'], '?')} / ${firstNodeData(node, ['protocol'], 'tcp')}` },
+            { label: 'Direction', value: firstNodeData(node, ['direction'], 'outbound') },
+            { label: 'Bytes', value: firstNodeData(node, ['total_bytes', 'bytes', 'bytes_sent']) },
+            { label: 'Owning process', value: firstNodeData(node, ['process_name', 'process']) },
+          ]
+        : node.type === 'dns'
+          ? [
+              { label: 'Domain', value: firstNodeData(node, ['query', 'query_name', 'domain', 'dns_query'], node.label) },
+              { label: 'Record type', value: firstNodeData(node, ['query_type', 'record_type'], 'A') },
+              { label: 'Response', value: firstNodeData(node, ['response', 'answer', 'resolved_ip', 'resolved_ips']) },
+              { label: 'Resolver/process', value: firstNodeData(node, ['process_name', 'resolver', 'process']) },
+            ]
+          : node.type === 'file'
+            ? [
+                { label: 'Path', value: firstNodeData(node, ['path', 'file_path'], node.full_label || node.label) },
+                { label: 'Operation', value: firstNodeData(node, ['operation', 'action', 'event_type']) },
+                { label: 'Hash', value: firstNodeData(node, ['sha256', 'hash', 'file_hash']) },
+                { label: 'Size', value: firstNodeData(node, ['size', 'file_size']) },
+              ]
+            : node.type === 'registry'
+              ? [
+                  { label: 'Key', value: firstNodeData(node, ['key', 'registry_key', 'path'], node.full_label || node.label) },
+                  { label: 'Value', value: firstNodeData(node, ['value_name', 'value']) },
+                  { label: 'Operation', value: firstNodeData(node, ['operation', 'action', 'event_type']) },
+                ]
+              : [
+                  { label: 'Identity', value: firstNodeData(node, ['user', 'username', 'account'], node.label) },
+                  { label: 'Session', value: firstNodeData(node, ['session_id', 'logon_id']) },
+                  { label: 'Domain', value: firstNodeData(node, ['domain', 'realm']) },
+                ];
+
+  return (
+    <div className="grid grid-cols-1 gap-2">
+      <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+        <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--muted)' }}>
+          Node Intelligence
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {common.map((item) => (
+            <div key={item.label} className="min-w-0">
+              <div className="text-[10px]" style={{ color: 'var(--subtle)' }}>{item.label}</div>
+              <div className="text-xs truncate" title={String(item.value)} style={{ color: 'var(--fg)' }}>{item.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+        <div className="space-y-2">
+          {typed.map((item) => (
+            <div key={item.label} className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{item.label}</div>
+              <div className="text-xs font-mono break-words" style={{ color: 'var(--fg-2)' }}>{formatNodeValue(item.value)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -636,13 +882,10 @@ export default function Storyline({
   // Initialize node positions from storyline data
   useEffect(() => {
     if (storyline?.nodes) {
-      const positions = new Map<string, { x: number; y: number }>();
-      storyline.nodes.forEach(node => {
-        positions.set(node.id, { x: node.x, y: node.y });
-      });
-      setNodePositions(positions);
+      setNodePositions(computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType));
+      requestAnimationFrame(handleFitView);
     }
-  }, [storyline?.nodes]);
+  }, [storyline?.nodes, storyline?.edges, layoutType]);
 
   // Run attack flow animation
   useEffect(() => {
@@ -869,8 +1112,13 @@ export default function Storyline({
   };
 
   const handleResetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    if (storyline?.nodes) {
+      setNodePositions(computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType));
+      requestAnimationFrame(handleFitView);
+    } else {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    }
   };
 
   // Node interactions
@@ -2045,6 +2293,12 @@ export default function Storyline({
                           {selectedNode.timestamp}
                         </div>
                       )}
+
+                      <NodeIntelligenceCards
+                        node={selectedNode}
+                        edges={filteredEdges}
+                        allNodes={storyline.nodes}
+                      />
 
                       {/* Command line for process nodes */}
                       {selectedNode.type === 'process' && selectedNode.data.cmdline && (

@@ -24,6 +24,7 @@ import {
   FileWarning,
   Activity,
   Eye,
+  ExternalLink,
 } from 'lucide-react'
 import { cn, formatDate, safeCapitalize } from '@/lib/utils'
 import { useEventStream } from '@/hooks/useSocket'
@@ -74,11 +75,29 @@ interface TopDomain {
 interface BlocklistEntry {
   id: string
   domain: string
-  blockedAt: string
+  blockedAt?: string
   blockedBy: string
   reason?: string
   source?: string
   selected?: boolean
+}
+
+interface ThreatIntelFeed {
+  name: string
+  enabled: boolean
+  health: string
+  iocCount: number
+  inserted: number
+  lastSyncAt?: string
+  description?: string
+}
+
+interface ThreatIntelFeedSummary {
+  enabled: boolean
+  totalIocs: number
+  syncIntervalHours?: number
+  lastGlobalSync?: string
+  feeds: ThreatIntelFeed[]
 }
 
 interface DNSAlert {
@@ -107,10 +126,111 @@ interface DNSPageProps {
   }
 }
 
+const DNS_EVENT_TYPES = new Set(['dns_query', 'dns', 'dns_response', 'name_resolution', 'domain_lookup'])
+
+const DEFAULT_THREAT_FEEDS = [
+  'abusech_feodo',
+  'abusech_urlhaus',
+  'abusech_threatfox',
+  'abusech_malware_bazaar',
+  'abusech_ssl_blacklist',
+  'emergingthreats',
+  'tor_exit_nodes',
+  'phishtank',
+  'openphish',
+  'spamhaus_drop',
+  'firehol_level1',
+  'c2_intel_feeds',
+]
+
+const DNS_RECORD_TYPE_BY_CODE: Record<string, string> = {
+  '1': 'A',
+  '2': 'NS',
+  '5': 'CNAME',
+  '6': 'SOA',
+  '12': 'PTR',
+  '15': 'MX',
+  '16': 'TXT',
+  '28': 'AAAA',
+  '33': 'SRV',
+  '65': 'HTTPS',
+  '255': 'ANY',
+}
+
+function isDnsEventType(type?: string): boolean {
+  const normalized = String(type || '').toLowerCase()
+  return DNS_EVENT_TYPES.has(normalized) || normalized.startsWith('dns')
+}
+
+function normalizeDnsRecordType(type: unknown): string {
+  const value = String(type ?? '').trim()
+  if (!value) return 'Unknown'
+
+  const withoutPrefix = value.replace(/^type/i, '')
+  if (DNS_RECORD_TYPE_BY_CODE[withoutPrefix]) return DNS_RECORD_TYPE_BY_CODE[withoutPrefix]
+
+  const upper = value.toUpperCase()
+  if (upper === 'IPV4') return 'A'
+  if (upper === 'IPV6') return 'AAAA'
+  return upper
+}
+
+function normalizeDnsSeverity(...values: Array<unknown>): DNSQuery['severity'] {
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      if (value >= 90) return 'critical'
+      if (value >= 70) return 'high'
+      if (value >= 40) return 'medium'
+      if (value > 0) return 'low'
+      return 'info'
+    }
+
+    const normalized = String(value).trim().toLowerCase()
+    if (!normalized) continue
+
+    if (/^\d+(\.\d+)?$/.test(normalized)) {
+      const score = Number(normalized)
+      if (score >= 90) return 'critical'
+      if (score >= 70) return 'high'
+      if (score >= 40) return 'medium'
+      if (score > 0) return 'low'
+      return 'info'
+    }
+
+    const labels: Record<string, DNSQuery['severity']> = {
+      alert: 'medium',
+      crit: 'critical',
+      critical: 'critical',
+      emergency: 'critical',
+      error: 'medium',
+      fatal: 'critical',
+      high: 'high',
+      informational: 'info',
+      info: 'info',
+      low: 'low',
+      medium: 'medium',
+      med: 'medium',
+      moderate: 'medium',
+      notice: 'info',
+      severe: 'critical',
+      suspicious: 'medium',
+      warn: 'medium',
+      warning: 'medium',
+    }
+
+    if (labels[normalized]) return labels[normalized]
+  }
+
+  return 'info'
+}
+
 function normalizeDnsQuery(raw: Record<string, unknown>): DNSQuery {
   const payload = (raw.payload as Record<string, unknown> | undefined) || {}
   const process = (payload.process as Record<string, unknown> | undefined) || {}
   const dns = (payload.dns as Record<string, unknown> | undefined) || {}
+  const agent = ((raw.agent || payload.agent || payload.endpoint || raw.endpoint) as Record<string, unknown> | undefined) || {}
 
   const pick = (...values: Array<unknown>) =>
     values.find((value) => value !== undefined && value !== null && value !== '')
@@ -118,6 +238,7 @@ function normalizeDnsQuery(raw: Record<string, unknown>): DNSQuery {
   const stringify = (value: unknown, fallback = ''): string => {
     if (typeof value === 'string') return value
     if (typeof value === 'number') return String(value)
+    if (typeof value === 'boolean') return String(value)
     return fallback
   }
 
@@ -130,64 +251,625 @@ function normalizeDnsQuery(raw: Record<string, unknown>): DNSQuery {
     return fallback
   }
 
+  const stringifyResponseItem = (value: unknown): string => {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
+
+    const item = value as Record<string, unknown>
+    const responseValue = pick(
+      item.data,
+      item.address,
+      item.ip,
+      item.value,
+      item.answer,
+      item.response,
+      item.resolved_ip,
+      item.resolvedIp,
+      item.host,
+      item.hostname,
+      item.domain,
+      item.target,
+      item.exchange,
+      item.cname,
+      item.ptr,
+    )
+
+    const text = stringify(responseValue)
+    if (!text) return ''
+
+    const type = normalizeDnsRecordType(pick(item.type, item.record_type, item.recordType, item.rrtype, item.qtype))
+    const ttl = stringify(pick(item.ttl, item.time_to_live, item.timeToLive))
+    const prefix = type && type !== 'Unknown' ? `${type} ` : ''
+    const suffix = ttl ? ` (${ttl}s)` : ''
+
+    return `${prefix}${text}${suffix}`
+  }
+
   const joinList = (value: unknown): string => {
     if (!Array.isArray(value)) return ''
-    return value.map((item) => stringify(item)).filter(Boolean).join(', ')
+    return value.map((item) => stringifyResponseItem(item)).filter(Boolean).join(', ')
   }
+
+  const normalizeDnsResponse = (...values: Array<unknown>): string => {
+    for (const value of values) {
+      const listValue = joinList(value)
+      if (listValue) return listValue
+
+      const scalarValue = stringify(value).trim()
+      if (scalarValue) return scalarValue
+
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const objectValue = stringifyResponseItem(value)
+        if (objectValue) return objectValue
+      }
+    }
+
+    return ''
+  }
+
+  const normalizeProcessName = (...values: Array<unknown>): string => {
+    for (const value of values) {
+      const text = stringify(value).trim()
+      if (!text) continue
+
+      const normalized = text.replace(/^.*[\\/]/, '')
+      if (normalized) return normalized
+    }
+
+    return 'Unknown'
+  }
+
+  const formatAgentFallback = (agentId: string): string => {
+    if (!agentId) return 'Unassigned agent'
+    return agentId.length > 12 ? `${agentId.slice(0, 8)}...` : agentId
+  }
+
+  const agentId = stringify(
+    pick(
+      raw.agentId,
+      raw.agent_id,
+      raw.agentID,
+      raw.endpoint_id,
+      raw.endpointId,
+      payload.agent_id,
+      payload.agentId,
+      payload.agentID,
+      payload.endpoint_id,
+      payload.endpointId,
+      agent.id,
+      agent.agent_id,
+      agent.agentId,
+      agent.endpoint_id,
+      agent.endpointId,
+    ),
+    '',
+  )
+
+  const agentHostname = stringify(
+    pick(
+      raw.agentHostname,
+      raw.agent_hostname,
+      raw.hostname,
+      raw.host,
+      raw.computer_name,
+      raw.computerName,
+      raw.device_name,
+      raw.deviceName,
+      raw.endpoint_name,
+      raw.endpointName,
+      payload.agent_hostname,
+      payload.agentHostname,
+      payload.hostname,
+      payload.host,
+      payload.computer_name,
+      payload.computerName,
+      payload.device_name,
+      payload.deviceName,
+      payload.endpoint_name,
+      payload.endpointName,
+      agent.hostname,
+      agent.host,
+      agent.name,
+      agent.computer_name,
+      agent.computerName,
+      agent.device_name,
+      agent.deviceName,
+      agent.endpoint_name,
+      agent.endpointName,
+    ),
+    formatAgentFallback(agentId),
+  )
 
   return {
     id: stringify(pick(raw.id), crypto.randomUUID()),
     timestamp: stringify(pick(raw.timestamp), new Date().toISOString()),
-    domain: stringify(pick(raw.domain, raw.query, raw.query_name, payload.query, payload.query_name, dns.query, dns.query_name), 'Unknown'),
-    queryType: stringify(pick(raw.queryType, raw.query_type, raw.record_type, raw.type, payload.query_type, payload.record_type, dns.query_type, dns.record_type), 'A'),
-    response: stringify(
+    domain: stringify(
       pick(
-        raw.response,
-        raw.resolved_ip,
-        raw.answer,
-        payload.response,
-        payload.resolved_ip,
-        payload.answer,
-        joinList(raw.responses),
-        joinList(raw.resolved_ips),
-        joinList(payload.responses),
-        joinList(payload.resolved_ips),
-        joinList(dns.responses),
-        joinList(dns.resolved_ips),
-      ),
-      '',
-    ),
-    processName: stringify(
-      pick(
-        raw.processName,
-        raw.process_name,
-        raw.name,
-        payload.process_name,
-        payload.name,
-        process.process_name,
-        process.name,
+        raw.domain,
+        raw.query,
+        raw.query_name,
+        raw.dns_query,
+        raw.host,
+        raw.hostname,
+        payload.query,
+        payload.query_name,
+        payload.domain,
+        payload.dns_query,
+        payload['dns.domain'],
+        payload.host,
+        payload.hostname,
+        dns.query,
+        dns.query_name,
+        dns.domain,
       ),
       'Unknown',
     ),
-    processPid: toNumber(pick(raw.processPid, raw.process_pid, raw.pid, payload.pid, process.pid), 0),
+    queryType: normalizeDnsRecordType(
+      pick(
+        raw.queryType,
+        raw.query_type,
+        raw.queryTypeName,
+        raw.query_type_name,
+        raw.record_type,
+        raw.recordType,
+        raw.rrtype,
+        raw.rr_type,
+        raw.qtype,
+        raw.q_type,
+        raw.dns_type,
+        raw.dnsType,
+        raw.type,
+        payload.query_type,
+        payload.queryType,
+        payload.query_type_name,
+        payload.record_type,
+        payload.recordType,
+        payload.rrtype,
+        payload.rr_type,
+        payload.qtype,
+        payload.q_type,
+        payload.dns_type,
+        payload.dnsType,
+        payload['dns.query_type'],
+        payload['dns.record_type'],
+        payload['dns.qtype'],
+        payload['dns.type'],
+        dns.query_type,
+        dns.queryType,
+        dns.query_type_name,
+        dns.record_type,
+        dns.recordType,
+        dns.rrtype,
+        dns.rr_type,
+        dns.qtype,
+        dns.q_type,
+        dns.type,
+      ),
+    ),
+    response: normalizeDnsResponse(
+      raw.response,
+      raw.resolved_ip,
+      raw.resolvedIp,
+      raw.answer,
+      raw.answers,
+      raw.response_data,
+      raw.responseData,
+      raw.dns_response,
+      raw.dnsResponse,
+      raw.result,
+      raw.results,
+      raw.records,
+      payload.response,
+      payload.resolved_ip,
+      payload.resolvedIp,
+      payload.answer,
+      payload.answers,
+      payload.response_data,
+      payload.responseData,
+      payload.dns_response,
+      payload.dnsResponse,
+      payload.result,
+      payload.results,
+      payload.records,
+      payload['dns.response'],
+      payload['dns.answers'],
+      payload['dns.response_data'],
+      dns.response,
+      dns.resolved_ip,
+      dns.resolvedIp,
+      dns.answer,
+      dns.answers,
+      dns.response_data,
+      dns.responseData,
+      dns.dns_response,
+      dns.dnsResponse,
+      dns.result,
+      dns.results,
+      dns.records,
+      raw.responses,
+      raw.resolved_ips,
+      raw.resolvedIps,
+      payload.responses,
+      payload.resolved_ips,
+      payload.resolvedIps,
+      dns.responses,
+      dns.resolved_ips,
+      dns.resolvedIps,
+      pick(raw.response_code, raw.rcode, payload.response_code, payload.rcode, dns.response_code, dns.rcode),
+    ),
+    processName: normalizeProcessName(
+      pick(
+        raw.processName,
+        raw.process_name,
+        raw.process,
+        raw.image,
+        raw.image_path,
+        raw.imagePath,
+        raw.executable,
+        raw.exe,
+        raw.command_line,
+        raw.commandLine,
+        raw.name,
+        payload.process_name,
+        payload.processName,
+        payload.process,
+        payload.image,
+        payload.image_path,
+        payload.imagePath,
+        payload.executable,
+        payload.exe,
+        payload.command_line,
+        payload.commandLine,
+        payload.name,
+        process.process_name,
+        process.processName,
+        process.image,
+        process.image_path,
+        process.imagePath,
+        process.executable,
+        process.exe,
+        process.command_line,
+        process.commandLine,
+        process.name,
+      ),
+    ),
+    processPid: toNumber(
+      pick(
+        raw.processPid,
+        raw.process_pid,
+        raw.pid,
+        raw.process_id,
+        raw.processId,
+        payload.pid,
+        payload.process_pid,
+        payload.processPid,
+        payload.process_id,
+        payload.processId,
+        process.pid,
+        process.process_pid,
+        process.processPid,
+        process.process_id,
+        process.processId,
+      ),
+      0,
+    ),
     processPath:
       stringify(
         pick(
           raw.processPath,
           raw.process_path,
+          raw.image_path,
+          raw.imagePath,
+          raw.image,
+          raw.executable,
+          raw.exe,
+          raw.command_line,
+          raw.commandLine,
           raw.path,
           payload.process_path,
+          payload.processPath,
+          payload.image_path,
+          payload.imagePath,
+          payload.image,
+          payload.executable,
+          payload.exe,
+          payload.command_line,
+          payload.commandLine,
           payload.path,
           process.process_path,
+          process.processPath,
+          process.image_path,
+          process.imagePath,
+          process.image,
+          process.executable,
+          process.exe,
+          process.command_line,
+          process.commandLine,
           process.path,
         ),
         '',
       ) || undefined,
-    agentId: stringify(pick(raw.agentId, raw.agent_id), ''),
-    agentHostname: stringify(pick(raw.agentHostname, raw.agent_hostname, raw.agentId, raw.agent_id), ''),
-    severity: stringify(pick(raw.severity), 'info') as DNSQuery['severity'],
+    agentId,
+    agentHostname,
+    severity: normalizeDnsSeverity(
+      raw.severity,
+      raw.level,
+      raw.priority,
+      raw.risk,
+      raw.risk_level,
+      raw.riskLevel,
+      raw.threat_level,
+      raw.threatLevel,
+      raw.score,
+      raw.threat_score,
+      raw.threatScore,
+      payload.severity,
+      payload.level,
+      payload.priority,
+      payload.risk,
+      payload.risk_level,
+      payload.riskLevel,
+      payload.threat_level,
+      payload.threatLevel,
+      payload.score,
+      payload.threat_score,
+      payload.threatScore,
+      dns.severity,
+      dns.level,
+      dns.risk,
+      dns.score,
+    ),
     status: stringify(pick(raw.status), 'allowed') as DNSQuery['status'],
     detections: Array.isArray(raw.detections) ? (raw.detections as DNSDetection[]) : undefined,
+  }
+}
+
+function normalizeBlocklistEntry(raw: unknown, index = 0): BlocklistEntry {
+  const entry = (typeof raw === 'object' && raw !== null ? raw : { domain: raw }) as Record<string, unknown>
+  const asRecord = (value: unknown): Record<string, unknown> =>
+    value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+
+  const metadata = (entry.metadata && typeof entry.metadata === 'object'
+    ? entry.metadata
+    : {}) as Record<string, unknown>
+  const payload = asRecord(entry.payload)
+  const dns = asRecord(entry.dns ?? payload.dns)
+  const ioc = asRecord(entry.ioc)
+  const indicator = asRecord(entry.indicator)
+  const observable = asRecord(entry.observable)
+
+  const pick = (...values: Array<unknown>) =>
+    values.find((value) => value !== undefined && value !== null && value !== '')
+
+  const stringify = (value: unknown, fallback = ''): string => {
+    if (typeof value === 'string') return value
+    if (typeof value === 'number') return String(value)
+    return fallback
+  }
+
+  const normalizeDomainValue = (value: unknown): string => {
+    const rawValue = stringify(value).trim()
+    if (!rawValue) return ''
+
+    try {
+      if (/^https?:\/\//i.test(rawValue)) {
+        return new URL(rawValue).hostname.replace(/^\*\./, '').replace(/\.$/, '').toLowerCase()
+      }
+    } catch {
+      // Fall through to raw domain normalization.
+    }
+
+    return rawValue
+      .replace(/^\*\./, '')
+      .replace(/\.$/, '')
+      .toLowerCase()
+  }
+
+  const normalizeTimestamp = (value: unknown): string | undefined => {
+    const rawValue = stringify(value).trim()
+    if (!rawValue) return undefined
+
+    const naiveMatch = rawValue.match(/^~N\[(.+)\]$/)
+    const timestamp = naiveMatch ? naiveMatch[1] : rawValue
+    return timestamp.includes('T') ? timestamp : timestamp.replace(' ', 'T')
+  }
+
+  const domain = normalizeDomainValue(
+    pick(
+      entry.normalized_domain,
+      entry.normalizedDomain,
+      entry.domain,
+      entry.fqdn,
+      entry.hostname,
+      entry.host,
+      entry.query,
+      entry.query_name,
+      entry.queryName,
+      entry.dns_query,
+      entry.dnsQuery,
+      entry['dns.domain'],
+      entry.value,
+      entry.name,
+      payload.domain,
+      payload.fqdn,
+      payload.hostname,
+      payload.host,
+      payload.query,
+      payload.query_name,
+      payload.queryName,
+      payload.dns_query,
+      payload.dnsQuery,
+      payload['dns.domain'],
+      dns.domain,
+      dns.query,
+      dns.query_name,
+      dns.queryName,
+      ioc.domain,
+      ioc.value,
+      indicator.domain,
+      indicator.value,
+      observable.domain,
+      observable.value,
+      metadata.domain,
+      metadata.normalized_domain,
+      metadata.normalizedDomain,
+      metadata.value,
+    ),
+  ) || 'Unresolved domain'
+  const blockedBy = stringify(
+    pick(
+      entry.blockedBy,
+      entry.blocked_by,
+      entry.blockedByUser,
+      entry.blocked_by_user,
+      entry.created_by,
+      entry.createdBy,
+      entry.created_by_user,
+      entry.createdByUser,
+      entry.user,
+      entry.username,
+      entry.actor,
+      entry.principal,
+      entry.owner,
+      entry.email,
+      metadata.blockedBy,
+      metadata.blocked_by,
+      metadata.created_by,
+      metadata.createdBy,
+      metadata.user,
+      metadata.actor,
+    ),
+    '',
+  )
+  const source = stringify(
+    pick(
+      entry.source,
+      entry.origin,
+      entry.source_type,
+      entry.sourceType,
+      entry.feed_source,
+      entry.feedSource,
+      entry.feed,
+      entry.provider,
+      entry.import_source,
+      entry.importSource,
+      entry.created_by_source,
+      entry.createdBySource,
+      metadata.source,
+      metadata.origin,
+    ),
+    '',
+  )
+
+  return {
+    id: stringify(pick(entry.id, domain), `${domain}-${index}`),
+    domain,
+    blockedAt: normalizeTimestamp(
+      pick(
+        entry.blockedAt,
+        entry.blocked_at,
+        entry.blockedAtIso,
+        entry.blocked_at_iso,
+        entry.inserted_at,
+        entry.created_at,
+        entry.timestamp,
+      ),
+    ),
+    blockedBy,
+    reason: stringify(pick(entry.reason, entry.description), '') || undefined,
+    source: source || undefined,
+    selected: Boolean(entry.selected),
+  }
+}
+
+function formatBlocklistActor(actor?: string): string {
+  const normalized = String(actor || '').trim()
+  if (!normalized) return 'Not recorded'
+
+  const labels: Record<string, string> = {
+    api: 'API',
+    bulk_import: 'Bulk Import',
+    dns_analyzer: 'DNS Analyzer',
+    feed_import: 'Feed Import',
+    manual: 'Manual',
+    system: 'System',
+    ui: 'UI',
+  }
+
+  const key = normalized.toLowerCase()
+  if (labels[key]) return labels[key]
+  if (normalized.includes('@')) return normalized
+  return normalized.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function formatBlocklistSource(source?: string): string {
+  const normalized = String(source || '').trim()
+  if (!normalized) return 'Manual'
+
+  const labels: Record<string, string> = {
+    api: 'API',
+    bulk_import: 'Bulk Import',
+    custom: 'Custom',
+    ioc: 'IOC',
+    manual: 'Manual',
+    threat_feed: 'Threat Feed',
+    threat_intel: 'Threat Intel',
+    ui: 'Manual',
+  }
+
+  const key = normalized.toLowerCase()
+  return labels[key] || normalized.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function formatFeedName(name: string): string {
+  const labels: Record<string, string> = {
+    abusech_feodo: 'Abuse.ch Feodo',
+    abusech_malware_bazaar: 'Abuse.ch Malware Bazaar',
+    abusech_ssl_blacklist: 'Abuse.ch SSL Blacklist',
+    abusech_threatfox: 'Abuse.ch ThreatFox',
+    abusech_urlhaus: 'Abuse.ch URLHaus',
+    c2_intel_feeds: 'C2 Intel Feeds',
+    emergingthreats: 'EmergingThreats',
+    firehol_level1: 'FireHOL Level 1',
+    openphish: 'OpenPhish',
+    phishtank: 'PhishTank',
+    spamhaus_drop: 'Spamhaus DROP',
+    tor_exit_nodes: 'Tor Exit Nodes',
+  }
+
+  return labels[name] || name.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function normalizeThreatIntelFeed(raw: Record<string, unknown>): ThreatIntelFeed {
+  const pick = (...values: Array<unknown>) =>
+    values.find((value) => value !== undefined && value !== null && value !== '')
+
+  const stringify = (value: unknown, fallback = ''): string => {
+    if (typeof value === 'string') return value
+    if (typeof value === 'number') return String(value)
+    if (typeof value === 'boolean') return String(value)
+    return fallback
+  }
+
+  const numberify = (value: unknown, fallback = 0): number => {
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : fallback
+    }
+    return fallback
+  }
+
+  const name = stringify(pick(raw.name, raw.feed, raw.source), 'unknown')
+
+  return {
+    name,
+    enabled: raw.enabled !== false,
+    health: stringify(pick(raw.health, raw.status), raw.enabled === false ? 'disabled' : 'unknown'),
+    iocCount: numberify(pick(raw.ioc_count, raw.iocCount, raw.count)),
+    inserted: numberify(pick(raw.inserted, raw.inserted_count, raw.insertedCount)),
+    lastSyncAt: stringify(pick(raw.last_sync_at, raw.lastSyncAt, raw.last_sync, raw.lastSync), '') || undefined,
+    description: stringify(pick(raw.description), '') || undefined,
   }
 }
 
@@ -227,7 +909,7 @@ export default function DNS({
   const [queries, setQueries] = useState<DNSQuery[]>(initialQueries || [])
   const [topDomains, setTopDomains] = useState<TopDomain[]>(initialTopDomains || [])
   const [blocklist, setBlocklist] = useState<BlocklistEntry[]>(
-    (initialBlocklist || []).map(e => ({ ...e, selected: false }))
+    (initialBlocklist || []).map((entry, index) => ({ ...normalizeBlocklistEntry(entry, index), selected: false }))
   )
   const [alerts, setAlerts] = useState<DNSAlert[]>(initialAlerts || [])
   const [pagination, setPagination] = useState(initialPagination || { page: 1, perPage: 50, total: 0 })
@@ -246,6 +928,8 @@ export default function DNS({
   const [showBulkImport, setShowBulkImport] = useState(false)
   const [blocklistLoading, setBlocklistLoading] = useState(false)
   const [selectAll, setSelectAll] = useState(false)
+  const [threatIntelFeeds, setThreatIntelFeeds] = useState<ThreatIntelFeedSummary | null>(null)
+  const [threatIntelFeedsLoading, setThreatIntelFeedsLoading] = useState(false)
 
   // Live event streaming
   const {
@@ -264,7 +948,7 @@ export default function DNS({
     if (!liveEvents || liveEvents.length === 0) return
 
     const dnsEvents = liveEvents.filter(
-      e => e.eventType === 'dns_query' && !mergedIdsRef.current.has(e.id)
+      e => isDnsEventType(e.eventType) && !mergedIdsRef.current.has(e.id)
     )
     if (dnsEvents.length === 0) return
 
@@ -341,7 +1025,18 @@ export default function DNS({
         const data = await res.json()
         const rawQueries = data.queries || data.data || []
         setQueries(Array.isArray(rawQueries) ? rawQueries.map((query: Record<string, unknown>) => normalizeDnsQuery(query)) : [])
-        if (data.pagination) setPagination(data.pagination)
+        if (data.pagination) {
+          setPagination(data.pagination)
+        } else if (data.meta) {
+          const limit = Number(data.meta.limit ?? data.meta.per_page ?? data.meta.perPage ?? 50)
+          const offset = Number(data.meta.offset ?? 0)
+          const total = Number(data.meta.total ?? data.meta.total_count ?? 0)
+          setPagination({
+            page: Math.floor(offset / Math.max(limit, 1)) + 1,
+            perPage: limit,
+            total,
+          })
+        }
       }
     } catch {
       // ignore
@@ -374,18 +1069,39 @@ export default function DNS({
       })
       if (res.ok) {
         const data = await res.json()
-        setBlocklist((data.blocklist || data.data || []).map((e: BlocklistEntry & Record<string, any>) => ({
-          id: e.id || e.domain,
-          domain: e.domain,
-          blockedAt: e.blockedAt || e.blocked_at,
-          blockedBy: e.blockedBy || e.blocked_by,
-          reason: e.reason,
-          source: e.source,
+        setBlocklist((data.blocklist || data.data || []).map((entry: unknown, index: number) => ({
+          ...normalizeBlocklistEntry(entry, index),
           selected: false,
         })))
       }
     } catch {
       // ignore
+    }
+  }, [])
+
+  const fetchThreatIntelFeeds = useCallback(async () => {
+    setThreatIntelFeedsLoading(true)
+    try {
+      const res = await fetch('/api/v1/threat-intel/feed-status', {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' },
+      })
+      if (res.ok) {
+        const json = await res.json()
+        const data = json.data || json
+        const rawFeeds = Array.isArray(data.feeds) ? data.feeds : []
+        setThreatIntelFeeds({
+          enabled: Boolean(data.enabled),
+          totalIocs: Number(data.total_iocs ?? data.totalIocs ?? 0),
+          syncIntervalHours: Number(data.sync_interval_hours ?? data.syncIntervalHours ?? 0) || undefined,
+          lastGlobalSync: data.last_global_sync ?? data.lastGlobalSync ?? undefined,
+          feeds: rawFeeds.map((feed: Record<string, unknown>) => normalizeThreatIntelFeed(feed)),
+        })
+      }
+    } catch {
+      // ignore
+    } finally {
+      setThreatIntelFeedsLoading(false)
     }
   }, [])
 
@@ -412,9 +1128,12 @@ export default function DNS({
   useEffect(() => {
     if (activeTab === 'live-feed') fetchQueries()
     if (activeTab === 'top-domains') fetchTopDomains()
-    if (activeTab === 'blocklist') fetchBlocklist()
+    if (activeTab === 'blocklist') {
+      fetchBlocklist()
+      fetchThreatIntelFeeds()
+    }
     if (activeTab === 'detections') fetchAlerts()
-  }, [activeTab, fetchQueries, fetchTopDomains, fetchBlocklist, fetchAlerts])
+  }, [activeTab, fetchQueries, fetchTopDomains, fetchBlocklist, fetchThreatIntelFeeds, fetchAlerts])
 
   // ---- Blocklist actions ----
 
@@ -539,7 +1258,11 @@ export default function DNS({
       if (searchQuery && !q.domain.toLowerCase().includes(searchQuery.toLowerCase())) return false
       if (queryTypeFilter !== 'all' && q.queryType !== queryTypeFilter) return false
       if (agentFilter !== 'all' && q.agentId !== agentFilter) return false
-      if (processFilter && !q.processName.toLowerCase().includes(processFilter.toLowerCase())) return false
+      if (processFilter) {
+        const normalizedProcessFilter = processFilter.toLowerCase()
+        const processText = `${q.processName} ${q.processPid || ''} ${q.processPath || ''}`.toLowerCase()
+        if (!processText.includes(normalizedProcessFilter)) return false
+      }
       return true
     })
   }, [queries, searchQuery, queryTypeFilter, agentFilter, processFilter])
@@ -567,6 +1290,7 @@ export default function DNS({
       response: q.response,
       process_name: q.processName,
       process_pid: q.processPid,
+      process_path: q.processPath || '',
       agent_id: q.agentId,
       agent_hostname: q.agentHostname,
       severity: q.severity,
@@ -576,10 +1300,10 @@ export default function DNS({
   const getBlocklistExportData = () =>
     blocklist.map(e => ({
       domain: e.domain,
-      blocked_at: e.blockedAt,
-      blocked_by: e.blockedBy,
+      blocked_at: e.blockedAt || '',
+      blocked_by: e.blockedBy || 'not_recorded',
       reason: e.reason,
-      source: e.source,
+      source: e.source || 'manual',
     }))
 
   return (
@@ -687,7 +1411,12 @@ export default function DNS({
           selectAll={selectAll}
           selectedCount={selectedCount}
           removeSelectedFromBlocklist={removeSelectedFromBlocklist}
-          onRefresh={fetchBlocklist}
+          threatIntelFeeds={threatIntelFeeds}
+          threatIntelFeedsLoading={threatIntelFeedsLoading}
+          onRefresh={() => {
+            fetchBlocklist()
+            fetchThreatIntelFeeds()
+          }}
           getExportData={getBlocklistExportData}
         />
       )}
@@ -788,7 +1517,7 @@ function LiveDNSFeed({
   onRefresh,
   getExportData,
 }: LiveDNSFeedProps) {
-  const queryTypes = ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'SOA', 'SRV', 'PTR']
+  const queryTypes = ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'SOA', 'SRV', 'PTR', 'TRANSPORT', 'DOH', 'DOT']
 
   return (
     <div className="card-sentinel">
@@ -799,7 +1528,7 @@ function LiveDNSFeed({
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--muted)]" />
             <input
               type="text"
-              placeholder="Search by domain..."
+              placeholder="Search by domain or resolver..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full bg-[var(--surface-alt)] border border-[var(--border)] rounded-lg pl-10 pr-4 py-2 text-sm text-[var(--fg)] placeholder-[var(--muted)] focus:ring-2 focus:ring-[var(--sol-cyan)] focus:border-transparent"
@@ -869,10 +1598,10 @@ function LiveDNSFeed({
             <Select
               value={queryTypeFilter}
               onValueChange={setQueryTypeFilter}
-              placeholder="All Query Types"
+              placeholder="All DNS Types"
               className="bg-[var(--surface-alt)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--fg)] focus:ring-2 focus:ring-[var(--sol-cyan)]"
             >
-              <SelectItem value="all">All Query Types</SelectItem>
+              <SelectItem value="all">All DNS Types</SelectItem>
               {queryTypes.map(t => (
                 <SelectItem key={t} value={t}>{t}</SelectItem>
               ))}
@@ -892,7 +1621,7 @@ function LiveDNSFeed({
           </Select>
 
           <span className="text-sm text-[var(--muted)]">
-            {queries.length} queries
+            {queries.length} DNS records
           </span>
         </div>
       </div>
@@ -903,7 +1632,7 @@ function LiveDNSFeed({
           <thead>
             <tr className="border-b border-[var(--border)] text-left">
               <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Timestamp</th>
-              <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Domain</th>
+              <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Domain / Resolver</th>
               <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Type</th>
               <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Response</th>
               <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Process</th>
@@ -917,8 +1646,8 @@ function LiveDNSFeed({
               <tr>
                 <td colSpan={8} className="px-4 py-12 text-center text-[var(--muted)]">
                   <Globe className="h-12 w-12 mx-auto mb-3 opacity-40" />
-                  <p>No DNS queries found</p>
-                  <p className="text-sm mt-1">Adjust your filters or wait for live data</p>
+                  <p>No DNS records found</p>
+                  <p className="text-sm mt-1">Adjust filters or wait for DNS query, resolver, DoH, or DoT telemetry</p>
                 </td>
               </tr>
             ) : (
@@ -1049,11 +1778,15 @@ function DNSQueryRow({
           {query.response || '--'}
         </td>
         <td className="px-4 py-3">
-          <span className="text-sm text-[var(--fg)]">{query.processName}</span>
-          <span className="text-xs text-[var(--muted)] ml-1">({query.processPid})</span>
+          <span className="text-sm text-[var(--fg)]" title={query.processPath || query.processName}>{query.processName}</span>
+          {query.processPid > 0 && (
+            <span className="text-xs text-[var(--muted)] ml-1">({query.processPid})</span>
+          )}
         </td>
         <td className="px-4 py-3 text-sm text-[var(--muted)]">
-          {query.agentHostname}
+          <span title={query.agentId || query.agentHostname}>
+            {query.agentHostname || 'Unassigned agent'}
+          </span>
         </td>
         <td className="px-4 py-3">
           <span
@@ -1098,7 +1831,7 @@ function DNSQueryRow({
                     <span className="text-[var(--muted)]">Name:</span> {query.processName}
                   </p>
                   <p className="text-[var(--fg)]">
-                    <span className="text-[var(--muted)]">PID:</span> {query.processPid}
+                    <span className="text-[var(--muted)]">PID:</span> {query.processPid > 0 ? query.processPid : 'Not recorded'}
                   </p>
                   {query.processPath && (
                     <p className="text-[var(--fg)] break-all">
@@ -1152,14 +1885,15 @@ function DNSQueryRow({
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[var(--sol-cyan)] hover:bg-[color-mix(in_srgb,var(--sol-cyan)_85%,black)] text-white text-xs font-medium rounded-lg"
               >
                 <Search className="h-3 w-3" />
-                Hunt Domain
+                Hunt Indicator
               </button>
               <button
                 onClick={e => {
                   e.stopPropagation()
-                  router.visit(`/app/agents/${query.agentId}`)
+                  if (query.agentId) router.visit(`/app/agents/${query.agentId}`)
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[var(--surface-alt)] hover:bg-[var(--border)] text-[var(--muted)] text-xs font-medium rounded-lg"
+                disabled={!query.agentId}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[var(--surface-alt)] hover:bg-[var(--border)] text-[var(--muted)] text-xs font-medium rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Eye className="h-3 w-3" />
                 View Agent
@@ -1251,6 +1985,8 @@ interface BlocklistManagementProps {
   selectAll: boolean
   selectedCount: number
   removeSelectedFromBlocklist: () => void
+  threatIntelFeeds: ThreatIntelFeedSummary | null
+  threatIntelFeedsLoading: boolean
   onRefresh: () => void
   getExportData: () => Record<string, any>[]
 }
@@ -1272,9 +2008,28 @@ function BlocklistManagement({
   selectAll,
   selectedCount,
   removeSelectedFromBlocklist,
+  threatIntelFeeds,
+  threatIntelFeedsLoading,
   onRefresh,
   getExportData,
 }: BlocklistManagementProps) {
+  const feedRows = threatIntelFeeds?.feeds.length
+    ? threatIntelFeeds.feeds
+    : DEFAULT_THREAT_FEEDS.map(name => ({
+      name,
+      enabled: true,
+      health: 'configured',
+      iocCount: 0,
+      inserted: 0,
+      description: undefined,
+    }))
+
+  const visibleFeeds = [...feedRows]
+    .sort((a, b) => (b.iocCount - a.iocCount) || a.name.localeCompare(b.name))
+    .slice(0, 6)
+
+  const activeFeedCount = feedRows.filter(feed => feed.enabled !== false).length
+
   return (
     <div className="space-y-4">
       {/* Add domain bar */}
@@ -1373,6 +2128,65 @@ function BlocklistManagement({
         </div>
       )}
 
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+        <div className="card-sentinel p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-[var(--sol-cyan)]" />
+                <h3 className="text-sm font-semibold text-[var(--fg)]">DNS blocklist overrides</h3>
+              </div>
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Tenant-specific domains added here are enforced as explicit DNS blocks. Default threat intel feeds are managed separately and matched during DNS analysis.
+              </p>
+            </div>
+            <a
+              href="/app/threat-intel"
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--surface-alt)] hover:bg-[var(--border)] text-sm text-[var(--fg)]"
+            >
+              Threat Intel
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </div>
+
+        <div className="card-sentinel p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Eye className="h-4 w-4 text-[var(--sol-cyan)]" />
+                <h3 className="text-sm font-semibold text-[var(--fg)]">Default threat intel feeds</h3>
+              </div>
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                {threatIntelFeedsLoading
+                  ? 'Loading feed status...'
+                  : `${activeFeedCount} enabled feeds · ${(threatIntelFeeds?.totalIocs || 0).toLocaleString()} IOCs`}
+              </p>
+            </div>
+            {threatIntelFeeds?.syncIntervalHours && (
+              <span className="text-xs text-[var(--muted)]">
+                {threatIntelFeeds.syncIntervalHours}h sync
+              </span>
+            )}
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {visibleFeeds.map(feed => (
+              <div key={feed.name} className="flex items-center justify-between gap-3 rounded-lg bg-[var(--surface-alt)] px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-[var(--fg)]">{formatFeedName(feed.name)}</p>
+                  <p className="truncate text-[11px] text-[var(--muted)]">{feed.description || feed.health}</p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="text-xs tabular-nums text-[var(--fg)]">{feed.iocCount.toLocaleString()}</p>
+                  <p className="text-[11px] capitalize text-[var(--muted)]">{feed.health}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* Blocklist table */}
       <div className="card-sentinel overflow-hidden">
         <table className="w-full">
@@ -1398,8 +2212,10 @@ function BlocklistManagement({
               <tr>
                 <td colSpan={6} className="px-4 py-12 text-center text-[var(--muted)]">
                   <Shield className="h-12 w-12 mx-auto mb-3 opacity-40" />
-                  <p>No blocked domains</p>
-                  <p className="text-sm mt-1">Add domains above to start blocking</p>
+                  <p className="text-[var(--fg)]">No DNS blocklist overrides</p>
+                  <p className="text-sm mt-1">
+                    Default threat intel feeds are visible in the panel above and in Threat Intel. Add a domain here only when you want a tenant-specific DNS block.
+                  </p>
                 </td>
               </tr>
             ) : (
@@ -1422,13 +2238,17 @@ function BlocklistManagement({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-[var(--muted)]">
-                    {entry.blockedAt ? formatDate(entry.blockedAt) : '--'}
+                    {entry.blockedAt ? formatDate(entry.blockedAt) : 'Not recorded'}
                   </td>
                   <td className="px-4 py-3 text-sm text-[var(--muted)]">
-                    {entry.source || 'manual'}
+                    <span title={entry.source || 'manual'}>
+                      {formatBlocklistSource(entry.source)}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-sm text-[var(--muted)]">
-                    {entry.blockedBy || '--'}
+                    <span title={entry.blockedBy || 'not_recorded'}>
+                      {formatBlocklistActor(entry.blockedBy)}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     <button
@@ -1577,7 +2397,8 @@ function DNSDetections({
 
 function inferQueryStatus(event: { severity: string; payload: Record<string, unknown> }): 'allowed' | 'blocked' | 'suspicious' {
   if (event.payload?.blocked) return 'blocked'
-  if (event.severity === 'critical' || event.severity === 'high') return 'suspicious'
+  const severity = normalizeDnsSeverity(event.severity, event.payload?.severity, event.payload?.risk, event.payload?.score)
+  if (severity === 'critical' || severity === 'high') return 'suspicious'
   if (event.payload?.suspicious) return 'suspicious'
   return 'allowed'
 }

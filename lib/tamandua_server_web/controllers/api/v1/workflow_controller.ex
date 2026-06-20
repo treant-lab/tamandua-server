@@ -26,14 +26,14 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     }
 
     case Hyperautomation.list_workflows(filters) do
-      {:ok, result} ->
+      {:ok, workflows} when is_list(workflows) ->
         json(conn, %{
-          data: result.workflows,
+          data: Enum.map(workflows, &serialize_workflow/1),
           meta: %{
-            total_count: result.total_count,
-            page: result.page,
-            page_size: result.page_size,
-            total_pages: result.total_pages
+            total_count: length(workflows),
+            page: parse_int(filters.page, 1),
+            page_size: parse_int(filters.page_size, 20),
+            total_pages: 1
           }
         })
 
@@ -81,27 +81,13 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   Create a new workflow.
   """
   def create(conn, params) do
-    workflow_params = %{
-      name: Map.get(params, "name"),
-      description: Map.get(params, "description"),
-      trigger: Map.get(params, "trigger"),
-      conditions: Map.get(params, "conditions", []),
-      actions: Map.get(params, "actions", []),
-      enabled: Map.get(params, "enabled", false)
-    }
+    workflow_params = normalize_workflow_params(params, default_enabled: false)
 
     case Hyperautomation.create_workflow(workflow_params) do
       {:ok, workflow} ->
         conn
         |> put_status(:created)
-        |> json(%{
-          data: %{
-            id: workflow.id,
-            name: workflow.name,
-            status: workflow.status,
-            created_at: workflow.created_at
-          }
-        })
+        |> json(%{data: serialize_workflow(workflow)})
 
       {:error, :invalid_trigger} ->
         conn
@@ -129,20 +115,14 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   Update an existing workflow.
   """
   def update(conn, %{"id" => id} = params) do
-    update_params = params
-    |> Map.drop(["id"])
-    |> Map.take(["name", "description", "trigger", "conditions", "actions", "enabled"])
+    update_params =
+      params
+      |> Map.drop(["id"])
+      |> normalize_workflow_params()
 
     case Hyperautomation.update_workflow(id, update_params) do
       {:ok, workflow} ->
-        json(conn, %{
-          data: %{
-            id: workflow.id,
-            name: workflow.name,
-            status: workflow.status,
-            updated_at: workflow.updated_at
-          }
-        })
+        json(conn, %{data: serialize_workflow(workflow)})
 
       {:error, :not_found} ->
         conn
@@ -319,6 +299,125 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   end
 
   # Private functions
+
+  defp normalize_workflow_params(params, opts \\ []) do
+    trigger_type =
+      (first_present(params, ["trigger_type", "triggerType"]) ||
+         trigger_type_from_legacy_trigger(Map.get(params, "trigger")) ||
+         "manual")
+      |> normalize_trigger_type()
+
+    trigger_config =
+      first_present(params, ["trigger_config", "triggerConfig"]) ||
+        trigger_config_from_legacy(params) ||
+        %{}
+
+    steps =
+      first_present(params, ["steps"]) ||
+        actions_to_steps(Map.get(params, "actions")) ||
+        []
+
+    %{
+      name: Map.get(params, "name"),
+      description: Map.get(params, "description"),
+      category: Map.get(params, "category"),
+      tags: Map.get(params, "tags", []),
+      trigger_type: trigger_type,
+      trigger_config: trigger_config,
+      steps: steps,
+      variables: Map.get(params, "variables", %{}),
+      enabled: normalized_enabled(params, opts)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp first_present(params, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.fetch(params, key) do
+        {:ok, value} -> value
+        :error -> nil
+      end
+    end)
+  end
+
+  defp trigger_type_from_legacy_trigger(%{"type" => type}), do: type
+  defp trigger_type_from_legacy_trigger(%{type: type}), do: type
+  defp trigger_type_from_legacy_trigger(type) when is_binary(type), do: type
+  defp trigger_type_from_legacy_trigger(_), do: nil
+
+  defp trigger_config_from_legacy(params) do
+    cond do
+      is_map(Map.get(params, "trigger")) -> Map.get(params, "trigger")
+      is_list(Map.get(params, "conditions")) -> %{"conditions" => Map.get(params, "conditions")}
+      is_list(Map.get(params, "triggerConditions")) -> %{"conditions" => Map.get(params, "triggerConditions")}
+      true -> nil
+    end
+  end
+
+  defp normalize_trigger_type("event"), do: "event_stream"
+  defp normalize_trigger_type(type) when type in ["manual", "alert", "detection", "schedule", "webhook", "api", "event_stream"], do: type
+  defp normalize_trigger_type(_), do: "manual"
+
+  defp actions_to_steps(actions) when is_list(actions) do
+    actions
+    |> Enum.with_index(1)
+    |> Enum.map(fn
+      {%{"id" => _id, "type" => _type} = step, _index} ->
+        step
+
+      {action, index} when is_map(action) ->
+        %{
+          "id" => Map.get(action, "id") || "step-#{index}",
+          "type" => Map.get(action, "type") || "action",
+          "name" => Map.get(action, "name") || Map.get(action, "action") || "Action #{index}",
+          "action" => Map.get(action, "action") || Map.get(action, "name"),
+          "params" => Map.get(action, "params", %{})
+        }
+
+      {action, index} when is_binary(action) ->
+        %{"id" => "step-#{index}", "type" => "action", "name" => action, "action" => action, "params" => %{}}
+    end)
+  end
+
+  defp actions_to_steps(_), do: nil
+
+  defp normalized_enabled(params, opts) do
+    case first_present(params, ["enabled", "isEnabled"]) do
+      nil -> Keyword.get(opts, :default_enabled)
+      value -> value
+    end
+  end
+
+  defp serialize_workflow(workflow) do
+    %{
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description || "",
+      enabled: workflow.enabled,
+      is_enabled: workflow.enabled,
+      trigger_type: workflow.trigger_type,
+      trigger_config: workflow.trigger_config || %{},
+      steps: workflow.steps || [],
+      execution_count: workflow.execution_count || 0,
+      success_count: workflow.success_count || 0,
+      avg_duration_seconds: workflow.avg_duration_seconds || 0,
+      last_executed_at: workflow.last_executed_at,
+      inserted_at: workflow.inserted_at,
+      updated_at: workflow.updated_at
+    }
+  end
+
+  defp parse_int(value, fallback) when is_integer(value), do: value
+
+  defp parse_int(value, fallback) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> fallback
+    end
+  end
+
+  defp parse_int(_, fallback), do: fallback
 
   defp format_changeset_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->

@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Workflow,
@@ -28,7 +28,7 @@ import {
   ToggleRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import { Dialog, DialogFooter, Select, SelectItem } from '@/components/ui/baseui'
 import { useState } from 'react'
 
 // Types
@@ -126,6 +126,15 @@ export default function Automation({
   const [selectedTrigger, setSelectedTrigger] = useState<AutomationWorkflow['triggerType'] | 'all'>('all')
   const [showEnabledOnly, setShowEnabledOnly] = useState(false)
   const [selectedWorkflow, setSelectedWorkflow] = useState<AutomationWorkflow | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [newWorkflow, setNewWorkflow] = useState({
+    name: '',
+    description: '',
+    triggerType: 'manual' as AutomationWorkflow['triggerType'],
+    enabled: true,
+  })
 
   const filteredWorkflows = workflows.filter((workflow) => {
     const matchesSearch = workflow.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -157,6 +166,52 @@ export default function Automation({
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}m ${secs.toFixed(0)}s`
+  }
+
+  const handleCreateWorkflow = async () => {
+    if (!newWorkflow.name.trim()) return
+
+    setIsCreating(true)
+    setCreateError(null)
+
+    try {
+      const response = await fetch('/api/v1/automation/workflows', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          name: newWorkflow.name.trim(),
+          description: newWorkflow.description.trim(),
+          trigger_type: newWorkflow.triggerType,
+          trigger_config: {},
+          enabled: newWorkflow.enabled,
+          steps: [
+            {
+              id: 'step-1',
+              type: 'action',
+              name: 'Review workflow',
+              action: 'manual_review',
+              params: {},
+            },
+          ],
+        }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error?.message || `Request failed with status ${response.status}`)
+      }
+
+      setShowCreateModal(false)
+      setNewWorkflow({ name: '', description: '', triggerType: 'manual', enabled: true })
+      router.reload({ only: ['workflows', 'executionStats', 'recentExecutions'] })
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : 'Failed to create workflow')
+    } finally {
+      setIsCreating(false)
+    }
   }
 
   return (
@@ -266,7 +321,11 @@ export default function Automation({
             </button>
           </div>
 
-          <button className="btn-sentinel-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCreateModal(true)}
+            className="btn-sentinel-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2"
+          >
             <Plus className="h-4 w-4" />
             New Workflow
           </button>
@@ -565,6 +624,89 @@ export default function Automation({
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={showCreateModal}
+        onOpenChange={setShowCreateModal}
+        title="New Workflow"
+        maxWidth="32rem"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Name</label>
+            <input
+              type="text"
+              value={newWorkflow.name}
+              onChange={(event) => setNewWorkflow((current) => ({ ...current, name: event.target.value }))}
+              placeholder="Contain high severity alert"
+              className="input-sentinel rounded-lg px-3 py-2 text-sm w-full"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Description</label>
+            <textarea
+              value={newWorkflow.description}
+              onChange={(event) => setNewWorkflow((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Describe when this workflow should run and what an analyst should review."
+              className="input-sentinel rounded-lg px-3 py-2 text-sm w-full min-h-[96px]"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1" style={{ color: 'var(--fg-2)' }}>Trigger</label>
+              <Select
+                value={newWorkflow.triggerType}
+                onValueChange={(value) =>
+                  setNewWorkflow((current) => ({ ...current, triggerType: value as AutomationWorkflow['triggerType'] }))
+                }
+                className="input-sentinel rounded-lg px-3 py-2 text-sm w-full"
+              >
+                <SelectItem value="manual">Manual</SelectItem>
+                <SelectItem value="alert">Alert</SelectItem>
+                <SelectItem value="schedule">Schedule</SelectItem>
+                <SelectItem value="webhook">Webhook</SelectItem>
+                <SelectItem value="event">Event</SelectItem>
+              </Select>
+            </div>
+
+            <label className="flex items-center gap-3 rounded-lg px-3 py-2 mt-6" style={{ background: 'var(--surface-2)' }}>
+              <input
+                type="checkbox"
+                checked={newWorkflow.enabled}
+                onChange={(event) => setNewWorkflow((current) => ({ ...current, enabled: event.target.checked }))}
+              />
+              <span className="text-sm" style={{ color: 'var(--fg-2)' }}>Enabled</span>
+            </label>
+          </div>
+
+          {createError && (
+            <div className="rounded-lg px-3 py-2 text-sm" style={{ color: 'var(--crit)', background: 'var(--crit-bg)' }}>
+              {createError}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="-mx-6 -mb-5 mt-6">
+          <button
+            type="button"
+            onClick={() => setShowCreateModal(false)}
+            className="btn-sentinel-secondary rounded-lg px-4 py-2 text-sm font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleCreateWorkflow}
+            disabled={isCreating || !newWorkflow.name.trim()}
+            className="btn-sentinel-primary rounded-lg px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isCreating ? 'Creating...' : 'Create Workflow'}
+          </button>
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   )
 }
