@@ -737,7 +737,7 @@ defmodule TamanduaServer.Storyline.Builder do
   defp is_network_suspicious?(addr, port, events) do
     # Check for suspicious ports
     suspicious_ports = [4444, 5555, 6666, 8888, 9999, 1337, 31337, 443, 80]
-    port_int = if is_binary(port), do: String.to_integer(port), else: port
+    port_int = parse_port(port)
 
     # Check for detections
     has_detections = events |> Enum.any?(&(length(detections_for(&1)) > 0))
@@ -750,6 +750,17 @@ defmodule TamanduaServer.Storyline.Builder do
 
     (is_suspicious_port && is_external) || has_detections
   end
+
+  defp parse_port(port) when is_integer(port), do: port
+
+  defp parse_port(port) when is_binary(port) do
+    case Integer.parse(port) do
+      {value, _} -> value
+      :error -> nil
+    end
+  end
+
+  defp parse_port(_), do: nil
 
   defp is_dns_suspicious?(domain, events) do
     domain_lower = String.downcase(domain || "")

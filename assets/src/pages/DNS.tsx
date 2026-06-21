@@ -127,6 +127,32 @@ interface DNSPageProps {
 }
 
 const DNS_EVENT_TYPES = new Set(['dns_query', 'dns', 'dns_response', 'name_resolution', 'domain_lookup'])
+const DNS_TRANSPORT_PORTS = new Set(['53', '5353'])
+const DOT_PORTS = new Set(['853'])
+const DOH_PORTS = new Set(['443', '8443'])
+const KNOWN_DOH_IPS = new Set([
+  '1.1.1.1',
+  '1.0.0.1',
+  '8.8.8.8',
+  '8.8.4.4',
+  '9.9.9.9',
+  '149.112.112.112',
+  '94.140.14.14',
+  '94.140.15.15',
+  '76.76.2.0',
+  '76.76.10.0',
+  '185.228.168.9',
+  '185.228.169.9',
+])
+const KNOWN_DOH_DOMAINS = new Set([
+  'cloudflare-dns.com',
+  'dns.google',
+  'dns.quad9.net',
+  'dns.adguard.com',
+  'doh.opendns.com',
+  'dns.nextdns.io',
+  'dns.cleanbrowsing.org',
+])
 
 const DEFAULT_THREAT_FEEDS = [
   'abusech_feodo',
@@ -160,6 +186,28 @@ const DNS_RECORD_TYPE_BY_CODE: Record<string, string> = {
 function isDnsEventType(type?: string): boolean {
   const normalized = String(type || '').toLowerCase()
   return DNS_EVENT_TYPES.has(normalized) || normalized.startsWith('dns')
+}
+
+function classifyDnsTransportEvent(eventType: unknown, payload: Record<string, unknown> = {}): 'query' | 'transport' | 'dot' | 'doh' | null {
+  if (isDnsEventType(String(eventType || ''))) return 'query'
+  if (String(eventType || '').toLowerCase() !== 'network_connect') return null
+
+  const port = String(payload.remote_port ?? payload.remotePort ?? payload.dst_port ?? payload.destination_port ?? '')
+  const remoteIp = String(payload.remote_ip ?? payload.remoteIp ?? payload.dst_ip ?? payload.destination_ip ?? '')
+  const targetName = String(payload.domain ?? payload.remote_domain ?? payload.sni ?? payload.tls_sni ?? payload.host ?? payload.hostname ?? '').toLowerCase()
+
+  if (DOT_PORTS.has(port)) return 'dot'
+  if (DOH_PORTS.has(port) && (KNOWN_DOH_IPS.has(remoteIp) || KNOWN_DOH_DOMAINS.has(targetName))) return 'doh'
+  if (DNS_TRANSPORT_PORTS.has(port)) return 'transport'
+  return null
+}
+
+function formatDnsTransportDomain(payload: Record<string, unknown>, transport: 'query' | 'transport' | 'dot' | 'doh' | null): string | undefined {
+  if (!transport || transport === 'query') return undefined
+  const remoteIp = String(payload.remote_ip ?? payload.remoteIp ?? payload.dst_ip ?? payload.destination_ip ?? '')
+  const remotePort = String(payload.remote_port ?? payload.remotePort ?? payload.dst_port ?? payload.destination_port ?? '')
+  const label = transport === 'doh' ? 'DoH resolver' : transport === 'dot' ? 'DoT resolver' : 'DNS resolver'
+  return remoteIp ? `${label} ${remoteIp}${remotePort ? `:${remotePort}` : ''}` : label
 }
 
 function normalizeDnsRecordType(type: unknown): string {
@@ -914,6 +962,7 @@ export default function DNS({
   const [alerts, setAlerts] = useState<DNSAlert[]>(initialAlerts || [])
   const [pagination, setPagination] = useState(initialPagination || { page: 1, perPage: 50, total: 0 })
   const [loading, setLoading] = useState(false)
+  const [apiError, setApiError] = useState<string | null>(null)
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('')
@@ -947,31 +996,37 @@ export default function DNS({
   useEffect(() => {
     if (!liveEvents || liveEvents.length === 0) return
 
-    const dnsEvents = liveEvents.filter(
-      e => isDnsEventType(e.eventType) && !mergedIdsRef.current.has(e.id)
-    )
+    const dnsEvents = liveEvents.filter(e => {
+      const payload = (e.payload || {}) as Record<string, unknown>
+      return Boolean(classifyDnsTransportEvent(e.eventType, payload)) && !mergedIdsRef.current.has(e.id)
+    })
     if (dnsEvents.length === 0) return
 
     dnsEvents.forEach(e => mergedIdsRef.current.add(e.id))
 
     setQueries(prev => {
-      const newQueries = dnsEvents.map(e =>
-        normalizeDnsQuery({
+      const newQueries = dnsEvents.map(e => {
+        const payload = (e.payload || {}) as Record<string, unknown>
+        const transport = classifyDnsTransportEvent(e.eventType, payload)
+
+        return normalizeDnsQuery({
           id: e.id,
           timestamp: new Date(e.timestamp).toISOString(),
           agentId: e.agentId,
           agentHostname: e.agentHostname || e.agentId,
           severity: e.severity,
-          status: inferQueryStatus(e),
+          status: inferQueryStatus(e, transport),
+          domain: formatDnsTransportDomain(payload, transport),
+          query_type: transport && transport !== 'query' ? transport.toUpperCase() : undefined,
           detections: e.detections?.map(d => ({
             type: d.type,
             ruleName: d.ruleName,
             confidence: d.confidence,
             description: d.description,
           })),
-          payload: e.payload,
+          payload,
         })
-      )
+      })
 
       return [...newQueries, ...prev].slice(0, 500)
     })
@@ -994,15 +1049,18 @@ export default function DNS({
       if (res.ok) {
         const json = await res.json()
         const d = json.data || json
+        setApiError(null)
         setStats({
           totalQueries: d.total_queries_today ?? d.totalQueries ?? 0,
           uniqueDomains: d.unique_domains ?? d.uniqueDomains ?? 0,
           blockedQueries: d.blocked_count ?? d.blockedQueries ?? 0,
           suspiciousQueries: d.suspicious_count ?? d.suspiciousQueries ?? 0,
         })
+      } else {
+        setApiError(`DNS stats failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS stats failed: ${error instanceof Error ? error.message : 'network error'}`)
     }
   }, [])
 
@@ -1024,6 +1082,7 @@ export default function DNS({
       if (res.ok) {
         const data = await res.json()
         const rawQueries = data.queries || data.data || []
+        setApiError(null)
         setQueries(Array.isArray(rawQueries) ? rawQueries.map((query: Record<string, unknown>) => normalizeDnsQuery(query)) : [])
         if (data.pagination) {
           setPagination(data.pagination)
@@ -1037,9 +1096,11 @@ export default function DNS({
             total,
           })
         }
+      } else {
+        setApiError(`DNS query feed failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS query feed failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setLoading(false)
     }
@@ -1054,10 +1115,13 @@ export default function DNS({
       if (res.ok) {
         const data = await res.json()
         const rawDomains = data.domains || data.data || []
+        setApiError(null)
         setTopDomains(Array.isArray(rawDomains) ? rawDomains : [])
+      } else {
+        setApiError(`Top domains failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`Top domains failed: ${error instanceof Error ? error.message : 'network error'}`)
     }
   }, [])
 
@@ -1069,13 +1133,16 @@ export default function DNS({
       })
       if (res.ok) {
         const data = await res.json()
+        setApiError(null)
         setBlocklist((data.blocklist || data.data || []).map((entry: unknown, index: number) => ({
           ...normalizeBlocklistEntry(entry, index),
           selected: false,
         })))
+      } else {
+        setApiError(`DNS blocklist failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS blocklist failed: ${error instanceof Error ? error.message : 'network error'}`)
     }
   }, [])
 
@@ -1097,9 +1164,11 @@ export default function DNS({
           lastGlobalSync: data.last_global_sync ?? data.lastGlobalSync ?? undefined,
           feeds: rawFeeds.map((feed: Record<string, unknown>) => normalizeThreatIntelFeed(feed)),
         })
+      } else {
+        setApiError(`Threat intel feed status failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`Threat intel feed status failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setThreatIntelFeedsLoading(false)
     }
@@ -1113,10 +1182,13 @@ export default function DNS({
       })
       if (res.ok) {
         const data = await res.json()
+        setApiError(null)
         setAlerts(data.alerts || data.data || [])
+      } else {
+        setApiError(`DNS detections failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS detections failed: ${error instanceof Error ? error.message : 'network error'}`)
     }
   }, [])
 
@@ -1337,6 +1409,21 @@ export default function DNS({
           iconColor="var(--warn)"
         />
       </div>
+
+      {apiError && (
+        <div className="mb-6 flex items-start justify-between gap-3 rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-3 text-sm text-[var(--fg)]">
+          <div className="flex items-start gap-2">
+            <FileWarning className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warn)]" />
+            <div>
+              <div className="font-medium">DNS data did not load cleanly</div>
+              <div className="text-[var(--muted)]">{apiError}</div>
+            </div>
+          </div>
+          <button type="button" onClick={() => setApiError(null)} className="text-[var(--muted)] hover:text-[var(--fg)]">
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-6 border-b border-[var(--border)] pb-0">
@@ -2395,8 +2482,12 @@ function DNSDetections({
 // Helpers
 // ============================================================================
 
-function inferQueryStatus(event: { severity: string; payload: Record<string, unknown> }): 'allowed' | 'blocked' | 'suspicious' {
+function inferQueryStatus(
+  event: { severity: string; payload: Record<string, unknown> },
+  transport?: 'query' | 'transport' | 'dot' | 'doh' | null,
+): 'allowed' | 'blocked' | 'suspicious' {
   if (event.payload?.blocked) return 'blocked'
+  if (transport === 'doh' || transport === 'dot') return 'suspicious'
   const severity = normalizeDnsSeverity(event.severity, event.payload?.severity, event.payload?.risk, event.payload?.score)
   if (severity === 'critical' || severity === 'high') return 'suspicious'
   if (event.payload?.suspicious) return 'suspicious'

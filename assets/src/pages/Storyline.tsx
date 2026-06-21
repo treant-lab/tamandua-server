@@ -958,7 +958,9 @@ export default function Storyline({
       if (timelineProgress < 100 && storyline.timeline.length > 0) {
         const timelineIndex = Math.floor((timelineProgress / 100) * storyline.timeline.length);
         const cutoffTime = storyline.timeline[timelineIndex]?.timestamp;
-        if (cutoffTime && node.timestamp && node.timestamp > cutoffTime) return false;
+        const cutoffMs = cutoffTime ? Date.parse(cutoffTime) : NaN;
+        const nodeMs = Date.parse(node.timestamp_raw || node.timestamp || asText(node.data.timestamp));
+        if (Number.isFinite(cutoffMs) && Number.isFinite(nodeMs) && nodeMs > cutoffMs) return false;
       }
 
       return true;

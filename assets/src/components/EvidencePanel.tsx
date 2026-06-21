@@ -20,7 +20,7 @@ export default function EvidencePanel({ evidence }: EvidencePanelProps) {
   const detection = (evidence.detection || {}) as NonNullable<Evidence['detection']>;
   const process = (evidence.process || {}) as Partial<NonNullable<Evidence['process']>>;
   const fileHashes = Array.isArray(evidence.file_hashes) ? evidence.file_hashes : [];
-  const network = Array.isArray(evidence.network) ? evidence.network : [];
+  const network = normalizeNetworkEvidence(evidence.network);
   const registry = Array.isArray(evidence.registry) ? evidence.registry : [];
   const processCommandLine = process.cmdline || process.command_line || process.command;
   const detectionType = displayDetectionType(
@@ -132,6 +132,29 @@ export default function EvidencePanel({ evidence }: EvidencePanelProps) {
       )}
     </div>
   );
+}
+
+function normalizeNetworkEvidence(network: unknown): Array<{ type?: string; value?: string; port?: string | number; direction?: string }> {
+  if (Array.isArray(network)) return network;
+  if (!network || typeof network !== 'object') return [];
+
+  const item = network as Record<string, unknown>;
+  const value =
+    item.value ||
+    item.remote_ip ||
+    item.remoteIp ||
+    item.destination_ip ||
+    item.destinationIp ||
+    item.domain ||
+    item.host ||
+    item.hostname;
+
+  return [{
+    type: String(item.type || item.protocol || 'network'),
+    value: value ? String(value) : undefined,
+    port: (item.port || item.remote_port || item.remotePort || item.destination_port || item.destinationPort) as string | number | undefined,
+    direction: item.direction ? String(item.direction) : undefined,
+  }].filter(ind => ind.value);
 }
 
 function displayDetectionType(ruleType?: string, ruleName?: string): string | null {

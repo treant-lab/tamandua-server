@@ -97,5 +97,39 @@ defmodule TamanduaServerWeb.Controllers.API.V1.DNSControllerTest do
       assert record["process_name"] == "powershell.exe"
       assert record["pid"] == 4242
     end
+
+    test "ignores future-dated DNS records", %{conn: conn, org: org, agent: agent} do
+      insert!(:dns_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        timestamp: DateTime.utc_now() |> DateTime.add(1, :day),
+        payload: %{"query" => "future.example", "query_type" => "A"}
+      })
+
+      conn = get(conn, "/api/v1/dns/queries")
+
+      assert json_response(conn, 200)["data"] == []
+    end
+  end
+
+  describe "GET /api/v1/dns/top-domains" do
+    test "omits transport-only records without a domain", %{conn: conn, org: org, agent: agent} do
+      insert!(:network_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        payload: %{"remote_ip" => "8.8.8.8", "remote_port" => "53"}
+      })
+
+      insert!(:dns_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        payload: %{"query" => "visible.example", "query_type" => "A"}
+      })
+
+      conn = get(conn, "/api/v1/dns/top-domains")
+      domains = json_response(conn, 200)["data"]
+
+      assert [%{"domain" => "visible.example", "count" => 1}] = domains
+    end
   end
 end

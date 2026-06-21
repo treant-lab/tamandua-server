@@ -67,8 +67,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     }
   """
   def stats(conn, _params) do
+    now = DateTime.utc_now()
+
     today_start =
-      DateTime.utc_now()
+      now
       |> Map.put(:hour, 0)
       |> Map.put(:minute, 0)
       |> Map.put(:second, 0)
@@ -79,6 +81,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
+      |> where([e], e.timestamp <= ^now)
 
     total_queries_today = Repo.aggregate(base_query, :count, :id)
 
@@ -86,6 +89,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
+      |> where([e], e.timestamp <= ^now)
       |> select([e],
         fragment(
           "COUNT(DISTINCT COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain'))",
@@ -108,6 +112,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
+      |> where([e], e.timestamp <= ^now)
       |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
       |> Repo.aggregate(:count, :id)
 
@@ -116,6 +121,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
+      |> where([e], e.timestamp <= ^now)
       |> where([e], e.severity in ["medium", "high", "critical"])
       |> Repo.aggregate(:count, :id)
 
@@ -147,6 +153,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     - offset:     pagination offset (default 0)
   """
   def queries(conn, params) do
+    now = DateTime.utc_now()
+
     # Support both limit/offset and page/per_page pagination styles
     {limit, offset} =
       case {params["page"], params["per_page"]} do
@@ -162,6 +170,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     base =
       Event
       |> dns_events_query()
+      |> where([e], e.timestamp <= ^now)
       |> order_by([e], desc: e.timestamp)
 
     # Domain search (ILIKE on known DNS domain fields)
@@ -299,11 +308,29 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   def top_domains(conn, params) do
     time_range = params["time_range"] || "24h"
     start_time = parse_time_range(time_range)
+    now = DateTime.utc_now()
 
     results =
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^start_time)
+      |> where([e], e.timestamp <= ^now)
+      |> where(
+        [e],
+        fragment(
+          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain') IS NOT NULL",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        )
+      )
       |> group_by([e],
         fragment(
           "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain')",

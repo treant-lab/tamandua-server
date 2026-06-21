@@ -197,7 +197,7 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
 
   @impl true
   def handle_call({:remove_blocklist, domain}, _from, state) do
-    domain = String.downcase(String.trim(domain))
+    domain = domain |> to_string() |> String.downcase() |> String.trim()
 
     case :ets.lookup(@ets_blocklist, domain) do
       [] -> {:reply, {:error, :not_found}, state}
@@ -272,8 +272,9 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
 
   defp do_analyze(event) do
     payload = event[:payload] || event["payload"] || %{}
-    domain = payload[:query] || payload["query"] || ""
-    query_type = payload[:query_type] || payload["query_type"] || "A"
+    dns_payload = payload[:dns] || payload["dns"] || %{}
+    domain = dns_domain(payload, dns_payload)
+    query_type = dns_query_type(payload, dns_payload)
     agent_id = event[:agent_id] || event["agent_id"]
     organization_id = event[:organization_id] || event["organization_id"] || OrgLookup.get_org_id(agent_id)
     timestamp = event[:timestamp] || event["timestamp"] || System.system_time(:millisecond)
@@ -310,8 +311,58 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
       # 7. Threat Intelligence feed check
       detections = detections ++ check_threat_intel(domain)
 
-      detections
+    detections
     end
+  end
+
+  defp dns_domain(payload, dns_payload) do
+    first_present([
+      payload[:query],
+      payload["query"],
+      payload[:query_name],
+      payload["query_name"],
+      payload[:domain],
+      payload["domain"],
+      payload[:dns_query],
+      payload["dns_query"],
+      payload[:"dns.domain"],
+      payload["dns.domain"],
+      payload[:host],
+      payload["host"],
+      payload[:hostname],
+      payload["hostname"],
+      dns_payload[:query],
+      dns_payload["query"],
+      dns_payload[:query_name],
+      dns_payload["query_name"],
+      dns_payload[:domain],
+      dns_payload["domain"]
+    ], "")
+  end
+
+  defp dns_query_type(payload, dns_payload) do
+    first_present([
+      payload[:query_type],
+      payload["query_type"],
+      payload[:record_type],
+      payload["record_type"],
+      payload[:"dns.query_type"],
+      payload["dns.query_type"],
+      payload[:"dns.record_type"],
+      payload["dns.record_type"],
+      dns_payload[:query_type],
+      dns_payload["query_type"],
+      dns_payload[:record_type],
+      dns_payload["record_type"]
+    ], "A")
+  end
+
+  defp first_present(values, default) do
+    Enum.find_value(values, default, fn
+      nil -> nil
+      "" -> nil
+      value -> value
+    end)
   end
 
   # --------------------------------------------------------------------------
