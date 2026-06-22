@@ -265,10 +265,28 @@ defmodule TamanduaServerWeb.InertiaController do
   """
   def public_proofs(conn, _params) do
     proofs =
-      Alerts.list_public_attestations(limit: 100, date_range: "all")
-      |> Enum.map(&serialize_public_proof/1)
+      try do
+        Alerts.list_public_attestations(limit: 50, date_range: "30d")
+        |> Enum.map(&serialize_public_proof/1)
+      rescue
+        e in [DBConnection.ConnectionError, Postgrex.Error] ->
+          Logger.warning("Public proofs attestation list failed: #{Exception.message(e)}")
+          []
 
-    stats = Alerts.public_attestation_stats()
+        e ->
+          Logger.warning("Public proofs attestation list failed: #{Exception.message(e)}")
+          []
+      catch
+        :exit, reason ->
+          Logger.warning("Public proofs attestation list failed: exit #{inspect(reason)}")
+          []
+      end
+
+    stats = %{
+      total_attested: length(proofs),
+      total_bounties: 0,
+      total_bounty_sol: 0
+    }
 
     conn
     |> assign(:page_title, "Public Proofs")
@@ -3618,11 +3636,31 @@ defmodule TamanduaServerWeb.InertiaController do
 
   defp safe_behavioral_alerts(org_id) do
     try do
-      Alerts.list_alerts_for_org(org_id, limit: 200)
+      Alerts.list_alerts_for_org(org_id, limit: 75)
     catch
       :exit, _ -> []
     rescue
       _ -> []
+    end
+  end
+
+  defp safe_threat_intel_alerts(nil), do: []
+
+  defp safe_threat_intel_alerts(org_id) do
+    try do
+      Alerts.list_alerts_for_org(org_id, limit: 100)
+    rescue
+      e in [DBConnection.ConnectionError, Postgrex.Error] ->
+        Logger.warning("ThreatIntel alert list failed: #{Exception.message(e)}")
+        []
+
+      e ->
+        Logger.warning("ThreatIntel alert list failed: #{Exception.message(e)}")
+        []
+    catch
+      :exit, reason ->
+        Logger.warning("ThreatIntel alert list failed: exit #{inspect(reason)}")
+        []
     end
   end
 
@@ -4109,10 +4147,14 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Threat Intelligence
   def threat_intel(conn, _params) do
+    org_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+
     # Get IOCs from ThreatIntel module
     iocs =
       try do
-        ThreatIntel.list_active_iocs(limit: 100)
+        ThreatIntel.list_active_iocs(limit: 75)
       catch
         kind, reason ->
           Logger.warning("ThreatIntel.list_active_iocs failed: #{kind} #{inspect(reason)}")
@@ -4165,9 +4207,11 @@ defmodule TamanduaServerWeb.InertiaController do
         }
       end)
 
-    # Get recent IOC matches from alerts that have threat intel matches
+    recent_alerts = safe_threat_intel_alerts(org_id)
+
+    # Get recent IOC matches from bounded, org-scoped alerts that have threat intel matches
     recent_matches =
-      Alerts.list_alerts(%{})
+      recent_alerts
       |> Enum.filter(fn alert ->
         title = String.downcase(alert.title || "")
         description = String.downcase(alert.description || "")
@@ -4237,7 +4281,7 @@ defmodule TamanduaServerWeb.InertiaController do
     # Derive campaigns from alert clusters with MITRE techniques
     campaigns =
       try do
-        Alerts.list_alerts(%{})
+        recent_alerts
         |> Enum.filter(fn a -> length(a.mitre_techniques || []) >= 2 end)
         |> Enum.group_by(fn a ->
           techniques = Enum.sort(a.mitre_techniques || [])
@@ -7917,17 +7961,19 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # MCP Servers
   def mcp_servers(conn, _params) do
+    mcp_alive? = Process.whereis(MCPServer) != nil
+
     # Get available tools from MCPServer module
-    tools_data =
+    {tools_data, tools_error} =
       try do
         case MCPServer.list_tools() do
-          {:ok, data} -> data
-          _ -> []
+          {:ok, data} -> {data, nil}
+          other -> {[], "list_tools returned #{inspect(other)}"}
         end
       catch
         kind, reason ->
           Logger.warning("MCPServer.list_tools failed: #{kind} #{inspect(reason)}")
-          []
+          {[], "list_tools failed: #{inspect(kind)} #{inspect(reason)}"}
       end
 
     tools =
@@ -7941,16 +7987,16 @@ defmodule TamanduaServerWeb.InertiaController do
       end)
 
     # Get context providers
-    providers_data =
+    {providers_data, providers_error} =
       try do
         case MCPServer.list_context_providers() do
-          {:ok, data} -> data
-          _ -> []
+          {:ok, data} -> {data, nil}
+          other -> {[], "list_context_providers returned #{inspect(other)}"}
         end
       catch
         kind, reason ->
           Logger.warning("MCPServer.list_context_providers failed: #{kind} #{inspect(reason)}")
-          []
+          {[], "list_context_providers failed: #{inspect(kind)} #{inspect(reason)}"}
       end
 
     context_providers =
@@ -7963,29 +8009,29 @@ defmodule TamanduaServerWeb.InertiaController do
       end)
 
     # Get server stats
-    stats =
+    {stats, stats_error} =
       try do
         case MCPServer.get_stats() do
-          {:ok, data} -> data
-          _ -> %{}
+          {:ok, data} -> {data, nil}
+          other -> {%{}, "get_stats returned #{inspect(other)}"}
         end
       catch
         kind, reason ->
           Logger.warning("MCPServer.get_stats failed: #{kind} #{inspect(reason)}")
-          %{}
+          {%{}, "get_stats failed: #{inspect(kind)} #{inspect(reason)}"}
       end
 
     # Get audit log for connection logs
-    audit_entries =
+    {audit_entries, audit_error} =
       try do
         case MCPServer.get_audit_log(limit: 50) do
-          {:ok, data} -> data
-          _ -> []
+          {:ok, data} -> {data, nil}
+          other -> {[], "get_audit_log returned #{inspect(other)}"}
         end
       catch
         kind, reason ->
           Logger.warning("MCPServer.get_audit_log failed: #{kind} #{inspect(reason)}")
-          []
+          {[], "get_audit_log failed: #{inspect(kind)} #{inspect(reason)}"}
       end
 
     connection_logs =
@@ -8005,13 +8051,23 @@ defmodule TamanduaServerWeb.InertiaController do
     successful_requests = stats[:successful_requests] || 0
     failed_requests = stats[:failed_requests] || 0
     actions_executed = stats[:actions_executed] || 0
+    health_errors = Enum.reject([tools_error, providers_error, stats_error, audit_error], &is_nil/1)
+    mcp_status = if mcp_alive? and health_errors == [], do: "active", else: "error"
+    health_message =
+      cond do
+        not mcp_alive? -> "MCPServer process is not running in this boot profile"
+        health_errors != [] -> Enum.join(health_errors, "; ")
+        true -> "MCP server is running"
+      end
 
     # Build server info (MCP is a single server endpoint)
     servers = [
       %{
         id: "tamandua-mcp",
         name: "Tamandua MCP Server",
-        status: "active",
+        endpoint: "/api/v1/mcp/rpc",
+        status: mcp_status,
+        healthMessage: health_message,
         toolCount: length(tools),
         contextProviderCount: length(context_providers),
         totalRequests: total_requests,
@@ -8019,7 +8075,13 @@ defmodule TamanduaServerWeb.InertiaController do
           if total_requests > 0 do
             Float.round(successful_requests / total_requests * 100, 1)
           else
-            100.0
+            if mcp_status == "active", do: 100.0, else: 0.0
+          end,
+        errorsToday:
+          if mcp_status == "active" do
+            failed_requests
+          else
+            max(failed_requests, 1)
           end,
         startedAt: format_datetime(stats[:started_at])
       }
@@ -8032,10 +8094,16 @@ defmodule TamanduaServerWeb.InertiaController do
       contextProviders: context_providers,
       connectionLogs: connection_logs,
       stats: %{
+        totalServers: 1,
+        connectedServers: if(mcp_status == "active", do: 1, else: 0),
+        totalTools: length(tools),
+        requestsToday: total_requests,
         totalRequests: total_requests,
         successfulRequests: successful_requests,
         failedRequests: failed_requests,
-        actionsExecuted: actions_executed
+        actionsExecuted: actions_executed,
+        mcpAlive: mcp_alive?,
+        healthMessage: health_message
       }
     })
   end
@@ -10262,7 +10330,10 @@ defmodule TamanduaServerWeb.InertiaController do
     import Ecto.Query
 
     from(a in TamanduaServer.Alerts.Alert,
-      where: like(a.title, "Malware detected:%"),
+      where:
+        like(a.title, "ML Detection:%") or
+          like(a.title, "Malware detected:%") or
+          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml"),
       order_by: [desc: a.inserted_at],
       limit: ^limit
     )
@@ -10443,8 +10514,8 @@ defmodule TamanduaServerWeb.InertiaController do
   # ===========================================================================
 
   def audit_log(conn, params) do
-    page = Map.get(params, "page", "1") |> String.to_integer()
-    per_page = Map.get(params, "per_page", "50") |> String.to_integer()
+    page = params["page"] |> safe_parse_int(1) |> max(1)
+    per_page = params["per_page"] |> safe_parse_int(50) |> max(1) |> min(100)
 
     # Try fetching from audit log service, fallback to empty
     {entries, pagination} =
