@@ -24,6 +24,18 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  # Phase 1 tenant-scoping guard. Every public HTTP action must call this
+  # before reading any data. Returns {:ok, org_id} when the request has been
+  # tagged by the :api_auth pipeline (SetOrganizationContext plug); otherwise
+  # returns {:error, :forbidden}, which the action_fallback above maps to 403.
+  # See .planning/BEHAVIORAL_TENANT_SCOPING_DESIGN.md (Phase 1).
+  defp require_org_id(conn) do
+    case conn.assigns[:current_organization_id] do
+      nil -> {:error, :forbidden}
+      org_id -> {:ok, org_id}
+    end
+  end
+
   # ETS tables for anomaly storage
   @anomaly_table :behavioral_anomalies
   @history_table :behavioral_history
@@ -39,23 +51,25 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `offset` - Offset for pagination (default: 0)
   """
   def entities(conn, params) do
-    entity_type = params["type"]
-    min_risk = parse_int(params["min_risk_score"], 0)
-    limit = parse_int(params["limit"], 100)
-    offset = parse_int(params["offset"], 0)
+    with {:ok, org_id} <- require_org_id(conn) do
+      entity_type = params["type"]
+      min_risk = parse_int(params["min_risk_score"], 0)
+      limit = parse_int(params["limit"], 100)
+      offset = parse_int(params["offset"], 0)
 
-    entities = list_entities(entity_type, limit, offset)
-    |> Enum.filter(fn e -> e.risk_score >= min_risk end)
+      entities = list_entities(org_id, entity_type, limit, offset)
+      |> Enum.filter(fn e -> e.risk_score >= min_risk end)
 
-    json(conn, %{
-      data: entities,
-      meta: %{
-        limit: limit,
-        offset: offset,
-        type: entity_type,
-        total: length(entities)
-      }
-    })
+      json(conn, %{
+        data: entities,
+        meta: %{
+          limit: limit,
+          offset: offset,
+          type: entity_type,
+          total: length(entities)
+        }
+      })
+    end
   end
 
   @doc """
@@ -66,23 +80,27 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - /behavioral/entities/:entity_type/:entity_id
   """
   def entity_profile(conn, %{"entity_type" => entity_type, "entity_id" => entity_id}) do
-    do_get_entity_profile(conn, entity_type, entity_id)
+    with {:ok, org_id} <- require_org_id(conn) do
+      do_get_entity_profile(conn, org_id, entity_type, entity_id)
+    end
   end
 
   def entity_profile(conn, %{"id" => id} = params) do
-    entity_type = params["type"] || "user"
-    do_get_entity_profile(conn, entity_type, id)
+    with {:ok, org_id} <- require_org_id(conn) do
+      entity_type = params["type"] || "user"
+      do_get_entity_profile(conn, org_id, entity_type, id)
+    end
   end
 
-  defp do_get_entity_profile(conn, entity_type, entity_id) do
-    case get_profile(entity_type, entity_id) do
+  defp do_get_entity_profile(conn, org_id, entity_type, entity_id) do
+    case get_profile(org_id, entity_type, entity_id) do
       {:ok, nil} ->
         {:error, :not_found}
 
       {:ok, profile} ->
-        risk_score = get_risk_score(entity_type, entity_id)
-        recent_anomalies = get_entity_anomalies(entity_type, entity_id, 10)
-        peer_comparison = get_peer_comparison(entity_type, entity_id)
+        risk_score = get_risk_score(org_id, entity_type, entity_id)
+        recent_anomalies = get_entity_anomalies(org_id, entity_type, entity_id, 10)
+        peer_comparison = get_peer_comparison(org_id, entity_type, entity_id)
 
         json(conn, %{
           data: %{
@@ -114,23 +132,25 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `limit` - Maximum number of results (default: 100)
   """
   def anomalies(conn, params) do
-    filters = %{
-      entity_type: params["entity_type"],
-      entity_id: params["entity_id"],
-      min_risk_score: parse_int(params["min_risk_score"], 0),
-      since: parse_datetime(params["since"]),
-      limit: parse_int(params["limit"], 100)
-    }
-
-    anomalies = list_anomalies(filters)
-
-    json(conn, %{
-      data: Enum.map(anomalies, &serialize_anomaly/1),
-      meta: %{
-        count: length(anomalies),
-        filters: Map.take(filters, [:entity_type, :entity_id, :min_risk_score])
+    with {:ok, org_id} <- require_org_id(conn) do
+      filters = %{
+        entity_type: params["entity_type"],
+        entity_id: params["entity_id"],
+        min_risk_score: parse_int(params["min_risk_score"], 0),
+        since: parse_datetime(params["since"]),
+        limit: parse_int(params["limit"], 100)
       }
-    })
+
+      anomalies = list_anomalies(org_id, filters)
+
+      json(conn, %{
+        data: Enum.map(anomalies, &serialize_anomaly/1),
+        meta: %{
+          count: length(anomalies),
+          filters: Map.take(filters, [:entity_type, :entity_id, :min_risk_score])
+        }
+      })
+    end
   end
 
   @doc """
@@ -143,38 +163,40 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `force_update` - Force immediate baseline recalculation
   """
   def baselines(conn, params) do
-    case conn.method do
-      "GET" ->
-        baseline_type = params["type"] || "global"
-        baselines = get_baselines(baseline_type)
-
-        json(conn, %{
-          data: baselines,
-          meta: %{
-            type: baseline_type,
-            last_updated: DateTime.utc_now()
-          }
-        })
-
-      "POST" ->
-        force_update = params["force_update"] == true || params["force_update"] == "true"
-
-        if force_update do
-          # Trigger baseline recalculation
-          spawn(fn -> trigger_baseline_update() end)
+    with {:ok, org_id} <- require_org_id(conn) do
+      case conn.method do
+        "GET" ->
+          baseline_type = params["type"] || "global"
+          baselines = get_baselines(org_id, baseline_type)
 
           json(conn, %{
-            success: true,
-            message: "Baseline update triggered",
-            status: "processing"
+            data: baselines,
+            meta: %{
+              type: baseline_type,
+              last_updated: DateTime.utc_now()
+            }
           })
-        else
-          json(conn, %{
-            success: true,
-            message: "No action taken",
-            status: "idle"
-          })
-        end
+
+        "POST" ->
+          force_update = params["force_update"] == true || params["force_update"] == "true"
+
+          if force_update do
+            # Trigger baseline recalculation
+            spawn(fn -> trigger_baseline_update() end)
+
+            json(conn, %{
+              success: true,
+              message: "Baseline update triggered",
+              status: "processing"
+            })
+          else
+            json(conn, %{
+              success: true,
+              message: "No action taken",
+              status: "idle"
+            })
+          end
+      end
     end
   end
 
@@ -188,14 +210,16 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - Trending indicators
   """
   def statistics(conn, _params) do
-    stats = calculate_statistics()
+    with {:ok, org_id} <- require_org_id(conn) do
+      stats = calculate_statistics(org_id)
 
-    json(conn, %{
-      data: stats,
-      meta: %{
-        generated_at: DateTime.utc_now()
-      }
-    })
+      json(conn, %{
+        data: stats,
+        meta: %{
+          generated_at: DateTime.utc_now()
+        }
+      })
+    end
   end
 
   @doc """
@@ -208,22 +232,24 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `interval` - Data point interval: "5m", "1h", "1d" (default: "1h")
   """
   def risk_trends(conn, params) do
-    entity_type = params["entity_type"]
-    entity_id = params["entity_id"]
-    period = params["period"] || "24h"
-    interval = params["interval"] || "1h"
+    with {:ok, org_id} <- require_org_id(conn) do
+      entity_type = params["entity_type"]
+      entity_id = params["entity_id"]
+      period = params["period"] || "24h"
+      interval = params["interval"] || "1h"
 
-    trends = calculate_risk_trends(entity_type, entity_id, period, interval)
+      trends = calculate_risk_trends(org_id, entity_type, entity_id, period, interval)
 
-    json(conn, %{
-      data: trends,
-      meta: %{
-        entity_type: entity_type,
-        entity_id: entity_id,
-        period: period,
-        interval: interval
-      }
-    })
+      json(conn, %{
+        data: trends,
+        meta: %{
+          entity_type: entity_type,
+          entity_id: entity_id,
+          period: period,
+          interval: interval
+        }
+      })
+    end
   end
 
   @doc """
@@ -237,21 +263,23 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `entity_id` - Entity identifier
   """
   def peer_analysis(conn, %{"entity_type" => entity_type, "entity_id" => entity_id}) do
-    analysis = perform_peer_analysis(entity_type, entity_id)
+    with {:ok, org_id} <- require_org_id(conn) do
+      analysis = perform_peer_analysis(org_id, entity_type, entity_id)
 
-    case analysis do
-      {:ok, result} ->
-        json(conn, %{
-          data: result,
-          meta: %{
-            entity_type: entity_type,
-            entity_id: entity_id,
-            analyzed_at: DateTime.utc_now()
-          }
-        })
+      case analysis do
+        {:ok, result} ->
+          json(conn, %{
+            data: result,
+            meta: %{
+              entity_type: entity_type,
+              entity_id: entity_id,
+              analyzed_at: DateTime.utc_now()
+            }
+          })
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -270,22 +298,24 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `limit` - Maximum events (default: 100)
   """
   def entity_history(conn, %{"entity_type" => entity_type, "entity_id" => entity_id} = params) do
-    since = parse_datetime(params["since"])
-    until_dt = parse_datetime(params["until"]) || DateTime.utc_now()
-    limit = parse_int(params["limit"], 100)
+    with {:ok, org_id} <- require_org_id(conn) do
+      since = parse_datetime(params["since"])
+      until_dt = parse_datetime(params["until"]) || DateTime.utc_now()
+      limit = parse_int(params["limit"], 100)
 
-    history = get_entity_history(entity_type, entity_id, since, until_dt, limit)
+      history = get_entity_history(org_id, entity_type, entity_id, since, until_dt, limit)
 
-    json(conn, %{
-      data: history,
-      meta: %{
-        entity_type: entity_type,
-        entity_id: entity_id,
-        since: since,
-        until: until_dt,
-        count: length(history.events)
-      }
-    })
+      json(conn, %{
+        data: history,
+        meta: %{
+          entity_type: entity_type,
+          entity_id: entity_id,
+          since: since,
+          until: until_dt,
+          count: length(history.events)
+        }
+      })
+    end
   end
 
   @doc """
@@ -298,39 +328,41 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `limit` - Maximum results (default: 20)
   """
   def high_risk_entities(conn, params) do
-    min_risk = parse_int(params["min_risk"], 70)
-    limit = parse_int(params["limit"], 20)
+    with {:ok, org_id} <- require_org_id(conn) do
+      min_risk = parse_int(params["min_risk"], 70)
+      limit = parse_int(params["limit"], 20)
 
-    entities = get_high_risk_entities(min_risk, limit)
+      entities = get_high_risk_entities(org_id, min_risk, limit)
 
-    json(conn, %{
-      data: entities,
-      meta: %{
-        min_risk: min_risk,
-        count: length(entities)
-      }
-    })
+      json(conn, %{
+        data: entities,
+        meta: %{
+          min_risk: min_risk,
+          count: length(entities)
+        }
+      })
+    end
   end
 
   # Private functions
 
-  defp list_entities(nil, limit, offset) do
+  defp list_entities(org_id, nil, limit, offset) do
     # Return all entity types combined
-    users = list_entities("user", limit, offset)
-    processes = list_entities("process", limit, offset)
-    hosts = list_entities("host", limit, offset)
+    users = list_entities(org_id, "user", limit, offset)
+    processes = list_entities(org_id, "process", limit, offset)
+    hosts = list_entities(org_id, "host", limit, offset)
 
     (users ++ processes ++ hosts)
     |> Enum.sort_by(& &1.last_activity, {:desc, DateTime})
     |> Enum.take(limit)
   end
 
-  defp list_entities("user", limit, _offset) do
-    case safe_get_all_profiles() do
+  defp list_entities(org_id, "user", limit, _offset) do
+    case safe_get_all_profiles(org_id) do
       {:ok, user_profiles, _process_profiles, _host_profiles} ->
         user_profiles
         |> Enum.map(fn {_key, profile} ->
-          risk = case safe_behavioral_risk_score(:user, profile.user_id) do
+          risk = case safe_behavioral_risk_score(org_id, :user, profile.user_id) do
             {:ok, score} -> score
             _ -> 0
           end
@@ -354,12 +386,12 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     _ -> []
   end
 
-  defp list_entities("process", limit, _offset) do
-    case safe_get_all_profiles() do
+  defp list_entities(org_id, "process", limit, _offset) do
+    case safe_get_all_profiles(org_id) do
       {:ok, _user_profiles, process_profiles, _host_profiles} ->
         process_profiles
         |> Enum.map(fn {_key, profile} ->
-          risk = case safe_behavioral_risk_score(:process, profile.process_name) do
+          risk = case safe_behavioral_risk_score(org_id, :process, profile.process_name) do
             {:ok, score} -> score
             _ -> 0
           end
@@ -383,8 +415,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     _ -> []
   end
 
-  defp list_entities("host", limit, _offset) do
-    case safe_get_all_profiles() do
+  defp list_entities(org_id, "host", limit, _offset) do
+    case safe_get_all_profiles(org_id) do
       {:ok, _user_profiles, _process_profiles, host_profiles} ->
         host_profiles
         |> Enum.map(fn {_key, profile} ->
@@ -406,30 +438,30 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     _ -> []
   end
 
-  defp list_entities(_type, _limit, _offset) do
+  defp list_entities(_org_id, _type, _limit, _offset) do
     []
   end
 
-  defp get_profile("user", entity_id) do
-    safe_get_user_profile(entity_id)
+  defp get_profile(org_id, "user", entity_id) do
+    safe_get_user_profile(org_id, entity_id)
   end
 
-  defp get_profile("process", entity_id) do
-    safe_get_process_profile(entity_id)
+  defp get_profile(org_id, "process", entity_id) do
+    safe_get_process_profile(org_id, entity_id)
   end
 
-  defp get_profile("host", _entity_id) do
+  defp get_profile(_org_id, "host", _entity_id) do
     # Host profiles not yet implemented in the Behavioral GenServer
     {:ok, nil}
   end
 
-  defp get_profile(_type, _entity_id) do
+  defp get_profile(_org_id, _type, _entity_id) do
     {:error, "Invalid entity type"}
   end
 
-  defp get_risk_score(entity_type, entity_id) do
+  defp get_risk_score(org_id, entity_type, entity_id) do
     type_atom = String.to_existing_atom(entity_type)
-    case safe_behavioral_risk_score(type_atom, entity_id) do
+    case safe_behavioral_risk_score(org_id, type_atom, entity_id) do
       {:ok, score} -> score
       _ -> 0
     end
@@ -470,8 +502,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   defp serialize_profile(profile) when is_map(profile), do: profile
 
-  defp list_anomalies(filters) do
-    all_anomalies = load_all_anomalies()
+  defp list_anomalies(org_id, filters) do
+    all_anomalies = load_all_anomalies(org_id)
 
     all_anomalies
     |> Enum.filter(fn a ->
@@ -484,9 +516,13 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     |> Enum.take(filters.limit)
   end
 
-  defp load_all_anomalies do
+  defp load_all_anomalies(org_id) do
     try do
       :ets.tab2list(@anomaly_table)
+      |> Enum.filter(fn
+        {{key_org, _entity_type, _entity_id}, _anomalies} -> key_org == org_id
+        _ -> false
+      end)
       |> Enum.flat_map(fn {_key, anomalies} ->
         if is_list(anomalies), do: anomalies, else: [anomalies]
       end)
@@ -512,8 +548,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   defp serialize_anomaly(anomaly) when is_map(anomaly), do: anomaly
 
-  defp get_baselines("global") do
-    {user_count, process_count, host_count} = case safe_get_all_profiles() do
+  defp get_baselines(org_id, "global") do
+    {user_count, process_count, host_count} = case safe_get_all_profiles(org_id) do
       {:ok, users, processes, hosts} ->
         {map_size(users), map_size(processes), map_size(hosts)}
       _ ->
@@ -539,8 +575,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     }
   end
 
-  defp get_baselines(type) do
-    count = case safe_get_all_profiles() do
+  defp get_baselines(org_id, type) do
+    count = case safe_get_all_profiles(org_id) do
       {:ok, users, processes, hosts} ->
         case type do
           "user" -> map_size(users)
@@ -571,11 +607,11 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   # New helper functions for enhanced UEBA
 
-  defp get_entity_anomalies(entity_type, entity_id, limit) do
+  defp get_entity_anomalies(org_id, entity_type, entity_id, limit) do
     # Query recent anomalies for the entity from ETS or database
     # In production, this would query stored anomaly records
     try do
-      case :ets.lookup(@anomaly_table, {entity_type, entity_id}) do
+      case :ets.lookup(@anomaly_table, {org_id, entity_type, entity_id}) do
         [{_, anomalies}] ->
           anomalies
           |> Enum.sort_by(& &1.timestamp, {:desc, DateTime})
@@ -587,14 +623,14 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp get_peer_comparison(entity_type, entity_id) do
+  defp get_peer_comparison(org_id, entity_type, entity_id) do
     # Compare entity metrics against peer group averages
     # Peer group = similar entities (same role, department, process type, etc.)
     %{
-      risk_score_percentile: calculate_percentile(entity_type, entity_id, :risk_score),
-      event_volume_percentile: calculate_percentile(entity_type, entity_id, :event_volume),
-      anomaly_rate_percentile: calculate_percentile(entity_type, entity_id, :anomaly_rate),
-      peer_group_size: get_peer_group_size(entity_type),
+      risk_score_percentile: calculate_percentile(org_id, entity_type, entity_id, :risk_score),
+      event_volume_percentile: calculate_percentile(org_id, entity_type, entity_id, :event_volume),
+      anomaly_rate_percentile: calculate_percentile(org_id, entity_type, entity_id, :anomaly_rate),
+      peer_group_size: get_peer_group_size(org_id, entity_type),
       comparison: %{
         above_average: [],
         below_average: [],
@@ -609,43 +645,43 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   defp risk_level_from_score(score) when score >= 25, do: "low"
   defp risk_level_from_score(_), do: "minimal"
 
-  defp calculate_statistics do
+  defp calculate_statistics(org_id) do
     # Aggregate statistics across all behavioral analytics
     %{
       entities: %{
-        total_users: count_entities("user"),
-        total_processes: count_entities("process"),
-        total_hosts: count_entities("host")
+        total_users: count_entities(org_id, "user"),
+        total_processes: count_entities(org_id, "process"),
+        total_hosts: count_entities(org_id, "host")
       },
       anomalies: %{
-        total_24h: count_anomalies_since(hours_ago(24)),
-        total_7d: count_anomalies_since(days_ago(7)),
+        total_24h: count_anomalies_since(org_id, hours_ago(24)),
+        total_7d: count_anomalies_since(org_id, days_ago(7)),
         by_severity: %{
-          critical: count_anomalies_by_severity("critical"),
-          high: count_anomalies_by_severity("high"),
-          medium: count_anomalies_by_severity("medium"),
-          low: count_anomalies_by_severity("low")
+          critical: count_anomalies_by_severity(org_id, "critical"),
+          high: count_anomalies_by_severity(org_id, "high"),
+          medium: count_anomalies_by_severity(org_id, "medium"),
+          low: count_anomalies_by_severity(org_id, "low")
         },
-        by_type: anomaly_type_distribution()
+        by_type: anomaly_type_distribution(org_id)
       },
       risk_distribution: %{
-        critical: count_entities_by_risk(90, 100),
-        high: count_entities_by_risk(75, 89),
-        medium: count_entities_by_risk(50, 74),
-        low: count_entities_by_risk(25, 49),
-        minimal: count_entities_by_risk(0, 24)
+        critical: count_entities_by_risk(org_id, 90, 100),
+        high: count_entities_by_risk(org_id, 75, 89),
+        medium: count_entities_by_risk(org_id, 50, 74),
+        low: count_entities_by_risk(org_id, 25, 49),
+        minimal: count_entities_by_risk(org_id, 0, 24)
       },
       trending: %{
-        risk_increasing: count_risk_trending(:increasing),
-        risk_decreasing: count_risk_trending(:decreasing),
-        risk_stable: count_risk_trending(:stable),
-        new_entities_24h: count_new_entities(hours_ago(24))
+        risk_increasing: count_risk_trending(org_id, :increasing),
+        risk_decreasing: count_risk_trending(org_id, :decreasing),
+        risk_stable: count_risk_trending(org_id, :stable),
+        new_entities_24h: count_new_entities(org_id, hours_ago(24))
       },
-      top_mitre_techniques: top_mitre_techniques(10)
+      top_mitre_techniques: top_mitre_techniques(org_id, 10)
     }
   end
 
-  defp calculate_risk_trends(entity_type, entity_id, period, interval) do
+  defp calculate_risk_trends(org_id, entity_type, entity_id, period, interval) do
     # Generate risk score time series data from actual anomalies
     {start_time, points} = case {period, interval} do
       {"1h", "5m"} -> {hours_ago(1), 12}
@@ -656,7 +692,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
 
     interval_secs = interval_seconds(interval)
-    all_anomalies = load_all_anomalies()
+    all_anomalies = load_all_anomalies(org_id)
 
     # Filter anomalies by entity if specified
     filtered = all_anomalies
@@ -692,14 +728,14 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end)
   end
 
-  defp perform_peer_analysis(entity_type, entity_id) do
+  defp perform_peer_analysis(org_id, entity_type, entity_id) do
     # Comprehensive peer group comparison
-    case get_profile(entity_type, entity_id) do
+    case get_profile(org_id, entity_type, entity_id) do
       {:ok, nil} ->
         {:error, :not_found}
 
       {:ok, profile} ->
-        peer_group = get_peer_group(entity_type, entity_id)
+        peer_group = get_peer_group(org_id, entity_type, entity_id)
         metrics = calculate_peer_metrics(profile, peer_group)
 
         {:ok, %{
@@ -711,7 +747,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
           },
           comparison: %{
             risk_score: %{
-              entity: get_risk_score(entity_type, entity_id),
+              entity: get_risk_score(org_id, entity_type, entity_id),
               peer_avg: metrics.avg_risk,
               peer_median: metrics.median_risk,
               peer_stddev: metrics.stddev_risk,
@@ -737,10 +773,10 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp get_entity_history(entity_type, entity_id, since, until_dt, limit) do
+  defp get_entity_history(org_id, entity_type, entity_id, since, until_dt, limit) do
     # Get historical events and anomalies for timeline view
     events = get_historical_events(entity_type, entity_id, since, until_dt, limit)
-    anomalies = get_entity_anomalies(entity_type, entity_id, limit)
+    anomalies = get_entity_anomalies(org_id, entity_type, entity_id, limit)
 
     %{
       events: events,
@@ -755,30 +791,30 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     }
   end
 
-  defp get_high_risk_entities(min_risk, limit) do
+  defp get_high_risk_entities(org_id, min_risk, limit) do
     # Query entities with risk above threshold
     # In production, this would query from ETS or database
     all_types = ["user", "process", "host"]
 
     all_types
     |> Enum.flat_map(fn type ->
-      list_entities(type, 1000, 0)
+      list_entities(org_id, type, 1000, 0)
       |> Enum.filter(&(&1.risk_score >= min_risk))
     end)
     |> Enum.sort_by(& &1.risk_score, :desc)
     |> Enum.take(limit)
     |> Enum.map(fn entity ->
       Map.merge(entity, %{
-        recent_anomalies: get_entity_anomalies(entity.type, entity.id, 5) |> length(),
+        recent_anomalies: get_entity_anomalies(org_id, entity.type, entity.id, 5) |> length(),
         trending: determine_risk_trend(entity.type, entity.id),
         mitre_techniques: get_entity_techniques(entity.type, entity.id)
       })
     end)
   end
 
-  defp safe_get_all_profiles do
+  defp safe_get_all_profiles(org_id) do
     try do
-      Behavioral.get_all_profiles()
+      Behavioral.get_all_profiles(org_id)
     rescue
       _ -> {:error, :behavioral_unavailable}
     catch
@@ -786,9 +822,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp safe_get_user_profile(entity_id) do
+  defp safe_get_user_profile(org_id, entity_id) do
     try do
-      Behavioral.get_user_profile(entity_id)
+      Behavioral.get_user_profile(org_id, entity_id)
     rescue
       _ -> {:error, :behavioral_unavailable}
     catch
@@ -796,9 +832,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp safe_get_process_profile(entity_id) do
+  defp safe_get_process_profile(org_id, entity_id) do
     try do
-      Behavioral.get_process_profile(entity_id)
+      Behavioral.get_process_profile(org_id, entity_id)
     rescue
       _ -> {:error, :behavioral_unavailable}
     catch
@@ -806,9 +842,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp safe_behavioral_risk_score(type_atom, entity_id) do
+  defp safe_behavioral_risk_score(org_id, type_atom, entity_id) do
     try do
-      Behavioral.get_risk_score(type_atom, entity_id)
+      Behavioral.get_risk_score(org_id, type_atom, entity_id)
     rescue
       _ -> {:error, :behavioral_unavailable}
     catch
@@ -818,18 +854,18 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   # Utility functions for statistics calculation
 
-  defp count_entities(type) do
-    list_entities(type, 10000, 0) |> length()
+  defp count_entities(org_id, type) do
+    list_entities(org_id, type, 10000, 0) |> length()
   end
 
-  defp count_anomalies_since(since) do
-    load_all_anomalies()
+  defp count_anomalies_since(org_id, since) do
+    load_all_anomalies(org_id)
     |> Enum.count(fn a ->
       not is_nil(a.timestamp) and DateTime.compare(a.timestamp, since) != :lt
     end)
   end
 
-  defp count_anomalies_by_severity(severity) do
+  defp count_anomalies_by_severity(org_id, severity) do
     threshold = case severity do
       "critical" -> 90
       "high" -> 75
@@ -846,14 +882,14 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       _ -> 25
     end
 
-    load_all_anomalies()
+    load_all_anomalies(org_id)
     |> Enum.count(fn a ->
       a.risk_score >= threshold and a.risk_score < max_threshold
     end)
   end
 
-  defp anomaly_type_distribution do
-    all = load_all_anomalies()
+  defp anomaly_type_distribution(org_id) do
+    all = load_all_anomalies(org_id)
 
     all
     |> Enum.group_by(& &1.anomaly_type)
@@ -861,8 +897,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     |> Enum.into(%{})
   end
 
-  defp count_entities_by_risk(min, max) do
-    all_entities = list_entities(nil, 10000, 0)
+  defp count_entities_by_risk(org_id, min, max) do
+    all_entities = list_entities(org_id, nil, 10000, 0)
     Enum.count(all_entities, fn e -> e.risk_score >= min and e.risk_score <= max end)
   end
 
@@ -871,28 +907,35 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   This should be called periodically (e.g., every 5-15 minutes) to build
   historical data for trending calculations.
+
+  Phase 3 tenant-scoping: snapshots are keyed by `{org_id, timestamp}` so
+  trending calculations stay tenant-local.
   """
-  def record_risk_snapshot do
+  def record_risk_snapshot(org_id) do
     ensure_risk_snapshot_table()
 
     now = DateTime.utc_now()
-    entities = list_entities(nil, 10000, 0)
+    entities = list_entities(org_id, nil, 10000, 0)
 
     snapshots =
       Enum.map(entities, fn entity ->
         %{type: entity.type, id: entity.id, risk_score: entity.risk_score}
       end)
 
-    :ets.insert(@risk_snapshot_table, {now, snapshots})
+    :ets.insert(@risk_snapshot_table, {{org_id, now}, snapshots})
 
     # Prune snapshots older than 48 hours to bound memory usage
     cutoff = DateTime.add(now, -48 * 3600, :second)
 
     :ets.tab2list(@risk_snapshot_table)
-    |> Enum.each(fn {ts, _} ->
-      if DateTime.compare(ts, cutoff) == :lt do
-        :ets.delete(@risk_snapshot_table, ts)
-      end
+    |> Enum.each(fn
+      {{key_org, ts}, _} when key_org == org_id ->
+        if DateTime.compare(ts, cutoff) == :lt do
+          :ets.delete(@risk_snapshot_table, {key_org, ts})
+        end
+
+      _ ->
+        :ok
     end)
 
     :ok
@@ -911,14 +954,14 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp count_risk_trending(direction) do
+  defp count_risk_trending(org_id, direction) do
     ensure_risk_snapshot_table()
 
     # Get the most recent snapshot as the "current" baseline
-    current_scores = get_current_entity_scores()
+    current_scores = get_current_entity_scores(org_id)
 
     # Get the previous snapshot (the oldest available, or at least 1h old)
-    previous_scores = get_previous_snapshot_scores()
+    previous_scores = get_previous_snapshot_scores(org_id)
 
     if map_size(current_scores) == 0 or map_size(previous_scores) == 0 do
       0
@@ -945,18 +988,22 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       0
   end
 
-  defp get_current_entity_scores do
-    list_entities(nil, 10000, 0)
+  defp get_current_entity_scores(org_id) do
+    list_entities(org_id, nil, 10000, 0)
     |> Enum.map(fn entity -> {{entity.type, entity.id}, entity.risk_score} end)
     |> Map.new()
   end
 
-  defp get_previous_snapshot_scores do
+  defp get_previous_snapshot_scores(org_id) do
     ensure_risk_snapshot_table()
 
     all_snapshots =
       :ets.tab2list(@risk_snapshot_table)
-      |> Enum.sort_by(fn {ts, _} -> ts end, {:asc, DateTime})
+      |> Enum.filter(fn
+        {{key_org, _ts}, _} -> key_org == org_id
+        _ -> false
+      end)
+      |> Enum.sort_by(fn {{_org, ts}, _} -> ts end, {:asc, DateTime})
 
     case all_snapshots do
       [] ->
@@ -967,8 +1014,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
         # or fall back to the oldest available snapshot
         cutoff = DateTime.add(DateTime.utc_now(), -3600, :second)
 
-        {_ts, snapshot_data} =
-          Enum.find(snapshots, List.first(snapshots), fn {ts, _} ->
+        {_key, snapshot_data} =
+          Enum.find(snapshots, List.first(snapshots), fn {{_org, ts}, _} ->
             DateTime.compare(ts, cutoff) == :lt
           end)
 
@@ -980,14 +1027,14 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     _ -> %{}
   end
 
-  defp count_new_entities(since) do
-    all_entities = list_entities(nil, 10000, 0)
+  defp count_new_entities(org_id, since) do
+    all_entities = list_entities(org_id, nil, 10000, 0)
     Enum.count(all_entities, fn e ->
       not is_nil(e.last_activity) and DateTime.compare(e.last_activity, since) != :lt
     end)
   end
 
-  defp top_mitre_techniques(limit) do
+  defp top_mitre_techniques(org_id, limit) do
     mitre_name_map = %{
       "T1078" => "Valid Accounts",
       "T1055" => "Process Injection",
@@ -1005,7 +1052,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       "T1021" => "Remote Services"
     }
 
-    load_all_anomalies()
+    load_all_anomalies(org_id)
     |> Enum.flat_map(fn a -> a.mitre_techniques || [] end)
     |> Enum.frequencies()
     |> Enum.sort_by(fn {_t, count} -> count end, :desc)
@@ -1019,8 +1066,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end)
   end
 
-  defp calculate_percentile(entity_type, entity_id, metric) do
-    all = list_entities(entity_type, 10000, 0)
+  defp calculate_percentile(org_id, entity_type, entity_id, metric) do
+    all = list_entities(org_id, entity_type, 10000, 0)
 
     if length(all) == 0 do
       50
@@ -1048,8 +1095,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     _ -> 50
   end
 
-  defp get_peer_group_size(entity_type) do
-    list_entities(entity_type, 10000, 0) |> length()
+  defp get_peer_group_size(org_id, entity_type) do
+    list_entities(org_id, entity_type, 10000, 0) |> length()
   end
 
   defp interval_seconds("5m"), do: 300
@@ -1065,9 +1112,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     DateTime.add(DateTime.utc_now(), -days * 86400, :second)
   end
 
-  defp get_peer_group(entity_type, _entity_id) do
+  defp get_peer_group(org_id, entity_type, _entity_id) do
     # Return all entities of the same type as the peer group
-    list_entities(entity_type, 1000, 0)
+    list_entities(org_id, entity_type, 1000, 0)
   end
 
   defp calculate_peer_metrics(profile, peer_group) do
@@ -1175,15 +1222,16 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - Privilege escalation attempts
   """
   def detection_categories(conn, params) do
-    since = parse_datetime(params["since"]) || hours_ago(24)
-    limit_per_category = parse_int(params["limit"], 10)
+    with {:ok, org_id} <- require_org_id(conn) do
+      since = parse_datetime(params["since"]) || hours_ago(24)
+      limit_per_category = parse_int(params["limit"], 10)
 
-    all_anomalies = load_all_anomalies()
-    |> Enum.filter(fn a ->
-      not is_nil(a.timestamp) and DateTime.compare(a.timestamp, since) != :lt
-    end)
+      all_anomalies = load_all_anomalies(org_id)
+      |> Enum.filter(fn a ->
+        not is_nil(a.timestamp) and DateTime.compare(a.timestamp, since) != :lt
+      end)
 
-    categories = %{
+      categories = %{
       unusual_process: %{
         name: "Unusual Process Execution",
         description: "Processes executed by unexpected users or from unusual locations",
@@ -1252,14 +1300,15 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       }
     }
 
-    json(conn, %{
-      data: categories,
-      meta: %{
-        since: since,
-        total_anomalies: length(all_anomalies),
-        generated_at: DateTime.utc_now()
-      }
-    })
+      json(conn, %{
+        data: categories,
+        meta: %{
+          since: since,
+          total_anomalies: length(all_anomalies),
+          generated_at: DateTime.utc_now()
+        }
+      })
+    end
   end
 
   # ============================================================================
@@ -1270,38 +1319,42 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   Get current detection thresholds.
   """
   def thresholds(conn, _params) do
-    alias TamanduaServer.Detection.Config
+    with {:ok, _org_id} <- require_org_id(conn) do
+      alias TamanduaServer.Detection.Config
 
-    thresholds = %{
-      z_score_threshold: Config.z_score_threshold(),
-      risk_score_alert_threshold: Config.risk_score_alert_threshold(),
-      large_transfer_bytes: Config.large_transfer_bytes(),
-      impossible_travel_speed_kmh: Config.impossible_travel_speed_kmh(),
-      suspicious_ports: Config.suspicious_ports(),
-      baseline_update_interval_ms: Config.baseline_update_interval(),
-      baseline_persist_interval_ms: Config.baseline_persist_interval()
-    }
-
-    json(conn, %{
-      data: thresholds,
-      meta: %{
-        configurable: true,
-        last_updated: DateTime.utc_now()
+      thresholds = %{
+        z_score_threshold: Config.z_score_threshold(),
+        risk_score_alert_threshold: Config.risk_score_alert_threshold(),
+        large_transfer_bytes: Config.large_transfer_bytes(),
+        impossible_travel_speed_kmh: Config.impossible_travel_speed_kmh(),
+        suspicious_ports: Config.suspicious_ports(),
+        baseline_update_interval_ms: Config.baseline_update_interval(),
+        baseline_persist_interval_ms: Config.baseline_persist_interval()
       }
-    })
+
+      json(conn, %{
+        data: thresholds,
+        meta: %{
+          configurable: true,
+          last_updated: DateTime.utc_now()
+        }
+      })
+    end
   end
 
   @doc """
   Update detection thresholds (requires admin).
   """
   def update_thresholds(conn, params) do
-    # In production, this would update the Config module or database
-    # For now, return acknowledgment
-    json(conn, %{
-      success: true,
-      message: "Threshold update queued",
-      updated: Map.take(params, ["z_score_threshold", "risk_score_alert_threshold", "large_transfer_bytes"])
-    })
+    with {:ok, _org_id} <- require_org_id(conn) do
+      # In production, this would update the Config module or database
+      # For now, return acknowledgment
+      json(conn, %{
+        success: true,
+        message: "Threshold update queued",
+        updated: Map.take(params, ["z_score_threshold", "risk_score_alert_threshold", "large_transfer_bytes"])
+      })
+    end
   end
 
   # ============================================================================
@@ -1314,14 +1367,16 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   List suppression rules (whitelisted patterns that won't generate alerts).
   """
   def suppressions(conn, _params) do
-    suppressions = load_suppressions()
+    with {:ok, _org_id} <- require_org_id(conn) do
+      suppressions = load_suppressions()
 
-    json(conn, %{
-      data: suppressions,
-      meta: %{
-        count: length(suppressions)
-      }
-    })
+      json(conn, %{
+        data: suppressions,
+        meta: %{
+          count: length(suppressions)
+        }
+      })
+    end
   end
 
   @doc """
@@ -1335,38 +1390,42 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `created_by` - User who created the suppression
   """
   def create_suppression(conn, params) do
-    suppression = %{
-      id: Ecto.UUID.generate(),
-      pattern_type: params["pattern_type"],
-      pattern: params["pattern"],
-      reason: params["reason"],
-      created_by: params["created_by"] || conn.assigns[:current_user_id],
-      created_at: DateTime.utc_now(),
-      expires_at: parse_datetime(params["expires_at"]),
-      enabled: true
-    }
+    with {:ok, _org_id} <- require_org_id(conn) do
+      suppression = %{
+        id: Ecto.UUID.generate(),
+        pattern_type: params["pattern_type"],
+        pattern: params["pattern"],
+        reason: params["reason"],
+        created_by: params["created_by"] || conn.assigns[:current_user_id],
+        created_at: DateTime.utc_now(),
+        expires_at: parse_datetime(params["expires_at"]),
+        enabled: true
+      }
 
-    # Store in ETS (in production, this would go to database)
-    ensure_suppression_table()
-    :ets.insert(@suppression_table, {suppression.id, suppression})
+      # Store in ETS (in production, this would go to database)
+      ensure_suppression_table()
+      :ets.insert(@suppression_table, {suppression.id, suppression})
 
-    json(conn, %{
-      data: suppression,
-      success: true
-    })
+      json(conn, %{
+        data: suppression,
+        success: true
+      })
+    end
   end
 
   @doc """
   Delete a suppression rule.
   """
   def delete_suppression(conn, %{"id" => id}) do
-    ensure_suppression_table()
-    :ets.delete(@suppression_table, id)
+    with {:ok, _org_id} <- require_org_id(conn) do
+      ensure_suppression_table()
+      :ets.delete(@suppression_table, id)
 
-    json(conn, %{
-      success: true,
-      message: "Suppression rule deleted"
-    })
+      json(conn, %{
+        success: true,
+        message: "Suppression rule deleted"
+      })
+    end
   end
 
   # ============================================================================
@@ -1384,8 +1443,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `bucket_size` - Time bucket: "1h", "6h", "1d" (default: "1h" for 24h, "6h" for 7d, "1d" for 30d)
   """
   def heatmap(conn, params) do
-    period = params["period"] || "7d"
-    entity_type = params["entity_type"]
+    with {:ok, org_id} <- require_org_id(conn) do
+      period = params["period"] || "7d"
+      entity_type = params["entity_type"]
 
     {start_time, bucket_size, bucket_count} = case period do
       "24h" -> {hours_ago(24), "1h", 24}
@@ -1401,7 +1461,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       _ -> 3600
     end
 
-    all_anomalies = load_all_anomalies()
+    all_anomalies = load_all_anomalies(org_id)
     |> Enum.filter(fn a ->
       (is_nil(entity_type) or to_string(a.entity_type) == entity_type) and
       not is_nil(a.timestamp) and
@@ -1447,19 +1507,20 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       }
     end)
 
-    json(conn, %{
-      data: %{
-        heatmap: heatmap_data,
-        entities: Enum.map(entities, fn {t, id} -> %{type: t, id: id} end),
-        period: period,
-        bucket_size: bucket_size
-      },
-      meta: %{
-        start_time: start_time,
-        bucket_count: bucket_count,
-        entity_count: length(entities)
-      }
-    })
+      json(conn, %{
+        data: %{
+          heatmap: heatmap_data,
+          entities: Enum.map(entities, fn {t, id} -> %{type: t, id: id} end),
+          period: period,
+          bucket_size: bucket_size
+        },
+        meta: %{
+          start_time: start_time,
+          bucket_count: bucket_count,
+          entity_count: length(entities)
+        }
+      })
+    end
   end
 
   # ============================================================================
@@ -1470,22 +1531,24 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   Get raw events associated with an anomaly for investigation.
   """
   def anomaly_events(conn, %{"anomaly_id" => anomaly_id} = params) do
-    limit = parse_int(params["limit"], 50)
+    with {:ok, _org_id} <- require_org_id(conn) do
+      limit = parse_int(params["limit"], 50)
 
-    # In production, this would query the telemetry/events table
-    # For now, we return a structured response indicating what events would be fetched
-    events = fetch_events_for_anomaly(anomaly_id, limit)
+      # In production, this would query the telemetry/events table
+      # For now, we return a structured response indicating what events would be fetched
+      events = fetch_events_for_anomaly(anomaly_id, limit)
 
-    json(conn, %{
-      data: %{
-        anomaly_id: anomaly_id,
-        events: events,
-        count: length(events)
-      },
-      meta: %{
-        limit: limit
-      }
-    })
+      json(conn, %{
+        data: %{
+          anomaly_id: anomaly_id,
+          events: events,
+          count: length(events)
+        },
+        meta: %{
+          limit: limit
+        }
+      })
+    end
   end
 
   defp fetch_events_for_anomaly(_anomaly_id, _limit) do
@@ -1502,38 +1565,40 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   Correlate anomalies with known threat intelligence.
   """
   def correlate_threats(conn, params) do
-    entity_type = params["entity_type"]
-    entity_id = params["entity_id"]
+    with {:ok, org_id} <- require_org_id(conn) do
+      entity_type = params["entity_type"]
+      entity_id = params["entity_id"]
 
-    # Get anomalies for the entity
-    anomalies = get_entity_anomalies(entity_type, entity_id, 100)
+      # Get anomalies for the entity
+      anomalies = get_entity_anomalies(org_id, entity_type, entity_id, 100)
 
-    # Extract indicators from anomalies
-    indicators = Enum.flat_map(anomalies, fn a ->
-      extract_indicators_from_anomaly(a)
-    end) |> Enum.uniq()
+      # Extract indicators from anomalies
+      indicators = Enum.flat_map(anomalies, fn a ->
+        extract_indicators_from_anomaly(a)
+      end) |> Enum.uniq()
 
-    # Check each indicator against the IOCs database for real matches
-    correlations = Enum.map(indicators, fn indicator ->
-      ioc_matches = check_indicator_against_iocs(indicator)
-      confidence = if length(ioc_matches) > 0, do: 0.8, else: 0.0
+      # Check each indicator against the IOCs database for real matches
+      correlations = Enum.map(indicators, fn indicator ->
+        ioc_matches = check_indicator_against_iocs(indicator)
+        confidence = if length(ioc_matches) > 0, do: 0.8, else: 0.0
 
-      %{
-        indicator: indicator,
-        matches: ioc_matches,
-        confidence: confidence
-      }
-    end)
+        %{
+          indicator: indicator,
+          matches: ioc_matches,
+          confidence: confidence
+        }
+      end)
 
-    json(conn, %{
-      data: %{
-        entity_type: entity_type,
-        entity_id: entity_id,
-        anomaly_count: length(anomalies),
-        indicators: indicators,
-        correlations: correlations
-      }
-    })
+      json(conn, %{
+        data: %{
+          entity_type: entity_type,
+          entity_id: entity_id,
+          anomaly_count: length(anomalies),
+          indicators: indicators,
+          correlations: correlations
+        }
+      })
+    end
   end
 
   defp extract_indicators_from_anomaly(a) when is_map(a) do

@@ -51,6 +51,11 @@ defmodule TamanduaServer.Detection.Behavioral do
   @temporal_table :behavioral_temporal
   @thresholds_table :behavioral_thresholds
   @risk_trends_table :behavioral_risk_trends
+  # Recent significant anomalies per {entity_type, entity_id}, read by
+  # TamanduaServerWeb.API.V1.BehavioralController. Bounded to
+  # @anomaly_history_per_entity most-recent entries to cap memory.
+  @anomaly_table :behavioral_anomalies
+  @anomaly_history_per_entity 100
 
   # GeoIP ETS cache table
   @geoip_cache_table :geoip_cache
@@ -1215,7 +1220,7 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   # Online statistics tracker using Welford's algorithm.
-  # Stored in ETS keyed by `{entity_type, entity_id, feature_name}`.
+  # Stored in ETS keyed by `{org_id, entity_type, entity_id, feature_name}` (Phase 2).
   # Supports incremental mean/variance without storing all observations.
   defmodule OnlineStats do
     @moduledoc "Welford's online mean/variance tracker"
@@ -1268,7 +1273,7 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   # Temporal pattern matrix: 24 hours x 7 days_of_week.
-  # Stored in ETS keyed by `{entity_type, entity_id}`.
+  # Stored in ETS keyed by `{org_id, entity_type, entity_id}` (Phase 2).
   defmodule TemporalPattern do
     @moduledoc "Time-of-day and day-of-week activity pattern"
     defstruct [
@@ -1355,20 +1360,27 @@ defmodule TamanduaServer.Detection.Behavioral do
     # Load rules (compile-time defaults + any DB overrides)
     rules = load_rules()
 
-    # Load persisted baselines from database
+    # Load persisted baselines from database (Phase 2: org-nested)
+    # Returns %{org_id => %{user_id => UserProfile}}, %{org_id => %{proc_name => ProcessProfile}}
     {user_profiles, process_profiles} = load_persisted_baselines()
 
     # Seed ETS tables from loaded profiles
     seed_ets_from_profiles(user_profiles, process_profiles)
 
     state = %{
+      # Phase 2: nested-by-org. Shape: %{org_id => %{user_id => UserProfile.t()}}
       user_profiles: user_profiles,
+      # Phase 2: nested-by-org. Shape: %{org_id => %{process_name => ProcessProfile.t()}}
       process_profiles: process_profiles,
+      # Phase 2: nested-by-org. Shape: %{org_id => %{...}}
       host_profiles: %{},
+      # Phase 2: keyed by {org_id, user_id}
       last_login_locations: %{},
       rules: rules,
+      # Phase 2: nested-by-org. Shape: %{org_id => stats}
       # Historical stats for z-score calculation (loaded from DB)
       historical_stats: load_historical_stats(),
+      # KEEP singleton: server-wide totals, not per-tenant
       global_stats: %{
         avg_events_per_hour: 0,
         avg_network_connections: 0,
@@ -1377,16 +1389,19 @@ defmodule TamanduaServer.Detection.Behavioral do
       # Learning period: suppress low-confidence behavioral alerts during baseline warmup
       started_at: System.monotonic_time(:second),
       learning_period_secs: 600,
-      # Counters for dashboard stats
+      # Counters for dashboard stats (singleton, server-wide)
       events_processed: 0,
       anomalies_detected: 0,
       alerts_created: 0
     }
 
+    user_count = state.user_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
+    proc_count = state.process_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
+
     Logger.info("Behavioral Analytics Engine started " <>
-      "(#{map_size(user_profiles)} user profiles, " <>
-      "#{map_size(process_profiles)} process profiles, " <>
-      "6 ETS tables initialized)")
+      "(#{user_count} user profiles across #{map_size(state.user_profiles)} orgs, " <>
+      "#{proc_count} process profiles across #{map_size(state.process_profiles)} orgs, " <>
+      "7 ETS tables initialized)")
     {:ok, state}
   end
 
@@ -1400,7 +1415,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       {@peer_groups_table, [:set, :public, :named_table, read_concurrency: true]},
       {@temporal_table, [:set, :public, :named_table, read_concurrency: true]},
       {@thresholds_table, [:set, :public, :named_table, read_concurrency: true]},
-      {@risk_trends_table, [:set, :public, :named_table, read_concurrency: true]}
+      {@risk_trends_table, [:set, :public, :named_table, read_concurrency: true]},
+      {@anomaly_table, [:set, :public, :named_table, read_concurrency: true]}
     ]
 
     Enum.each(tables, fn {name, opts} ->
@@ -1410,11 +1426,17 @@ defmodule TamanduaServer.Detection.Behavioral do
       end
     end)
 
-    # Seed default adaptive thresholds
-    seed_default_thresholds()
+    # Phase 2: thresholds are now per-org. Seeding deferred to first read per org
+    # (see ensure_default_thresholds/1). No eager seed at boot — orgs do not yet
+    # exist at GenServer init time.
+    :ok
   end
 
-  defp seed_default_thresholds do
+  # Phase 2: per-org lazy seed of default adaptive thresholds.
+  # Called from the threshold-read path on cache-miss for a given org.
+  # Idempotent and safe to call multiple times (each row is gated by lookup).
+  defp ensure_default_thresholds(nil), do: :ok
+  defp ensure_default_thresholds(org_id) do
     defaults = [
       # {entity_type, feature} => {threshold_z, fp_count, tp_count}
       {{:user, :login_hour}, {3.0, 0, 0}},
@@ -1427,31 +1449,44 @@ defmodule TamanduaServer.Detection.Behavioral do
       {{:host, :process_count}, {3.0, 0, 0}}
     ]
 
-    Enum.each(defaults, fn {key, value} ->
+    Enum.each(defaults, fn {{entity_type, feature}, value} ->
+      key = {org_id, entity_type, feature}
       # Only seed if not already present (preserves learned thresholds across restarts)
       case :ets.lookup(@thresholds_table, key) do
         [] -> :ets.insert(@thresholds_table, {key, value})
         _ -> :ok
       end
     end)
+  rescue
+    _ -> :ok
   end
 
+  # Phase 2: user_profiles/process_profiles are now org-nested maps
+  # (%{org_id => %{id => profile}}). ETS keys gain org_id prefix.
   defp seed_ets_from_profiles(user_profiles, process_profiles) do
-    # Seed profiles table
-    Enum.each(user_profiles, fn {user_id, profile} ->
-      :ets.insert(@profiles_table, {{:user, user_id}, profile})
+    # Seed profiles table — user profiles per-org
+    Enum.each(user_profiles, fn {org_id, users} ->
+      Enum.each(users, fn {user_id, profile} ->
+        :ets.insert(@profiles_table, {{org_id, :user, user_id}, profile})
+      end)
     end)
 
-    Enum.each(process_profiles, fn {proc_name, profile} ->
-      :ets.insert(@profiles_table, {{:process, proc_name}, profile})
+    # Seed profiles table — process profiles per-org
+    Enum.each(process_profiles, fn {org_id, processes} ->
+      Enum.each(processes, fn {proc_name, profile} ->
+        :ets.insert(@profiles_table, {{org_id, :process, proc_name}, profile})
+      end)
     end)
 
-    # Initialize empty temporal patterns and online stats for known entities
-    Enum.each(user_profiles, fn {user_id, _profile} ->
-      case :ets.lookup(@temporal_table, {:user, user_id}) do
-        [] -> :ets.insert(@temporal_table, {{:user, user_id}, %TemporalPattern{}})
-        _ -> :ok
-      end
+    # Initialize empty temporal patterns for known entities
+    Enum.each(user_profiles, fn {org_id, users} ->
+      Enum.each(users, fn {user_id, _profile} ->
+        key = {org_id, :user, user_id}
+        case :ets.lookup(@temporal_table, key) do
+          [] -> :ets.insert(@temporal_table, {key, %TemporalPattern{}})
+          _ -> :ok
+        end
+      end)
     end)
   end
 
@@ -1462,25 +1497,32 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   @impl true
-  def handle_call({:get_user_profile, user_id}, _from, state) do
-    profile = Map.get(state.user_profiles, user_id)
+  def handle_call({:get_user_profile, org_id, user_id}, _from, state) do
+    profile = state.user_profiles |> Map.get(org_id, %{}) |> Map.get(user_id)
     {:reply, {:ok, profile}, state}
   end
 
   @impl true
-  def handle_call({:get_risk_score, entity_type, entity_id}, _from, state) do
-    score = calculate_entity_risk_score(entity_type, entity_id, state)
+  def handle_call({:get_risk_score, org_id, entity_type, entity_id}, _from, state) do
+    score = calculate_entity_risk_score(org_id, entity_type, entity_id, state)
     {:reply, {:ok, score}, state}
   end
 
   @impl true
-  def handle_call(:get_all_profiles, _from, state) do
-    {:reply, {:ok, state.user_profiles, state.process_profiles, state.host_profiles}, state}
+  def handle_call({:get_all_profiles, org_id}, _from, state) do
+    users = Map.get(state.user_profiles, org_id, %{})
+    processes = Map.get(state.process_profiles, org_id, %{})
+    hosts = Map.get(state.host_profiles, org_id, %{})
+    {:reply, {:ok, users, processes, hosts}, state}
   end
 
   @impl true
-  def handle_call({:get_process_profile, process_name}, _from, state) do
-    profile = Map.get(state.process_profiles, String.downcase(process_name))
+  def handle_call({:get_process_profile, org_id, process_name}, _from, state) do
+    profile =
+      state.process_profiles
+      |> Map.get(org_id, %{})
+      |> Map.get(String.downcase(process_name))
+
     {:reply, {:ok, profile}, state}
   end
 
@@ -1521,11 +1563,36 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   # ── PubSub: Analyst verdict feedback for adaptive threshold learning ─────
+  # Phase 2: payload may carry :organization_id (preferred) or :alert_id (we resolve
+  # the org via Alerts.get_alert! fallback). If neither yields an org, we skip the
+  # update — global thresholds no longer exist after the per-org refactor.
   @impl true
-  def handle_info({:verdict_feedback, %{alert_id: _alert_id, verdict: verdict, rule_id: rule_id, entity_type: entity_type, feature: feature}}, state) do
-    update_adaptive_threshold(entity_type, feature, verdict)
-    Logger.debug("[Behavioral] Adaptive threshold updated for #{entity_type}:#{feature} (verdict: #{verdict}, rule: #{rule_id})")
+  def handle_info({:verdict_feedback, %{alert_id: alert_id, verdict: verdict, rule_id: rule_id, entity_type: entity_type, feature: feature} = payload}, state) do
+    org_id =
+      Map.get(payload, :organization_id) ||
+        resolve_org_from_alert(alert_id)
+
+    if org_id do
+      update_adaptive_threshold(org_id, entity_type, feature, verdict)
+      Logger.debug("[Behavioral] Adaptive threshold updated for org=#{inspect(org_id)} #{entity_type}:#{feature} (verdict: #{verdict}, rule: #{rule_id})")
+    else
+      Logger.debug("[Behavioral] Verdict feedback received without org_id (alert=#{inspect(alert_id)}); skipping threshold update")
+    end
+
     {:noreply, state}
+  end
+
+  # Resolve org_id from an alert id; safe to call when Alerts/Repo is unavailable.
+  defp resolve_org_from_alert(nil), do: nil
+  defp resolve_org_from_alert(alert_id) do
+    try do
+      case Alerts.get_alert!(alert_id) do
+        %{organization_id: org_id} -> org_id
+        _ -> nil
+      end
+    rescue
+      _ -> nil
+    end
   end
 
   # ── Risk Score Trend Tick (EWMA) ─────────────────────────────────────────
@@ -1568,29 +1635,35 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Public API
   # ============================================================================
 
-  @doc "Analyze an event for behavioral anomalies."
+  @doc """
+  Analyze an event for behavioral anomalies.
+
+  Phase 2: signature unchanged. Org-id is resolved inside `analyze_event/2`
+  from the event's :organization_id (with `safe_org_lookup/1` fallback via
+  agent_id).
+  """
   def analyze(event) do
     GenServer.call(__MODULE__, {:analyze_event, event})
   end
 
-  @doc "Get the behavioral profile for a user."
-  def get_user_profile(user_id) do
-    GenServer.call(__MODULE__, {:get_user_profile, user_id})
+  @doc "Get the behavioral profile for a user within an organization."
+  def get_user_profile(org_id, user_id) do
+    GenServer.call(__MODULE__, {:get_user_profile, org_id, user_id})
   end
 
-  @doc "Calculate risk score for an entity (user, process, or host)."
-  def get_risk_score(entity_type, entity_id) do
-    GenServer.call(__MODULE__, {:get_risk_score, entity_type, entity_id})
+  @doc "Calculate risk score for an entity (user, process, or host) within an organization."
+  def get_risk_score(org_id, entity_type, entity_id) do
+    GenServer.call(__MODULE__, {:get_risk_score, org_id, entity_type, entity_id})
   end
 
-  @doc "Get all profiles (user, process, host) from the behavioral engine."
-  def get_all_profiles do
-    GenServer.call(__MODULE__, :get_all_profiles)
+  @doc "Get all profiles (user, process, host) for an organization."
+  def get_all_profiles(org_id) do
+    GenServer.call(__MODULE__, {:get_all_profiles, org_id})
   end
 
-  @doc "Get the behavioral profile for a process."
-  def get_process_profile(process_name) do
-    GenServer.call(__MODULE__, {:get_process_profile, process_name})
+  @doc "Get the behavioral profile for a process within an organization."
+  def get_process_profile(org_id, process_name) do
+    GenServer.call(__MODULE__, {:get_process_profile, org_id, process_name})
   end
 
   @doc "Reload detection rules from defaults and database."
@@ -1599,38 +1672,51 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   # ── ETS-backed public reads (no GenServer bottleneck) ────────────────────
+  # Phase 2: all ETS reads scope to org_id to prevent cross-tenant data leak.
 
   @doc "Read online statistics for a feature directly from ETS (no GenServer call)."
-  @spec get_feature_stats(atom(), String.t(), atom()) :: OnlineStats.t() | nil
-  def get_feature_stats(entity_type, entity_id, feature) do
-    case ets_lookup(@stats_table, {entity_type, entity_id, feature}) do
+  @spec get_feature_stats(any(), atom(), String.t(), atom()) :: OnlineStats.t() | nil
+  def get_feature_stats(org_id, entity_type, entity_id, feature) do
+    case ets_lookup(@stats_table, {org_id, entity_type, entity_id, feature}) do
       nil -> nil
       stats -> stats
     end
   end
 
   @doc "Read a temporal pattern directly from ETS."
-  @spec get_temporal_pattern(atom(), String.t()) :: TemporalPattern.t() | nil
-  def get_temporal_pattern(entity_type, entity_id) do
-    ets_lookup(@temporal_table, {entity_type, entity_id})
+  @spec get_temporal_pattern(any(), atom(), String.t()) :: TemporalPattern.t() | nil
+  def get_temporal_pattern(org_id, entity_type, entity_id) do
+    ets_lookup(@temporal_table, {org_id, entity_type, entity_id})
   end
 
-  @doc "Read the adaptive threshold for an entity type and feature from ETS."
-  @spec get_adaptive_threshold(atom(), atom()) :: {float(), integer(), integer()} | nil
-  def get_adaptive_threshold(entity_type, feature) do
-    ets_lookup(@thresholds_table, {entity_type, feature})
+  @doc """
+  Read the adaptive threshold for an entity type and feature from ETS,
+  scoped to an organization. Lazily seeds default thresholds for the org
+  on first access.
+  """
+  @spec get_adaptive_threshold(any(), atom(), atom()) :: {float(), integer(), integer()} | nil
+  def get_adaptive_threshold(org_id, entity_type, feature) do
+    case ets_lookup(@thresholds_table, {org_id, entity_type, feature}) do
+      nil ->
+        # Cache-miss: seed defaults for this org and retry.
+        ensure_default_thresholds(org_id)
+        ets_lookup(@thresholds_table, {org_id, entity_type, feature})
+
+      value ->
+        value
+    end
   end
 
   @doc "Read the EWMA risk trend for an entity directly from ETS."
-  @spec get_risk_trend(atom(), String.t()) :: map() | nil
-  def get_risk_trend(entity_type, entity_id) do
-    ets_lookup(@risk_trends_table, {entity_type, entity_id})
+  @spec get_risk_trend(any(), atom(), String.t()) :: map() | nil
+  def get_risk_trend(org_id, entity_type, entity_id) do
+    ets_lookup(@risk_trends_table, {org_id, entity_type, entity_id})
   end
 
-  @doc "Read peer group norms from ETS."
-  @spec get_peer_group_norms(String.t()) :: map() | nil
-  def get_peer_group_norms(group_label) do
-    ets_lookup(@peer_groups_table, group_label)
+  @doc "Read peer group norms from ETS for a given organization."
+  @spec get_peer_group_norms(any(), String.t()) :: map() | nil
+  def get_peer_group_norms(org_id, group_label) do
+    ets_lookup(@peer_groups_table, {org_id, group_label})
   end
 
   @doc "Get a summary of the behavioral engine state for dashboard display."
@@ -1646,21 +1732,44 @@ defmodule TamanduaServer.Detection.Behavioral do
     }
   end
 
-  @doc "Submit analyst verdict feedback for adaptive threshold learning."
+  @doc """
+  Submit analyst verdict feedback for adaptive threshold learning.
+
+  Phase 2: signature preserved. Org-id is resolved from the alert via
+  `resolve_org_from_alert/1`; if the alert lookup fails, the update is dropped
+  (no global thresholds exist post-Phase-2). The message is sent to the
+  registered `Detection.Behavioral` process — fixes a bug where `send(self(),
+  ...)` would target the *caller's* mailbox, not the GenServer.
+  """
   @spec submit_feedback(String.t(), String.t(), atom(), atom(), String.t() | nil) :: :ok
   def submit_feedback(alert_id, verdict, entity_type, feature, rule_id \\ nil) do
-    send(self(), {:verdict_feedback, %{
+    org_id = resolve_org_from_alert(alert_id)
+
+    payload = %{
       alert_id: alert_id,
+      organization_id: org_id,
       verdict: verdict,
       entity_type: entity_type,
       feature: feature,
       rule_id: rule_id
-    }})
-    :ok
+    }
+
+    case Process.whereis(__MODULE__) do
+      nil ->
+        # GenServer not running — apply directly when we have an org context.
+        if org_id, do: update_adaptive_threshold(org_id, entity_type, feature, verdict)
+        :ok
+
+      pid ->
+        send(pid, {:verdict_feedback, payload})
+        :ok
+    end
   rescue
     _ ->
-      # If the GenServer isn't running, update threshold directly
-      update_adaptive_threshold(entity_type, feature, verdict)
+      # Best-effort fallback: if anything explodes, still try a direct update
+      # when we have an org context.
+      org_id = resolve_org_from_alert(alert_id)
+      if org_id, do: update_adaptive_threshold(org_id, entity_type, feature, verdict)
       :ok
   end
 
@@ -1693,17 +1802,23 @@ defmodule TamanduaServer.Detection.Behavioral do
     agent_id = normalized.agent_id
     category = EventTypes.category(event_type)
 
+    # Phase 2: resolve org_id up-front so we can thread it through every
+    # analysis/write path. The fallback to `safe_org_lookup/1` covers events
+    # whose `organization_id` wasn't stamped at ingress.
+    org_id = normalized.organization_id || safe_org_lookup(agent_id)
+    normalized = Map.put(normalized, :organization_id, org_id)
+
     anomalies =
       case category do
         :process ->
-          analyze_process_event(normalized.payload, agent_id, state) ++
+          analyze_process_event(normalized.payload, agent_id, org_id, state) ++
           analyze_command_line_rules(normalized.payload, state)
 
         :auth ->
-          analyze_auth_event(normalized.payload, state)
+          analyze_auth_event(normalized.payload, org_id, state)
 
         :network ->
-          analyze_network_event(normalized.payload, state)
+          analyze_network_event(normalized.payload, org_id, state)
 
         :file ->
           analyze_file_event(normalized.payload, state)
@@ -1713,6 +1828,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       end
 
     # ── Z-Score Anomaly Detection via Online Stats ──────────────────────
+    # Phase 2: entity_key is now a 3-tuple {org_id, entity_type, entity_id}
     entity_key = extract_entity_key(normalized)
     zscore_anomalies = run_zscore_analysis(entity_key, normalized, category, state)
 
@@ -1729,13 +1845,10 @@ defmodule TamanduaServer.Detection.Behavioral do
     update_ets_temporal(entity_key)
     update_ets_risk_trend(entity_key, anomalies)
 
-    # Update GenServer-local profiles
+    # Update GenServer-local profiles (Phase 2: org-scoped writes)
     new_state = update_profiles_from_event(normalized, state)
 
-    # Attach agent/org context
-    org_id = normalized.organization_id ||
-             safe_org_lookup(agent_id)
-
+    # Stamp agent/org context onto every anomaly
     anomalies = Enum.map(anomalies, fn a ->
       %{a | agent_id: agent_id, organization_id: org_id}
     end)
@@ -1746,25 +1859,59 @@ defmodule TamanduaServer.Detection.Behavioral do
     # Create alerts for significant anomalies
     Enum.each(significant_anomalies, &create_anomaly_alert/1)
 
+    # Persist recent anomalies in ETS so BehavioralController/{statistics,
+    # anomalies, risk_trends, heatmap, categories, entity_history} have data.
+    # Phase 2: keyed by {org_id, entity_type, entity_id}.
+    record_anomalies_in_ets(significant_anomalies)
+
     {significant_anomalies, new_state}
   end
 
-  # Extract a stable entity key from the normalized event for ETS operations
+  # Append significant anomalies into @anomaly_table, grouped by entity, keeping
+  # at most @anomaly_history_per_entity most-recent entries per entity. Safe to
+  # call with [] (no-op). Tolerant of missing table so test/standalone usage
+  # without init/1 does not crash callers (rescued to :ok).
+  defp record_anomalies_in_ets([]), do: :ok
+  defp record_anomalies_in_ets(anomalies) when is_list(anomalies) do
+    anomalies
+    |> Enum.group_by(&{&1.organization_id, &1.entity_type, &1.entity_id})
+    |> Enum.each(fn {key, fresh} ->
+      existing =
+        case :ets.lookup(@anomaly_table, key) do
+          [{^key, list}] when is_list(list) -> list
+          _ -> []
+        end
+
+      merged = Enum.take(fresh ++ existing, @anomaly_history_per_entity)
+      :ets.insert(@anomaly_table, {key, merged})
+    end)
+  rescue
+    error ->
+      Logger.warning("record_anomalies_in_ets failed: #{inspect(error)}")
+      :ok
+  end
+
+  # Phase 2: Extract a stable, org-scoped entity key from the normalized event
+  # for ETS operations. Returns {org_id, entity_type, entity_id}.
   defp extract_entity_key(normalized) do
+    org_id = normalized[:organization_id] ||
+               Map.get(normalized, :organization_id) ||
+               safe_org_lookup(normalized.agent_id)
     payload = normalized.payload
     user = get_field(payload, "user") || get_field(payload, "username")
     process_name = get_field(payload, "name") || get_field(payload, "process_name")
     hostname = get_field(payload, "hostname") || normalized.agent_id
 
     cond do
-      user && user != "" -> {:user, user}
-      process_name && process_name != "" -> {:process, String.downcase(process_name)}
-      hostname -> {:host, hostname}
-      true -> {:unknown, "unknown"}
+      user && user != "" -> {org_id, :user, user}
+      process_name && process_name != "" -> {org_id, :process, String.downcase(process_name)}
+      hostname -> {org_id, :host, hostname}
+      true -> {org_id, :unknown, "unknown"}
     end
   end
 
   # Filter anomalies using adaptive thresholds (Bayesian-tuned z-score thresholds)
+  # Phase 2: thresholds are org-scoped; we read each anomaly's :organization_id.
   defp filter_significant_anomalies(anomalies, _state) do
     risk_threshold = Config.risk_score_alert_threshold()
 
@@ -1775,7 +1922,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       else
         # For z-score based anomalies, use adaptive threshold
         if is_number(a.deviation_score) and abs(a.deviation_score) > 0 do
-          adaptive_z = get_adaptive_z_threshold(a.entity_type, feature_from_anomaly(a))
+          adaptive_z = get_adaptive_z_threshold(a.organization_id, a.entity_type, feature_from_anomaly(a))
           abs(a.deviation_score) >= adaptive_z
         else
           false
@@ -1784,9 +1931,11 @@ defmodule TamanduaServer.Detection.Behavioral do
     end)
   end
 
-  # Look up the adaptive z-score threshold for this entity type and feature
-  defp get_adaptive_z_threshold(entity_type, feature) do
-    case ets_lookup(@thresholds_table, {entity_type, feature}) do
+  # Look up the adaptive z-score threshold for this org/entity_type/feature.
+  # Phase 2: thresholds are org-scoped; we read the org-keyed row and fall back
+  # to the configured default if absent.
+  defp get_adaptive_z_threshold(org_id, entity_type, feature) do
+    case ets_lookup(@thresholds_table, {org_id, entity_type, feature}) do
       {threshold_z, _fp, _tp} -> threshold_z
       _ -> Config.z_score_threshold()
     end
@@ -1826,7 +1975,8 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Process Analysis (rule-based + behavioral)
   # ============================================================================
 
-  defp analyze_process_event(payload, agent_id, state) do
+  # Phase 2: profiles maps are org-nested. Lookups must scope by org_id.
+  defp analyze_process_event(payload, agent_id, org_id, state) do
     process_name = get_field(payload, "name") || ""
     parent_name = get_field(payload, "parent_name")
     user = get_field(payload, "user")
@@ -1838,7 +1988,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     anomalies = anomalies ++ match_process_rules(process_name, state.rules.process)
 
     # 2. Behavioral: unusual parent-child relationship
-    process_profile = Map.get(state.process_profiles, String.downcase(process_name))
+    org_processes = Map.get(state.process_profiles, org_id, %{})
+    process_profile = Map.get(org_processes, String.downcase(process_name))
 
     anomalies = anomalies ++
       if not is_nil(process_profile) and not is_nil(parent_name) do
@@ -1850,7 +2001,7 @@ defmodule TamanduaServer.Detection.Behavioral do
     # 3. Behavioral: unusual process for user
     anomalies = anomalies ++
       if not is_nil(user) do
-        check_unusual_process_for_user(process_name, user, state)
+        check_unusual_process_for_user(process_name, user, org_id, state)
       else
         []
       end
@@ -1945,13 +2096,15 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
-  defp check_unusual_process_for_user(process_name, user, state) do
+  # Phase 2: user_profiles is org-nested; scope lookup by org_id.
+  defp check_unusual_process_for_user(process_name, user, org_id, state) do
     # Skip during learning period
     uptime = System.monotonic_time(:second) - state.started_at
     if uptime < state.learning_period_secs do
       []
     else
-      user_profile = Map.get(state.user_profiles, user)
+      org_users = Map.get(state.user_profiles, org_id, %{})
+      user_profile = Map.get(org_users, user)
 
       if not is_nil(user_profile) do
         typical_procs = user_profile.typical_processes || %{}
@@ -2537,11 +2690,14 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Auth Analysis
   # ============================================================================
 
-  defp analyze_auth_event(payload, state) do
+  # Phase 2: user_profiles is org-nested; last_login_locations is keyed by
+  # {org_id, user}. All lookups now require org_id.
+  defp analyze_auth_event(payload, org_id, state) do
     user = get_field(payload, "user") || get_field(payload, "username") || ""
     source_ip = get_field(payload, "source_ip")
 
-    user_profile = Map.get(state.user_profiles, user)
+    org_users = Map.get(state.user_profiles, org_id, %{})
+    user_profile = Map.get(org_users, user)
 
     anomalies = []
 
@@ -2551,8 +2707,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     # Check unusual source IP
     anomalies = anomalies ++ check_unusual_source_ip(user, source_ip, user_profile, state)
 
-    # Check impossible travel
-    anomalies = anomalies ++ check_impossible_travel(user, source_ip, state)
+    # Check impossible travel (org-scoped login-location lookup)
+    anomalies = anomalies ++ check_impossible_travel(user, source_ip, org_id, state)
 
     anomalies
   end
@@ -2625,7 +2781,8 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Network Analysis
   # ============================================================================
 
-  defp analyze_network_event(payload, state) do
+  # Phase 2: process_profiles is org-nested; thread org_id through.
+  defp analyze_network_event(payload, org_id, state) do
     process_name = get_field(payload, "process_name") || ""
     remote_ip = get_field(payload, "remote_ip")
     remote_port = payload["remote_port"] || payload[:remote_port]
@@ -2634,7 +2791,7 @@ defmodule TamanduaServer.Detection.Behavioral do
     anomalies = []
 
     # Check unusual port for process (behavioral)
-    anomalies = anomalies ++ check_unusual_port(process_name, remote_port, state)
+    anomalies = anomalies ++ check_unusual_port(process_name, remote_port, org_id, state)
 
     # Check large data transfer (configurable threshold)
     large_threshold = Config.large_transfer_bytes()
@@ -2679,8 +2836,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     anomalies
   end
 
-  defp check_unusual_port(_process_name, nil, _state), do: []
-  defp check_unusual_port(process_name, remote_port, state) do
+  defp check_unusual_port(_process_name, nil, _org_id, _state), do: []
+  defp check_unusual_port(process_name, remote_port, org_id, state) do
     # Skip common infrastructure ports
     port_int = parse_port(remote_port)
 
@@ -2692,7 +2849,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       if uptime < state.learning_period_secs do
         []
       else
-        process_profile = Map.get(state.process_profiles, String.downcase(process_name))
+        org_processes = Map.get(state.process_profiles, org_id, %{})
+        process_profile = Map.get(org_processes, String.downcase(process_name))
 
         if not is_nil(process_profile) do
           typical_ports = process_profile.typical_network_ports || %{}
@@ -2781,15 +2939,19 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Profile Updates
   # ============================================================================
 
+  # Phase 2: state.user_profiles / state.process_profiles are org-nested. All
+  # writes scope by the normalized event's :organization_id (already resolved
+  # in analyze_event/2).
   defp update_profiles_from_event(normalized, state) do
     event_type = normalized.event_type
     payload = normalized.payload
+    org_id = normalized[:organization_id] || Map.get(normalized, :organization_id)
 
     case EventTypes.category(event_type) do
       :process ->
         process_name = get_field(payload, "name")
         if process_name do
-          update_process_profile(state, process_name, payload)
+          update_process_profile(state, org_id, process_name, payload)
         else
           state
         end
@@ -2799,13 +2961,13 @@ defmodule TamanduaServer.Detection.Behavioral do
         source_ip = get_field(payload, "source_ip")
 
         state = if user do
-          update_user_profile(state, user, payload)
+          update_user_profile(state, org_id, user, payload)
         else
           state
         end
 
         if user && source_ip do
-          update_last_login_location(state, user, source_ip)
+          update_last_login_location(state, org_id, user, source_ip)
         else
           state
         end
@@ -2815,9 +2977,10 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
-  defp update_process_profile(state, process_name, payload) do
+  defp update_process_profile(state, org_id, process_name, payload) do
     key = String.downcase(process_name)
-    current = Map.get(state.process_profiles, key, %ProcessProfile{process_name: key})
+    org_processes = Map.get(state.process_profiles, org_id, %{})
+    current = Map.get(org_processes, key, %ProcessProfile{process_name: key})
 
     parent_name = get_field(payload, "parent_name")
     port = payload["remote_port"] || payload[:remote_port]
@@ -2829,11 +2992,13 @@ defmodule TamanduaServer.Detection.Behavioral do
       last_updated: DateTime.utc_now()
     }
 
-    %{state | process_profiles: Map.put(state.process_profiles, key, updated)}
+    new_org_processes = Map.put(org_processes, key, updated)
+    %{state | process_profiles: Map.put(state.process_profiles, org_id, new_org_processes)}
   end
 
-  defp update_user_profile(state, user, payload) do
-    current = Map.get(state.user_profiles, user, %UserProfile{user_id: user})
+  defp update_user_profile(state, org_id, user, payload) do
+    org_users = Map.get(state.user_profiles, org_id, %{})
+    current = Map.get(org_users, user, %UserProfile{user_id: user})
 
     current_hour = DateTime.utc_now().hour
     source_ip = get_field(payload, "source_ip")
@@ -2847,7 +3012,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       last_updated: DateTime.utc_now()
     }
 
-    %{state | user_profiles: Map.put(state.user_profiles, user, updated)}
+    new_org_users = Map.put(org_users, user, updated)
+    %{state | user_profiles: Map.put(state.user_profiles, org_id, new_org_users)}
   end
 
   defp update_frequency_map(nil, _value), do: %{}
@@ -2858,10 +3024,13 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   defp update_all_baselines(state) do
+    # Phase 2: profiles are nested by org_id. Sum across orgs for the log line.
+    user_count = state.user_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
+    proc_count = state.process_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
     # In production, this queries historical data and rebuilds profiles
     Logger.info("Baseline update completed - " <>
-      "#{map_size(state.user_profiles)} user profiles, " <>
-      "#{map_size(state.process_profiles)} process profiles")
+      "#{user_count} user profiles across #{map_size(state.user_profiles)} orgs, " <>
+      "#{proc_count} process profiles across #{map_size(state.process_profiles)} orgs")
     state
   end
 
@@ -2869,30 +3038,43 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Database Persistence (baselines)
   # ============================================================================
 
+  # Phase 2: profile maps are nested by org_id. We encode the org_id INTO the
+  # persisted entity_id (e.g. "ORG_UUID::alice") so the existing
+  # behavioral_baselines schema (entity_type, entity_id, data) keeps working
+  # without a DB migration. Phase 5 will add a dedicated org_id column. The
+  # load path parses the same prefix back into org buckets.
+  @org_id_separator "::"
+
   defp persist_baselines_to_db(state) do
-    user_count = map_size(state.user_profiles)
-    process_count = map_size(state.process_profiles)
+    user_count = state.user_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
+    process_count = state.process_profiles |> Enum.map(fn {_org, m} -> map_size(m) end) |> Enum.sum()
 
     try do
-      # Persist user profiles
-      Enum.each(state.user_profiles, fn {user_id, profile} ->
-        upsert_baseline(:user, user_id, %{
-          typical_login_hours: profile.typical_login_hours || %{},
-          typical_source_ips: profile.typical_source_ips || %{},
-          typical_processes: profile.typical_processes || %{},
-          total_events: profile.total_events,
-          last_updated: profile.last_updated
-        })
+      # Persist user profiles per-org
+      Enum.each(state.user_profiles, fn {org_id, users} ->
+        Enum.each(users, fn {user_id, profile} ->
+          upsert_baseline(:user, scoped_entity_id(org_id, user_id), %{
+            organization_id: org_id,
+            typical_login_hours: profile.typical_login_hours || %{},
+            typical_source_ips: profile.typical_source_ips || %{},
+            typical_processes: profile.typical_processes || %{},
+            total_events: profile.total_events,
+            last_updated: profile.last_updated
+          })
+        end)
       end)
 
-      # Persist process profiles
-      Enum.each(state.process_profiles, fn {proc_name, profile} ->
-        upsert_baseline(:process, proc_name, %{
-          typical_parents: profile.typical_parents || %{},
-          typical_network_ports: profile.typical_network_ports || %{},
-          total_events: profile.total_events,
-          last_updated: profile.last_updated
-        })
+      # Persist process profiles per-org
+      Enum.each(state.process_profiles, fn {org_id, processes} ->
+        Enum.each(processes, fn {proc_name, profile} ->
+          upsert_baseline(:process, scoped_entity_id(org_id, proc_name), %{
+            organization_id: org_id,
+            typical_parents: profile.typical_parents || %{},
+            typical_network_ports: profile.typical_network_ports || %{},
+            total_events: profile.total_events,
+            last_updated: profile.last_updated
+          })
+        end)
       end)
 
       # Persist historical stats for z-score calculation
@@ -2902,6 +3084,20 @@ defmodule TamanduaServer.Detection.Behavioral do
     rescue
       e ->
         Logger.error("Failed to persist baselines: #{inspect(e)}")
+    end
+  end
+
+  # Encode {org_id, entity_id} into the persisted entity_id column.
+  defp scoped_entity_id(nil, entity_id), do: "__noorg__#{@org_id_separator}#{entity_id}"
+  defp scoped_entity_id(org_id, entity_id), do: "#{org_id}#{@org_id_separator}#{entity_id}"
+
+  # Decode "ORG_UUID::entity" back into {org_id, entity_id}; legacy unprefixed
+  # rows (pre-Phase-2) are returned as {nil, raw_id}.
+  defp parse_scoped_entity_id(raw) when is_binary(raw) do
+    case String.split(raw, @org_id_separator, parts: 2) do
+      ["__noorg__", rest] -> {nil, rest}
+      [org_id, rest] -> {org_id, rest}
+      [_only] -> {nil, raw}
     end
   end
 
@@ -2928,6 +3124,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
+  # Phase 2: returns {%{org_id => %{user_id => UserProfile}},
+  #                   %{org_id => %{proc_name => ProcessProfile}}}
   defp load_persisted_baselines do
     try do
       rows = TamanduaServer.Repo.query!(
@@ -2935,30 +3133,40 @@ defmodule TamanduaServer.Detection.Behavioral do
       ).rows
 
       {user_profiles, process_profiles} =
-        Enum.reduce(rows, {%{}, %{}}, fn [entity_type, entity_id, data_json], {users, procs} ->
+        Enum.reduce(rows, {%{}, %{}}, fn [entity_type, raw_entity_id, data_json], {users, procs} ->
           case Jason.decode(data_json) do
             {:ok, data} ->
+              {parsed_org, parsed_id} = parse_scoped_entity_id(raw_entity_id)
+              # Prefer the org_id embedded in the JSON payload; fall back to
+              # the prefix parsed out of the entity_id column. Either may be nil
+              # for legacy/unscoped rows.
+              org_id = data["organization_id"] || parsed_org
+
               case entity_type do
                 "user" ->
                   profile = %UserProfile{
-                    user_id: entity_id,
+                    user_id: parsed_id,
                     typical_login_hours: atomize_int_keys(data["typical_login_hours"]),
                     typical_source_ips: data["typical_source_ips"] || %{},
                     typical_processes: data["typical_processes"] || %{},
                     total_events: data["total_events"] || 0,
                     last_updated: parse_datetime(data["last_updated"])
                   }
-                  {Map.put(users, entity_id, profile), procs}
+                  org_bucket = Map.get(users, org_id, %{})
+                  new_org_bucket = Map.put(org_bucket, parsed_id, profile)
+                  {Map.put(users, org_id, new_org_bucket), procs}
 
                 "process" ->
                   profile = %ProcessProfile{
-                    process_name: entity_id,
+                    process_name: parsed_id,
                     typical_parents: data["typical_parents"] || %{},
                     typical_network_ports: atomize_int_keys(data["typical_network_ports"]),
                     total_events: data["total_events"] || 0,
                     last_updated: parse_datetime(data["last_updated"])
                   }
-                  {users, Map.put(procs, entity_id, profile)}
+                  org_bucket = Map.get(procs, org_id, %{})
+                  new_org_bucket = Map.put(org_bucket, parsed_id, profile)
+                  {users, Map.put(procs, org_id, new_org_bucket)}
 
                 _ ->
                   {users, procs}
@@ -3020,12 +3228,14 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Risk Scoring
   # ============================================================================
 
-  defp calculate_entity_risk_score(entity_type, entity_id, state) do
+  # Phase 2: org-scoped lookup into nested profile maps.
+  defp calculate_entity_risk_score(org_id, entity_type, entity_id, state) do
     base_score = 0
 
     case entity_type do
       :user ->
-        profile = Map.get(state.user_profiles, entity_id)
+        org_users = Map.get(state.user_profiles, org_id, %{})
+        profile = Map.get(org_users, entity_id)
         if profile do
           if profile.total_events > 100, do: base_score, else: base_score + 10
         else
@@ -3033,7 +3243,8 @@ defmodule TamanduaServer.Detection.Behavioral do
         end
 
       :process ->
-        profile = Map.get(state.process_profiles, String.downcase(to_string(entity_id)))
+        org_processes = Map.get(state.process_profiles, org_id, %{})
+        profile = Map.get(org_processes, String.downcase(to_string(entity_id)))
         if profile do
           if profile.total_events > 50, do: base_score, else: base_score + 15
         else
@@ -3153,19 +3364,21 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Run z-score analysis on numeric features extracted from the event.
   # Compares each feature's current value against the running mean/stddev
   # stored in the :behavioral_stats ETS table.
-  defp run_zscore_analysis({entity_type, entity_id}, normalized, category, _state) do
+  # Phase 2: entity_key is org-scoped {org_id, entity_type, entity_id} and the
+  # stats_key includes org_id so two tenants cannot pollute each other's baseline.
+  defp run_zscore_analysis({org_id, entity_type, entity_id}, normalized, category, _state) do
     payload = normalized.payload
 
     features = extract_numeric_features(payload, category)
 
     features
     |> Enum.flat_map(fn {feature_name, value} ->
-      stats_key = {entity_type, entity_id, feature_name}
+      stats_key = {org_id, entity_type, entity_id, feature_name}
 
       case ets_lookup(@stats_table, stats_key) do
         %OnlineStats{count: n} = stats when n >= @min_observations_for_zscore ->
           z = OnlineStats.z_score(stats, value)
-          adaptive_z = get_adaptive_z_threshold(entity_type, feature_name)
+          adaptive_z = get_adaptive_z_threshold(org_id, entity_type, feature_name)
 
           if abs(z) >= adaptive_z do
             [%BehavioralAnomaly{
@@ -3255,13 +3468,14 @@ defmodule TamanduaServer.Detection.Behavioral do
   defp zscore_mitre_techniques(_, :bytes_received), do: ["T1105"]
   defp zscore_mitre_techniques(_, _), do: ["T1078"]
 
-  # Update ETS online stats for all numeric features in this event
-  defp update_ets_stats({entity_type, entity_id}, normalized, category) do
+  # Update ETS online stats for all numeric features in this event.
+  # Phase 2: stats_key is org-scoped {org_id, entity_type, entity_id, feature}.
+  defp update_ets_stats({org_id, entity_type, entity_id}, normalized, category) do
     payload = normalized.payload
     features = extract_numeric_features(payload, category)
 
     Enum.each(features, fn {feature_name, value} ->
-      stats_key = {entity_type, entity_id, feature_name}
+      stats_key = {org_id, entity_type, entity_id, feature_name}
 
       current = case :ets.lookup(@stats_table, stats_key) do
         [{^stats_key, stats}] -> stats
@@ -3281,12 +3495,13 @@ defmodule TamanduaServer.Detection.Behavioral do
 
   # Detect activity at unusual times by comparing against the entity's
   # historical time-of-day x day-of-week matrix.
-  defp run_temporal_analysis({entity_type, entity_id}, _normalized) do
+  # Phase 2: temporal key is org-scoped {org_id, entity_type, entity_id}.
+  defp run_temporal_analysis({org_id, entity_type, entity_id}, _normalized) do
     now = DateTime.utc_now()
     hour = now.hour
     day_of_week = Date.day_of_week(DateTime.to_date(now))
 
-    case ets_lookup(@temporal_table, {entity_type, entity_id}) do
+    case ets_lookup(@temporal_table, {org_id, entity_type, entity_id}) do
       %TemporalPattern{total: t} = tp when t >= 50 ->
         score = TemporalPattern.anomaly_score(tp, hour, day_of_week)
         is_after_hours = not TemporalPattern.working_hours?(hour, day_of_week)
@@ -3343,12 +3558,13 @@ defmodule TamanduaServer.Detection.Behavioral do
     "#{day_name} #{String.pad_leading(to_string(hour), 2, "0")}:00 UTC"
   end
 
-  # Update the temporal pattern matrix in ETS
-  defp update_ets_temporal({entity_type, entity_id}) do
+  # Update the temporal pattern matrix in ETS.
+  # Phase 2: tp_key is org-scoped {org_id, entity_type, entity_id}.
+  defp update_ets_temporal({org_id, entity_type, entity_id}) do
     now = DateTime.utc_now()
     hour = now.hour
     day_of_week = Date.day_of_week(DateTime.to_date(now))
-    tp_key = {entity_type, entity_id}
+    tp_key = {org_id, entity_type, entity_id}
 
     current = case :ets.lookup(@temporal_table, tp_key) do
       [{^tp_key, tp}] -> tp
@@ -3367,13 +3583,15 @@ defmodule TamanduaServer.Detection.Behavioral do
 
   # Compare an entity's current behavior against its peer group norms.
   # Users are grouped by department/role, processes by type.
-  defp run_peer_group_analysis({entity_type, entity_id}, _normalized, state) do
-    group_label = determine_peer_group(entity_type, entity_id, state)
+  # Phase 2: entity_key carries org_id; peer-group ETS key is {org_id, group_label}
+  # so peers in tenant A never compare against peers in tenant B.
+  defp run_peer_group_analysis({org_id, entity_type, entity_id}, _normalized, state) do
+    group_label = determine_peer_group(org_id, entity_type, entity_id, state)
 
     if group_label do
-      case ets_lookup(@peer_groups_table, group_label) do
+      case ets_lookup(@peer_groups_table, {org_id, group_label}) do
         %{mean_events: peer_mean, stddev_events: peer_stddev, member_count: n} when n >= 3 and peer_stddev > 0 ->
-          entity_events = get_entity_event_count(entity_type, entity_id, state)
+          entity_events = get_entity_event_count(org_id, entity_type, entity_id, state)
 
           if entity_events > 0 do
             z = (entity_events - peer_mean) / peer_stddev
@@ -3410,38 +3628,43 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
-  # Determine peer group label for an entity
-  defp determine_peer_group(:user, user_id, state) do
-    case Map.get(state.user_profiles, user_id) do
+  # Determine peer group label for an entity.
+  # Phase 2: org_id scopes the profile lookup so a user in tenant A's
+  # "engineering" department is not grouped with tenant B's "engineering".
+  defp determine_peer_group(org_id, :user, user_id, state) do
+    org_users = Map.get(state.user_profiles, org_id, %{})
+    case Map.get(org_users, user_id) do
       %UserProfile{peer_group: group} when is_binary(group) and group != "" -> group
       %UserProfile{department: dept} when is_binary(dept) and dept != "" -> "dept:#{dept}"
       _ -> "user:default"
     end
   end
 
-  defp determine_peer_group(:process, proc_name, _state) do
+  defp determine_peer_group(_org_id, :process, proc_name, _state) do
     type = classify_process_type(proc_name)
     "process_type:#{type}"
   end
 
-  defp determine_peer_group(:host, _host_id, _state), do: "host:default"
-  defp determine_peer_group(_, _, _), do: nil
+  defp determine_peer_group(_org_id, :host, _host_id, _state), do: "host:default"
+  defp determine_peer_group(_org_id, _, _, _), do: nil
 
-  defp get_entity_event_count(:user, user_id, state) do
-    case Map.get(state.user_profiles, user_id) do
+  defp get_entity_event_count(org_id, :user, user_id, state) do
+    org_users = Map.get(state.user_profiles, org_id, %{})
+    case Map.get(org_users, user_id) do
       %UserProfile{total_events: n} -> n
       _ -> 0
     end
   end
 
-  defp get_entity_event_count(:process, proc_name, state) do
-    case Map.get(state.process_profiles, String.downcase(proc_name)) do
+  defp get_entity_event_count(org_id, :process, proc_name, state) do
+    org_processes = Map.get(state.process_profiles, org_id, %{})
+    case Map.get(org_processes, String.downcase(proc_name)) do
       %ProcessProfile{total_events: n} -> n
       _ -> 0
     end
   end
 
-  defp get_entity_event_count(_, _, _), do: 0
+  defp get_entity_event_count(_org_id, _, _, _), do: 0
 
   # Classify a process name into a type category for peer grouping
   defp classify_process_type(name) when is_binary(name) do
@@ -3458,17 +3681,48 @@ defmodule TamanduaServer.Detection.Behavioral do
 
   defp classify_process_type(_), do: :unknown
 
-  # Periodically recalculate peer group norms from current profiles
+  # Periodically recalculate peer group norms from current profiles.
+  # Phase 2: iterates per-org so a peer group in tenant A is computed only
+  # from tenant-A profiles. ETS rows are keyed {org_id, group_label}.
   defp recalculate_peer_groups(state) do
-    # Group users by their peer group label
-    user_groups =
-      state.user_profiles
+    orgs = enumerate_known_orgs(state)
+    total_user_groups = Enum.reduce(orgs, 0, fn org_id, acc ->
+      acc + recalculate_user_peer_groups(org_id, state)
+    end)
+
+    total_process_groups = Enum.reduce(orgs, 0, fn org_id, acc ->
+      acc + recalculate_process_peer_groups(org_id, state)
+    end)
+
+    Logger.debug(
+      "[Behavioral] Recalculated #{total_user_groups + total_process_groups} peer groups across #{length(orgs)} org(s)"
+    )
+  rescue
+    e -> Logger.warning("[Behavioral] Peer group recalculation failed: #{inspect(e)}")
+  end
+
+  # Phase 2 helper: union of org_ids seen across user/process/host profile maps.
+  # Returns a list (possibly including `nil` for unscoped legacy data).
+  defp enumerate_known_orgs(state) do
+    user_orgs = Map.keys(state.user_profiles || %{})
+    process_orgs = Map.keys(state.process_profiles || %{})
+    host_orgs = Map.keys(state.host_profiles || %{})
+
+    (user_orgs ++ process_orgs ++ host_orgs)
+    |> Enum.uniq()
+  end
+
+  defp recalculate_user_peer_groups(org_id, state) do
+    org_users = Map.get(state.user_profiles, org_id, %{})
+
+    groups =
+      org_users
       |> Enum.group_by(fn {user_id, _profile} ->
-        determine_peer_group(:user, user_id, state)
+        determine_peer_group(org_id, :user, user_id, state)
       end)
       |> Enum.reject(fn {group, _} -> is_nil(group) end)
 
-    Enum.each(user_groups, fn {group_label, members} ->
+    Enum.each(groups, fn {group_label, members} ->
       event_counts = Enum.map(members, fn {_id, profile} -> profile.total_events * 1.0 end)
       n = length(event_counts)
 
@@ -3477,7 +3731,7 @@ defmodule TamanduaServer.Detection.Behavioral do
         variance = Enum.reduce(event_counts, 0.0, fn x, acc -> acc + (x - mean_val) * (x - mean_val) end) / n
         stddev_val = :math.sqrt(variance)
 
-        :ets.insert(@peer_groups_table, {group_label, %{
+        :ets.insert(@peer_groups_table, {{org_id, group_label}, %{
           mean_events: mean_val,
           stddev_events: max(stddev_val, 1.0),
           member_count: n,
@@ -3486,15 +3740,20 @@ defmodule TamanduaServer.Detection.Behavioral do
       end
     end)
 
-    # Group processes by type
-    process_groups =
-      state.process_profiles
+    length(groups)
+  end
+
+  defp recalculate_process_peer_groups(org_id, state) do
+    org_processes = Map.get(state.process_profiles, org_id, %{})
+
+    groups =
+      org_processes
       |> Enum.group_by(fn {proc_name, _profile} ->
-        determine_peer_group(:process, proc_name, state)
+        determine_peer_group(org_id, :process, proc_name, state)
       end)
       |> Enum.reject(fn {group, _} -> is_nil(group) end)
 
-    Enum.each(process_groups, fn {group_label, members} ->
+    Enum.each(groups, fn {group_label, members} ->
       event_counts = Enum.map(members, fn {_name, profile} -> profile.total_events * 1.0 end)
       n = length(event_counts)
 
@@ -3503,7 +3762,7 @@ defmodule TamanduaServer.Detection.Behavioral do
         variance = Enum.reduce(event_counts, 0.0, fn x, acc -> acc + (x - mean_val) * (x - mean_val) end) / n
         stddev_val = :math.sqrt(variance)
 
-        :ets.insert(@peer_groups_table, {group_label, %{
+        :ets.insert(@peer_groups_table, {{org_id, group_label}, %{
           mean_events: mean_val,
           stddev_events: max(stddev_val, 1.0),
           member_count: n,
@@ -3512,9 +3771,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       end
     end)
 
-    Logger.debug("[Behavioral] Recalculated #{map_size(user_groups) + map_size(process_groups)} peer groups")
-  rescue
-    e -> Logger.warning("[Behavioral] Peer group recalculation failed: #{inspect(e)}")
+    length(groups)
   end
 
   # ============================================================================
@@ -3526,8 +3783,10 @@ defmodule TamanduaServer.Detection.Behavioral do
   # - "false_positive" verdict -> raise threshold (fewer alerts)
   # - "true_positive" verdict -> lower threshold (more sensitive)
   # - "benign" -> same as false_positive
-  defp update_adaptive_threshold(entity_type, feature, verdict) do
-    key = {entity_type, feature}
+  # Phase 2: thresholds are org-scoped; the key carries org_id so one tenant's
+  # verdict feedback cannot retune another tenant's sensitivity.
+  defp update_adaptive_threshold(org_id, entity_type, feature, verdict) do
+    key = {org_id, entity_type, feature}
 
     {current_z, fp_count, tp_count} = case :ets.lookup(@thresholds_table, key) do
       [{^key, val}] -> val
@@ -3564,15 +3823,16 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Risk Score Trending (EWMA)
   # ============================================================================
 
-  # Update the EWMA risk trend for an entity after processing anomalies
-  defp update_ets_risk_trend({entity_type, entity_id}, anomalies) do
+  # Update the EWMA risk trend for an entity after processing anomalies.
+  # Phase 2: trend_key is org-scoped {org_id, entity_type, entity_id}.
+  defp update_ets_risk_trend({org_id, entity_type, entity_id}, anomalies) do
     # Current risk score is the max risk from any anomaly, or 0 if no anomalies
     current_risk = case anomalies do
       [] -> 0.0
       list -> Enum.max_by(list, & &1.risk_score).risk_score * 1.0
     end
 
-    trend_key = {entity_type, entity_id}
+    trend_key = {org_id, entity_type, entity_id}
 
     current_trend = case :ets.lookup(@risk_trends_table, trend_key) do
       [{^trend_key, trend}] -> trend
@@ -3602,21 +3862,27 @@ defmodule TamanduaServer.Detection.Behavioral do
     _ -> :ok
   end
 
-  # Check all entities with sustained elevated risk trends and create alerts
+  # Check all entities with sustained elevated risk trends and create alerts.
+  # Phase 2: risk_trends key is {org_id, entity_type, entity_id}. We carry the
+  # org_id straight through to the generated alert so cross-tenant attribution
+  # is preserved; the `safe_org_lookup/1` fallback only fires for legacy rows
+  # that were written without an org context.
   defp check_sustained_risk_trends(_state) do
     try do
       :ets.foldl(fn {key, trend}, acc ->
-        {entity_type, entity_id} = key
+        {trend_org_id, entity_type, entity_id} = key
 
         if trend.ticks_above >= @sustained_risk_ticks do
           # Reset ticks to prevent repeated alerts
           :ets.insert(@risk_trends_table, {key, %{trend | ticks_above: 0}})
 
           # Create a sustained risk alert
-          org_id = case entity_type do
-            :user -> nil
-            _ -> safe_org_lookup(entity_id)
-          end
+          org_id =
+            cond do
+              not is_nil(trend_org_id) -> trend_org_id
+              entity_type == :user -> nil
+              true -> safe_org_lookup(entity_id)
+            end
 
           anomaly = %BehavioralAnomaly{
             anomaly_type: :sustained_risk_trend,
@@ -3651,31 +3917,49 @@ defmodule TamanduaServer.Detection.Behavioral do
   # ETS Persistence & Cleanup
   # ============================================================================
 
-  # Persist OnlineStats from ETS to database for recovery after restart
+  # Persist OnlineStats from ETS to database for recovery after restart.
+  # Phase 2: stats_key is {org_id, entity_type, entity_id, feature} and
+  # thresholds_key is {org_id, entity_type, feature}. We encode the org_id
+  # via `scoped_entity_id/2` so the row roundtrips through the existing
+  # `behavioral_baselines` schema without a migration (Phase 5 will add a
+  # dedicated organization_id column).
   defp persist_ets_stats_to_db do
     try do
-      count = :ets.foldl(fn {{entity_type, entity_id, feature}, stats}, acc ->
-        key = "#{entity_type}:#{entity_id}:#{feature}"
-        data = %{
-          "count" => stats.count,
-          "mean" => stats.mean,
-          "m2" => stats.m2,
-          "min_val" => stats.min_val,
-          "max_val" => stats.max_val
-        }
+      count = :ets.foldl(fn
+        {{org_id, entity_type, entity_id, feature}, stats}, acc ->
+          scoped = scoped_entity_id(org_id, entity_id)
+          key = "#{entity_type}:#{scoped}:#{feature}"
+          data = %{
+            "organization_id" => org_id,
+            "count" => stats.count,
+            "mean" => stats.mean,
+            "m2" => stats.m2,
+            "min_val" => stats.min_val,
+            "max_val" => stats.max_val
+          }
 
-        upsert_baseline(:online_stats, key, data)
-        acc + 1
+          upsert_baseline(:online_stats, key, data)
+          acc + 1
+
+        _, acc ->
+          # Defensive: skip legacy untupled rows if any exist mid-rollout.
+          acc
       end, 0, @stats_table)
 
-      # Also persist adaptive thresholds
-      :ets.foldl(fn {{entity_type, feature}, {threshold_z, fp, tp}}, _acc ->
-        key = "threshold:#{entity_type}:#{feature}"
-        upsert_baseline(:adaptive_threshold, key, %{
-          "threshold_z" => threshold_z,
-          "fp_count" => fp,
-          "tp_count" => tp
-        })
+      # Also persist adaptive thresholds (org-scoped key)
+      :ets.foldl(fn
+        {{org_id, entity_type, feature}, {threshold_z, fp, tp}}, _acc ->
+          scoped = scoped_entity_id(org_id, to_string(feature))
+          key = "threshold:#{entity_type}:#{scoped}"
+          upsert_baseline(:adaptive_threshold, key, %{
+            "organization_id" => org_id,
+            "threshold_z" => threshold_z,
+            "fp_count" => fp,
+            "tp_count" => tp
+          })
+
+        _, acc ->
+          acc
       end, :ok, @thresholds_table)
 
       Logger.debug("[Behavioral] Persisted #{count} online stats and thresholds to DB")
@@ -3743,14 +4027,19 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Dashboard Stats Publishing
   # ============================================================================
 
+  # Phase 2: profile maps are org-nested %{org_id => %{entity_id => profile}},
+  # so we sum the inner map sizes across orgs to keep the dashboard counts
+  # consistent with the pre-Phase-2 semantics ("how many distinct entities are
+  # being tracked across the deployment").
   defp publish_dashboard_stats(state) do
     stats = %{
       events_processed: state.events_processed,
       anomalies_detected: state.anomalies_detected,
       alerts_created: state.alerts_created,
-      user_profiles: map_size(state.user_profiles),
-      process_profiles: map_size(state.process_profiles),
-      host_profiles: map_size(state.host_profiles),
+      user_profiles: sum_nested_profile_count(state.user_profiles),
+      process_profiles: sum_nested_profile_count(state.process_profiles),
+      host_profiles: sum_nested_profile_count(state.host_profiles),
+      tracked_orgs: state.user_profiles |> Map.keys() |> length(),
       ets_stats: dashboard_summary(),
       uptime_seconds: System.monotonic_time(:second) - state.started_at
     }
@@ -3763,6 +4052,14 @@ defmodule TamanduaServer.Detection.Behavioral do
   rescue
     _ -> :ok
   end
+
+  defp sum_nested_profile_count(nested) when is_map(nested) do
+    Enum.reduce(nested, 0, fn
+      {_org_id, inner}, acc when is_map(inner) -> acc + map_size(inner)
+      {_org_id, _}, acc -> acc
+    end)
+  end
+  defp sum_nested_profile_count(_), do: 0
 
   # ============================================================================
   # Helper Functions
@@ -3928,10 +4225,12 @@ defmodule TamanduaServer.Detection.Behavioral do
     @earth_radius_km * c
   end
 
-  defp check_impossible_travel(user, source_ip, state) when is_binary(user) and is_binary(source_ip) do
+  # Phase 2: last_login_locations is keyed {org_id, user} so a user that exists
+  # in two tenants is tracked independently per tenant.
+  defp check_impossible_travel(user, source_ip, org_id, state) when is_binary(user) and is_binary(source_ip) do
     speed_threshold = Config.impossible_travel_speed_kmh()
 
-    case Map.get(state.last_login_locations, user) do
+    case Map.get(state.last_login_locations, {org_id, user}) do
       nil ->
         []
 
@@ -3984,13 +4283,14 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
-  defp check_impossible_travel(_, _, _), do: []
+  defp check_impossible_travel(_, _, _, _), do: []
 
-  defp update_last_login_location(state, user, source_ip) do
+  # Phase 2: last_login_locations is keyed {org_id, user}.
+  defp update_last_login_location(state, org_id, user, source_ip) do
     case geoip_lookup(source_ip) do
       {:ok, %{lat: lat, lon: lon}} ->
         location = %{ip: source_ip, lat: lat, lon: lon, timestamp: DateTime.utc_now()}
-        %{state | last_login_locations: Map.put(state.last_login_locations, user, location)}
+        %{state | last_login_locations: Map.put(state.last_login_locations, {org_id, user}, location)}
 
       _ ->
         state

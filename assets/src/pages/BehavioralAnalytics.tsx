@@ -1,47 +1,50 @@
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
-  BarChart3,
-  TrendingUp,
-  TrendingDown,
-  AlertTriangle,
-  AlertCircle,
-  User,
-  Users,
-  Monitor,
-  Clock,
   Activity,
-  Shield,
-  ChevronRight,
-  ChevronDown,
-  Filter,
-  Search,
-  Target,
-  Zap,
-  Eye,
-  ArrowUp,
+  AlertCircle,
+  AlertTriangle,
   ArrowDown,
-  Minus,
-  RefreshCw,
-  Settings,
-  XCircle,
-  Plus,
-  Network,
-  Key,
-  MoveHorizontal,
-  Database,
-  ShieldAlert,
-  MapPin,
-  Calendar,
-  Layers,
-  GitBranch,
-  ExternalLink,
-  Download,
+  ArrowUp,
+  BarChart3,
   Bell,
   BellOff,
-  Play,
+  Calendar,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Database,
+  Download,
+  ExternalLink,
+  Eye,
+  Filter,
+  GitBranch,
+  Info,
+  Key,
+  Layers,
+  MapPin,
+  Minus,
+  Monitor,
+  MoveHorizontal,
+  Network,
   Pause,
+  Play,
+  Plus,
+  PlugZap,
+  RefreshCw,
+  Search,
+  Settings,
+  Shield,
+  ShieldAlert,
+  Target,
+  TrendingDown,
+  TrendingUp,
+  User,
+  Users,
+  XCircle,
+  Zap,
 } from 'lucide-react'
+import { Tooltip } from '@/components/ui/baseui/Tooltip'
 import { cn, formatDate } from '@/lib/utils'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useDashboardChannel, getConnectionStatusColor, getConnectionStatusText } from '@/hooks/useSocket'
@@ -482,6 +485,19 @@ export default function BehavioralAnalytics({
         avgRiskScore: 0,
       }
 
+  // Derived honest-empty-state signal: when every UEBA metric is 0 the page is
+  // not broken, it is simply waiting for connected agents to emit telemetry that
+  // crosses the deterministic baselines. We use this to swap zeros for honest
+  // "Awaiting telemetry" badges rather than presenting raw 0s as live data.
+  const awaitingTelemetry =
+    !loadError &&
+    displayStats.totalEntities === 0 &&
+    displayStats.anomalies24h === 0 &&
+    displayStats.criticalCount === 0 &&
+    displayStats.highCount === 0 &&
+    highRiskEntities.length === 0 &&
+    anomalies.length === 0
+
   // ============================================================================
   // Render
   // ============================================================================
@@ -532,6 +548,57 @@ export default function BehavioralAnalytics({
           </div>
         </div>
 
+        {/* Load Error Banner — surfaced at top so operators do not interpret a
+            silent backend failure as "no telemetry yet". */}
+        {loadError && (
+          <div
+            className="flex items-start gap-3 p-3 rounded-lg"
+            style={{
+              backgroundColor: 'var(--crit-bg)',
+              border: '1px solid var(--crit)',
+              color: 'var(--fg)',
+            }}
+            role="alert"
+          >
+            <AlertTriangle className="h-5 w-5 mt-0.5 flex-shrink-0" style={{ color: 'var(--crit)' }} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold" style={{ color: 'var(--crit)' }}>
+                Failed to load behavioral analytics
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                {loadError}
+              </p>
+            </div>
+            <button
+              onClick={loadData}
+              className="px-3 py-1.5 rounded text-xs font-medium"
+              style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg)', border: '1px solid var(--border)' }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Connection State Banner — when the live socket is not connected, the
+            page is still functional via polling but real-time updates are
+            paused. Surface this so the operator does not assume the dashboard
+            is hung. */}
+        {connectionState !== 'connected' && (
+          <div
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+            style={{
+              backgroundColor: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--muted)',
+            }}
+          >
+            <PlugZap className="h-4 w-4" style={{ color: 'var(--high)' }} />
+            <span>
+              Live updates paused — {getConnectionStatusText(connectionState).toLowerCase()}. Polling fallback is active.
+            </span>
+          </div>
+        )}
+
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <StatCard
@@ -539,6 +606,7 @@ export default function BehavioralAnalytics({
             label="Monitored Entities"
             value={displayStats.totalEntities}
             color="primary"
+            awaitingTelemetry={awaitingTelemetry}
           />
           <StatCard
             icon={AlertTriangle}
@@ -546,24 +614,28 @@ export default function BehavioralAnalytics({
             value={displayStats.anomalies24h}
             color="yellow"
             trend={statistics?.trending.risk_increasing || 0}
+            awaitingTelemetry={awaitingTelemetry}
           />
           <StatCard
             icon={Shield}
             label="Critical"
             value={displayStats.criticalCount}
             color="red"
+            awaitingTelemetry={awaitingTelemetry}
           />
           <StatCard
             icon={ShieldAlert}
             label="High Risk"
             value={displayStats.highCount}
             color="orange"
+            awaitingTelemetry={awaitingTelemetry}
           />
           <StatCard
             icon={Target}
             label="Avg Risk Score"
             value={displayStats.avgRiskScore}
             color="blue"
+            awaitingTelemetry={awaitingTelemetry}
           />
         </div>
 
@@ -625,20 +697,7 @@ export default function BehavioralAnalytics({
           </div>
         )}
 
-        {/* Error State */}
-        {loadError && (
-          <div className="flex flex-col items-center justify-center h-64" style={{ color: 'var(--muted)' }}>
-            <AlertCircle className="w-12 h-12 mb-3" style={{ color: 'var(--crit)' }} />
-            <p className="text-sm">{loadError}</p>
-            <button
-              onClick={loadData}
-              className="mt-3 px-4 py-2 rounded text-sm"
-              style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg)' }}
-            >
-              Retry
-            </button>
-          </div>
-        )}
+        {/* Error State — see top banner; intentionally not duplicated here. */}
 
         {/* Tab Content */}
         {!loadError && activeTab === 'overview' && (
@@ -714,9 +773,17 @@ interface StatCardProps {
   value: number
   color: 'primary' | 'yellow' | 'red' | 'purple' | 'blue' | 'orange' | 'green'
   trend?: number
+  /**
+   * When true and value === 0, render a subtle "Awaiting telemetry" badge under
+   * the number with a tooltip explaining why the metric is zero. UEBA baselines
+   * only populate once connected agents emit enough events to cross the
+   * deterministic z-score thresholds in `Detection.Baseline`, so a fresh
+   * tenant legitimately sees zeros — the badge differentiates that from a bug.
+   */
+  awaitingTelemetry?: boolean
 }
 
-function StatCard({ icon: Icon, label, value, color, trend }: StatCardProps) {
+function StatCard({ icon: Icon, label, value, color, trend, awaitingTelemetry }: StatCardProps) {
   const colorStyles: Record<string, { bg: string; text: string }> = {
     primary: { bg: 'var(--emerald-glow)', text: 'var(--emerald-400)' },
     yellow: { bg: 'var(--high-bg)', text: 'var(--high)' },
@@ -728,6 +795,7 @@ function StatCard({ icon: Icon, label, value, color, trend }: StatCardProps) {
   }
 
   const styles = colorStyles[color]
+  const showAwaiting = awaitingTelemetry && value === 0
 
   return (
     <div className="card-sentinel">
@@ -751,7 +819,79 @@ function StatCard({ icon: Icon, label, value, color, trend }: StatCardProps) {
       <div className="mt-3">
         <span className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>{value.toLocaleString()}</span>
         <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>{label}</p>
+        {showAwaiting && (
+          <Tooltip
+            content="UEBA baselines populate once connected agents emit enough telemetry to cross the deterministic z-score thresholds. Without agents reporting, this stays at 0."
+            side="bottom"
+          >
+            <span
+              className="inline-flex items-center gap-1 mt-2 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider"
+              style={{
+                backgroundColor: 'var(--surface-2)',
+                border: '1px solid var(--border)',
+                color: 'var(--subtle)',
+              }}
+            >
+              <Info className="h-3 w-3" />
+              Awaiting telemetry
+            </span>
+          </Tooltip>
+        )}
       </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// Empty State Helper
+// ============================================================================
+
+interface EmptyStateProps {
+  icon: React.ElementType
+  title: string
+  description: string
+  ctaLabel?: string
+  ctaHref?: string
+  compact?: boolean
+}
+
+/**
+ * Honest empty-state card used when a UEBA section has no data because no
+ * agents are emitting telemetry yet (rather than because the query failed).
+ * Differentiates "fresh tenant, working as intended" from "broken backend".
+ */
+function EmptyState({ icon: Icon, title, description, ctaLabel, ctaHref, compact }: EmptyStateProps) {
+  return (
+    <div
+      className={cn('flex flex-col items-center justify-center text-center', compact ? 'p-6' : 'p-8')}
+      style={{ color: 'var(--muted)' }}
+    >
+      <div
+        className="p-3 rounded-full mb-3"
+        style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)' }}
+      >
+        <Icon className={cn(compact ? 'h-6 w-6' : 'h-8 w-8')} style={{ color: 'var(--subtle)' }} />
+      </div>
+      <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--fg)' }}>
+        {title}
+      </h3>
+      <p className="text-xs max-w-md" style={{ color: 'var(--subtle)' }}>
+        {description}
+      </p>
+      {ctaLabel && ctaHref && (
+        <a
+          href={ctaHref}
+          className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+          style={{
+            backgroundColor: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            color: 'var(--emerald-400)',
+          }}
+        >
+          {ctaLabel}
+          <ChevronRight className="h-3 w-3" />
+        </a>
+      )}
     </div>
   )
 }
@@ -780,44 +920,52 @@ function OverviewTab({ statistics, riskTrends, highRiskEntities, anomalies, onEn
           </div>
         </div>
         <div className="p-4">
-          {riskTrends.length > 0 ? (
-            <div className="space-y-4">
-              {/* Simple bar chart visualization */}
-              <div className="flex items-end gap-1 h-32">
-                {riskTrends.slice(-24).map((point, idx) => {
-                  const height = Math.max(4, (point.avg_risk_score / 100) * 100)
-                  const maxHeight = Math.max(4, (point.max_risk_score / 100) * 100)
-                  const barColor = point.max_risk_score >= 90
-                    ? 'var(--crit)'
-                    : point.max_risk_score >= 75
-                    ? 'var(--high)'
-                    : point.max_risk_score >= 50
-                    ? 'var(--med)'
-                    : 'var(--emerald-400)'
-                  return (
-                    <div
-                      key={idx}
-                      className="flex-1 flex flex-col items-center gap-1"
-                      title={`${point.avg_risk_score.toFixed(1)} avg, ${point.max_risk_score} max`}
-                    >
-                      <div
-                        className="w-full rounded-t transition-all"
-                        style={{ height: `${maxHeight}%`, backgroundColor: barColor }}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="flex items-center justify-between text-xs" style={{ color: 'var(--subtle)' }}>
-                <span>Older</span>
-                <span>Recent</span>
-              </div>
-            </div>
-          ) : (
-            <div className="h-32 flex items-center justify-center" style={{ color: 'var(--subtle)' }}>
-              No trend data available
-            </div>
-          )}
+          {(() => {
+            const hasTrendSignal = riskTrends.length > 0 && riskTrends.some((p) => p.max_risk_score > 0 || p.avg_risk_score > 0)
+            if (hasTrendSignal) {
+              return (
+                <div className="space-y-4">
+                  {/* Simple bar chart visualization */}
+                  <div className="flex items-end gap-1 h-32">
+                    {riskTrends.slice(-24).map((point, idx) => {
+                      const maxHeight = Math.max(4, (point.max_risk_score / 100) * 100)
+                      const barColor = point.max_risk_score >= 90
+                        ? 'var(--crit)'
+                        : point.max_risk_score >= 75
+                        ? 'var(--high)'
+                        : point.max_risk_score >= 50
+                        ? 'var(--med)'
+                        : 'var(--emerald-400)'
+                      return (
+                        <div
+                          key={idx}
+                          className="flex-1 flex flex-col items-center gap-1"
+                          title={`${point.avg_risk_score.toFixed(1)} avg, ${point.max_risk_score} max`}
+                        >
+                          <div
+                            className="w-full rounded-t transition-all"
+                            style={{ height: `${maxHeight}%`, backgroundColor: barColor }}
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="flex items-center justify-between text-xs" style={{ color: 'var(--subtle)' }}>
+                    <span>Older</span>
+                    <span>Recent</span>
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <EmptyState
+                icon={TrendingUp}
+                title="No risk trend data"
+                description="Risk trends accumulate once agents stream telemetry and the baseline learner has enough samples to score deviations. Connect an agent to start populating this chart."
+                compact
+              />
+            )
+          })()}
         </div>
       </div>
 
@@ -891,7 +1039,14 @@ function OverviewTab({ statistics, riskTrends, highRiskEntities, anomalies, onEn
             )
           })}
           {highRiskEntities.length === 0 && (
-            <div className="p-4 text-sm text-center" style={{ color: 'var(--subtle)' }}>No high-risk entities</div>
+            <EmptyState
+              icon={Shield}
+              title="No high-risk entities detected"
+              description="Behavioral baselines learn from agent telemetry. Without connected agents emitting events, this view stays empty."
+              ctaLabel="Manage agents"
+              ctaHref="/app/agents"
+              compact
+            />
           )}
         </div>
       </div>
@@ -938,7 +1093,14 @@ function OverviewTab({ statistics, riskTrends, highRiskEntities, anomalies, onEn
             )
           })}
           {anomalies.length === 0 && (
-            <div className="p-4 text-sm text-center" style={{ color: 'var(--subtle)' }}>No recent anomalies</div>
+            <EmptyState
+              icon={AlertTriangle}
+              title="No anomalies detected yet"
+              description="Behavioral analysis requires a baseline of events per entity before deviations are scored. Check the Agents page to verify telemetry flow."
+              ctaLabel="Check agents"
+              ctaHref="/app/agents"
+              compact
+            />
           )}
         </div>
       </div>
@@ -963,6 +1125,21 @@ function CategoriesTab({ categories, onEntitySelect }: CategoriesTabProps) {
       <div className="text-center py-8" style={{ color: 'var(--subtle)' }}>
         <Activity className="h-12 w-12 mx-auto mb-4 opacity-50" />
         <p>Loading detection categories...</p>
+      </div>
+    )
+  }
+
+  const totalCategoryDetections = Object.values(categories).reduce((sum, c) => sum + (c.count || 0), 0)
+  if (totalCategoryDetections === 0) {
+    return (
+      <div className="card-sentinel">
+        <EmptyState
+          icon={Layers}
+          title="No detection categories populated"
+          description="Detection categories aggregate behavioral anomalies by MITRE ATT&CK technique. Once agents emit telemetry and baselines learn what's normal, deviations will show up here grouped by category."
+          ctaLabel="Manage agents"
+          ctaHref="/app/agents"
+        />
       </div>
     )
   }
@@ -1189,7 +1366,17 @@ function EntitiesTab({ entities, highRiskEntities, onEntitySelect }: EntitiesTab
           </tbody>
         </table>
         {filteredEntities.length === 0 && (
-          <div className="p-8 text-center" style={{ color: 'var(--subtle)' }}>No entities found</div>
+          <EmptyState
+            icon={Users}
+            title={allEntities.length === 0 ? 'No entity profiles yet' : 'No entities match your filters'}
+            description={
+              allEntities.length === 0
+                ? 'Entity profiles are built from user, host, and process activity reported by connected agents. Once agents emit telemetry, profiles will appear here.'
+                : 'Try clearing the search box or switching the type filter to "All Types".'
+            }
+            ctaLabel={allEntities.length === 0 ? 'Manage agents' : undefined}
+            ctaHref={allEntities.length === 0 ? '/app/agents' : undefined}
+          />
         )}
       </div>
     </div>
@@ -1214,9 +1401,14 @@ interface HeatmapTabProps {
 function HeatmapTab({ heatmapData, timeRange, onEntitySelect }: HeatmapTabProps) {
   if (!heatmapData || heatmapData.heatmap.length === 0) {
     return (
-      <div className="card-sentinel p-8 text-center">
-        <Activity className="h-12 w-12 mx-auto mb-4 opacity-50" style={{ color: 'var(--subtle)' }} />
-        <p style={{ color: 'var(--subtle)' }}>No heatmap data available for this time range</p>
+      <div className="card-sentinel">
+        <EmptyState
+          icon={Activity}
+          title="No heatmap data for this time range"
+          description="The heatmap renders anomaly density per entity per time bucket. Without agent telemetry crossing the baseline thresholds in this window, there are no cells to draw."
+          ctaLabel="Manage agents"
+          ctaHref="/app/agents"
+        />
       </div>
     )
   }

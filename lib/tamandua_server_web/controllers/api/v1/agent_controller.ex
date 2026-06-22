@@ -16,6 +16,12 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
   @live_presence_stale_after_ms :timer.seconds(120)
 
+  # Pagination defaults for index/2 to prevent unbounded responses.
+  # @default_per_page mirrors the existing list-endpoint convention across
+  # AlertController; @max_per_page is the hard ceiling for clients.
+  @default_per_page 50
+  @max_per_page 200
+
   action_fallback(TamanduaServerWeb.FallbackController)
 
   # RBAC on destructive/state-changing agent actions. Org membership alone is
@@ -35,13 +41,19 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   def index(conn, params) do
     org_id = conn.assigns[:current_organization_id]
 
-    agents =
+    filtered =
       org_id
       |> Agents.list_all_for_org()
       |> filter_agents(params)
-      |> paginate_agents(params)
 
-    json(conn, %{data: Enum.map(agents, &serialize/1)})
+    total = length(filtered)
+    {limit, offset} = pagination_params(params)
+    page = filtered |> Enum.drop(offset) |> Enum.take(limit)
+
+    json(conn, %{
+      data: Enum.map(page, &serialize/1),
+      meta: %{total: total, limit: limit, offset: offset}
+    })
   end
 
   def data_sources_health(conn, params) do
@@ -846,13 +858,18 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     end)
   end
 
-  defp paginate_agents(agents, params) do
-    offset = parse_int(params["offset"], 0)
-    limit = parse_int(params["limit"], length(agents))
+  # Clamps client-supplied limit/offset so /agents cannot return an unbounded
+  # response. Defaults each page to @default_per_page; absolute ceiling is
+  # @max_per_page.
+  defp pagination_params(params) do
+    limit =
+      params["limit"]
+      |> parse_int(@default_per_page)
+      |> max(1)
+      |> min(@max_per_page)
 
-    agents
-    |> Enum.drop(max(offset, 0))
-    |> Enum.take(max(limit, 1))
+    offset = params["offset"] |> parse_int(0) |> max(0)
+    {limit, offset}
   end
 
   defp derive_collectors(events, config) do

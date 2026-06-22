@@ -1799,8 +1799,8 @@ defmodule TamanduaServerWeb.InertiaController do
           timestamp: format_datetime(event.timestamp),
           severity: event.severity || infer_severity(event.event_type),
           hostname: Map.get(agent_hostname_map, event.agent_id, "Unknown"),
-          payload: payload,
-          enrichment: event.enrichment || %{},
+          payload: json_safe(payload),
+          enrichment: json_safe(event.enrichment || %{}),
           summary: build_event_summary(event.event_type, payload)
         }
       end)
@@ -2319,38 +2319,45 @@ defmodule TamanduaServerWeb.InertiaController do
         _ -> 1440
       end
 
-    # Get correlated incidents from alerts
-    # Auto-correlate recent alerts into potential incidents
+    # Keep the initial page load cheap. Expensive correlation is available via
+    # /api/v1/timeline and /api/v1/timeline/correlate after the UI mounts.
     incidents =
-      try do
+      if params["include_incidents"] in ["true", true] do
         clusters =
           if is_nil(org_id) do
             []
           else
             Detection.Timeline.auto_correlate_alerts(org_id,
               time_window_minutes: time_window_minutes,
-              limit: 100
+              limit: 25
             )
           end
 
         case clusters do
           clusters when is_list(clusters) ->
-            Enum.map(clusters, fn alert_cluster ->
-              alert_ids = Enum.map(alert_cluster, & &1.id)
-              incident = Detection.Timeline.build_incident(alert_ids)
-              serialize_incident(incident, alert_cluster)
+            clusters
+            |> Enum.take(10)
+            |> Enum.flat_map(fn alert_cluster ->
+              try do
+                alert_ids = Enum.map(alert_cluster, & &1.id)
+                incident = Detection.Timeline.build_incident(alert_ids)
+                [serialize_incident(incident, alert_cluster)]
+              rescue
+                e ->
+                  Logger.warning("Timeline incident serialization failed: #{Exception.message(e)}")
+                  []
+              catch
+                :exit, reason ->
+                  Logger.warning("Timeline incident serialization failed: exit #{inspect(reason)}")
+                  []
+              end
             end)
 
           _ ->
             []
         end
-      rescue
-        e ->
-          Logger.warning(
-            "Timeline auto-correlation unavailable in lab light: #{Exception.message(e)}"
-          )
-
-          []
+      else
+        []
       end
 
     # Build filters
@@ -2372,7 +2379,7 @@ defmodule TamanduaServerWeb.InertiaController do
       try do
         alias TamanduaServer.Telemetry
 
-        Telemetry.list_events(%{limit: 200})
+        Telemetry.list_events(%{limit: 75})
         |> Enum.map(fn event ->
           payload = event.payload || %{}
 
@@ -2384,12 +2391,16 @@ defmodule TamanduaServerWeb.InertiaController do
             severity: to_string(Map.get(event, :severity, "info")),
             summary: build_event_summary(event.event_type, payload),
             hostname: Map.get(agent_hostnames, event.agent_id, "Unknown"),
-            payload: payload
+            payload: json_safe(payload)
           }
         end)
       rescue
         e ->
           Logger.warning("Failed to build timeline events: #{Exception.message(e)}")
+          []
+      catch
+        :exit, reason ->
+          Logger.warning("Failed to build timeline events: exit #{inspect(reason)}")
           []
       end
 
@@ -3498,79 +3509,103 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Behavioral Analytics
   def behavioral_analytics(conn, _params) do
-    current_user = conn.assigns[:current_user]
-    org_id = current_user && current_user.organization_id
+    # Phase 3 tenant-scoping: prefer the assigns set by SetOrganizationContext,
+    # fall back to current_user.organization_id, and finally render an honest
+    # zero-state if neither is present (Inertia hydrators must be resilient and
+    # never crash the page on missing org context).
+    org_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
 
-    # The Behavioral module uses a GenServer for state
-    # We can get profiles through its API
-    # Since there's no list_entities, we build entity list from agents
-    agents = list_agents_for_dashboard(org_id)
-
-    entities =
-      Enum.map(agents, fn agent ->
-        # Try to get risk score for each agent/user
-        user_risk = safe_behavioral_risk_score(:user, agent.hostname)
-        host_risk = safe_behavioral_risk_score(:host, agent.hostname)
-
-        %{
-          id: Map.get(agent, :id) || Map.get(agent, :agent_id),
-          name: agent.hostname,
-          type: "host",
-          userRiskScore: user_risk,
-          hostRiskScore: host_risk,
-          lastSeen: format_datetime(Map.get(agent, :last_seen_at) || Map.get(agent, :updated_at))
+    if is_nil(org_id) do
+      render_inertia(conn, "BehavioralAnalytics", %{
+        page_title: "Behavioral Analytics",
+        entities: [],
+        anomalies: [],
+        baselines: %{
+          updateInterval: "1 hour",
+          lastUpdate: format_datetime(DateTime.utc_now()),
+          profileCount: 0
+        },
+        stats: %{
+          totalEntities: 0,
+          highRiskEntities: 0,
+          anomaliesDetected: 0,
+          riskScoreThreshold: 75
         }
-      end)
+      })
+    else
+      # The Behavioral module uses a GenServer for state
+      # We can get profiles through its API
+      # Since there's no list_entities, we build entity list from agents
+      agents = list_agents_for_dashboard(org_id)
 
-    # Get behavioral anomaly alerts from the Alerts system
-    # Behavioral anomalies create alerts when detected - filter by behavioral patterns
-    anomalies =
-      safe_behavioral_alerts()
-      |> Enum.filter(fn alert ->
-        title = String.downcase(alert.title || "")
+      entities =
+        Enum.map(agents, fn agent ->
+          # Try to get risk score for each agent/user
+          user_risk = safe_behavioral_risk_score(org_id, :user, agent.hostname)
+          host_risk = safe_behavioral_risk_score(org_id, :host, agent.hostname)
 
-        String.contains?(title, ["behavioral", "anomaly", "unusual"]) or
-          Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1078"))
-      end)
-      |> Enum.take(50)
-      |> Enum.map(fn alert ->
-        %{
-          id: alert.id,
-          type: detect_anomaly_type(alert),
-          entityId: alert.agent_id,
-          entityType: "host",
-          description: alert.description,
-          riskScore: severity_to_risk_score(alert.severity),
-          deviationScore: 0.0,
-          baselineValue: nil,
-          observedValue: nil,
-          mitreTechniques: alert.mitre_techniques || [],
-          detectedAt: format_datetime(alert.inserted_at)
+          %{
+            id: Map.get(agent, :id) || Map.get(agent, :agent_id),
+            name: agent.hostname,
+            type: "host",
+            userRiskScore: user_risk,
+            hostRiskScore: host_risk,
+            lastSeen: format_datetime(Map.get(agent, :last_seen_at) || Map.get(agent, :updated_at))
+          }
+        end)
+
+      # Get behavioral anomaly alerts from the Alerts system, org-scoped.
+      # Behavioral anomalies create alerts when detected - filter by behavioral patterns.
+      anomalies =
+        safe_behavioral_alerts(org_id)
+        |> Enum.filter(fn alert ->
+          title = String.downcase(alert.title || "")
+
+          String.contains?(title, ["behavioral", "anomaly", "unusual"]) or
+            Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1078"))
+        end)
+        |> Enum.take(50)
+        |> Enum.map(fn alert ->
+          %{
+            id: alert.id,
+            type: detect_anomaly_type(alert),
+            entityId: alert.agent_id,
+            entityType: "host",
+            description: alert.description,
+            riskScore: severity_to_risk_score(alert.severity),
+            deviationScore: 0.0,
+            baselineValue: nil,
+            observedValue: nil,
+            mitreTechniques: alert.mitre_techniques || [],
+            detectedAt: format_datetime(alert.inserted_at)
+          }
+        end)
+
+      render_inertia(conn, "BehavioralAnalytics", %{
+        page_title: "Behavioral Analytics",
+        entities: entities,
+        anomalies: anomalies,
+        baselines: %{
+          updateInterval: "1 hour",
+          lastUpdate: format_datetime(DateTime.utc_now()),
+          profileCount: length(agents)
+        },
+        stats: %{
+          totalEntities: length(entities),
+          highRiskEntities:
+            Enum.count(entities, fn e -> (e.userRiskScore || 0) + (e.hostRiskScore || 0) > 50 end),
+          anomaliesDetected: length(anomalies),
+          riskScoreThreshold: 75
         }
-      end)
-
-    render_inertia(conn, "BehavioralAnalytics", %{
-      page_title: "Behavioral Analytics",
-      entities: entities,
-      anomalies: anomalies,
-      baselines: %{
-        updateInterval: "1 hour",
-        lastUpdate: format_datetime(DateTime.utc_now()),
-        profileCount: length(agents)
-      },
-      stats: %{
-        totalEntities: length(entities),
-        highRiskEntities:
-          Enum.count(entities, fn e -> (e.userRiskScore || 0) + (e.hostRiskScore || 0) > 50 end),
-        anomaliesDetected: length(anomalies),
-        riskScoreThreshold: 75
-      }
-    })
+      })
+    end
   end
 
-  defp safe_behavioral_risk_score(entity_type, entity_id) do
+  defp safe_behavioral_risk_score(org_id, entity_type, entity_id) do
     try do
-      case Detection.Behavioral.get_risk_score(entity_type, entity_id) do
+      case Detection.Behavioral.get_risk_score(org_id, entity_type, entity_id) do
         {:ok, score} when is_number(score) -> score
         _ -> 0
       end
@@ -3581,9 +3616,9 @@ defmodule TamanduaServerWeb.InertiaController do
     end
   end
 
-  defp safe_behavioral_alerts do
+  defp safe_behavioral_alerts(org_id) do
     try do
-      Alerts.list_alerts(%{})
+      Alerts.list_alerts_for_org(org_id, limit: 200)
     catch
       :exit, _ -> []
     rescue
@@ -8957,8 +8992,52 @@ defmodule TamanduaServerWeb.InertiaController do
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   defp format_datetime(unix_ms) when is_integer(unix_ms) do
-    DateTime.from_unix!(unix_ms, :millisecond) |> DateTime.to_iso8601()
+    case DateTime.from_unix(unix_ms, :millisecond) do
+      {:ok, datetime} -> DateTime.to_iso8601(datetime)
+      {:error, _} -> nil
+    end
   end
+
+  defp format_datetime(_), do: nil
+
+  defp json_safe(value), do: json_safe(value, 0)
+
+  defp json_safe(_value, depth) when depth > 6, do: nil
+  defp json_safe(nil, _depth), do: nil
+  defp json_safe(value, _depth) when is_boolean(value) or is_number(value), do: value
+
+  defp json_safe(value, _depth) when is_binary(value) do
+    if String.length(value) > 4_096 do
+      String.slice(value, 0, 4_096) <> "...[truncated]"
+    else
+      value
+    end
+  end
+
+  defp json_safe(%DateTime{} = value, _depth), do: DateTime.to_iso8601(value)
+  defp json_safe(%NaiveDateTime{} = value, _depth), do: NaiveDateTime.to_iso8601(value)
+  defp json_safe(%Decimal{} = value, _depth), do: Decimal.to_string(value)
+
+  defp json_safe(value, depth) when is_list(value) do
+    value
+    |> Enum.take(100)
+    |> Enum.map(&json_safe(&1, depth + 1))
+  end
+
+  defp json_safe(value, depth) when is_map(value) do
+    value
+    |> Enum.take(100)
+    |> Enum.reduce(%{}, fn {key, item}, acc ->
+      Map.put(acc, json_key(key), json_safe(item, depth + 1))
+    end)
+  end
+
+  defp json_safe(value, _depth) when is_atom(value), do: Atom.to_string(value)
+  defp json_safe(value, _depth), do: inspect(value, limit: 20)
+
+  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_key(key) when is_binary(key), do: key
+  defp json_key(key), do: to_string(key)
 
   defp serialize_process_node(node) do
     %{

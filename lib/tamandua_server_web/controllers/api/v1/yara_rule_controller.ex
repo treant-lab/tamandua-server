@@ -6,18 +6,38 @@ defmodule TamanduaServerWeb.API.V1.YaraRuleController do
   alias TamanduaServer.Detection.YaraScanner
   alias TamanduaServer.Detection.YaraGenerator
 
+  # Pagination defaults for /yara-rules. The merged response combines DB
+  # rules + builtin file-backed rules so clamping happens at the controller
+  # level (the DB query alone cannot bound the response). Mirrors
+  # AgentController / SigmaRuleController / AlertController.
+  @default_per_page 50
+  @max_per_page 200
+
   action_fallback TamanduaServerWeb.FallbackController
 
   def index(conn, params) do
-    filters = %{
+    {limit, offset} = pagination_params(params)
+
+    base_filters = %{
       enabled: params["enabled"],
       category: params["category"]
     }
 
-    database_rules = Rules.list_yara_rules(filters) |> Enum.map(&serialize/1)
-    builtin_rules = list_builtin_file_rules(filters)
+    # YARA rules come from two sources (Postgres + builtin .yar files on disk).
+    # We materialize both, concatenate DB-first to preserve existing ordering,
+    # then page in memory. Total rule counts are O(hundreds), so in-memory
+    # pagination is acceptable here.
+    database_rules = Rules.list_yara_rules(base_filters) |> Enum.map(&serialize/1)
+    builtin_rules = list_builtin_file_rules(base_filters)
 
-    json(conn, %{data: database_rules ++ builtin_rules})
+    all_rules = database_rules ++ builtin_rules
+    total = length(all_rules)
+    page = all_rules |> Enum.drop(offset) |> Enum.take(limit)
+
+    json(conn, %{
+      data: page,
+      meta: %{total: total, limit: limit, offset: offset}
+    })
   end
 
   def show(conn, %{"id" => id}) do
@@ -540,4 +560,28 @@ defmodule TamanduaServerWeb.API.V1.YaraRuleController do
     end
   end
   defp parse_limit(_), do: 100
+
+  # Clamps client-supplied limit/offset on /yara-rules. Distinct from
+  # `parse_limit/1` above (which serves list_generated/2 with its own ceiling
+  # of 500) so the public list endpoint gets its own conservative cap.
+  defp pagination_params(params) do
+    limit =
+      params["limit"]
+      |> parse_int(@default_per_page)
+      |> max(1)
+      |> min(@max_per_page)
+
+    offset = params["offset"] |> parse_int(0) |> max(0)
+    {limit, offset}
+  end
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
 end

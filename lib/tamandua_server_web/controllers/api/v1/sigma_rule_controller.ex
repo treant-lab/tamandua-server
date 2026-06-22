@@ -3,16 +3,30 @@ defmodule TamanduaServerWeb.API.V1.SigmaRuleController do
 
   alias TamanduaServer.Detection.Rules
 
+  # Pagination defaults for /sigma-rules to prevent unbounded responses on
+  # tenants with large rule sets. Mirrors AlertController / AgentController.
+  @default_per_page 50
+  @max_per_page 200
+
   action_fallback TamanduaServerWeb.FallbackController
 
   def index(conn, params) do
-    filters = %{
+    {limit, offset} = pagination_params(params)
+
+    base_filters = %{
       enabled: params["enabled"],
       category: params["category"]
     }
 
-    rules = Rules.list_sigma_rules(filters)
-    json(conn, %{data: Enum.map(rules, &serialize/1)})
+    list_filters = Map.merge(base_filters, %{limit: limit, offset: offset})
+
+    rules = Rules.list_sigma_rules(list_filters)
+    total = Rules.count_sigma_rules(base_filters)
+
+    json(conn, %{
+      data: Enum.map(rules, &serialize/1),
+      meta: %{total: total, limit: limit, offset: offset}
+    })
   end
 
   def show(conn, %{"id" => id}) do
@@ -122,4 +136,25 @@ defmodule TamanduaServerWeb.API.V1.SigmaRuleController do
       end)
     end)
   end
+
+  defp pagination_params(params) do
+    limit =
+      params["limit"]
+      |> parse_int(@default_per_page)
+      |> max(1)
+      |> min(@max_per_page)
+
+    offset = params["offset"] |> parse_int(0) |> max(0)
+    {limit, offset}
+  end
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
 end
