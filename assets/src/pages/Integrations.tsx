@@ -34,6 +34,7 @@ import {
   Search,
   FileText,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useState, useCallback, useEffect } from 'react'
 
@@ -338,62 +339,6 @@ function IntegrationHealthRow({ integration }: { integration: Integration }) {
   )
 }
 
-interface Toast {
-  id: number
-  type: 'success' | 'error'
-  message: string
-}
-
-function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
-  return (
-    <div className="fixed top-4 right-4 z-50 space-y-2">
-      {toasts.map((toast) => (
-        <div
-          key={toast.id}
-          className={cn(
-            'flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border min-w-[320px]',
-            toast.type === 'success'
-              ? 'badge-sentinel-success'
-              : 'badge-sentinel-error'
-          )}
-          style={{
-            background: toast.type === 'success' ? 'var(--emerald-glow)' : 'var(--crit-bg)',
-            borderColor: toast.type === 'success' ? 'var(--emerald-500)' : 'var(--crit)'
-          }}
-        >
-          {toast.type === 'success' ? (
-            <CheckCircle className="h-5 w-5" style={{ color: 'var(--emerald-400)' }} />
-          ) : (
-            <XCircle className="h-5 w-5" style={{ color: 'var(--crit)' }} />
-          )}
-          <span className="text-sm flex-1" style={{ color: 'var(--fg)' }}>{toast.message}</span>
-          <button onClick={() => onDismiss(toast.id)} style={{ color: 'var(--muted)' }} className="hover:opacity-80">
-            <XCircle className="h-4 w-4" />
-          </button>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function useToast() {
-  const [toasts, setToasts] = useState<Toast[]>([])
-
-  const addToast = useCallback((type: 'success' | 'error', message: string) => {
-    const id = Date.now() + Math.random()
-    setToasts((prev) => [...prev, { id, type, message }])
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, 5000)
-  }, [])
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id))
-  }, [])
-
-  return { toasts, addToast, dismissToast }
-}
-
 export default function Integrations({
   integrations = [],
   routingRules = [],
@@ -416,7 +361,6 @@ export default function Integrations({
   })
   const [healthData, setHealthData] = useState<HealthSummary | null>(healthSummary || null)
   const [refreshingHealth, setRefreshingHealth] = useState(false)
-  const { toasts, addToast, dismissToast } = useToast()
 
   // Auto-refresh health data every 30 seconds when on health tab
   useEffect(() => {
@@ -450,12 +394,12 @@ export default function Integrations({
       if (response.ok) {
         const data = await response.json()
         setHealthData(data)
-        addToast('success', 'Health data refreshed')
+        toast.success('Health data refreshed')
       } else {
-        addToast('error', 'Failed to refresh health data')
+        toast.error('Failed to refresh health data')
       }
     } catch {
-      addToast('error', 'Failed to refresh health data')
+      toast.error('Failed to refresh health data')
     } finally {
       setRefreshingHealth(false)
     }
@@ -482,13 +426,13 @@ export default function Integrations({
       })
 
       if (response.ok) {
-        addToast('success', 'Connection test successful')
+        toast.success('Connection test successful')
       } else {
         const data = await response.json()
-        addToast('error', data.error || 'Connection test failed')
+        toast.error(data.error || 'Connection test failed')
       }
     } catch {
-      addToast('error', 'Failed to test connection')
+      toast.error('Failed to test connection')
     }
   }
 
@@ -504,14 +448,14 @@ export default function Integrations({
       })
 
       if (response.ok) {
-        addToast('success', `Integration ${integration.enabled ? 'disabled' : 'enabled'}`)
+        toast.success(`Integration ${integration.enabled ? 'disabled' : 'enabled'}`)
         // Reload page to reflect changes
         window.location.reload()
       } else {
-        addToast('error', 'Failed to update integration')
+        toast.error('Failed to update integration')
       }
     } catch {
-      addToast('error', 'Failed to update integration')
+      toast.error('Failed to update integration')
     }
   }
 
@@ -525,13 +469,13 @@ export default function Integrations({
       })
 
       if (response.ok) {
-        addToast('success', 'Integration deleted')
+        toast.success('Integration deleted')
         window.location.reload()
       } else {
-        addToast('error', 'Failed to delete integration')
+        toast.error('Failed to delete integration')
       }
     } catch {
-      addToast('error', 'Failed to delete integration')
+      toast.error('Failed to delete integration')
     }
   }
 
@@ -545,7 +489,6 @@ export default function Integrations({
   return (
     <MainLayout title="Integrations">
       <Head title="Integrations - Tamandua EDR" />
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Stats Cards */}
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -1148,7 +1091,7 @@ export default function Integrations({
           onClose={() => setShowAddModal(false)}
           onSuccess={() => {
             setShowAddModal(false)
-            addToast('success', 'Integration added successfully')
+            toast.success('Integration added successfully')
             window.location.reload()
           }}
         />
@@ -1161,7 +1104,7 @@ export default function Integrations({
           onClose={() => setSelectedIntegration(null)}
           onSuccess={() => {
             setSelectedIntegration(null)
-            addToast('success', 'Integration updated successfully')
+            toast.success('Integration updated successfully')
             window.location.reload()
           }}
         />
@@ -1292,8 +1235,11 @@ function AddIntegrationModal({
       if (response.ok) {
         onSuccess()
       } else {
-        alert('Failed to create integration')
+        const data = await response.json().catch(() => ({}))
+        toast.error('Failed to create integration' + (data?.error ? ': ' + data.error : ''))
       }
+    } catch (err) {
+      toast.error('Failed to create integration: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setSaving(false)
     }
@@ -1447,8 +1393,11 @@ function EditIntegrationModal({
       if (response.ok) {
         onSuccess()
       } else {
-        alert('Failed to update integration')
+        const data = await response.json().catch(() => ({}))
+        toast.error('Failed to update integration' + (data?.error ? ': ' + data.error : ''))
       }
+    } catch (err) {
+      toast.error('Failed to update integration: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setSaving(false)
     }

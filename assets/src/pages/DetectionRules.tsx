@@ -7,6 +7,7 @@ import {
   Check, X, Copy, Trash2, Edit3, Play, Filter, Loader2,
   Eye, EyeOff, Clock, Tag, Zap, Info, CheckCircle, XCircle,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
@@ -303,9 +304,10 @@ export default function DetectionRules() {
       if (type === 'sigma') await fetchSigmaRules()
       else await fetchYaraRules()
       setEditingRule(null)
+      toast.success(`${type === 'sigma' ? 'Sigma' : 'YARA'} rule saved`)
     } catch (err) {
       logger.error('Failed to save rule:', err)
-      alert('Failed to save rule: ' + (err instanceof Error ? err.message : 'Unknown error'))
+      toast.error('Failed to save rule: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setEditorSaving(false)
     }
@@ -345,8 +347,10 @@ export default function DetectionRules() {
       setImportText('')
       if (importType === 'sigma') await fetchSigmaRules()
       else await fetchYaraRules()
+      toast.success(`${importType === 'sigma' ? 'Sigma' : 'YARA'} rule imported`)
     } catch (err) {
-      alert('Import failed: ' + (err instanceof Error ? err.message : 'Unknown error'))
+      logger.error('Failed to import rule:', err)
+      toast.error('Import failed: ' + (err instanceof Error ? err.message : 'Unknown error'))
     }
   }, [importText, importType, fetchSigmaRules, fetchYaraRules])
 

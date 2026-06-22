@@ -25,3 +25,16 @@ export { Tooltip } from './Tooltip'
 export { Select, SelectItem } from './Select'
 export { Switch } from './Switch'
 export { Checkbox } from './Checkbox'
+export { DataTable } from './DataTable'
+export { DataTableColumnHeader } from './DataTableColumnHeader'
+export { DataTablePagination } from './DataTablePagination'
+export { DataTableEmptyState } from './DataTableEmptyState'
+export { DataTableSkeleton } from './DataTableSkeleton'
+export { useControllable } from './useControllable'
+export type {
+  TamanduaColumnDef,
+  DataTableDensity,
+  DataTableLoadingState,
+  DataTablePaginationState,
+  DataTableSortingItem,
+} from './DataTable.types'

@@ -23,7 +23,7 @@ defmodule TamanduaServer.Detection.EvidenceTest do
       ]
 
       for {agent_type, expected} <- cases do
-        assert %{rule_type: ^expected} =
+        assert %{rule_type: ^expected, source: ^expected, detection_source: ^expected} =
                  Evidence.extract_detection_info([%{"rule_name" => "test", "detection_type" => agent_type}])
       end
     end
@@ -52,10 +52,31 @@ defmodule TamanduaServer.Detection.EvidenceTest do
         ])
 
       assert info.rule_type == "persistence"
+      assert info.source == "persistence"
+      assert info.detection_source == "persistence"
       assert info.detection_type == "Persistence"
       assert info.confidence == 0.7
       assert info.mitre_tactics == ["Persistence"]
       assert info.mitre_techniques == ["T1547.001"]
+    end
+
+    test "marks ML detections as ML source for alert API and GUI filters" do
+      info =
+        Evidence.extract_detection_info([
+          %{
+            "rule_name" => "agent_ml_malware_classification",
+            "detection_type" => "Ml",
+            "confidence" => 0.91,
+            "mitre_tactics" => ["execution"],
+            "mitre_techniques" => ["T1204"]
+          }
+        ])
+
+      assert info.rule_type == "ml"
+      assert info.source == "ml"
+      assert info.detection_source == "ml"
+      assert info.detection_type == "Ml"
+      assert info.confidence == 0.91
     end
   end
 end

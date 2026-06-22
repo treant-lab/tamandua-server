@@ -4,6 +4,7 @@ import { Shield, Plus, Usb, Bluetooth, Wifi, HardDrive, ArrowLeft, FileX, Loader
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { logger } from '@/lib/logger'
+import { toast } from 'sonner'
 import { Dialog } from '@/components/ui/baseui'
 
 interface DeviceControlPoliciesProps {
@@ -192,7 +193,7 @@ export default function DeviceControlPolicies({ page_title }: DeviceControlPolic
 
   const handleSave = async () => {
     if (!formData.group.trim()) {
-      alert('Policy group name is required')
+      toast.error('Policy group name is required')
       return
     }
 
@@ -225,9 +226,10 @@ export default function DeviceControlPolicies({ page_title }: DeviceControlPolic
 
       await fetchPolicies()
       closeModal()
+      toast.success(`Policy "${formData.group}" saved`)
     } catch (err) {
       logger.error('Error saving policy:', err)
-      alert(err instanceof Error ? err.message : 'Failed to save policy')
+      toast.error('Failed to save policy: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setSaving(false)
     }
@@ -255,9 +257,10 @@ export default function DeviceControlPolicies({ page_title }: DeviceControlPolic
       }
 
       await fetchPolicies()
+      toast.success(`Policy "${group}" deleted`)
     } catch (err) {
       logger.error('Error deleting policy:', err)
-      alert(err instanceof Error ? err.message : 'Failed to delete policy')
+      toast.error('Failed to delete policy: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setDeleting(null)
     }

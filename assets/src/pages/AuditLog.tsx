@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
@@ -11,8 +11,6 @@ import {
   LogIn,
   LogOut,
   AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
   RefreshCw,
   FileText,
   Crosshair,
@@ -21,7 +19,13 @@ import {
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { ExportDropdown } from '@/components/ExportDropdown'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import {
+  Select,
+  SelectItem,
+  DataTable,
+  DataTableEmptyState,
+  type TamanduaColumnDef,
+} from '@/components/ui/baseui'
 import axios from 'axios'
 import { logger } from '@/lib/logger'
 
@@ -104,7 +108,7 @@ export default function AuditLog({ entries: initialEntries, pagination: initialP
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [page, setPage] = useState(initialPagination?.page || 1)
-  const [perPage] = useState(initialPagination?.per_page || 50)
+  const [perPage, setPerPage] = useState(initialPagination?.per_page || 50)
   const [total, setTotal] = useState(initialPagination?.total || 0)
   const [totalPages, setTotalPages] = useState(initialPagination?.total_pages || 1)
 
@@ -168,10 +172,102 @@ export default function AuditLog({ entries: initialEntries, pagination: initialP
     fetchAuditLogs()
   }
 
-  const goToPage = (newPage: number) => {
-    if (newPage < 1 || newPage > totalPages) return
-    setPage(newPage)
-  }
+  const columns = useMemo<TamanduaColumnDef<AuditEntry>[]>(
+    () => [
+      {
+        id: 'timestamp',
+        header: 'Timestamp',
+        accessorKey: 'timestamp',
+        meta: { width: 200, truncate: true },
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
+            <Clock className="h-3 w-3 flex-shrink-0" />
+            <span className="whitespace-nowrap">{formatDate(row.original.timestamp)}</span>
+          </div>
+        ),
+      },
+      {
+        id: 'user',
+        header: 'User',
+        accessorKey: 'user',
+        meta: { width: 160, truncate: true },
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <User className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--subtle)' }} />
+            <span className="text-sm font-medium truncate" style={{ color: 'var(--fg)' }}>
+              {row.original.user}
+            </span>
+          </div>
+        ),
+      },
+      {
+        id: 'action',
+        header: 'Action',
+        accessorKey: 'action',
+        meta: { width: 200, truncate: true },
+        cell: ({ row }) => {
+          const style = ACTION_TYPE_STYLES[row.original.action_type] || ACTION_TYPE_STYLES.user_action
+          const Icon = style.icon
+          return (
+            <div className="flex items-center gap-2">
+              <div
+                className="p-1.5 rounded"
+                style={{ background: style.bgVar, color: style.colorVar }}
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </div>
+              <span className="text-sm" style={{ color: 'var(--fg-2)' }}>
+                {formatActionName(row.original.action)}
+              </span>
+            </div>
+          )
+        },
+      },
+      {
+        id: 'target',
+        header: 'Target',
+        accessorKey: 'target',
+        meta: { width: 220, truncate: true },
+        cell: ({ row }) => (
+          <span
+            className="text-sm font-mono truncate block"
+            style={{ color: 'var(--fg-2)' }}
+            title={row.original.target}
+          >
+            {row.original.target}
+          </span>
+        ),
+      },
+      {
+        id: 'details',
+        header: 'Details',
+        accessorKey: 'details',
+        meta: { truncate: true, maxWidth: 420 },
+        cell: ({ row }) => (
+          <span
+            className="text-sm truncate block"
+            style={{ color: 'var(--muted)' }}
+            title={row.original.details}
+          >
+            {row.original.details}
+          </span>
+        ),
+      },
+      {
+        id: 'ip_address',
+        header: 'IP Address',
+        accessorKey: 'ip_address',
+        meta: { width: 160, truncate: true },
+        cell: ({ row }) => (
+          <div className="flex items-center gap-1.5 text-sm" style={{ color: 'var(--muted)' }}>
+            <Globe className="h-3 w-3 flex-shrink-0" />
+            <span className="font-mono">{row.original.ip_address}</span>
+          </div>
+        ),
+      },
+    ],
+    [],
+  )
 
   return (
     <MainLayout title="Audit Log">
@@ -299,176 +395,37 @@ export default function AuditLog({ entries: initialEntries, pagination: initialP
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--hairline)' }}>
-                  <th className="text-left p-4 text-sm font-medium w-44" style={{ color: 'var(--muted)' }}>Timestamp</th>
-                  <th className="text-left p-4 text-sm font-medium w-36" style={{ color: 'var(--muted)' }}>User</th>
-                  <th className="text-left p-4 text-sm font-medium w-36" style={{ color: 'var(--muted)' }}>Action</th>
-                  <th className="text-left p-4 text-sm font-medium w-48" style={{ color: 'var(--muted)' }}>Target</th>
-                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Details</th>
-                  <th className="text-left p-4 text-sm font-medium w-36" style={{ color: 'var(--muted)' }}>IP Address</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={6} className="p-12 text-center" style={{ color: 'var(--muted)' }}>
-                      <RefreshCw className="h-12 w-12 mx-auto mb-4 opacity-50 animate-spin" />
-                      <p className="text-lg">Loading audit entries...</p>
-                    </td>
-                  </tr>
-                ) : filteredEntries.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-12 text-center" style={{ color: 'var(--muted)' }}>
-                      <Shield className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p className="text-lg">No audit entries found</p>
-                      <p className="text-sm">
-                        {entries.length === 0
-                          ? 'Audit logging will capture user actions, config changes, and response executions.'
-                          : 'Try adjusting your filters.'}
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  filteredEntries.map((entry) => {
-                    const style = ACTION_TYPE_STYLES[entry.action_type] || ACTION_TYPE_STYLES.user_action
-                    const Icon = style.icon
-                    return (
-                      <tr
-                        key={entry.id}
-                        className="transition-colors"
-                        style={{
-                          borderBottom: '1px solid var(--hairline)',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'var(--surface-2)'
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'transparent'
-                        }}
-                      >
-                        <td className="p-4">
-                          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
-                            <Clock className="h-3 w-3 flex-shrink-0" />
-                            <span className="whitespace-nowrap">{formatDate(entry.timestamp)}</span>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center gap-2">
-                            <User className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--subtle)' }} />
-                            <span className="text-sm font-medium truncate" style={{ color: 'var(--fg)' }}>{entry.user}</span>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center gap-2">
-                            <div
-                              className="p-1.5 rounded"
-                              style={{
-                                background: style.bgVar,
-                                color: style.colorVar,
-                              }}
-                            >
-                              <Icon className="h-3.5 w-3.5" />
-                            </div>
-                            <span className="text-sm" style={{ color: 'var(--fg-2)' }}>{formatActionName(entry.action)}</span>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <span
-                            className="text-sm font-mono truncate block max-w-[200px]"
-                            style={{ color: 'var(--fg-2)' }}
-                            title={entry.target}
-                          >
-                            {entry.target}
-                          </span>
-                        </td>
-                        <td className="p-4">
-                          <span
-                            className="text-sm truncate block max-w-[350px]"
-                            style={{ color: 'var(--muted)' }}
-                            title={entry.details}
-                          >
-                            {entry.details}
-                          </span>
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center gap-1.5 text-sm" style={{ color: 'var(--muted)' }}>
-                            <Globe className="h-3 w-3 flex-shrink-0" />
-                            <span className="font-mono">{entry.ip_address}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div
-              className="flex items-center justify-between p-4"
-              style={{ borderTop: '1px solid var(--hairline)' }}
-            >
-              <span className="text-sm" style={{ color: 'var(--muted)' }}>
-                Page {page} of {totalPages} ({total} total entries)
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => goToPage(page - 1)}
-                  disabled={page <= 1}
-                  className={cn(
-                    'btn-sentinel btn-sentinel-sm',
-                    page <= 1 ? 'btn-sentinel-ghost opacity-50 cursor-not-allowed' : 'btn-sentinel-secondary'
-                  )}
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                  Previous
-                </button>
-
-                {/* Page numbers */}
-                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  let pageNum: number
-                  if (totalPages <= 5) {
-                    pageNum = i + 1
-                  } else if (page <= 3) {
-                    pageNum = i + 1
-                  } else if (page >= totalPages - 2) {
-                    pageNum = totalPages - 4 + i
-                  } else {
-                    pageNum = page - 2 + i
-                  }
-                  return (
-                    <button
-                      key={pageNum}
-                      onClick={() => goToPage(pageNum)}
-                      className={cn(
-                        'btn-sentinel btn-sentinel-sm btn-sentinel-icon',
-                        page === pageNum ? 'btn-sentinel-primary' : 'btn-sentinel-secondary'
-                      )}
-                    >
-                      {pageNum}
-                    </button>
-                  )
-                })}
-
-                <button
-                  onClick={() => goToPage(page + 1)}
-                  disabled={page >= totalPages}
-                  className={cn(
-                    'btn-sentinel btn-sentinel-sm',
-                    page >= totalPages ? 'btn-sentinel-ghost opacity-50 cursor-not-allowed' : 'btn-sentinel-secondary'
-                  )}
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )}
+          <DataTable<AuditEntry>
+            data={filteredEntries}
+            columns={columns}
+            getRowId={(row) => row.id}
+            ariaLabel="Audit log entries"
+            density="comfortable"
+            loadingState={loading ? 'loading' : 'idle'}
+            manualPagination
+            pageCount={totalPages}
+            pagination={{ pageIndex: Math.max(0, page - 1), pageSize: perPage }}
+            onPaginationChange={({ pageIndex, pageSize }) => {
+              if (pageSize !== perPage) {
+                setPerPage(pageSize)
+                setPage(1)
+              } else {
+                setPage(pageIndex + 1)
+              }
+            }}
+            totalRows={total}
+            pageSizeOptions={[25, 50, 100, 250]}
+            emptyState={
+              <DataTableEmptyState
+                title="No audit entries found"
+                description={
+                  entries.length === 0
+                    ? 'Audit logging will capture user actions, config changes, and response executions.'
+                    : 'Try adjusting your filters.'
+                }
+              />
+            }
+          />
         </div>
       </div>
     </MainLayout>

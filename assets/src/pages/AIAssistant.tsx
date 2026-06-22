@@ -27,6 +27,7 @@ import {
   MessageSquare,
   RefreshCw,
 } from 'lucide-react'
+import { Dialog, DialogFooter } from '@/components/ui/baseui'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 
@@ -205,6 +206,7 @@ export default function AIAssistant({
   const [welcomeLoading, setWelcomeLoading] = useState(true)
   const [conversationsLoading, setConversationsLoading] = useState(true)
   const [suggestionsLoading, setSuggestionsLoading] = useState(true)
+  const [pendingAction, setPendingAction] = useState<SuggestedAction | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -564,10 +566,18 @@ How can I assist you today?`,
       return
     }
 
-    if (action.requiresConfirmation && !window.confirm(`Run action: ${action.label}?`)) {
+    if (action.requiresConfirmation) {
+      setPendingAction(action)
       return
     }
 
+    handleSendMessage(action.action)
+  }
+
+  const confirmPendingAction = () => {
+    const action = pendingAction
+    setPendingAction(null)
+    if (!action) return
     handleSendMessage(action.action)
   }
 
@@ -1392,6 +1402,30 @@ How can I assist you today?`,
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={!!pendingAction}
+        onOpenChange={(o) => !o && setPendingAction(null)}
+        title="Confirm action"
+        description={pendingAction ? `Run action: ${pendingAction.label}?` : ''}
+      >
+        <DialogFooter>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-secondary"
+            onClick={() => setPendingAction(null)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-primary"
+            onClick={confirmPendingAction}
+          >
+            Run action
+          </button>
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   )
 }

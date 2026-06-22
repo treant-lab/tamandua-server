@@ -76,6 +76,7 @@ import {
 } from 'lucide-react'
 import { cn, formatDate, formatBytes } from '@/lib/utils'
 import { toast } from 'sonner'
+import { Dialog, DialogFooter } from '@/components/ui/baseui'
 import axios from 'axios'
 
 // ============================================================================
@@ -536,6 +537,7 @@ function FileBrowser({
   const [previewContent, setPreviewContent] = useState<string | null>(null)
   const [previewMode, setPreviewMode] = useState<'text' | 'hex'>('text')
   const [fileAction, setFileAction] = useState<string | null>(null)
+  const [pendingQuarantine, setPendingQuarantine] = useState<{ file: FileEntry; filePath: string } | null>(null)
 
   const buildFilePath = useCallback((file: FileEntry) => {
     if (file.path) return file.path
@@ -671,10 +673,12 @@ function FileBrowser({
     }
   }
 
-  const quarantineFile = async (file: FileEntry) => {
+  const quarantineFile = (file: FileEntry) => {
     const filePath = buildFilePath(file)
-    if (!window.confirm(`Quarantine ${filePath}?`)) return
+    setPendingQuarantine({ file, filePath })
+  }
 
+  const performQuarantine = async (file: FileEntry, filePath: string) => {
     setFileAction(`quarantine:${filePath}`)
     try {
       await axios.post(`/api/v1/response/quarantine`, {
@@ -688,6 +692,13 @@ function FileBrowser({
     } finally {
       setFileAction(null)
     }
+  }
+
+  const confirmQuarantine = async () => {
+    const pending = pendingQuarantine
+    setPendingQuarantine(null)
+    if (!pending) return
+    await performQuarantine(pending.file, pending.filePath)
   }
 
   const getFileIcon = (file: FileEntry) => {
@@ -1892,6 +1903,30 @@ export default function LiveResponse({
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={!!pendingQuarantine}
+        onOpenChange={(o) => !o && setPendingQuarantine(null)}
+        title="Quarantine file"
+        description={pendingQuarantine ? `Quarantine ${pendingQuarantine.filePath}? The file will be moved to the agent's quarantine vault and removed from its original location.` : ''}
+      >
+        <DialogFooter>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-secondary"
+            onClick={() => setPendingQuarantine(null)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-danger"
+            onClick={confirmQuarantine}
+          >
+            Quarantine file
+          </button>
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   )
 }

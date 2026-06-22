@@ -302,6 +302,8 @@ defmodule TamanduaServer.Detection.Evidence do
               detection_field(first, :description) ||
               type_to_string(detection_field(first, :type)),
           rule_type: detect_rule_type(first),
+          source: detect_rule_type(first),
+          detection_source: detect_rule_type(first),
           detection_type:
             type_to_string(detection_field(first, :detection_type) || detection_field(first, :type)),
           confidence: extract_confidence(first),

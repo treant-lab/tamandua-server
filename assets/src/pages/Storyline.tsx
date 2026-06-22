@@ -12,10 +12,11 @@ import {
   SkipBack, SkipForward, Volume2, Square, Circle,
   Minus, Plus, Move, MousePointer, X, Check, Search
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { PageProps, Detection } from '@/types';
 import { logger } from '@/lib/logger';
 import { safeCapitalize } from '@/lib/utils';
-import { Checkbox } from '@/components/ui/baseui';
+import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
 
 function LongTextPreview({
   value,
@@ -967,6 +968,7 @@ export default function Storyline({
 
   // Action states
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [pendingKill, setPendingKill] = useState<{ pid: number } | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLink, setShareLink] = useState('');
@@ -1262,19 +1264,20 @@ export default function Storyline({
         headers: { 'Content-Type': 'application/json' },
       });
       if (response.ok) {
-        alert('Endpoint isolated successfully');
+        toast.success('Endpoint isolated');
+      } else {
+        toast.error(`Failed to isolate endpoint: ${response.status} ${response.statusText}`);
       }
     } catch (err) {
       logger.error('Failed to isolate:', err);
+      toast.error(`Failed to isolate endpoint: ${(err as Error).message}`);
     } finally {
       setActionLoading(null);
     }
   };
 
-  const handleKillProcessTree = async () => {
-    if (!storyline?.agent_id || !selectedNode?.pid) return;
-    if (!confirm(`Kill process tree starting from PID ${selectedNode.pid}?`)) return;
-
+  const performKillProcessTree = async (pid: number) => {
+    if (!storyline?.agent_id) return;
     setActionLoading('kill');
     try {
       const response = await fetch('/api/v1/response/kill', {
@@ -1282,18 +1285,33 @@ export default function Storyline({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent_id: storyline.agent_id,
-          pid: selectedNode.pid,
+          pid,
           kill_tree: true,
         }),
       });
       if (response.ok) {
-        alert('Process tree terminated');
+        toast.success('Process tree terminated');
+      } else {
+        toast.error(`Failed to kill process tree: ${response.status} ${response.statusText}`);
       }
     } catch (err) {
       logger.error('Failed to kill process:', err);
+      toast.error(`Failed to kill process tree: ${(err as Error).message}`);
     } finally {
       setActionLoading(null);
     }
+  };
+
+  const handleKillProcessTree = () => {
+    if (!storyline?.agent_id || !selectedNode?.pid) return;
+    setPendingKill({ pid: selectedNode.pid });
+  };
+
+  const confirmKillProcessTree = async () => {
+    const pending = pendingKill;
+    setPendingKill(null);
+    if (!pending) return;
+    await performKillProcessTree(pending.pid);
   };
 
   const handleQuarantineFile = async () => {
@@ -1310,10 +1328,13 @@ export default function Storyline({
         }),
       });
       if (response.ok) {
-        alert('File quarantined');
+        toast.success('File quarantined');
+      } else {
+        toast.error(`Failed to quarantine file: ${response.status} ${response.statusText}`);
       }
     } catch (err) {
       logger.error('Failed to quarantine:', err);
+      toast.error(`Failed to quarantine file: ${(err as Error).message}`);
     } finally {
       setActionLoading(null);
     }
@@ -2677,6 +2698,30 @@ export default function Storyline({
           </div>
         </div>
       )}
+
+      <Dialog
+        open={!!pendingKill}
+        onOpenChange={(o) => !o && setPendingKill(null)}
+        title="Kill process tree"
+        description={pendingKill ? `Kill process tree starting from PID ${pendingKill.pid}? This will terminate the process and all its descendants.` : ''}
+      >
+        <DialogFooter>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-secondary"
+            onClick={() => setPendingKill(null)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-sentinel btn-sentinel-danger"
+            onClick={confirmKillProcessTree}
+          >
+            Kill process tree
+          </button>
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   );
 }
