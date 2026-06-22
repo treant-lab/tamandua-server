@@ -24,7 +24,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   alias TamanduaServer.Detection.Correlator
   alias TamanduaServer.Agents
 
+  require Logger
+
   action_fallback(TamanduaServerWeb.FallbackController)
+
+  @default_timeline_limit 150
+  @max_timeline_limit 250
+  @default_readiness_limit 1_000
+  @max_readiness_limit 2_500
 
   @doc """
   List timeline events with time range and optional filters.
@@ -42,7 +49,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   """
   def index(conn, params) do
     organization_id = get_organization_id(conn)
-    limit = parse_int(params["limit"], 500)
+    limit = params["limit"] |> parse_int(@default_timeline_limit) |> min(@max_timeline_limit)
 
     # Get agent IDs that belong to this organization for tenant isolation
     org_agent_ids = get_org_agent_ids(organization_id)
@@ -121,9 +128,15 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
           end
       end
 
-    events = Repo.all(query)
+    events = safe_repo_all(query, "Timeline events")
 
-    evidence = CorrelationEvidence.correlate_events(events, threshold: 40, max_events: 250)
+    {evidence, correlation_partial_reason} =
+      safe_correlate_events(events,
+        threshold: 40,
+        max_events: min(limit, @max_timeline_limit),
+        label: "Timeline correlation"
+      )
+
     serialized = serialize_timeline_events(events, organization_id, evidence)
 
     json(conn, %{
@@ -133,6 +146,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         analyzedEventCount: evidence.analyzed_event_count,
         correlationCount: length(evidence.correlations),
         partial: evidence.partial,
+        partialReason: correlation_partial_reason,
         incidentCandidates: evidence.incident_candidates || [],
         campaignCandidates: evidence.campaign_candidates || [],
         entityGraph: evidence.entity_graph,
@@ -233,7 +247,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   def readiness(conn, params) do
     organization_id = get_organization_id(conn)
     org_agent_ids = get_org_agent_ids(organization_id)
-    limit = params["limit"] |> parse_int(2_000) |> min(10_000)
+    limit = params["limit"] |> parse_int(@default_readiness_limit) |> min(@max_readiness_limit)
 
     since =
       params["hours"]
@@ -246,13 +260,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         order_by: [desc: e.timestamp],
         limit: ^limit
       )
-      |> Repo.all()
+      |> safe_repo_all("Timeline readiness")
 
     json(conn, %{
       data: build_readiness(events, organization_id),
       meta: %{
         since: format_timestamp(since),
         eventCount: length(events),
+        eventLimit: limit,
         scoring: "telemetry-contract/v1"
       }
     })
@@ -400,7 +415,12 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         |> json(%{error: "At least two selected events were not found for this organization"})
 
       true ->
-        evidence = CorrelationEvidence.correlate_events(events, threshold: 40, max_events: 100)
+        {evidence, correlation_partial_reason} =
+          safe_correlate_events(events,
+            threshold: 40,
+            max_events: 100,
+            label: "Selected event correlation"
+          )
 
         {persisted_candidates, persistence_warnings} =
           persist_selected_correlation(evidence, organization_id)
@@ -433,6 +453,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
             evidenceSummary: evidence.evidence_summary,
             telemetryGaps: evidence.telemetry_gaps,
             persistenceWarnings: persistence_warnings,
+            partialReason: correlation_partial_reason,
             analyzedEventCount: evidence.analyzed_event_count
           }
         })
@@ -1032,4 +1053,54 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   defp parse_int(value, _default) when is_integer(value), do: value
+
+  defp safe_repo_all(query, label) do
+    Repo.all(query, timeout: 8_000)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      []
+  end
+
+  defp safe_correlate_events(events, opts) do
+    label = Keyword.get(opts, :label, "Timeline correlation")
+    correlate_opts = Keyword.drop(opts, [:label])
+
+    {CorrelationEvidence.correlate_events(events, correlate_opts), nil}
+  rescue
+    error ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      {empty_correlation_evidence(length(events)), "correlation_unavailable"}
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      {empty_correlation_evidence(length(events)), "correlation_unavailable"}
+  end
+
+  defp empty_correlation_evidence(event_count) do
+    %{
+      scoring_version: "unavailable",
+      scoring_policy: %{
+        version: "unavailable",
+        threshold: nil,
+        mode: "degraded",
+        requirements: []
+      },
+      correlations: [],
+      event_links: %{},
+      entity_graph: %{nodes: [], edges: []},
+      incident_candidates: [],
+      campaign_candidates: [],
+      risk_score: 0,
+      attack_chain: [],
+      evidence_summary: [],
+      telemetry_gaps: [],
+      analyzed_event_count: event_count,
+      partial: true
+    }
+  end
 end

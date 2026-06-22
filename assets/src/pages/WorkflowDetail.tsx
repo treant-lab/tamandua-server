@@ -120,9 +120,14 @@ export default function WorkflowDetail({
     if (!workflow) return
     setIsRunning(true)
     try {
-      const res = await fetch(`/api/v1/workflows/${workflow.id}/run`, {
+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+      const res = await fetch(`/api/v1/automation/workflows/${workflow.id}/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+        },
         credentials: 'include',
       })
       if (!res.ok) {

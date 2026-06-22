@@ -133,7 +133,7 @@ function TenantRowMenu({ tenant }: { tenant: Tenant }) {
       </MenuItem>
       <MenuSeparator />
       {tenant.status === 'active' ? (
-        <MenuItem onSelect={() => handleAction('suspend')}>
+        <MenuItem tone="warning" onSelect={() => handleAction('suspend')}>
           <Ban className="h-4 w-4" />
           Suspend Tenant
         </MenuItem>
@@ -143,7 +143,7 @@ function TenantRowMenu({ tenant }: { tenant: Tenant }) {
           Activate Tenant
         </MenuItem>
       ) : null}
-      <MenuItem destructive onSelect={() => handleAction('delete')}>
+      <MenuItem tone="danger" onSelect={() => handleAction('delete')}>
         <Trash2 className="h-4 w-4" />
         Delete Tenant
       </MenuItem>

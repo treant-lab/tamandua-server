@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { cn, formatDate, safeCapitalize, severityColor } from '@/lib/utils';
 import type { InvestigationCaseDetailProps, Alert, CaseInvestigation } from '@/types';
+import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
 
 // ============================================================================
 // Constants
@@ -395,22 +396,19 @@ function ExportModal({
     onClose();
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="card-sentinel w-full max-w-md rounded-xl border" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-        <div className="flex items-center justify-between p-4 border-b" style={{ borderColor: 'var(--muted)' }}>
-          <h2 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
-            <Download className="h-5 w-5" />
-            Export Case
-          </h2>
-          <button onClick={onClose} className="p-1 rounded hover:opacity-80" style={{ backgroundColor: 'var(--surface)' }}>
-            <X className="h-5 w-5" style={{ color: 'var(--muted)' }} />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title={
+        <span className="flex items-center gap-2">
+          <Download className="h-5 w-5" />
+          Export Case
+        </span>
+      }
+      maxWidth="28rem"
+    >
+      <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-2" style={{ color: 'var(--fg)' }}>Format</label>
             <div className="flex gap-3">
@@ -443,35 +441,30 @@ function ExportModal({
             </div>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={includeAlerts}
-              onChange={(e) => setIncludeAlerts(e.target.checked)}
-              className="rounded border-[var(--muted)] bg-[var(--surface)] text-primary-600"
-            />
-            <span className="text-sm" style={{ color: 'var(--fg)' }}>Include linked alerts</span>
-          </label>
-        </div>
-
-        <div className="flex justify-end gap-3 p-4 border-t" style={{ borderColor: 'var(--muted)' }}>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg transition-colors hover:opacity-80"
-            style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleExport}
-            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg text-white transition-colors flex items-center gap-2"
-          >
-            <Download className="h-4 w-4" />
-            Export
-          </button>
-        </div>
+          <Checkbox
+            checked={includeAlerts}
+            onCheckedChange={setIncludeAlerts}
+            label="Include linked alerts"
+          />
       </div>
-    </div>
+
+      <DialogFooter>
+        <button
+          onClick={onClose}
+          className="px-4 py-2 rounded-lg transition-colors hover:opacity-80"
+          style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleExport}
+          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg text-white transition-colors flex items-center gap-2"
+        >
+          <Download className="h-4 w-4" />
+          Export
+        </button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 

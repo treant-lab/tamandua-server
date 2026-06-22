@@ -21,6 +21,8 @@ defmodule TamanduaServer.Detection.Timeline do
   alias TamanduaServer.Alerts.Timestamp
   alias TamanduaServer.Telemetry.Event
 
+  require Logger
+
   # MITRE ATT&CK Kill Chain phases in order
   @kill_chain_phases [
     "reconnaissance",
@@ -158,6 +160,7 @@ defmodule TamanduaServer.Detection.Timeline do
   def auto_correlate_alerts(organization_id, opts \\ []) do
     time_window = Keyword.get(opts, :time_window_minutes, 60)
     min_correlation_score = Keyword.get(opts, :min_score, 0.7)
+    limit = opts |> Keyword.get(:limit, 100) |> min(250)
 
     time_threshold = DateTime.utc_now()
     |> DateTime.add(-time_window * 60, :second)
@@ -166,7 +169,8 @@ defmodule TamanduaServer.Detection.Timeline do
     base_query = from(a in Alert,
       where: a.inserted_at >= ^time_threshold
         and a.status == "new",
-      order_by: [asc: a.inserted_at]
+      order_by: [asc: a.inserted_at],
+      limit: ^limit
     )
 
     # Add organization filter if provided
@@ -175,10 +179,18 @@ defmodule TamanduaServer.Detection.Timeline do
     else
       base_query
     end
-    |> Repo.all()
+    |> Repo.all(timeout: 8_000)
 
     # Cluster alerts by correlation score
     cluster_alerts(alerts, min_correlation_score)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("Timeline auto-correlate alerts failed: #{Exception.message(error)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("Timeline auto-correlate alerts failed: exit #{inspect(reason)}")
+      []
   end
 
   # ============================================================================

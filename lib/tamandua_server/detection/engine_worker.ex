@@ -23,7 +23,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
     TemporalScorer, Provenance, LateralMovement, IdentityThreats, Storyline,
     EngineSupervisor, PackageBehaviorAnalyzer, CredentialDetector, MLProcessTracker,
     ModelFileCorrelator, LLMRequestTracker, AIRuntimeAnalyzer, InferenceTracker,
-    PromptInjectionClassifier}
+    PromptInjectionClassifier, RiskScoreSnapshot, AgentRiskScoreStore}
   alias TamanduaServer.Detection.ThreatIntel.Feeds, as: ThreatIntelFeeds
   alias TamanduaServer.Telemetry.PackageInstallCorrelator
   alias TamanduaServer.Alerts
@@ -150,6 +150,21 @@ defmodule TamanduaServer.Detection.EngineWorker do
     detection_context = EventContext.build(event)
     record_precision_event(:event_received, event, detection_context, %{})
 
+    # 0. Sideband: agent-side deterministic risk score snapshot. This
+    # event type is a periodic, per-process, *enrichment* signal — not
+    # an alert source. Store it in the per-agent cache and short-circuit
+    # the detection pipeline (no Sigma/YARA/Correlator/etc.). Other
+    # events for the same `process_key` may consume it via
+    # `apply_agent_deterministic_score/4` below, gated on having at
+    # least one detection (FP-budget guard).
+    if detection_context.event_type == "behavioral_risk_score" do
+      handle_risk_score_snapshot(event, shard, detection_context, start_time)
+    else
+      do_analyze_event_full(event, shard, detection_context, start_time)
+    end
+  end
+
+  defp do_analyze_event_full(event, shard, detection_context, start_time) do
     try do
       detections = []
 
@@ -439,6 +454,14 @@ defmodule TamanduaServer.Detection.EngineWorker do
       # 9. Apply baseline adjustment
       {adjusted_threat_score, baseline_metadata} = apply_baseline_adjustment(agent_id, event, threat_score)
       baseline_metadata = Map.merge(baseline_metadata, temporal_metadata)
+
+      # 9b. Apply agent-side deterministic score boost (enrichment only,
+      # gated on `detections != []` — see `apply_agent_deterministic_score/4`).
+      {adjusted_threat_score, agent_score_metadata} =
+        apply_agent_deterministic_score(adjusted_threat_score, agent_id, event, detections)
+
+      baseline_metadata = Map.merge(baseline_metadata, agent_score_metadata)
+
       {adjusted_threat_score, collector_metadata} =
         apply_collector_context_adjustment(adjusted_threat_score, detection_context)
 
@@ -2235,6 +2258,143 @@ defmodule TamanduaServer.Detection.EngineWorker do
     }
 
     {adjusted_score, metadata}
+  end
+
+  # ── Agent-side deterministic risk score blending ─────────────────────
+  #
+  # Sideband consumer for `RiskScoreSnapshot` events emitted by the
+  # agent's `export_risk_score_events()` function. The snapshot is a
+  # per-process, periodic 0-100 score from the agent's deterministic
+  # behavioral analyzer (`behavioral.rs`). On the server we treat it
+  # strictly as *enrichment*: it can only boost an event that already
+  # has at least one server-side or agent-side detection. This is the
+  # FP-budget guard — the agent's heuristic score must never become a
+  # primary alert source on its own, or it would regress the
+  # SOC/MSSP/mid-market tenant-profile presets.
+  #
+  # Blend shape: `min(1.0, threat_score + agent_score * 0.25 * (1.0 - threat_score))`
+  # — a concave bump that gives small lift to weak server signal when
+  # the agent is hot, near-zero lift when the server is already high,
+  # never decreases the score, never exceeds 1.0.
+
+  defp apply_agent_deterministic_score(threat_score, nil, _event, _detections),
+    do: {threat_score, %{}}
+
+  defp apply_agent_deterministic_score(threat_score, _agent_id, _event, []),
+    do: {threat_score, %{}}
+
+  defp apply_agent_deterministic_score(threat_score, agent_id, event, _detections)
+       when is_binary(agent_id) do
+    try do
+      with process_key when is_binary(process_key) <- extract_process_key(event),
+           %{score_0_1: agent_score, snapshot_at_ms: ts} = snap when agent_score > 0.0 <-
+             AgentRiskScoreStore.get(agent_id, process_key) do
+        now_ms = System.system_time(:millisecond)
+
+        if RiskScoreSnapshot.stale?(snap, now_ms) do
+          {threat_score,
+           %{
+             agent_score_stale: true,
+             agent_score_age_ms: now_ms - ts,
+             agent_score_process_key: process_key
+           }}
+        else
+          blended = min(1.0, threat_score + agent_score * 0.25 * (1.0 - threat_score))
+
+          {blended,
+           %{
+             agent_score_applied: Float.round(agent_score, 4),
+             agent_score_boost: Float.round(blended - threat_score, 4),
+             agent_score_process_key: process_key,
+             agent_score_age_ms: now_ms - ts
+           }}
+        end
+      else
+        _ -> {threat_score, %{}}
+      end
+    rescue
+      e ->
+        Logger.warning("Agent risk score blend failed: #{inspect(e)}")
+        {threat_score, %{agent_score_error: true}}
+    catch
+      :exit, _ -> {threat_score, %{agent_score_error: true}}
+    end
+  end
+
+  defp apply_agent_deterministic_score(threat_score, _, _, _), do: {threat_score, %{}}
+
+  # Extract a lowercased process basename suitable for joining against
+  # `RiskScoreSnapshot.process_key`. Mirrors the Rust side's key
+  # convention (`behavioral.rs:461` — lowercased basename).
+  defp extract_process_key(event) do
+    payload = event[:payload] || event["payload"] || %{}
+
+    candidate =
+      payload[:process_name] || payload["process_name"] ||
+        payload[:image] || payload["image"] ||
+        payload[:process] || payload["process"] ||
+        payload[:executable] || payload["executable"] ||
+        payload[:path] || payload["path"]
+
+    cond do
+      is_binary(candidate) and String.trim(candidate) != "" ->
+        candidate
+        |> Path.basename()
+        |> String.downcase()
+
+      true ->
+        nil
+    end
+  end
+
+  # Sideband handler: persist the snapshot into the per-agent cache and
+  # short-circuit the detection pipeline. Returns a minimal result map
+  # in the same shape as `do_analyze_event_full/4` (no detections, no
+  # alert) so the caller's contract is unchanged.
+  defp handle_risk_score_snapshot(event, shard, detection_context, start_time) do
+    agent_id = event[:agent_id] || event["agent_id"]
+
+    stored? =
+      case RiskScoreSnapshot.from_event(event) do
+        {:ok, snap} ->
+          AgentRiskScoreStore.put(agent_id, snap)
+
+          :telemetry.execute(
+            [:tamandua, :detection, :agent_risk_score, :stored],
+            %{score: snap.score_0_1, factors: length(snap.factors)},
+            %{agent_id: agent_id, process_key: snap.process_key}
+          )
+
+          true
+
+        :error ->
+          Logger.debug(
+            "[EngineWorker:#{shard}] discarded malformed behavioral_risk_score event"
+          )
+
+          false
+      end
+
+    EngineSupervisor.update_shard_stat(shard, :events_analyzed)
+
+    elapsed_us = System.monotonic_time(:microsecond) - start_time
+
+    record_precision_event(:detection_completed, event, detection_context, %{
+      duration_us: elapsed_us,
+      detection_count: 0,
+      threat_score: 0.0,
+      policy_action: :sideband,
+      agent_risk_score_stored: stored?
+    })
+
+    %{
+      event_id: event[:event_id] || event["event_id"],
+      detections: [],
+      threat_score: 0.0,
+      alert_id: nil,
+      policy_action: :sideband,
+      agent_risk_score_stored: stored?
+    }
   end
 
   defp collector_context_metadata(%{_detection_context: context}) when is_map(context) do

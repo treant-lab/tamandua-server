@@ -746,11 +746,22 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
     [
       evidence["file_hashes"] || evidence[:file_hashes],
       evidence["iocs"] || evidence[:iocs],
-      get_in(evidence, ["network", "remote_ip"]) || get_in(evidence, [:network, :remote_ip]),
-      get_in(evidence, ["dns", "query"]) || get_in(evidence, [:dns, :query])
+      nested_value(evidence, "network", "remote_ip"),
+      nested_value(evidence, "dns", "query")
     ]
     |> List.flatten()
     |> Enum.reject(&(&1 in [nil, "", []]))
     |> length()
   end
+
+  defp nested_value(map, parent, child) when is_map(map) do
+    case Map.get(map, parent) || Map.get(map, String.to_atom(parent)) do
+      nested when is_map(nested) -> Map.get(nested, child) || Map.get(nested, String.to_atom(child))
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp nested_value(_, _, _), do: nil
 end

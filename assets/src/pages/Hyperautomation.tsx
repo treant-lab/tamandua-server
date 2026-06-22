@@ -20,21 +20,21 @@ import {
   Activity,
   Target,
   GitBranch,
-  Box,
   Eye,
   Edit,
   Copy,
   ToggleLeft,
   ToggleRight,
+  type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Dialog, DialogFooter, Select, SelectItem } from '@/components/ui/baseui'
+import { Dialog, DialogFooter, Select, SelectItem, Checkbox } from '@/components/ui/baseui'
 import { useState } from 'react'
 
 // Types
 interface WorkflowStep {
   id: string
-  type: 'trigger' | 'condition' | 'action' | 'delay'
+  type: string
   name: string
   config: Record<string, any>
 }
@@ -54,7 +54,7 @@ interface AutomationWorkflow {
   name: string
   description: string
   isEnabled: boolean
-  triggerType: 'alert' | 'schedule' | 'webhook' | 'event' | 'manual'
+  triggerType: 'alert' | 'detection' | 'schedule' | 'webhook' | 'api' | 'event' | 'event_stream' | 'manual'
   triggerConditions: string[]
   steps: WorkflowStep[]
   executions: {
@@ -93,26 +93,52 @@ interface HyperautomationPageProps {
   recentExecutions?: WorkflowExecution[]
 }
 
-const triggerTypeConfig: Record<AutomationWorkflow['triggerType'], { icon: typeof Zap; color: string; label: string }> = {
+const triggerTypeConfig: Record<AutomationWorkflow['triggerType'], { icon: LucideIcon; color: string; label: string }> = {
   alert: { icon: AlertTriangle, color: 'text-orange-400 bg-orange-400/10', label: 'Alert' },
+  detection: { icon: Target, color: 'text-red-400 bg-red-400/10', label: 'Detection' },
   schedule: { icon: Clock, color: 'text-blue-400 bg-blue-400/10', label: 'Schedule' },
   webhook: { icon: GitBranch, color: 'text-purple-400 bg-purple-400/10', label: 'Webhook' },
+  api: { icon: GitBranch, color: 'text-cyan-400 bg-cyan-400/10', label: 'API' },
   event: { icon: Zap, color: 'text-yellow-400 bg-yellow-400/10', label: 'Event' },
+  event_stream: { icon: Zap, color: 'text-yellow-400 bg-yellow-400/10', label: 'Event Stream' },
   manual: { icon: Play, color: 'text-[var(--muted)] bg-[var(--surface-2)]', label: 'Manual' },
 }
 
-const stepTypeConfig: Record<WorkflowStep['type'], { color: string; icon: typeof Box }> = {
-  trigger: { color: 'bg-blue-500', icon: Zap },
-  condition: { color: 'bg-yellow-500', icon: GitBranch },
-  action: { color: 'bg-green-500', icon: Play },
-  delay: { color: 'bg-[var(--muted)]', icon: Clock },
+const stepTypeConfig: Record<string, { color: string; icon: LucideIcon; label: string }> = {
+  trigger: { color: 'bg-blue-500', icon: Zap, label: 'Trigger' },
+  condition: { color: 'bg-yellow-500', icon: GitBranch, label: 'Condition' },
+  action: { color: 'bg-green-500', icon: Play, label: 'Action' },
+  delay: { color: 'bg-[var(--muted)]', icon: Clock, label: 'Delay' },
+  create_ticket: { color: 'bg-green-500', icon: Play, label: 'Create Ticket' },
+  send_slack: { color: 'bg-green-500', icon: Play, label: 'Send Slack' },
+  send_email: { color: 'bg-green-500', icon: Play, label: 'Send Email' },
+  wait: { color: 'bg-[var(--muted)]', icon: Clock, label: 'Wait' },
+  conditional: { color: 'bg-yellow-500', icon: GitBranch, label: 'Conditional' },
+  set_variable: { color: 'bg-blue-500', icon: Settings, label: 'Set Variable' },
+  http_request: { color: 'bg-purple-500', icon: GitBranch, label: 'HTTP Request' },
+  isolate_host: { color: 'bg-red-500', icon: AlertTriangle, label: 'Isolate Host' },
+  kill_process: { color: 'bg-red-500', icon: AlertTriangle, label: 'Kill Process' },
+  quarantine_file: { color: 'bg-red-500', icon: AlertTriangle, label: 'Quarantine File' },
+  block_ip: { color: 'bg-red-500', icon: AlertTriangle, label: 'Block IP' },
+  block_domain: { color: 'bg-red-500', icon: AlertTriangle, label: 'Block Domain' },
 }
 
-const executionStatusConfig: Record<WorkflowExecution['status'], { color: string; icon: typeof CheckCircle }> = {
+const executionStatusConfig: Record<WorkflowExecution['status'], { color: string; icon: LucideIcon }> = {
   running: { color: 'text-blue-400 bg-blue-400/10', icon: RefreshCw },
   completed: { color: 'text-green-400 bg-green-400/10', icon: CheckCircle },
   failed: { color: 'text-red-400 bg-red-400/10', icon: XCircle },
   cancelled: { color: 'text-[var(--muted)] bg-[var(--surface-2)]', icon: Pause },
+}
+
+const getCsrfToken = () => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+
+const getApiErrorMessage = async (response: Response, fallback: string) => {
+  const payload = await response.json().catch(() => null)
+  return payload?.error?.message || payload?.message || `${fallback} (${response.status})`
+}
+
+const getStepConfig = (type: string) => {
+  return stepTypeConfig[type] || { color: 'bg-green-500', icon: Play, label: type.replace(/_/g, ' ') }
 }
 
 export default function Automation({
@@ -129,6 +155,8 @@ export default function Automation({
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [executingWorkflowId, setExecutingWorkflowId] = useState<string | null>(null)
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [newWorkflow, setNewWorkflow] = useState({
     name: '',
     description: '',
@@ -173,44 +201,89 @@ export default function Automation({
 
     setIsCreating(true)
     setCreateError(null)
+    setActionNotice(null)
 
     try {
+      const name = newWorkflow.name.trim()
+      const description = newWorkflow.description.trim()
+      const csrfToken = getCsrfToken()
       const response = await fetch('/api/v1/automation/workflows', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
+          ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
         },
         body: JSON.stringify({
-          name: newWorkflow.name.trim(),
-          description: newWorkflow.description.trim(),
+          name,
+          description,
           trigger_type: newWorkflow.triggerType,
           trigger_config: {},
           enabled: newWorkflow.enabled,
           steps: [
             {
               id: 'step-1',
-              type: 'action',
-              name: 'Review workflow',
-              action: 'manual_review',
-              params: {},
+              type: 'create_ticket',
+              name: 'Create starter ticket',
+              params: {
+                title: `Workflow review: ${name}`,
+                description: description || 'Starter workflow created from Hyperautomation.',
+              },
             },
           ],
         }),
       })
 
       if (!response.ok) {
-        const payload = await response.json().catch(() => null)
-        throw new Error(payload?.error?.message || `Request failed with status ${response.status}`)
+        throw new Error(await getApiErrorMessage(response, 'Failed to create workflow'))
       }
 
       setShowCreateModal(false)
       setNewWorkflow({ name: '', description: '', triggerType: 'manual', enabled: true })
+      setActionNotice({ type: 'success', message: 'Workflow created with an executable starter step.' })
       router.reload({ only: ['workflows', 'executionStats', 'recentExecutions'] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : 'Failed to create workflow')
     } finally {
       setIsCreating(false)
+    }
+  }
+
+  const handleRunWorkflow = async (workflow: AutomationWorkflow) => {
+    setExecutingWorkflowId(workflow.id)
+    setActionNotice(null)
+
+    try {
+      const csrfToken = getCsrfToken()
+      const response = await fetch(`/api/v1/automation/workflows/${workflow.id}/execute`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          context: {},
+          async: true,
+          dry_run: false,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(await getApiErrorMessage(response, 'Failed to execute workflow'))
+      }
+
+      setActionNotice({ type: 'success', message: `Workflow "${workflow.name}" execution started.` })
+      router.reload({ only: ['workflows', 'executionStats', 'recentExecutions'] })
+    } catch (error) {
+      setActionNotice({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Failed to execute workflow',
+      })
+    } finally {
+      setExecutingWorkflowId(null)
     }
   }
 
@@ -331,6 +404,20 @@ export default function Automation({
           </button>
         </div>
 
+        {actionNotice && (
+          <div
+            className="rounded-lg px-4 py-3 text-sm flex items-center gap-2"
+            style={{
+              color: actionNotice.type === 'success' ? 'var(--emerald-400)' : 'var(--crit)',
+              background: actionNotice.type === 'success' ? 'var(--emerald-glow)' : 'var(--crit-bg)',
+              border: `1px solid ${actionNotice.type === 'success' ? 'var(--emerald-500)' : 'var(--crit)'}`,
+            }}
+          >
+            {actionNotice.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+            <span>{actionNotice.message}</span>
+          </div>
+        )}
+
         <div className="grid grid-cols-3 gap-6">
           {/* Workflows List */}
           <div className="col-span-2 space-y-4">
@@ -385,7 +472,7 @@ export default function Automation({
                     {/* Workflow Steps Preview */}
                     <div className="flex items-center gap-1 mb-4 overflow-x-auto pb-2">
                       {workflow.steps.map((step, index) => {
-                        const stepConf = stepTypeConfig[step.type]
+                        const stepConf = getStepConfig(step.type)
 
                         return (
                           <div key={step.id} className="flex items-center">
@@ -465,7 +552,7 @@ export default function Automation({
                   {/* Visual Step Flow */}
                   <div className="space-y-2 mb-4">
                     {selectedWorkflow.steps.map((step, index) => {
-                      const stepConf = stepTypeConfig[step.type]
+                      const stepConf = getStepConfig(step.type)
                       const StepIcon = stepConf.icon
 
                       return (
@@ -482,7 +569,7 @@ export default function Automation({
                             </div>
                             <div className="flex-1">
                               <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{step.name}</p>
-                              <p className="text-xs capitalize" style={{ color: 'var(--subtle)' }}>{step.type}</p>
+                              <p className="text-xs capitalize" style={{ color: 'var(--subtle)' }}>{stepConf.label}</p>
                             </div>
                             <span className="text-xs" style={{ color: 'var(--subtle)' }}>#{index + 1}</span>
                           </div>
@@ -506,9 +593,18 @@ export default function Automation({
                   </div>
 
                   <div className="flex items-center gap-2 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
-                    <button className="flex-1 btn-sentinel-primary rounded-lg px-3 py-2 text-sm font-medium flex items-center justify-center gap-2">
-                      <Play className="h-4 w-4" />
-                      Run Now
+                    <button
+                      type="button"
+                      onClick={() => handleRunWorkflow(selectedWorkflow)}
+                      disabled={executingWorkflowId === selectedWorkflow.id}
+                      className="flex-1 btn-sentinel-primary rounded-lg px-3 py-2 text-sm font-medium flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {executingWorkflowId === selectedWorkflow.id ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Play className="h-4 w-4" />
+                      )}
+                      {executingWorkflowId === selectedWorkflow.id ? 'Running...' : 'Run Now'}
                     </button>
                     <button className="btn-sentinel-secondary rounded-lg px-3 py-2 text-sm font-medium flex items-center justify-center gap-2">
                       <Settings className="h-4 w-4" />
@@ -672,14 +768,13 @@ export default function Automation({
               </Select>
             </div>
 
-            <label className="flex items-center gap-3 rounded-lg px-3 py-2 mt-6" style={{ background: 'var(--surface-2)' }}>
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-3 rounded-lg px-3 py-2 mt-6" style={{ background: 'var(--surface-2)' }}>
+              <Checkbox
                 checked={newWorkflow.enabled}
-                onChange={(event) => setNewWorkflow((current) => ({ ...current, enabled: event.target.checked }))}
+                onCheckedChange={(checked) => setNewWorkflow((current) => ({ ...current, enabled: checked }))}
+                label="Enabled"
               />
-              <span className="text-sm" style={{ color: 'var(--fg-2)' }}>Enabled</span>
-            </label>
+            </div>
           </div>
 
           {createError && (

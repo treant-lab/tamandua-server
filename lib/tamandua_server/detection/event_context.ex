@@ -137,6 +137,7 @@ defmodule TamanduaServer.Detection.EventContext do
       String.starts_with?(event_type, "registry") -> "registry"
       event_type in ~w(authentication logon auth_event logon_event kerberos_tgt kerberos_tgs account_logon logon_failure directory_replication) -> "authentication"
       event_type in ~w(llm_request llm_api_request inference_request inference_response llm_response llm_api_response) -> "ai_runtime"
+      event_type == "behavioral_risk_score" -> "behavioral_risk_score"
       true -> "unknown"
     end
   end

@@ -88,7 +88,7 @@ function NavigationProgress() {
 }
 import { TenantSelector } from '@/components/TenantSelector'
 import { useTenant } from '@/contexts/TenantContext'
-import { Tooltip } from '@/components/ui/baseui'
+import { Menu, MenuItem, Tooltip } from '@/components/ui/baseui'
 
 // --- localStorage persistence helpers ---
 
@@ -225,7 +225,7 @@ const navigationGroups: ExtendedNavGroup[] = [
     items: [
       { name: 'Contributions', href: '/app/contributions', icon: FileCode },
       { name: 'Leaderboard', href: '/live/leaderboard', icon: Award, external: true },
-      { name: 'Rule Marketplace', href: '/app/detection-packs', icon: Box },
+      { name: 'Detection Packs Preview', href: '/app/detection-packs', icon: Box },
     ],
   },
   {
@@ -251,7 +251,6 @@ interface ExtendedSharedProps extends SharedProps {
 export function MainLayout({ children, title }: MainLayoutProps) {
   const pageProps = usePage<ExtendedSharedProps>().props
   const { auth, flash, current_tenant, available_tenants, is_super_admin } = pageProps
-  const [showUserMenu, setShowUserMenu] = useState(false)
   const [isSearchOpen, setIsSearchOpen] = useState(false)
 
   // --- Sidebar collapsed state (icon-only mode) with localStorage persistence ---
@@ -666,9 +665,13 @@ export function MainLayout({ children, title }: MainLayoutProps) {
             className={cn('flex-shrink-0', sidebarCollapsed ? 'p-2' : 'p-4')}
             style={{ borderTop: '1px solid var(--hairline)' }}
           >
-            <div className="relative">
+            <Menu
+              side={sidebarCollapsed ? 'right' : 'top'}
+              align={sidebarCollapsed ? 'start' : 'center'}
+              className={sidebarCollapsed ? 'w-48' : 'w-56'}
+              trigger={
               <button
-                onClick={() => setShowUserMenu(!showUserMenu)}
+                type="button"
                 className={cn(
                   'flex items-center w-full rounded-lg p-2 transition-colors',
                   sidebarCollapsed ? 'justify-center' : 'gap-3'
@@ -700,55 +703,27 @@ export function MainLayout({ children, title }: MainLayoutProps) {
                       <p className="text-xs truncate" style={{ color: 'var(--muted)' }}>{user.role}</p>
                     </div>
                     <ChevronDown
-                      className={cn('h-4 w-4 transition-transform', showUserMenu && 'rotate-180')}
+                      className="h-4 w-4"
                       style={{ color: 'var(--muted)' }}
                     />
                   </>
                 )}
               </button>
-
-              {showUserMenu && (
-                <div
-                  className={cn(
-                    'absolute bottom-full mb-2 rounded-lg shadow-lg py-1',
-                    sidebarCollapsed ? 'left-full ml-2 bottom-0 mb-0 w-48' : 'left-0 right-0'
-                  )}
-                  style={{
-                    backgroundColor: 'var(--surface-2)',
-                    border: '1px solid var(--border)'
-                  }}
-                >
-                  <Link
-                    href="/app/settings"
-                    className="flex items-center gap-2 px-3 py-2 text-sm"
-                    style={{ color: 'var(--fg-2)' }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = 'var(--surface-3)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = 'transparent'
-                    }}
-                  >
-                    <Settings className="h-4 w-4" />
-                    Settings
-                  </Link>
-                  <button
-                    onClick={handleLogout}
-                    className="flex items-center gap-2 w-full px-3 py-2 text-sm"
-                    style={{ color: 'var(--crit)' }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = 'var(--surface-3)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = 'transparent'
-                    }}
-                  >
-                    <LogOut className="h-4 w-4" />
-                    Logout
-                  </button>
-                </div>
-              )}
-            </div>
+              }
+            >
+              <MenuItem onSelect={() => router.visit('/app/settings')}>
+                <>
+                  <Settings className="h-4 w-4" />
+                  Settings
+                </>
+              </MenuItem>
+              <MenuItem onSelect={handleLogout} tone="danger">
+                <>
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </>
+              </MenuItem>
+            </Menu>
           </div>
         )}
       </aside>

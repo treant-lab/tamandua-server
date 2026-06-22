@@ -45,6 +45,7 @@ import {
   Hash,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 
@@ -411,7 +412,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
       enabled: false,
       steps: template?.steps || [],
       triggerConditions: [],
-      trigger: { type: 'auto', conditions: [] },
+      trigger: { type: 'manual', conditions: [] },
     })
     setShowEditor(true)
   }
@@ -420,7 +421,7 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
   const openEditPlaybook = (playbook: Playbook) => {
     setEditingPlaybook({
       ...playbook,
-      trigger: playbook.trigger || { type: 'auto', conditions: [] },
+      trigger: playbook.trigger || { type: 'manual', conditions: [] },
     })
     setShowEditor(true)
   }
@@ -563,29 +564,27 @@ export default function Playbooks({ playbooks: initialPlaybooks = [], executions
               />
             </div>
 
-            <select
+            <Select
               value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value as Playbook['category'] | 'all')}
-              className="input-sentinel px-3 py-2"
-              style={{ width: 'auto' }}
+              onValueChange={(value) => setSelectedCategory(value as Playbook['category'] | 'all')}
+              className="min-w-44"
             >
-              <option value="all">All Categories</option>
+              <SelectItem value="all">All Categories</SelectItem>
               {Object.entries(categoryConfig).map(([key, config]) => (
-                <option key={key} value={key}>{config.label}</option>
+                <SelectItem key={key} value={key}>{config.label}</SelectItem>
               ))}
-            </select>
+            </Select>
 
-            <select
+            <Select
               value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value as Playbook['status'] | 'all')}
-              className="input-sentinel px-3 py-2"
-              style={{ width: 'auto' }}
+              onValueChange={(value) => setSelectedStatus(value as Playbook['status'] | 'all')}
+              className="min-w-36"
             >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="draft">Draft</option>
-              <option value="disabled">Disabled</option>
-            </select>
+              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="disabled">Disabled</SelectItem>
+            </Select>
 
             <button
               onClick={fetchPlaybooks}
@@ -1374,15 +1373,15 @@ function PlaybookEditor({
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1" style={{ color: 'var(--muted)' }}>Category</label>
-                  <select
+                  <Select
                     value={playbook.category || 'custom'}
-                    onChange={(e) => onChange({ ...playbook, category: e.target.value as Playbook['category'] })}
-                    className="input-sentinel w-full"
+                    onValueChange={(value) => onChange({ ...playbook, category: value as Playbook['category'] })}
+                    className="w-full"
                   >
                     {Object.entries(categoryConfig).map(([key, config]) => (
-                      <option key={key} value={key}>{config.label}</option>
+                      <SelectItem key={key} value={key}>{config.label}</SelectItem>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
@@ -1398,15 +1397,15 @@ function PlaybookEditor({
 
               <div>
                 <label className="block text-sm font-medium mb-1" style={{ color: 'var(--muted)' }}>Status</label>
-                <select
+                <Select
                   value={playbook.status || 'draft'}
-                  onChange={(e) => onChange({ ...playbook, status: e.target.value as Playbook['status'] })}
-                  className="input-sentinel w-full"
+                  onValueChange={(value) => onChange({ ...playbook, status: value as Playbook['status'] })}
+                  className="w-full"
                 >
-                  <option value="draft">Draft</option>
-                  <option value="active">Active</option>
-                  <option value="disabled">Disabled</option>
-                </select>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="disabled">Disabled</SelectItem>
+                </Select>
               </div>
             </>
           )}
@@ -1447,27 +1446,27 @@ function PlaybookEditor({
                       <div className="flex-1 grid grid-cols-3 gap-3">
                         <div>
                           <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Field</label>
-                          <select
+                          <Select
                             value={cond.field}
-                            onChange={(e) => updateTriggerCondition(index, { field: e.target.value as TriggerCondition['field'] })}
-                            className="input-sentinel w-full text-sm"
+                            onValueChange={(value) => updateTriggerCondition(index, { field: value as TriggerCondition['field'] })}
+                            className="w-full"
                           >
                             {triggerFieldOptions.map(opt => (
-                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                             ))}
-                          </select>
+                          </Select>
                         </div>
                         <div>
                           <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Operator</label>
-                          <select
+                          <Select
                             value={cond.operator}
-                            onChange={(e) => updateTriggerCondition(index, { operator: e.target.value as TriggerCondition['operator'] })}
-                            className="input-sentinel w-full text-sm"
+                            onValueChange={(value) => updateTriggerCondition(index, { operator: value as TriggerCondition['operator'] })}
+                            className="w-full"
                           >
                             {triggerOperatorOptions.map(opt => (
-                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                             ))}
-                          </select>
+                          </Select>
                         </div>
                         <div>
                           <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Value</label>
@@ -1633,15 +1632,15 @@ function PlaybookEditor({
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
                                   <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Action Type</label>
-                                  <select
+                                  <Select
                                     value={step.actionType}
-                                    onChange={(e) => updateStep(index, { actionType: e.target.value as PlaybookStep['actionType'], action: e.target.value })}
-                                    className="input-sentinel w-full text-sm"
+                                    onValueChange={(value) => updateStep(index, { actionType: value as PlaybookStep['actionType'], action: value })}
+                                    className="w-full"
                                   >
                                     {actionTypes.map((action) => (
-                                      <option key={action.value} value={action.value}>{action.label}</option>
+                                      <SelectItem key={action.value} value={action.value}>{action.label}</SelectItem>
                                     ))}
-                                  </select>
+                                  </Select>
                                 </div>
                                 <div>
                                   <label className="block text-xs mb-1" style={{ color: 'var(--subtle)' }}>Timeout (sec)</label>

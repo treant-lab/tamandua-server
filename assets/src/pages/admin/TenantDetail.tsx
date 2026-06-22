@@ -35,7 +35,7 @@ import {
 import { cn, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useRef, useEffect } from 'react'
-import { Dialog, Select, SelectItem } from '@/components/ui/baseui'
+import { Dialog, Select, SelectItem, Checkbox } from '@/components/ui/baseui'
 import type {
   TenantDetailPageProps,
   TenantUser,
@@ -504,21 +504,18 @@ function APIKeysTab({ apiKeys, tenantId }: { apiKeys: APIKey[]; tenantId: string
               <label className="block text-sm font-medium text-slate-300 mb-2">Scopes</label>
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {availableScopes.map(scope => (
-                  <label key={scope} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={newKeyScopes.includes(scope)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setNewKeyScopes([...newKeyScopes, scope])
-                        } else {
-                          setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
-                        }
-                      }}
-                      className="h-4 w-4 rounded border-slate-600 bg-slate-700 text-primary-600"
-                    />
-                    <span className="text-sm text-slate-300 font-mono">{scope}</span>
-                  </label>
+                  <Checkbox
+                    key={scope}
+                    checked={newKeyScopes.includes(scope)}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setNewKeyScopes([...newKeyScopes, scope])
+                      } else {
+                        setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
+                      }
+                    }}
+                    label={<span className="font-mono">{scope}</span>}
+                  />
                 ))}
               </div>
             </div>

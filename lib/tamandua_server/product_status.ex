@@ -101,6 +101,6 @@ defmodule TamanduaServer.ProductStatus do
   """
   @spec gaps_url() :: String.t()
   def gaps_url do
-    "https://github.com/treant-lab/tamandua/blob/main/docs/KNOWN_PRODUCTION_GAPS.md"
+    "https://github.com/treant-lab/tamandua-community/blob/main/docs/KNOWN_PRODUCTION_GAPS.md"
   end
 end

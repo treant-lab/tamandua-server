@@ -50,20 +50,7 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   def show(conn, %{"id" => id}) do
     case Hyperautomation.get_workflow(id) do
       {:ok, workflow} ->
-        json(conn, %{
-          data: %{
-            id: workflow.id,
-            name: workflow.name,
-            description: workflow.description,
-            status: workflow.status,
-            trigger: workflow.trigger,
-            conditions: workflow.conditions,
-            actions: workflow.actions,
-            execution_stats: workflow.execution_stats,
-            created_at: workflow.created_at,
-            updated_at: workflow.updated_at
-          }
-        })
+        json(conn, %{data: serialize_workflow(workflow)})
 
       {:error, :not_found} ->
         conn

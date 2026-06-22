@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { cn, safeRandomUUID } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { ExportDropdown } from '@/components/ExportDropdown'
+import { Checkbox, Select, SelectItem } from '@/components/ui/baseui'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -650,20 +651,18 @@ function ConditionRow({
       </div>
 
       {/* Operator */}
-      <select
-        value={condition.operator}
-        onChange={e => onUpdate({ operator: e.target.value })}
-        className="w-36 rounded px-2 py-1.5 text-sm flex-shrink-0"
-        style={{
-          background: 'var(--surface-2)',
-          border: '1px solid var(--border)',
-          color: 'var(--fg-2)',
-        }}
-      >
-        {applicableOps.map(op => (
-          <option key={op.value} value={op.value}>{op.label}</option>
-        ))}
-      </select>
+      <div className="w-36 flex-shrink-0">
+        <Select
+          value={condition.operator}
+          onValueChange={(v) => onUpdate({ operator: v })}
+          placeholder="Operator"
+          fullWidth
+        >
+          {applicableOps.map(op => (
+            <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+          ))}
+        </Select>
+      </div>
 
       {/* Value */}
       <input
@@ -1681,21 +1680,16 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4 text-sm" style={{ color: 'var(--muted)' }}>
                   <span>Page Size:</span>
-                  <select
-                    value={tqlPageSize}
-                    onChange={e => setTqlPageSize(Number(e.target.value))}
-                    className="rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2"
-                    style={{
-                      background: 'var(--surface-2)',
-                      border: '1px solid var(--border)',
-                      color: 'var(--fg-2)',
-                    }}
+                  <Select
+                    value={String(tqlPageSize)}
+                    onValueChange={(v) => setTqlPageSize(Number(v))}
+                    placeholder="Page size"
                   >
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
-                    <option value={500}>500</option>
-                    <option value={1000}>1000</option>
-                  </select>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                    <SelectItem value="500">500</SelectItem>
+                    <SelectItem value="1000">1000</SelectItem>
+                  </Select>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -2197,22 +2191,13 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4 text-sm" style={{ color: 'var(--muted)' }}>
                 <span>Time Range:</span>
-                <select
-                  value={timeRange}
-                  onChange={e => setTimeRange(e.target.value)}
-                  className="rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2"
-                  style={{
-                    background: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--fg-2)',
-                  }}
-                >
-                  <option value="1h">Last 1 hour</option>
-                  <option value="6h">Last 6 hours</option>
-                  <option value="24h">Last 24 hours</option>
-                  <option value="7d">Last 7 days</option>
-                  <option value="30d">Last 30 days</option>
-                </select>
+                <Select value={timeRange} onValueChange={setTimeRange} placeholder="Time range">
+                  <SelectItem value="1h">Last 1 hour</SelectItem>
+                  <SelectItem value="6h">Last 6 hours</SelectItem>
+                  <SelectItem value="24h">Last 24 hours</SelectItem>
+                  <SelectItem value="7d">Last 7 days</SelectItem>
+                  <SelectItem value="30d">Last 30 days</SelectItem>
+                </Select>
               </div>
               <button
                 type="button"
@@ -2372,13 +2357,13 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                     }}
                   >
                     <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleResultSelection(result.id)}
-                        className="mt-1 h-4 w-4 rounded"
-                        style={{ accentColor: 'var(--emerald-500)' }}
-                      />
+                      <div className="mt-1">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => toggleResultSelection(result.id)}
+                          aria-label="Select hunt result"
+                        />
+                      </div>
                       <div className="p-2 rounded" style={{ background: 'var(--surface-2)' }}>
                         <Icon className="h-4 w-4" style={{ color: 'var(--muted)' }} />
                       </div>
@@ -2597,21 +2582,16 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               </div>
               <div>
                 <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Category (MITRE Tactic)</label>
-                <select
+                <Select
                   value={saveForm.category}
-                  onChange={e => setSaveForm({ ...saveForm, category: e.target.value })}
-                  className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2"
-                  style={{
-                    background: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--fg-2)',
-                  }}
+                  onValueChange={(v) => setSaveForm({ ...saveForm, category: v })}
+                  placeholder="Select category..."
+                  fullWidth
                 >
-                  <option value="">Select category...</option>
                   {mitreCategories.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                   ))}
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-sm mb-2" style={{ color: 'var(--muted)' }}>Query</label>
@@ -2633,16 +2613,11 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                   {queryMode === 'tql' ? tqlQuery : query}
                 </pre>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={saveForm.isPublic}
-                  onChange={e => setSaveForm({ ...saveForm, isPublic: e.target.checked })}
-                  className="rounded"
-                  style={{ accentColor: 'var(--emerald-500)' }}
-                />
-                <span className="text-sm" style={{ color: 'var(--fg-2)' }}>Share with team</span>
-              </label>
+              <Checkbox
+                checked={saveForm.isPublic}
+                onCheckedChange={(checked) => setSaveForm({ ...saveForm, isPublic: checked })}
+                label="Share with team"
+              />
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button

@@ -11,6 +11,7 @@ import InvestigationGraph from '@/components/InvestigationGraph';
 import EntityPivot from '@/components/EntityPivot';
 import EvidencePanel from '@/components/EvidencePanel';
 import ProcessChainView from '@/components/ProcessChainView';
+import { Menu, MenuItem, Tooltip } from '@/components/ui/baseui';
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger';
 import type { Alert, Agent, GraphNode, GraphEdge, TimelineEntry, GraphNodeType, Evidence, ProcessChainNode } from '@/types';
@@ -381,7 +382,6 @@ export default function AlertDetail({
     const tab = new URLSearchParams(window.location.search).get('tab') as AlertTab | null;
     return tab && ALERT_TABS.includes(tab) ? tab : 'graph';
   });
-  const [showResponseActions, setShowResponseActions] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
@@ -686,7 +686,6 @@ export default function AlertDetail({
         return;
       }
       setActionNotice({ type: 'success', message: `${action} request accepted. Check response history for execution status.` });
-      setShowResponseActions(false);
       router.reload();
     } catch (err) {
       logger.error(`Response action ${action} error:`, err);
@@ -1223,72 +1222,55 @@ export default function AlertDetail({
 
                 {/* Response Actions */}
                 {agent && (
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowResponseActions(!showResponseActions)}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors"
-                      style={{
-                        backgroundColor: 'color-mix(in srgb, var(--crit) 20%, transparent)',
-                        borderColor: 'color-mix(in srgb, var(--crit) 30%, transparent)',
-                        color: 'var(--crit)',
-                        border: '1px solid'
-                      }}
-                    >
-                      <Terminal size={16} />
-                      Respond
-                      <ChevronDown size={14} className={cn('transition-transform', showResponseActions && 'rotate-180')} />
-                    </button>
-                    {showResponseActions && (
+                  <Menu
+                    align="end"
+                    className="w-56"
+                    trigger={
+                      <button
+                        type="button"
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors"
+                        style={{
+                          backgroundColor: 'color-mix(in srgb, var(--crit) 20%, transparent)',
+                          borderColor: 'color-mix(in srgb, var(--crit) 30%, transparent)',
+                          color: 'var(--crit)',
+                          border: '1px solid'
+                        }}
+                      >
+                        <Terminal size={16} />
+                        Respond
+                        <ChevronDown size={14} />
+                      </button>
+                    }
+                  >
+                    <MenuItem onSelect={() => handleResponseAction('isolate')} disabled={isUpdating} tone="danger">
                       <>
-                        <div className="fixed inset-0 z-10" onClick={() => setShowResponseActions(false)} />
-                        <div
-                          className="absolute right-0 mt-1 w-52 rounded-lg shadow-xl z-20 py-1"
-                          style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}
-                        >
-                          <button
-                            onClick={() => handleResponseAction('isolate')}
-                            disabled={isUpdating}
-                            className="w-full px-4 py-2 text-sm text-left flex items-center gap-2 hover:brightness-110"
-                            style={{ color: 'var(--crit)' }}
-                          >
-                            <Globe size={14} />
-                            Isolate Endpoint
-                          </button>
-                          {alert.evidence?.process?.pid && (
-                            <button
-                              onClick={() => handleResponseAction('kill')}
-                              disabled={isUpdating}
-                              className="w-full px-4 py-2 text-sm text-left flex items-center gap-2 hover:brightness-110"
-                              style={{ color: 'var(--high)' }}
-                            >
-                              <XCircle size={14} />
-                              Kill Process (PID {alert.evidence.process.pid})
-                            </button>
-                          )}
-                          {alert.evidence?.file?.path && (
-                            <button
-                              onClick={() => handleResponseAction('quarantine')}
-                              disabled={isUpdating}
-                              className="w-full px-4 py-2 text-sm text-left flex items-center gap-2 hover:brightness-110"
-                              style={{ color: 'var(--med)' }}
-                            >
-                              <File size={14} />
-                              Quarantine File
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleResponseAction('scan')}
-                            disabled={isUpdating}
-                            className="w-full px-4 py-2 text-sm text-left flex items-center gap-2 hover:brightness-110"
-                            style={{ color: 'var(--accent)' }}
-                          >
-                            <Search size={14} />
-                            Full Scan
-                          </button>
-                        </div>
+                        <Globe size={14} />
+                        Isolate Endpoint
                       </>
+                    </MenuItem>
+                    {alert.evidence?.process?.pid && (
+                      <MenuItem onSelect={() => handleResponseAction('kill')} disabled={isUpdating} tone="warning">
+                        <>
+                          <XCircle size={14} />
+                          Kill Process (PID {alert.evidence.process.pid})
+                        </>
+                      </MenuItem>
                     )}
-                  </div>
+                    {alert.evidence?.file?.path && (
+                      <MenuItem onSelect={() => handleResponseAction('quarantine')} disabled={isUpdating} tone="warning">
+                        <>
+                          <File size={14} />
+                          Quarantine File
+                        </>
+                      </MenuItem>
+                    )}
+                    <MenuItem onSelect={() => handleResponseAction('scan')} disabled={isUpdating}>
+                      <>
+                        <Search size={14} />
+                        Full Scan
+                      </>
+                    </MenuItem>
+                  </Menu>
                 )}
 
                 <button
@@ -1500,9 +1482,17 @@ export default function AlertDetail({
               </div>
               <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Reason</p>
-                <p className="mt-1 text-sm truncate" style={{ color: 'var(--fg)' }} title={policyDecision?.reason || undefined}>
-                  {policyDecision?.reason || 'Decision trace not available for this alert'}
-                </p>
+                {policyDecision?.reason ? (
+                  <Tooltip content={policyDecision.reason}>
+                    <p className="mt-1 text-sm truncate" style={{ color: 'var(--fg)' }}>
+                      {policyDecision.reason}
+                    </p>
+                  </Tooltip>
+                ) : (
+                  <p className="mt-1 text-sm truncate" style={{ color: 'var(--fg)' }}>
+                    Decision trace not available for this alert
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -2005,14 +1995,14 @@ export default function AlertDetail({
                                       </div>
                                       <div className="flex flex-wrap gap-1.5">
                                         {correlation.signals.map((signal) => (
-                                          <span
-                                            key={`${event.id}-${signal.label}-${signal.value}`}
-                                            className="text-[11px] px-2 py-1 rounded"
-                                            style={{ backgroundColor: 'var(--surface-alt, var(--surface))', color: 'var(--fg-2)' }}
-                                            title={`${signal.label}: ${signal.value}`}
-                                          >
-                                            <span style={{ color: 'var(--muted)' }}>{signal.label}:</span> {signal.value}
-                                          </span>
+                                          <Tooltip key={`${event.id}-${signal.label}-${signal.value}`} content={`${signal.label}: ${signal.value}`}>
+                                            <span
+                                              className="text-[11px] px-2 py-1 rounded"
+                                              style={{ backgroundColor: 'var(--surface-alt, var(--surface))', color: 'var(--fg-2)' }}
+                                            >
+                                              <span style={{ color: 'var(--muted)' }}>{signal.label}:</span> {signal.value}
+                                            </span>
+                                          </Tooltip>
                                         ))}
                                       </div>
                                     </div>
@@ -2052,14 +2042,15 @@ export default function AlertDetail({
                                   {/* Action buttons */}
                                   <div className="flex flex-col items-center gap-1">
                                     {event.pid && agent && (
-                                      <button
-                                        onClick={() => router.visit(`/app/investigation/${event.pid}?type=process&agent_id=${agent.id}`)}
-                                        className="p-2 rounded transition-colors hover:brightness-110"
-                                        style={{ color: 'var(--muted)' }}
-                                        title="View in Graph"
-                                      >
-                                        <Share2 size={16} />
-                                      </button>
+                                      <Tooltip content="View in Graph">
+                                        <button
+                                          onClick={() => router.visit(`/app/investigation/${event.pid}?type=process&agent_id=${agent.id}`)}
+                                          className="p-2 rounded transition-colors hover:brightness-110"
+                                          style={{ color: 'var(--muted)' }}
+                                        >
+                                          <Share2 size={16} />
+                                        </button>
+                                      </Tooltip>
                                     )}
                                   </div>
                                 </div>
@@ -2159,16 +2150,17 @@ export default function AlertDetail({
                         <span className="truncate max-w-[180px] font-mono text-xs" style={{ color: 'var(--fg)' }}>
                           {String(value)}
                         </span>
-                        <button
-                          onClick={() => copyToClipboard(String(value), key)}
-                          className="p-1 rounded hover:brightness-110"
-                          title="Copy"
-                        >
-                          <Copy
-                            size={12}
-                            style={{ color: copiedField === key ? 'var(--low)' : 'var(--muted)' }}
-                          />
-                        </button>
+                        <Tooltip content="Copy">
+                          <button
+                            onClick={() => copyToClipboard(String(value), key)}
+                            className="p-1 rounded hover:brightness-110"
+                          >
+                            <Copy
+                              size={12}
+                              style={{ color: copiedField === key ? 'var(--low)' : 'var(--muted)' }}
+                            />
+                          </button>
+                        </Tooltip>
                       </div>
                     </div>
                   ))}
@@ -2362,12 +2354,16 @@ function IncidentStorylinePanel({
                           <Icon size={15} />
                         </div>
                       </div>
-                      <div className="text-sm font-semibold truncate" style={{ color: 'var(--fg)' }} title={step.title}>
-                        {step.title}
-                      </div>
-                      <p className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--muted)' }} title={step.detail}>
-                        {step.detail}
-                      </p>
+                      <Tooltip content={step.title}>
+                        <div className="text-sm font-semibold truncate" style={{ color: 'var(--fg)' }}>
+                          {step.title}
+                        </div>
+                      </Tooltip>
+                      <Tooltip content={step.detail}>
+                        <p className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--muted)' }}>
+                          {step.detail}
+                        </p>
+                      </Tooltip>
                     </button>
                   );
                 })}
@@ -2414,9 +2410,11 @@ function IncidentStorylinePanel({
                   <div className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
                     {relatedEventsCount} event{relatedEventsCount === 1 ? '' : 's'} grouped
                   </div>
-                  <div className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--muted)' }} title={correlationOverview}>
-                    {correlationOverview}
-                  </div>
+                  <Tooltip content={correlationOverview}>
+                    <div className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--muted)' }}>
+                      {correlationOverview}
+                    </div>
+                  </Tooltip>
                 </div>
 
                 <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--hairline)' }}>
@@ -2424,9 +2422,17 @@ function IncidentStorylinePanel({
                     <Wifi size={14} style={{ color: 'var(--low)' }} />
                     <span className="text-xs font-semibold" style={{ color: 'var(--fg)' }}>External Touchpoint</span>
                   </div>
-                  <div className="text-sm font-mono truncate" style={{ color: remote ? 'var(--low)' : 'var(--muted)' }} title={remote ? String(remote) : undefined}>
-                    {remote ? `${remote}${remotePort ? `:${remotePort}` : ''}` : 'no remote endpoint captured'}
-                  </div>
+                  {remote ? (
+                    <Tooltip content={String(remote)}>
+                      <div className="text-sm font-mono truncate" style={{ color: 'var(--low)' }}>
+                        {`${remote}${remotePort ? `:${remotePort}` : ''}`}
+                      </div>
+                    </Tooltip>
+                  ) : (
+                    <div className="text-sm font-mono truncate" style={{ color: 'var(--muted)' }}>
+                      no remote endpoint captured
+                    </div>
+                  )}
                   <div className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
                     {eventFlowStats.uniqueIPs} unique IPs, {eventFlowStats.uniqueDomains} DNS names, {formatBytesLocal(eventFlowStats.totalBytesSent)} sent
                   </div>
@@ -2488,14 +2494,15 @@ function IncidentStorylinePanel({
                       <span className="text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0" style={{ backgroundColor: 'var(--surface-2)', color: 'var(--muted)' }}>
                         {ioc.type}
                       </span>
-                      <button
-                        onClick={() => onCopy(ioc.value, `story_ioc_${index}`)}
-                        className="text-xs font-mono truncate text-left hover:brightness-125"
-                        style={{ color: copiedField === `story_ioc_${index}` ? 'var(--low)' : 'var(--fg-2)' }}
-                        title={ioc.value}
-                      >
-                        {shortValue(ioc.value, 20, 12)}
-                      </button>
+                      <Tooltip content={ioc.value}>
+                        <button
+                          onClick={() => onCopy(ioc.value, `story_ioc_${index}`)}
+                          className="text-xs font-mono truncate text-left hover:brightness-125"
+                          style={{ color: copiedField === `story_ioc_${index}` ? 'var(--low)' : 'var(--fg-2)' }}
+                        >
+                          {shortValue(ioc.value, 20, 12)}
+                        </button>
+                      </Tooltip>
                     </div>
                   ))}
                 </div>
@@ -2517,13 +2524,14 @@ function EvidenceRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start justify-between gap-3 py-1.5 border-b last:border-b-0" style={{ borderColor: 'var(--hairline)' }}>
       <span className="uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{label}</span>
-      <span
-        className="font-mono text-right max-w-[280px] min-w-0"
-        style={{ color: 'var(--fg-2)', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
-        title={value}
-      >
-        {shortValue(value, 44, 14)}
-      </span>
+      <Tooltip content={value}>
+        <span
+          className="font-mono text-right max-w-[280px] min-w-0"
+          style={{ color: 'var(--fg-2)', overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+        >
+          {shortValue(value, 44, 14)}
+        </span>
+      </Tooltip>
     </div>
   );
 }
@@ -2563,26 +2571,27 @@ function LongTextPreview({
 
   return (
     <div className={compact ? 'mt-1' : 'mt-2'}>
-      <div
-        className={cn(
-          'rounded-md border min-w-0',
-          compact ? 'px-0 py-0 border-transparent bg-transparent' : 'p-2',
-          mono ? 'font-mono text-[11px]' : 'text-sm'
-        )}
-        style={{
-          backgroundColor: compact ? 'transparent' : 'var(--bg)',
-          borderColor: compact ? 'transparent' : 'var(--hairline)',
-          color: compact ? 'var(--muted)' : 'var(--fg-2)',
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-          whiteSpace: 'pre-wrap',
-          maxHeight: expanded ? '18rem' : undefined,
-          overflowY: expanded ? 'auto' : undefined
-        }}
-        title={normalized}
-      >
-        {visibleText}
-      </div>
+      <Tooltip content={normalized}>
+        <div
+          className={cn(
+            'rounded-md border min-w-0',
+            compact ? 'px-0 py-0 border-transparent bg-transparent' : 'p-2',
+            mono ? 'font-mono text-[11px]' : 'text-sm'
+          )}
+          style={{
+            backgroundColor: compact ? 'transparent' : 'var(--bg)',
+            borderColor: compact ? 'transparent' : 'var(--hairline)',
+            color: compact ? 'var(--muted)' : 'var(--fg-2)',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+            maxHeight: expanded ? '18rem' : undefined,
+            overflowY: expanded ? 'auto' : undefined
+          }}
+        >
+          {visibleText}
+        </div>
+      </Tooltip>
       {(shouldCollapse || onCopy) && (
         <div className="mt-1 flex items-center gap-2">
           {shouldCollapse && (
@@ -3040,7 +3049,9 @@ function ProofMiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded p-2" style={{ backgroundColor: 'var(--surface-2)' }}>
       <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{label}</div>
-      <div className="text-xs font-medium truncate" style={{ color: 'var(--fg)' }} title={value}>{value}</div>
+      <Tooltip content={value}>
+        <div className="text-xs font-medium truncate" style={{ color: 'var(--fg)' }}>{value}</div>
+      </Tooltip>
     </div>
   );
 }
@@ -3067,13 +3078,14 @@ function ProofField({
         {label}
       </span>
       <div className="flex items-center gap-1.5">
-        <span
-          className="font-mono text-xs"
-          style={{ color: 'var(--fg-2)' }}
-          title={fullValue}
-        >
-          {value}
-        </span>
+        <Tooltip content={fullValue}>
+          <span
+            className="font-mono text-xs"
+            style={{ color: 'var(--fg-2)' }}
+          >
+            {value}
+          </span>
+        </Tooltip>
         {linkUrl && (
           <a
             href={linkUrl}
@@ -3143,9 +3155,11 @@ function ResponseActionsSection({ actions }: { actions: ResponseActionRecord[] }
                 {action.executed_at || action.created_at ? new Date(action.executed_at || action.created_at || '').toLocaleString() : 'time not recorded'}
               </div>
               {action.error_message && (
-                <div className="mt-1 text-[10px] truncate" style={{ color: 'var(--crit)' }} title={action.error_message}>
-                  {action.error_message}
-                </div>
+                <Tooltip content={action.error_message}>
+                  <div className="mt-1 text-[10px] truncate" style={{ color: 'var(--crit)' }}>
+                    {action.error_message}
+                  </div>
+                </Tooltip>
               )}
             </div>
           ))}
@@ -3231,13 +3245,14 @@ function IOCsSection({
                     >
                       {badge.label}
                     </span>
-                    <span
-                      className="text-xs font-mono truncate"
-                      style={{ color: 'var(--fg-2)' }}
-                      title={ioc.value}
-                    >
-                      {ioc.value.length > 32 ? `${ioc.value.slice(0, 16)}...${ioc.value.slice(-12)}` : ioc.value}
-                    </span>
+                    <Tooltip content={ioc.value}>
+                      <span
+                        className="text-xs font-mono truncate"
+                        style={{ color: 'var(--fg-2)' }}
+                      >
+                        {ioc.value.length > 32 ? `${ioc.value.slice(0, 16)}...${ioc.value.slice(-12)}` : ioc.value}
+                      </span>
+                    </Tooltip>
                   </div>
                   <div className="flex flex-col min-w-0 flex-1">
                     {(ioc.source || ioc.tlp || ioc.confidence != null || ioc.redacted) && (
@@ -3249,23 +3264,25 @@ function IOCsSection({
                       </span>
                     )}
                   </div>
-                  <button
-                    onClick={() => onCopyToClipboard(ioc.value, fieldKey)}
-                    className="p-1 rounded hover:brightness-110 shrink-0"
-                    style={{ color: copiedField === fieldKey ? 'var(--emerald-400)' : 'var(--muted)' }}
-                    title="Copy IOC"
-                  >
-                    {copiedField === fieldKey ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                  {canBlock && (ioc.blockable ?? (ioc.type === 'ip' || ioc.type === 'domain')) && (
+                  <Tooltip content="Copy IOC">
                     <button
-                      onClick={() => onBlockIOC(ioc)}
+                      onClick={() => onCopyToClipboard(ioc.value, fieldKey)}
                       className="p-1 rounded hover:brightness-110 shrink-0"
-                      style={{ color: 'var(--crit)' }}
-                      title={`Block ${ioc.type}`}
+                      style={{ color: copiedField === fieldKey ? 'var(--emerald-400)' : 'var(--muted)' }}
                     >
-                      <ShieldAlert size={12} />
+                      {copiedField === fieldKey ? <Check size={12} /> : <Copy size={12} />}
                     </button>
+                  </Tooltip>
+                  {canBlock && (ioc.blockable ?? (ioc.type === 'ip' || ioc.type === 'domain')) && (
+                    <Tooltip content={`Block ${ioc.type}`}>
+                      <button
+                        onClick={() => onBlockIOC(ioc)}
+                        className="p-1 rounded hover:brightness-110 shrink-0"
+                        style={{ color: 'var(--crit)' }}
+                      >
+                        <ShieldAlert size={12} />
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
               );

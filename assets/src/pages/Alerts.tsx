@@ -13,6 +13,7 @@ import { logger } from '@/lib/logger'
 import { useAlertChannel } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
 import type { Alert, User } from '@/types'
+import { Select, SelectItem, Menu, MenuItem, Popover } from '@/components/ui/baseui'
 
 // ===========================================================================
 // Types
@@ -140,10 +141,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
   // UI State
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
-  const [showBulkActions, setShowBulkActions] = useState(false)
   const [showTuningPanel, setShowTuningPanel] = useState(false)
-  const [showExportOptions, setShowExportOptions] = useState(false)
-  const [showFilterPresets, setShowFilterPresets] = useState(false)
   const [sortBy, setSortBy] = useState<'created_at' | 'severity' | 'threat_score'>('created_at')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
@@ -637,8 +635,6 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             {/* Bulk Actions */}
             {selectedAlerts.size > 0 && (
               <BulkActionsDropdown
-                show={showBulkActions}
-                setShow={setShowBulkActions}
                 actions={BULK_ACTIONS}
                 users={assignableUsers}
                 investigations={investigations}
@@ -649,16 +645,12 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
             {/* Filter Presets */}
             <FilterPresetsDropdown
-              show={showFilterPresets}
-              setShow={setShowFilterPresets}
               presets={filterPresets}
               onApply={applyFilterPreset}
             />
 
             {/* Export */}
             <ExportDropdown
-              show={showExportOptions}
-              setShow={setShowExportOptions}
               onExport={exportAlerts}
               hasSelection={selectedAlerts.size > 0}
             />
@@ -862,16 +854,15 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
                   Showing {((currentPage - 1) * pageSize) + 1}--{Math.min(currentPage * pageSize, filteredAlerts.length)} of {filteredAlerts.length}
                   {filteredAlerts.length !== effectiveAlerts.length && ` (${effectiveAlerts.length} total)`}
                 </span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1) }}
-                  className="input-sentinel px-2 py-1 text-xs"
-                  style={{ width: 'auto', height: 'auto' }}
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(v) => { setPageSize(Number(v)); setCurrentPage(1) }}
+                  placeholder="Page size"
                 >
                   {PAGE_SIZE_OPTIONS.map(size => (
-                    <option key={size} value={size}>{size} per page</option>
+                    <SelectItem key={size} value={String(size)}>{size} per page</SelectItem>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <div className="flex items-center gap-1">
@@ -1064,15 +1055,6 @@ function MultiSelect({
   onChange: (v: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
 
   const toggleOption = (opt: string) => {
     if (selected.includes(opt)) {
@@ -1083,54 +1065,50 @@ function MultiSelect({
   }
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          "btn-sentinel",
-          selected.length > 0
-            ? "btn-sentinel-outline"
-            : "btn-sentinel-secondary"
-        )}
-      >
-        {label}
-        {selected.length > 0 && (
-          <span className="badge-sentinel badge-sentinel-success ml-1">{selected.length}</span>
-        )}
-        <ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
-      </button>
-
-      {open && (
-        <div
-          className="absolute top-full mt-1 left-0 z-50 w-44 rounded-lg shadow-xl overflow-hidden"
-          style={{
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-          }}
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      align="start"
+      padded={false}
+      popupStyle={{ width: '11rem', minWidth: '11rem', maxWidth: '11rem', background: 'var(--surface-2)' }}
+      trigger={
+        <button
+          className={cn(
+            "btn-sentinel",
+            selected.length > 0
+              ? "btn-sentinel-outline"
+              : "btn-sentinel-secondary"
+          )}
         >
-          {options.map(opt => (
-            <button
-              key={opt}
-              onClick={() => toggleOption(opt)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors"
-              style={{
-                color: selected.includes(opt) ? 'var(--emerald-400)' : 'var(--fg-2)',
-                background: 'transparent',
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-            >
-              {selected.includes(opt) ? (
-                <CheckSquare className="h-4 w-4" />
-              ) : (
-                <Square className="h-4 w-4" />
-              )}
-              <span className="capitalize">{opt.replace('_', ' ')}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+          {label}
+          {selected.length > 0 && (
+            <span className="badge-sentinel badge-sentinel-success ml-1">{selected.length}</span>
+          )}
+          <ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
+        </button>
+      }
+    >
+      {options.map(opt => (
+        <button
+          key={opt}
+          onClick={() => toggleOption(opt)}
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors"
+          style={{
+            color: selected.includes(opt) ? 'var(--emerald-400)' : 'var(--fg-2)',
+            background: 'transparent',
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+        >
+          {selected.includes(opt) ? (
+            <CheckSquare className="h-4 w-4" />
+          ) : (
+            <Square className="h-4 w-4" />
+          )}
+          <span className="capitalize">{opt.replace('_', ' ')}</span>
+        </button>
+      ))}
+    </Popover>
   )
 }
 
@@ -1205,17 +1183,13 @@ function AdvancedFilters({
         {/* Assigned To */}
         <div className="col-span-2">
           <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Assigned To</label>
-          <select
-            value={assignedFilter}
-            onChange={(e) => setAssignedFilter(e.target.value)}
-            className="input-sentinel"
-          >
-            <option value="">All</option>
-            <option value="unassigned">Unassigned</option>
+          <Select value={assignedFilter} onValueChange={setAssignedFilter} placeholder="All" fullWidth>
+            <SelectItem value="">All</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
             {users.map(u => (
-              <option key={u.id} value={u.id}>{u.name}</option>
+              <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
     </div>
@@ -1223,36 +1197,24 @@ function AdvancedFilters({
 }
 
 function BulkActionsDropdown({
-  show, setShow, actions, users, investigations, onAction, loading
+  actions, users, investigations, onAction, loading
 }: {
-  show: boolean
-  setShow: (v: boolean) => void
   actions: BulkAction[]
   users: User[]
   investigations: { id: string; title: string }[]
   onAction: (action: string, params: Record<string, unknown>) => void
   loading: boolean
 }) {
+  const [open, setOpen] = useState(false)
   const [selectedAction, setSelectedAction] = useState<BulkAction | null>(null)
   const [inputValue, setInputValue] = useState('')
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setShow(false)
-        setSelectedAction(null)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [setShow])
 
   const handleActionClick = (action: BulkAction) => {
     if (action.requiresInput) {
       setSelectedAction(action)
     } else {
       onAction(action.action, {})
+      setOpen(false)
     }
   }
 
@@ -1271,252 +1233,203 @@ function BulkActionsDropdown({
     onAction(selectedAction.action, params)
     setSelectedAction(null)
     setInputValue('')
+    setOpen(false)
   }
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setShow(!show)}
-        disabled={loading}
-        className="btn-sentinel btn-sentinel-primary"
-      >
-        {loading ? (
-          <RefreshCw className="h-4 w-4 animate-spin" />
-        ) : (
-          <Layers className="h-4 w-4" />
-        )}
-        Bulk Actions
-        <ChevronDown className="h-3 w-3" />
-      </button>
-
-      {show && (
-        <div
-          className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg shadow-xl overflow-hidden"
-          style={{
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          {selectedAction ? (
-            <div className="p-3">
-              <div className="flex items-center gap-2 mb-3 text-sm" style={{ color: 'var(--fg-2)' }}>
-                {selectedAction.icon}
-                {selectedAction.label}
-              </div>
-
-              {selectedAction.inputType === 'user' && (
-                <select
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  className="input-sentinel mb-3"
-                >
-                  <option value="">Select user...</option>
-                  {users.map(u => (
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  ))}
-                </select>
-              )}
-
-              {selectedAction.inputType === 'investigation' && (
-                <select
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  className="input-sentinel mb-3"
-                >
-                  <option value="">Select investigation...</option>
-                  {investigations.map(i => (
-                    <option key={i.id} value={i.id}>{i.title}</option>
-                  ))}
-                </select>
-              )}
-
-              {selectedAction.inputType === 'text' && (
-                <textarea
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="Notes (optional)..."
-                  className="input-sentinel mb-3 resize-none"
-                  rows={2}
-                  style={{ height: 'auto' }}
-                />
-              )}
-
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setSelectedAction(null); setInputValue('') }}
-                  className="btn-sentinel btn-sentinel-secondary flex-1"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={submitAction}
-                  disabled={selectedAction.inputType !== 'text' && !inputValue}
-                  className="btn-sentinel btn-sentinel-primary flex-1"
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (!o) { setSelectedAction(null); setInputValue('') }
+      }}
+      align="end"
+      padded={false}
+      popupStyle={{ width: '16rem', minWidth: '16rem', maxWidth: '16rem' }}
+      trigger={
+        <button disabled={loading} className="btn-sentinel btn-sentinel-primary">
+          {loading ? (
+            <RefreshCw className="h-4 w-4 animate-spin" />
           ) : (
-            actions.map(action => (
-              <button
-                key={action.action}
-                onClick={() => handleActionClick(action)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-                style={{ color: 'var(--fg-2)', background: 'transparent' }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-              >
-                {action.icon}
-                {action.label}
-              </button>
-            ))
+            <Layers className="h-4 w-4" />
           )}
+          Bulk Actions
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      }
+    >
+      {selectedAction ? (
+        <div className="p-3">
+          <div className="flex items-center gap-2 mb-3 text-sm" style={{ color: 'var(--fg-2)' }}>
+            {selectedAction.icon}
+            {selectedAction.label}
+          </div>
+
+          {selectedAction.inputType === 'user' && (
+            <div className="mb-3">
+              <Select value={inputValue} onValueChange={setInputValue} placeholder="Select user..." fullWidth>
+                {users.map(u => (
+                  <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+                ))}
+              </Select>
+            </div>
+          )}
+
+          {selectedAction.inputType === 'investigation' && (
+            <div className="mb-3">
+              <Select value={inputValue} onValueChange={setInputValue} placeholder="Select investigation..." fullWidth>
+                {investigations.map(i => (
+                  <SelectItem key={i.id} value={i.id}>{i.title}</SelectItem>
+                ))}
+              </Select>
+            </div>
+          )}
+
+          {selectedAction.inputType === 'text' && (
+            <textarea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Notes (optional)..."
+              className="input-sentinel mb-3 resize-none"
+              rows={2}
+              style={{ height: 'auto' }}
+            />
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setSelectedAction(null); setInputValue('') }}
+              className="btn-sentinel btn-sentinel-secondary flex-1"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submitAction}
+              disabled={selectedAction.inputType !== 'text' && !inputValue}
+              className="btn-sentinel btn-sentinel-primary flex-1"
+            >
+              Apply
+            </button>
+          </div>
         </div>
+      ) : (
+        actions.map(action => (
+          <button
+            key={action.action}
+            onClick={() => handleActionClick(action)}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
+            style={{ color: 'var(--fg-2)', background: 'transparent' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            {action.icon}
+            {action.label}
+          </button>
+        ))
       )}
-    </div>
+    </Popover>
   )
 }
 
 function FilterPresetsDropdown({
-  show, setShow, presets, onApply
+  presets, onApply
 }: {
-  show: boolean
-  setShow: (v: boolean) => void
   presets: FilterPreset[]
   onApply: (preset: FilterPreset) => void
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setShow(false)
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [setShow])
-
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setShow(!show)}
-        className="btn-sentinel btn-sentinel-secondary"
-      >
-        <Save className="h-4 w-4" />
-        Presets
-        <ChevronDown className="h-3 w-3" />
-      </button>
-
-      {show && (
-        <div
-          className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg shadow-xl overflow-hidden"
-          style={{
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          {presets.length === 0 ? (
-            <div className="px-4 py-3 text-sm" style={{ color: 'var(--muted)' }}>No saved presets</div>
-          ) : (
-            presets.map(preset => (
-              <button
-                key={preset.id}
-                onClick={() => onApply(preset)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-                style={{ color: 'var(--fg-2)', background: 'transparent' }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-              >
-                <Filter className="h-4 w-4" style={{ color: 'var(--subtle)' }} />
-                {preset.name}
-              </button>
-            ))
-          )}
-        </div>
+    <Menu
+      align="end"
+      trigger={
+        <button className="btn-sentinel btn-sentinel-secondary">
+          <Save className="h-4 w-4" />
+          Presets
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      }
+    >
+      {presets.length === 0 ? (
+        <div className="px-3 py-2 text-sm" style={{ color: 'var(--muted)' }}>No saved presets</div>
+      ) : (
+        presets.map(preset => (
+          <MenuItem key={preset.id} onSelect={() => onApply(preset)}>
+            <Filter className="h-4 w-4" style={{ color: 'var(--subtle)' }} />
+            {preset.name}
+          </MenuItem>
+        ))
       )}
-    </div>
+    </Menu>
   )
 }
 
 function ExportDropdown({
-  show, setShow, onExport, hasSelection
+  onExport, hasSelection
 }: {
-  show: boolean
-  setShow: (v: boolean) => void
   onExport: (format: 'json' | 'csv', includeEnrichment: boolean) => void
   hasSelection: boolean
 }) {
-  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setShow(false)
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [setShow])
+  const handleExport = (format: 'json' | 'csv', includeEnrichment: boolean) => {
+    onExport(format, includeEnrichment)
+    setOpen(false)
+  }
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setShow(!show)}
-        className="btn-sentinel btn-sentinel-secondary"
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      align="end"
+      padded={false}
+      popupStyle={{ width: '14rem', minWidth: '14rem', maxWidth: '14rem' }}
+      trigger={
+        <button className="btn-sentinel btn-sentinel-secondary">
+          <Download className="h-4 w-4" />
+          Export
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      }
+    >
+      <div
+        className="px-3 py-2 text-xs"
+        style={{
+          color: 'var(--muted)',
+          borderBottom: '1px solid var(--hairline)',
+        }}
       >
-        <Download className="h-4 w-4" />
-        Export
-        <ChevronDown className="h-3 w-3" />
+        {hasSelection ? 'Export selected alerts' : 'Export filtered alerts'}
+      </div>
+      <button
+        onClick={() => handleExport('csv', false)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
+        style={{ color: 'var(--fg-2)', background: 'transparent' }}
+        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      >
+        <FileSpreadsheet className="h-4 w-4" style={{ color: 'var(--emerald-400)' }} />
+        Export as CSV
       </button>
-
-      {show && (
-        <div
-          className="absolute right-0 top-full mt-1 z-50 w-56 rounded-lg shadow-xl overflow-hidden"
-          style={{
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          <div
-            className="px-3 py-2 text-xs"
-            style={{
-              color: 'var(--muted)',
-              borderBottom: '1px solid var(--hairline)',
-            }}
-          >
-            {hasSelection ? 'Export selected alerts' : 'Export filtered alerts'}
-          </div>
-          <button
-            onClick={() => onExport('csv', false)}
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-            style={{ color: 'var(--fg-2)', background: 'transparent' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <FileSpreadsheet className="h-4 w-4" style={{ color: 'var(--emerald-400)' }} />
-            Export as CSV
-          </button>
-          <button
-            onClick={() => onExport('json', false)}
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-            style={{ color: 'var(--fg-2)', background: 'transparent' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <FileJson className="h-4 w-4" style={{ color: 'var(--med)' }} />
-            Export as JSON
-          </button>
-          <button
-            onClick={() => onExport('json', true)}
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-            style={{ color: 'var(--fg-2)', background: 'transparent' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <FileText className="h-4 w-4" style={{ color: 'var(--sol-magenta)' }} />
-            JSON with Enrichment
-          </button>
-        </div>
-      )}
-    </div>
+      <button
+        onClick={() => handleExport('json', false)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
+        style={{ color: 'var(--fg-2)', background: 'transparent' }}
+        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      >
+        <FileJson className="h-4 w-4" style={{ color: 'var(--med)' }} />
+        Export as JSON
+      </button>
+      <button
+        onClick={() => handleExport('json', true)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
+        style={{ color: 'var(--fg-2)', background: 'transparent' }}
+        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      >
+        <FileText className="h-4 w-4" style={{ color: 'var(--sol-magenta)' }} />
+        JSON with Enrichment
+      </button>
+    </Popover>
   )
 }
 
@@ -1785,66 +1698,62 @@ function AlertRow({
       </div>
 
       {/* Actions */}
-      <div className="w-20 relative">
-        <button
-          onClick={() => setShowActions(!showActions)}
-          className="btn-sentinel btn-sentinel-ghost btn-sentinel-icon"
+      <div className="w-20">
+        <Popover
+          open={showActions}
+          onOpenChange={setShowActions}
+          align="end"
+          padded={false}
+          popupStyle={{ width: '12rem', minWidth: '12rem', maxWidth: '12rem', background: 'var(--surface-2)' }}
+          trigger={
+            <button className="btn-sentinel btn-sentinel-ghost btn-sentinel-icon">
+              <Settings className="h-4 w-4" style={{ color: 'var(--muted)' }} />
+            </button>
+          }
         >
-          <Settings className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-        </button>
-
-        {showActions && (
-          <div
-            className="absolute right-0 top-full mt-1 z-50 w-48 rounded-lg shadow-xl overflow-hidden"
-            style={{
-              background: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-            }}
+          <a
+            href={`/app/alerts/${alert.id}`}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm transition-colors"
+            style={{ color: 'var(--fg-2)', background: 'transparent' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
-            <a
-              href={`/app/alerts/${alert.id}`}
-              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm transition-colors"
-              style={{ color: 'var(--fg-2)', background: 'transparent' }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-            >
-              <ExternalLink className="h-4 w-4" />
-              View Details
-            </a>
-            <a
-              href={`/app/storyline/${alert.id}`}
-              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm transition-colors"
-              style={{ color: 'var(--fg-2)', background: 'transparent' }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-            >
-              <History className="h-4 w-4" />
-              View Timeline
-            </a>
-            {status === 'new' || status === 'open' ? (
-              <button
-                onClick={() => { onAcknowledge(); setShowActions(false) }}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
-                style={{ color: 'var(--fg-2)', background: 'transparent' }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-              >
-                <CheckCircle className="h-4 w-4" style={{ color: 'var(--emerald-400)' }} />
-                Acknowledge
-              </button>
-            ) : null}
+            <ExternalLink className="h-4 w-4" />
+            View Details
+          </a>
+          <a
+            href={`/app/storyline/${alert.id}`}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm transition-colors"
+            style={{ color: 'var(--fg-2)', background: 'transparent' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <History className="h-4 w-4" />
+            View Timeline
+          </a>
+          {status === 'new' || status === 'open' ? (
             <button
-              onClick={() => { onCreateExclusion(); setShowActions(false) }}
+              onClick={() => { onAcknowledge(); setShowActions(false) }}
               className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
               style={{ color: 'var(--fg-2)', background: 'transparent' }}
               onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
               onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
             >
-              <Ban className="h-4 w-4" />
-              Create Exclusion
+              <CheckCircle className="h-4 w-4" style={{ color: 'var(--emerald-400)' }} />
+              Acknowledge
             </button>
-          </div>
-        )}
+          ) : null}
+          <button
+            onClick={() => { onCreateExclusion(); setShowActions(false) }}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left transition-colors"
+            style={{ color: 'var(--fg-2)', background: 'transparent' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--surface-3)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            <Ban className="h-4 w-4" />
+            Create Exclusion
+          </button>
+        </Popover>
       </div>
     </div>
   )

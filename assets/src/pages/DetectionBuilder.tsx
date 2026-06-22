@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
+import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui'
 
 // Types
 interface RuleCondition {
@@ -819,21 +820,13 @@ tags:
                   </div>
 
                   <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rule.enabled}
-                        onChange={(e) =>
-                          setRule((prev) => ({ ...prev, enabled: e.target.checked }))
-                        }
-                        className="w-4 h-4 rounded"
-                        style={{
-                          borderColor: 'var(--border)',
-                          backgroundColor: 'var(--surface)',
-                        }}
-                      />
-                      <span className="text-sm" style={{ color: 'var(--fg)' }}>Rule Enabled</span>
-                    </label>
+                    <Checkbox
+                      checked={rule.enabled}
+                      onCheckedChange={(checked) =>
+                        setRule((prev) => ({ ...prev, enabled: checked }))
+                      }
+                      label="Rule Enabled"
+                    />
                   </div>
                 </div>
               </div>
@@ -1147,75 +1140,51 @@ tags:
       </div>
 
       {/* MITRE Technique Selection Modal */}
-      {showMitreModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div
-            className="card-sentinel rounded-xl w-full max-w-2xl max-h-[80vh] overflow-hidden"
-          >
+      <Dialog
+        open={showMitreModal}
+        onOpenChange={setShowMitreModal}
+        title="Select MITRE ATT&CK Techniques"
+        maxWidth="42rem"
+      >
+        <div className="space-y-2">
+          {MITRE_TECHNIQUES.map((tech) => (
             <div
-              className="p-4 flex items-center justify-between"
-              style={{ borderBottom: '1px solid var(--border)' }}
+              key={tech.id}
+              className="flex items-center gap-3 p-3 rounded-lg hover:opacity-90"
+              style={{ backgroundColor: 'var(--surface)' }}
             >
-              <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Select MITRE ATT&CK Techniques</h3>
-              <button
-                onClick={() => setShowMitreModal(false)}
-                className="p-1 hover:opacity-80"
-                style={{ color: 'var(--muted)' }}
-              >
-                <XCircle className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-4 overflow-y-auto max-h-[60vh]">
-              <div className="space-y-2">
-                {MITRE_TECHNIQUES.map((tech) => (
-                  <label
-                    key={tech.id}
-                    className="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:opacity-90"
-                    style={{ backgroundColor: 'var(--surface)' }}
+              <Checkbox
+                checked={rule.mitreTechniques.includes(tech.id)}
+                onCheckedChange={() => toggleMitreTechnique(tech.id)}
+                aria-label={`${tech.id} ${tech.name}`}
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono" style={{ color: 'var(--emerald-400)' }}>{tech.id}</span>
+                  <span
+                    className="text-xs px-2 py-0.5 rounded"
+                    style={{
+                      backgroundColor: 'var(--bg)',
+                      color: 'var(--fg)',
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={rule.mitreTechniques.includes(tech.id)}
-                      onChange={() => toggleMitreTechnique(tech.id)}
-                      className="w-4 h-4 rounded"
-                      style={{
-                        borderColor: 'var(--border)',
-                        backgroundColor: 'var(--bg)',
-                      }}
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono" style={{ color: 'var(--emerald-400)' }}>{tech.id}</span>
-                        <span
-                          className="text-xs px-2 py-0.5 rounded"
-                          style={{
-                            backgroundColor: 'var(--bg)',
-                            color: 'var(--fg)',
-                          }}
-                        >
-                          {tech.tactic}
-                        </span>
-                      </div>
-                      <p className="text-sm mt-1" style={{ color: 'var(--fg)' }}>{tech.name}</p>
-                    </div>
-                  </label>
-                ))}
+                    {tech.tactic}
+                  </span>
+                </div>
+                <p className="text-sm mt-1" style={{ color: 'var(--fg)' }}>{tech.name}</p>
               </div>
             </div>
-            <div
-              className="p-4 flex justify-end"
-              style={{ borderTop: '1px solid var(--border)' }}
-            >
-              <button
-                onClick={() => setShowMitreModal(false)}
-                className="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg"
-              >
-                Done
-              </button>
-            </div>
-          </div>
+          ))}
         </div>
-      )}
+        <DialogFooter>
+          <button
+            onClick={() => setShowMitreModal(false)}
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg"
+          >
+            Done
+          </button>
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   )
 }

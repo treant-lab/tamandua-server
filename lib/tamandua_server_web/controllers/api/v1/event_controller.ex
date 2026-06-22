@@ -7,21 +7,37 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @default_limit 100
+  @max_limit 250
+
   def index(conn, params) do
+    limit = params["limit"] |> parse_int(@default_limit) |> min(@max_limit)
+
     filters = %{
       agent_id: params["agent_id"],
       event_type: params["event_type"],
-      limit: parse_int(params["limit"], 100),
+      limit: limit,
       offset: parse_int(params["offset"], 0)
     }
 
-    events = Telemetry.list_events(filters)
-    json(conn, %{data: Enum.map(events, &serialize/1)})
+    events = safe_list_events(filters, "Event index")
+
+    json(conn, %{
+      data: Enum.map(events, &serialize/1),
+      meta: %{limit: limit, offset: filters.offset}
+    })
   end
 
   def show(conn, %{"id" => id}) do
-    event = Telemetry.get_event!(id)
-    json(conn, %{data: serialize(event)})
+    case Telemetry.get_event(id) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Event not found"})
+
+      event ->
+        json(conn, %{data: serialize(event)})
+    end
   end
 
   def purge(conn, params) do
@@ -42,9 +58,21 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   def search(conn, params) do
     query = params["query"] || ""
     time_range = params["time_range"] || "24h"
-    limit = parse_int(params["limit"], 100)
+    limit = params["limit"] |> parse_int(@default_limit) |> min(@max_limit)
 
-    results = Telemetry.search_events(query, time_range, limit)
+    results =
+      try do
+        Telemetry.search_events(query, time_range, limit)
+      rescue
+        exception ->
+          Logger.warning("[EventController] search failed: #{Exception.message(exception)}")
+          []
+      catch
+        :exit, reason ->
+          Logger.warning("[EventController] search failed: exit #{inspect(reason)}")
+          []
+      end
+
     json(conn, %{data: Enum.map(results, &serialize/1), meta: %{query: query, time_range: time_range}})
   end
 
@@ -193,4 +221,16 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     end
   end
   defp parse_int(value, _default) when is_integer(value), do: value
+
+  defp safe_list_events(filters, label) do
+    Telemetry.list_events(filters)
+  rescue
+    exception ->
+      Logger.warning("[EventController] #{label} failed: #{Exception.message(exception)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("[EventController] #{label} failed: exit #{inspect(reason)}")
+      []
+  end
 end

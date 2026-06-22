@@ -30,7 +30,7 @@ import { cn, formatDate, safeCapitalize } from '@/lib/utils'
 import { useEventStream } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
 import { ExportDropdown } from '@/components/ExportDropdown'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import { Checkbox, Select, SelectItem } from '@/components/ui/baseui'
 import type { WebSocketConnectionState } from '@/types'
 
 // ============================================================================
@@ -192,7 +192,22 @@ function classifyDnsTransportEvent(eventType: unknown, payload: Record<string, u
   if (isDnsEventType(String(eventType || ''))) return 'query'
   if (String(eventType || '').toLowerCase() !== 'network_connect') return null
 
-  const port = String(payload.remote_port ?? payload.remotePort ?? payload.dst_port ?? payload.destination_port ?? '')
+  const port = String(
+    payload.remote_port ??
+    payload.remotePort ??
+    payload.destination_port ??
+    payload.destinationPort ??
+    payload.dst_port ??
+    payload.dstPort ??
+    payload.port ??
+    payload.local_port ??
+    payload.localPort ??
+    payload.source_port ??
+    payload.sourcePort ??
+    payload.src_port ??
+    payload.srcPort ??
+    ''
+  )
   const remoteIp = String(payload.remote_ip ?? payload.remoteIp ?? payload.dst_ip ?? payload.destination_ip ?? '')
   const targetName = String(payload.domain ?? payload.remote_domain ?? payload.sni ?? payload.tls_sni ?? payload.host ?? payload.hostname ?? '').toLowerCase()
 
@@ -205,7 +220,18 @@ function classifyDnsTransportEvent(eventType: unknown, payload: Record<string, u
 function formatDnsTransportDomain(payload: Record<string, unknown>, transport: 'query' | 'transport' | 'dot' | 'doh' | null): string | undefined {
   if (!transport || transport === 'query') return undefined
   const remoteIp = String(payload.remote_ip ?? payload.remoteIp ?? payload.dst_ip ?? payload.destination_ip ?? '')
-  const remotePort = String(payload.remote_port ?? payload.remotePort ?? payload.dst_port ?? payload.destination_port ?? '')
+  const remotePort = String(
+    payload.remote_port ??
+    payload.remotePort ??
+    payload.destination_port ??
+    payload.destinationPort ??
+    payload.dst_port ??
+    payload.dstPort ??
+    payload.port ??
+    payload.local_port ??
+    payload.localPort ??
+    ''
+  )
   const label = transport === 'doh' ? 'DoH resolver' : transport === 'dot' ? 'DoT resolver' : 'DNS resolver'
   return remoteIp ? `${label} ${remoteIp}${remotePort ? `:${remotePort}` : ''}` : label
 }
@@ -1225,12 +1251,15 @@ export default function DNS({
         body: JSON.stringify({ domains: [domain.trim()], reason: 'Manual block' }),
       })
       if (res.ok) {
+        setApiError(null)
         setNewBlockDomain('')
         fetchBlocklist()
         fetchStats()
+      } else {
+        setApiError(`DNS blocklist add failed with HTTP ${res.status}`)
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS blocklist add failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setBlocklistLoading(false)
     }
@@ -1240,7 +1269,7 @@ export default function DNS({
     setBlocklistLoading(true)
     try {
       const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
-      await fetch(`/api/v1/dns/blocklist/${encodeURIComponent(domain)}`, {
+      const res = await fetch(`/api/v1/dns/blocklist/${encodeURIComponent(domain)}`, {
         method: 'DELETE',
         credentials: 'include',
         headers: {
@@ -1248,10 +1277,15 @@ export default function DNS({
           ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
         },
       })
-      fetchBlocklist()
-      fetchStats()
-    } catch {
-      // ignore
+      if (res.ok) {
+        setApiError(null)
+        fetchBlocklist()
+        fetchStats()
+      } else {
+        setApiError(`DNS blocklist remove failed with HTTP ${res.status}`)
+      }
+    } catch (error) {
+      setApiError(`DNS blocklist remove failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setBlocklistLoading(false)
     }
@@ -1264,7 +1298,7 @@ export default function DNS({
     setBlocklistLoading(true)
     try {
       const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
-      await fetch('/api/v1/dns/blocklist/import', {
+      const res = await fetch('/api/v1/dns/blocklist/import', {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -1274,12 +1308,17 @@ export default function DNS({
         },
         body: JSON.stringify({ text, reason: 'Bulk import' }),
       })
-      setBulkImportText('')
-      setShowBulkImport(false)
-      fetchBlocklist()
-      fetchStats()
-    } catch {
-      // ignore
+      if (res.ok) {
+        setApiError(null)
+        setBulkImportText('')
+        setShowBulkImport(false)
+        fetchBlocklist()
+        fetchStats()
+      } else {
+        setApiError(`DNS blocklist import failed with HTTP ${res.status}`)
+      }
+    } catch (error) {
+      setApiError(`DNS blocklist import failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setBlocklistLoading(false)
     }
@@ -1293,7 +1332,7 @@ export default function DNS({
     try {
       const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
       for (const domain of selectedDomains) {
-        await fetch(`/api/v1/dns/blocklist/${encodeURIComponent(domain)}`, {
+        const res = await fetch(`/api/v1/dns/blocklist/${encodeURIComponent(domain)}`, {
           method: 'DELETE',
           credentials: 'include',
           headers: {
@@ -1301,11 +1340,15 @@ export default function DNS({
             ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
           },
         })
+        if (!res.ok) {
+          throw new Error(`${domain} returned HTTP ${res.status}`)
+        }
       }
+      setApiError(null)
       fetchBlocklist()
       fetchStats()
-    } catch {
-      // ignore
+    } catch (error) {
+      setApiError(`DNS blocklist bulk remove failed: ${error instanceof Error ? error.message : 'network error'}`)
     } finally {
       setBlocklistLoading(false)
     }
@@ -2280,11 +2323,10 @@ function BlocklistManagement({
           <thead>
             <tr className="border-b border-[var(--border)] text-left">
               <th className="px-4 py-3 w-10">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={selectAll}
-                  onChange={toggleSelectAll}
-                  className="rounded bg-[var(--surface-alt)] border-[var(--border)] text-[var(--sol-cyan)] focus:ring-[var(--sol-cyan)]"
+                  onCheckedChange={toggleSelectAll}
+                  aria-label="Select all blocklist entries"
                 />
               </th>
               <th className="px-4 py-3 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Domain</th>
@@ -2309,11 +2351,10 @@ function BlocklistManagement({
               blocklist.map(entry => (
                 <tr key={entry.id} className="hover:bg-[var(--surface-alt)] transition-colors">
                   <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={entry.selected || false}
-                      onChange={() => toggleBlocklistSelection(entry.id)}
-                      className="rounded bg-[var(--surface-alt)] border-[var(--border)] text-[var(--sol-cyan)] focus:ring-[var(--sol-cyan)]"
+                      onCheckedChange={() => toggleBlocklistSelection(entry.id)}
+                      aria-label={`Select ${entry.domain}`}
                     />
                   </td>
                   <td className="px-4 py-3">

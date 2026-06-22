@@ -94,7 +94,10 @@ export default function BaseUIShowcase() {
             <MenuItem onSelect={() => console.log('kill')}>Kill process</MenuItem>
             <MenuItem onSelect={() => console.log('quarantine')}>Quarantine</MenuItem>
             <MenuSeparator />
-            <MenuItem destructive onSelect={() => console.log('ignore')}>
+            <MenuItem tone="warning" onSelect={() => console.log('suspend')}>
+              Suspend host
+            </MenuItem>
+            <MenuItem tone="danger" onSelect={() => console.log('ignore')}>
               Ignore alert
             </MenuItem>
           </Menu>

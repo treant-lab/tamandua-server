@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
+import { Checkbox } from '@/components/ui/baseui'
 
 interface Permission {
   slug: string
@@ -492,26 +493,38 @@ export default function RBACRoleDetail({
                       {expandedCategories.has(category) && (
                         <div className="space-y-1 border-t p-3" style={{ borderColor: 'var(--muted)' }}>
                           {perms.map((perm) => (
-                            <label
+                            <div
                               key={perm.slug}
+                              role={isBuiltin ? undefined : 'button'}
+                              tabIndex={isBuiltin ? undefined : 0}
+                              onClick={() => {
+                                if (!isBuiltin) togglePermission(perm.slug)
+                              }}
+                              onKeyDown={(event) => {
+                                if (!isBuiltin && (event.key === 'Enter' || event.key === ' ')) {
+                                  event.preventDefault()
+                                  togglePermission(perm.slug)
+                                }
+                              }}
                               className={cn(
                                 'flex items-center gap-2 rounded p-1.5',
                                 isBuiltin ? 'cursor-default' : 'cursor-pointer hover:opacity-80'
                               )}
                             >
-                              <input
-                                type="checkbox"
-                                checked={selectedPermissions.has(perm.slug)}
-                                onChange={() => togglePermission(perm.slug)}
-                                disabled={isBuiltin}
-                                className="h-4 w-4 rounded border-[var(--muted)] bg-[var(--surface)] text-primary-600 focus:ring-primary-500 disabled:opacity-50"
-                              />
+                              <div onClick={(event) => event.stopPropagation()}>
+                                <Checkbox
+                                  checked={selectedPermissions.has(perm.slug)}
+                                  onCheckedChange={() => togglePermission(perm.slug)}
+                                  disabled={isBuiltin}
+                                  aria-label={perm.slug}
+                                />
+                              </div>
                               <div className="min-w-0 flex-1">
                                 <span className="block truncate font-mono text-xs" style={{ color: 'var(--fg)' }}>
                                   {perm.slug}
                                 </span>
                               </div>
-                            </label>
+                            </div>
                           ))}
                         </div>
                       )}
@@ -547,25 +560,37 @@ export default function RBACRoleDetail({
                     </div>
                     <div className="space-y-2">
                       {perms.map((perm) => (
-                        <label
+                        <div
                           key={perm.slug}
+                          role={isBuiltin ? undefined : 'button'}
+                          tabIndex={isBuiltin ? undefined : 0}
+                          onClick={() => {
+                            if (!isBuiltin) togglePermission(perm.slug)
+                          }}
+                          onKeyDown={(event) => {
+                            if (!isBuiltin && (event.key === 'Enter' || event.key === ' ')) {
+                              event.preventDefault()
+                              togglePermission(perm.slug)
+                            }
+                          }}
                           className={cn(
                             'flex items-start gap-3 rounded-lg p-2',
                             isBuiltin ? 'cursor-default' : 'cursor-pointer hover:opacity-80'
                           )}
                         >
-                          <input
-                            type="checkbox"
-                            checked={selectedPermissions.has(perm.slug)}
-                            onChange={() => togglePermission(perm.slug)}
-                            disabled={isBuiltin}
-                            className="mt-0.5 h-4 w-4 rounded border-[var(--muted)] bg-[var(--surface)] text-primary-600 focus:ring-primary-500 disabled:opacity-50"
-                          />
+                          <div className="mt-0.5" onClick={(event) => event.stopPropagation()}>
+                            <Checkbox
+                              checked={selectedPermissions.has(perm.slug)}
+                              onCheckedChange={() => togglePermission(perm.slug)}
+                              disabled={isBuiltin}
+                              aria-label={perm.slug}
+                            />
+                          </div>
                           <div className="min-w-0 flex-1">
                             <span className="font-mono text-sm" style={{ color: 'var(--fg)' }}>{perm.slug}</span>
                             <p className="mt-0.5 text-sm" style={{ color: 'var(--muted)' }}>{perm.description}</p>
                           </div>
-                        </label>
+                        </div>
                       ))}
                     </div>
                   </div>

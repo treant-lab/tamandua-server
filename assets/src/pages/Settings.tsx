@@ -13,6 +13,7 @@ import {
   XCircle,
   Loader2,
 } from 'lucide-react'
+import { Checkbox } from '@/components/ui/baseui'
 import { cn } from '@/lib/utils'
 import { useState, useCallback } from 'react'
 
@@ -511,21 +512,13 @@ function NotificationSettings({ notifications, user, addToast }: { notifications
             <h3 className="text-sm font-medium" style={{ color: 'var(--fg)' }}>Email Notifications</h3>
             <div className="space-y-3">
               {Object.keys(emailNotifications).map((item) => (
-                <label key={item} className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={emailNotifications[item]}
-                    onChange={() => toggleEmailNotification(item)}
-                    disabled={saving}
-                    className="h-4 w-4 rounded focus:ring-emerald-500 disabled:opacity-50"
-                    style={{
-                      backgroundColor: 'var(--surface)',
-                      borderColor: 'var(--border)',
-                      accentColor: 'var(--emerald-400)',
-                    }}
-                  />
-                  <span className="text-sm" style={{ color: 'var(--fg)' }}>{item}</span>
-                </label>
+                <Checkbox
+                  key={item}
+                  checked={emailNotifications[item]}
+                  onCheckedChange={() => toggleEmailNotification(item)}
+                  disabled={saving}
+                  label={item}
+                />
               ))}
             </div>
           </div>

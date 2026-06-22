@@ -513,7 +513,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       messages
     else
       # Always broadcast for real-time feeds, regardless of DB persistence
-      broadcast_events(events)
+      broadcast_events(Enum.map(events, &add_organization_id/1))
 
       # Dual-write: send ALL events to ClickHouse for high-volume storage.
       # This is fire-and-forget — ClickHouse buffers internally and flushes

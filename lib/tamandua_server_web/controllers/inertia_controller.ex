@@ -1677,7 +1677,7 @@ defmodule TamanduaServerWeb.InertiaController do
         |> Enum.take(20),
       blocklist:
         try do
-          case TamanduaServer.Detection.DnsAnalyzer.get_blocklist() do
+          case TamanduaServer.Detection.DNSAnalyzer.get_blocklist(org_id) do
             list when is_list(list) -> list
             _ -> []
           end
@@ -1727,12 +1727,12 @@ defmodule TamanduaServerWeb.InertiaController do
     org_id = current_user && current_user.organization_id
 
     # Parse pagination params
-    page = (params["page"] || "1") |> String.to_integer() |> max(1)
-    per_page = (params["per_page"] || "50") |> String.to_integer() |> min(200)
+    page = params["page"] |> safe_parse_int(1) |> max(1)
+    per_page = params["per_page"] |> safe_parse_int(50) |> max(1) |> min(100)
     offset = (page - 1) * per_page
 
     # Build filter options
-    filters = %{limit: per_page, offset: offset}
+    filters = %{limit: per_page + 1, offset: offset}
 
     filters =
       if params["event_type"] && params["event_type"] != "",
@@ -1760,11 +1760,24 @@ defmodule TamanduaServerWeb.InertiaController do
         _ -> filters
       end
 
-    # Get events from telemetry
-    events_data = Telemetry.list_events(filters)
+    # Get events from telemetry. Pull one extra row so large tables do not need
+    # an expensive COUNT(*) just to render the first page.
+    events_rows =
+      try do
+        Telemetry.list_events(filters)
+      rescue
+        e in [DBConnection.ConnectionError, Postgrex.Error] ->
+          Logger.warning("Telemetry.list_events failed for Events page: #{Exception.message(e)}")
+          []
+      catch
+        :exit, reason ->
+          Logger.warning("Telemetry.list_events failed for Events page: exit #{inspect(reason)}")
+          []
+      end
 
-    # Count total events for pagination (respecting active filters)
-    total_count = Telemetry.count_events(Map.drop(filters, [:limit, :offset]))
+    has_more = length(events_rows) > per_page
+    events_data = Enum.take(events_rows, per_page)
+    total_count = offset + length(events_data) + if(has_more, do: 1, else: 0)
 
     # Build agent hostname lookup
     all_agents = list_agents_for_dashboard(org_id)
@@ -1853,7 +1866,9 @@ defmodule TamanduaServerWeb.InertiaController do
         page: page,
         perPage: per_page,
         total: total_count,
-        totalPages: max(1, ceil(total_count / per_page))
+        totalPages: max(1, ceil(total_count / per_page)),
+        hasMore: has_more,
+        totalIsEstimate: true
       },
       stats: %{
         byType: type_counts,
@@ -2288,6 +2303,9 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Timeline / Attack Storyline
   def timeline(conn, params) do
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+
     # Get time range from params (default 24h)
     time_window_minutes =
       case params["time_range"] do
@@ -2305,9 +2323,17 @@ defmodule TamanduaServerWeb.InertiaController do
     # Auto-correlate recent alerts into potential incidents
     incidents =
       try do
-        case Detection.Timeline.auto_correlate_alerts(nil,
-               time_window_minutes: time_window_minutes
-             ) do
+        clusters =
+          if is_nil(org_id) do
+            []
+          else
+            Detection.Timeline.auto_correlate_alerts(org_id,
+              time_window_minutes: time_window_minutes,
+              limit: 100
+            )
+          end
+
+        case clusters do
           clusters when is_list(clusters) ->
             Enum.map(clusters, fn alert_cluster ->
               alert_ids = Enum.map(alert_cluster, & &1.id)
@@ -2328,8 +2354,6 @@ defmodule TamanduaServerWeb.InertiaController do
       end
 
     # Build filters
-    current_user = conn.assigns[:current_user]
-    org_id = current_user && current_user.organization_id
     agents = list_agents_for_dashboard(org_id) |> Enum.map(&serialize_agent/1)
 
     agent_hostnames =
@@ -2365,7 +2389,7 @@ defmodule TamanduaServerWeb.InertiaController do
         end)
       rescue
         e ->
-          Logger.warning("Failed to build timeline events: \#{Exception.message(e)}")
+          Logger.warning("Failed to build timeline events: #{Exception.message(e)}")
           []
       end
 
@@ -9124,16 +9148,45 @@ defmodule TamanduaServerWeb.InertiaController do
   defp normalize_asset_type(_type), do: "server"
 
   defp serialize_playbook(playbook) do
+    execution_count = playbook.execution_count || 0
+    success_count = playbook.success_count || 0
+    trigger_conditions = playbook.trigger_conditions || %{}
+
+    status =
+      cond do
+        not playbook.enabled -> "disabled"
+        execution_count == 0 -> "draft"
+        true -> "active"
+      end
+
+    success_rate =
+      if execution_count > 0 do
+        Float.round(success_count / execution_count * 100, 1)
+      else
+        0.0
+      end
+
     %{
       id: playbook.id,
       name: playbook.name,
-      description: playbook.description,
+      description: playbook.description || "",
+      category: Map.get(trigger_conditions, "category", "custom"),
+      status: status,
       triggerType: playbook.trigger_type,
-      triggerConditions: playbook.trigger_conditions,
-      steps: playbook.steps,
+      trigger_type: playbook.trigger_type,
+      triggerConditions: Map.keys(trigger_conditions),
+      trigger: %{
+        type: playbook.trigger_type || "manual",
+        conditions: Enum.map(trigger_conditions, fn {key, value} -> %{field: key, value: value} end)
+      },
+      steps: playbook.steps || [],
       enabled: playbook.enabled,
+      executionCount: execution_count,
+      successRate: success_rate,
+      lastExecuted: format_datetime(playbook.last_executed_at),
       createdAt: format_datetime(playbook.inserted_at),
-      updatedAt: format_datetime(playbook.updated_at)
+      updatedAt: format_datetime(playbook.updated_at),
+      createdBy: playbook.created_by || "system"
     }
   end
 
@@ -9755,6 +9808,18 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp parse_int_param(_), do: nil
+
+  defp safe_parse_int(nil, default), do: default
+  defp safe_parse_int(value, _default) when is_integer(value), do: value
+
+  defp safe_parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp safe_parse_int(_, default), do: default
 
   # Provenance Graph (causal analysis visualization)
   def provenance_graph(conn, _params) do

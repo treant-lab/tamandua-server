@@ -15,6 +15,7 @@ import {
 import { PageProps, Detection } from '@/types';
 import { logger } from '@/lib/logger';
 import { safeCapitalize } from '@/lib/utils';
+import { Checkbox } from '@/components/ui/baseui';
 
 function LongTextPreview({
   value,
@@ -330,12 +331,51 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, StorylineEdge[]>();
   const outgoing = new Map<string, StorylineEdge[]>();
+  const undirected = new Map<string, Set<string>>();
 
   edges.forEach((edge) => {
     if (!byId.has(edge.source) || !byId.has(edge.target)) return;
     incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge]);
     outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge]);
+    undirected.set(edge.source, (undirected.get(edge.source) || new Set()).add(edge.target));
+    undirected.set(edge.target, (undirected.get(edge.target) || new Set()).add(edge.source));
   });
+
+  const componentById = new Map<string, number>();
+  const components: StorylineNode[][] = [];
+  const visited = new Set<string>();
+
+  nodes.forEach((node) => {
+    if (visited.has(node.id)) return;
+
+    const stack = [node.id];
+    const component: StorylineNode[] = [];
+    visited.add(node.id);
+
+    while (stack.length) {
+      const id = stack.pop()!;
+      const current = byId.get(id);
+      if (current) component.push(current);
+
+      for (const next of undirected.get(id) || []) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        stack.push(next);
+      }
+    }
+
+    components.push(component);
+  });
+
+  components
+    .sort((a, b) =>
+      Number(b.some((node) => node.highlighted)) - Number(a.some((node) => node.highlighted)) ||
+      Math.min(...a.map(nodeTime)) - Math.min(...b.map(nodeTime)) ||
+      b.length - a.length
+    )
+    .forEach((component, index) => {
+      component.forEach((node) => componentById.set(node.id, index));
+    });
 
   const roots = nodes
     .filter((node) => !incoming.has(node.id) || node.highlighted)
@@ -360,9 +400,17 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     });
   }
 
-  nodes.forEach((node) => {
-    if (!level.has(node.id)) level.set(node.id, Math.max(1, Math.floor(nodeTime(node) / 60000) % 4));
-  });
+  [...nodes]
+    .sort((a, b) => (componentById.get(a.id) || 0) - (componentById.get(b.id) || 0) || nodeTime(a) - nodeTime(b))
+    .forEach((node, index) => {
+      if (level.has(node.id)) return;
+
+      const neighborLevels = Array.from(undirected.get(node.id) || [])
+        .map((id) => level.get(id))
+        .filter((value): value is number => typeof value === 'number');
+
+      level.set(node.id, neighborLevels.length ? Math.min(...neighborLevels) + 1 : 1 + Math.floor(index / 6));
+    });
 
   const lanes: Record<StorylineNode['type'], number> = {
     process: 0,
@@ -421,16 +469,17 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
       ordered.forEach((node) => {
         const lane = lanes[node.type] ?? 0;
         const index = laneCounts.get(lane) || 0;
+        const componentIndex = componentById.get(node.id) || 0;
         laneCounts.set(lane, index + 1);
         if (mode === 'hierarchical') {
           positions.set(node.id, {
-            x: 160 + lane * 250 + index * 80,
+            x: 160 + componentIndex * 720 + lane * 250 + index * 80,
             y: 110 + lvl * 175,
           });
         } else {
           positions.set(node.id, {
             x: 140 + lvl * xSpacing,
-            y: 110 + lane * laneHeight + index * ySpacing,
+            y: 110 + componentIndex * 780 + lane * laneHeight + index * ySpacing,
           });
         }
       });
@@ -453,6 +502,39 @@ function firstNodeData(node: StorylineNode, keys: string[], fallback = 'Not capt
     if (formatted !== 'Not captured') return formatted;
   }
   return fallback;
+}
+
+function summarizeStorylineNode(node: StorylineNode, edges: StorylineEdge[], allNodes: StorylineNode[]): string {
+  const incoming = edges.filter((edge) => edge.target === node.id);
+  const outgoing = edges.filter((edge) => edge.source === node.id);
+  const parent = incoming[0] ? allNodes.find((candidate) => candidate.id === incoming[0].source) : null;
+
+  if (node.type === 'process') {
+    const cmd = firstNodeData(node, ['cmdline', 'command_line'], '');
+    const path = firstNodeData(node, ['path', 'process_path', 'image_path'], '');
+    return `${node.label}${node.pid ? ` PID ${node.pid}` : ''}${parent ? ` was reached from ${parent.label}` : ''}${cmd ? ` and ran ${cmd}` : path ? ` from ${path}` : ''}.`;
+  }
+
+  if (node.type === 'network') {
+    const host = firstNodeData(node, ['remote_ip', 'destination_ip', 'ip', 'host'], node.label);
+    const port = firstNodeData(node, ['remote_port', 'destination_port', 'port'], '');
+    const proto = firstNodeData(node, ['protocol'], 'tcp');
+    return `${parent?.label || 'A process'} contacted ${host}${port ? `:${port}` : ''} over ${proto}.`;
+  }
+
+  if (node.type === 'dns') {
+    return `${parent?.label || 'A process'} resolved ${firstNodeData(node, ['query', 'query_name', 'domain', 'dns_query'], node.label)}.`;
+  }
+
+  if (node.type === 'file') {
+    return `${parent?.label || 'A process'} ${firstNodeData(node, ['operation', 'action', 'event_type'], 'touched')} ${firstNodeData(node, ['path', 'file_path'], node.full_label || node.label)}.`;
+  }
+
+  if (node.type === 'registry') {
+    return `${parent?.label || 'A process'} ${firstNodeData(node, ['operation', 'action', 'event_type'], 'modified')} registry key ${firstNodeData(node, ['key', 'registry_key', 'path'], node.full_label || node.label)}.`;
+  }
+
+  return `${node.label} has ${incoming.length} inbound and ${outgoing.length} outbound relationship(s).`;
 }
 
 function countConnected(edges: StorylineEdge[], nodeId: string, direction: 'in' | 'out' | 'all' = 'all') {
@@ -752,25 +834,39 @@ export default function Storyline({
         confidence_score: asNumber(rawStoryline.root_cause.confidence_score),
         reasoning: asText(rawStoryline.root_cause.reasoning),
       } : null,
-      nodes: asArray(rawStoryline.nodes).map((node) => ({
-        ...node,
-        id: asText(node.id),
-        type: (asText(node.type, 'process') as StorylineNode['type']),
-        label: asText(node.label, 'Unknown'),
-        full_label: node.full_label ? asText(node.full_label) : undefined,
-        x: asNumber(node.x),
-        y: asNumber(node.y),
-        severity: (asText(node.severity, 'info') as StorylineNode['severity']),
-        highlighted: Boolean(node.highlighted),
-        suspicious: Boolean(node.suspicious),
-        data: node.data && typeof node.data === 'object' ? node.data : {},
-        detections: asArray(node.detections).map((det) => ({
-          ruleName: asText(det.ruleName, 'Unknown'),
-          description: asText(det.description),
-          severity: asText(det.severity, 'info'),
-          mitreTechniques: asArray(det.mitreTechniques).map((tech) => asText(tech)).filter(Boolean),
-        })),
-      })),
+      nodes: asArray(rawStoryline.nodes).map((node) => {
+        const data = node.data && typeof node.data === 'object' ? node.data : {};
+
+        return {
+          ...node,
+          id: asText(node.id),
+          type: (asText(node.type, 'process') as StorylineNode['type']),
+          label: asText(node.label, 'Unknown'),
+          full_label: node.full_label ? asText(node.full_label) : undefined,
+          x: asNumber(node.x),
+          y: asNumber(node.y),
+          severity: (asText(node.severity, 'info') as StorylineNode['severity']),
+          highlighted: Boolean(node.highlighted),
+          suspicious: Boolean(node.suspicious),
+          data: {
+            ...data,
+            cmdline: data.cmdline ?? node.cmdline,
+            path: data.path ?? node.path,
+            user: data.user ?? node.user,
+            ppid: data.ppid ?? node.ppid,
+            sha256: data.sha256 ?? node.sha256,
+            is_elevated: data.is_elevated ?? node.is_elevated,
+            is_signed: data.is_signed ?? node.is_signed,
+            signer: data.signer ?? node.signer,
+          },
+          detections: asArray(node.detections).map((det) => ({
+            ruleName: asText(det.ruleName, 'Unknown'),
+            description: asText(det.description),
+            severity: asText(det.severity, 'info'),
+            mitreTechniques: asArray(det.mitreTechniques).map((tech) => asText(tech)).filter(Boolean),
+          })),
+        };
+      }),
       edges: asArray(rawStoryline.edges).map((edge) => ({
         ...edge,
         id: asText(edge.id),
@@ -1859,26 +1955,16 @@ export default function Storyline({
                   </div>
 
                   <div className="mt-4 pt-3 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: 'var(--muted)' }}>
-                      <input
-                        type="checkbox"
-                        checked={showSuspiciousOnly}
-                        onChange={(e) => setShowSuspiciousOnly(e.target.checked)}
-                        className="rounded"
-                        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-2)' }}
-                      />
-                      Show suspicious only
-                    </label>
-                    <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: 'var(--muted)' }}>
-                      <input
-                        type="checkbox"
-                        checked={showLabels}
-                        onChange={(e) => setShowLabels(e.target.checked)}
-                        className="rounded"
-                        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-2)' }}
-                      />
-                      Show labels
-                    </label>
+                    <Checkbox
+                      checked={showSuspiciousOnly}
+                      onCheckedChange={(checked) => setShowSuspiciousOnly(checked)}
+                      label="Show suspicious only"
+                    />
+                    <Checkbox
+                      checked={showLabels}
+                      onCheckedChange={(checked) => setShowLabels(checked)}
+                      label="Show labels"
+                    />
                   </div>
                 </div>
               )}
@@ -2295,6 +2381,15 @@ export default function Storyline({
                           {selectedNode.timestamp}
                         </div>
                       )}
+
+                      <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+                        <div className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--muted)' }}>
+                          Summary
+                        </div>
+                        <div className="text-sm leading-relaxed" style={{ color: 'var(--fg-2)' }}>
+                          {summarizeStorylineNode(selectedNode, filteredEdges, storyline.nodes)}
+                        </div>
+                      </div>
 
                       <NodeIntelligenceCards
                         node={selectedNode}

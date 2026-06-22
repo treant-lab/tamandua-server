@@ -1,6 +1,6 @@
 import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import { Select, SelectItem, Checkbox } from '@/components/ui/baseui'
 import {
   Eye,
   AlertTriangle,
@@ -615,14 +615,13 @@ function GatewayPolicyEditor({
         <ListPolicyInput label="Review Data Categories" value={policy.high_risk_data_categories || ['pii', 'source_code', 'customer_data', 'financial_data']} onChange={(value) => setPolicy({ ...policy, high_risk_data_categories: value })} />
       </div>
 
-      <label className="mt-4 flex items-center gap-3 text-sm" style={{ color: 'var(--fg)' }}>
-        <input
-          type="checkbox"
+      <div className="mt-4">
+        <Checkbox
           checked={policy.enforce_block === true}
-          onChange={(event) => setPolicy({ ...policy, enforce_block: event.target.checked })}
+          onCheckedChange={(checked) => setPolicy({ ...policy, enforce_block: checked })}
+          label="Queue endpoint enforcement for block decisions when an agent target is present"
         />
-        Queue endpoint enforcement for block decisions when an agent target is present
-      </label>
+      </div>
     </div>
   )
 }

@@ -51,6 +51,7 @@ import { cn, formatDate } from '@/lib/utils'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
+import { Menu, MenuItem } from '@/components/ui/baseui'
 
 // ============================================================================
 // Types
@@ -1882,43 +1883,30 @@ function DownloadMenu({ report, onDownload }: {
   report: GeneratedReport
   onDownload: (report: GeneratedReport, format?: string) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="btn-sentinel flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors"
-      >
-        <Download className="h-4 w-4" />
-        Download
-        <ChevronDown className="h-3 w-3" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 w-40 rounded-lg shadow-lg z-20" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
-            {FORMAT_OPTIONS.map((format) => {
-              const Icon = format.icon
-              return (
-                <button
-                  key={format.value}
-                  onClick={() => {
-                    onDownload(report, format.value)
-                    setOpen(false)
-                  }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm first:rounded-t-lg last:rounded-b-lg transition-colors hover:opacity-80"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  <Icon className="h-4 w-4" />
-                  {format.label}
-                </button>
-              )
-            })}
-          </div>
-        </>
-      )}
-    </div>
+    <Menu
+      align="end"
+      trigger={
+        <button className="btn-sentinel flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors">
+          <Download className="h-4 w-4" />
+          Download
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      }
+    >
+      {FORMAT_OPTIONS.map((format) => {
+        const Icon = format.icon
+        return (
+          <MenuItem
+            key={format.value}
+            onSelect={() => onDownload(report, format.value)}
+          >
+            <Icon className="h-4 w-4" />
+            {format.label}
+          </MenuItem>
+        )
+      })}
+    </Menu>
   )
 }
 

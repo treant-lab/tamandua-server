@@ -43,6 +43,7 @@ import {
   CreditCard
 } from 'lucide-react';
 import { safeCapitalize } from '@/lib/utils';
+import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
 
 // Types
 interface Tenant {
@@ -585,11 +586,10 @@ const MSSPPortal: React.FC = () => {
                 <div className="p-4">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center space-x-3">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={selectedTenants.has(tenant.id)}
-                        onChange={() => handleSelectTenant(tenant.id)}
-                        className="w-4 h-4 rounded border-[var(--surface-border)] bg-[var(--surface-hover)] text-indigo-600 focus:ring-indigo-500"
+                        onCheckedChange={() => handleSelectTenant(tenant.id)}
+                        aria-label={`Select ${tenant.name}`}
                       />
                       <div>
                         <h3 className="font-medium">{tenant.name}</h3>
@@ -670,11 +670,10 @@ const MSSPPortal: React.FC = () => {
               <thead>
                 <tr className="border-b border-[var(--surface-border)]">
                   <th className="px-4 py-3 text-left">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={selectedTenants.size === filteredTenants.length && filteredTenants.length > 0}
-                      onChange={handleSelectAll}
-                      className="w-4 h-4 rounded border-[var(--surface-border)] bg-[var(--surface-hover)] text-indigo-600 focus:ring-indigo-500"
+                      onCheckedChange={handleSelectAll}
+                      aria-label="Select all tenants"
                     />
                   </th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-[var(--muted)]">Tenant</th>
@@ -693,11 +692,10 @@ const MSSPPortal: React.FC = () => {
                 {filteredTenants.map(tenant => (
                   <tr key={tenant.id} className="border-b border-[var(--surface-border)]/50 hover:bg-[var(--surface-hover)]/30">
                     <td className="px-4 py-3">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={selectedTenants.has(tenant.id)}
-                        onChange={() => handleSelectTenant(tenant.id)}
-                        className="w-4 h-4 rounded border-[var(--surface-border)] bg-[var(--surface-hover)] text-indigo-600 focus:ring-indigo-500"
+                        onCheckedChange={() => handleSelectTenant(tenant.id)}
+                        aria-label={`Select ${tenant.name}`}
                       />
                     </td>
                     <td className="px-4 py-3">
@@ -747,67 +745,62 @@ const MSSPPortal: React.FC = () => {
         )}
 
         {/* Bulk Actions Modal */}
-        {showBulkActions && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-[var(--surface)] rounded-lg border border-[var(--surface-border)] w-full max-w-lg p-6">
-              <h3 className="text-lg font-semibold mb-4">Bulk Operations</h3>
-              <p className="text-sm text-[var(--muted)] mb-4">
-                Apply actions to {selectedTenants.size} selected tenant(s)
-              </p>
-
-              <div className="space-y-3 mb-6">
-                <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
-                  <Shield className="w-5 h-5 text-indigo-400" />
-                  <div>
-                    <p className="font-medium">Deploy Detection Rules</p>
-                    <p className="text-sm text-[var(--muted)]">Push YARA/Sigma rules to selected tenants</p>
-                  </div>
-                </button>
-
-                <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
-                  <Settings className="w-5 h-5 text-cyan-400" />
-                  <div>
-                    <p className="font-medium">Update Agent Policy</p>
-                    <p className="text-sm text-[var(--muted)]">Configure collection and response settings</p>
-                  </div>
-                </button>
-
-                <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
-                  <FileText className="w-5 h-5 text-purple-400" />
-                  <div>
-                    <p className="font-medium">Deploy Playbook</p>
-                    <p className="text-sm text-[var(--muted)]">Push automated response playbooks</p>
-                  </div>
-                </button>
-
-                <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
-                  <CreditCard className="w-5 h-5 text-amber-400" />
-                  <div>
-                    <p className="font-medium">Update License</p>
-                    <p className="text-sm text-[var(--muted)]">Modify license tier or agent limits</p>
-                  </div>
-                </button>
-
-                <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
-                  <Download className="w-5 h-5 text-green-400" />
-                  <div>
-                    <p className="font-medium">Export Reports</p>
-                    <p className="text-sm text-[var(--muted)]">Generate compliance or executive reports</p>
-                  </div>
-                </button>
+        <Dialog
+          open={showBulkActions}
+          onOpenChange={setShowBulkActions}
+          title="Bulk Operations"
+          description={`Apply actions to ${selectedTenants.size} selected tenant(s)`}
+        >
+          <div className="space-y-3">
+            <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
+              <Shield className="w-5 h-5 text-indigo-400" />
+              <div>
+                <p className="font-medium">Deploy Detection Rules</p>
+                <p className="text-sm text-[var(--muted)]">Push YARA/Sigma rules to selected tenants</p>
               </div>
+            </button>
 
-              <div className="flex items-center justify-end space-x-3">
-                <button
-                  onClick={() => setShowBulkActions(false)}
-                  className="px-4 py-2 text-[var(--muted)] hover:text-[var(--fg)]"
-                >
-                  Cancel
-                </button>
+            <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
+              <Settings className="w-5 h-5 text-cyan-400" />
+              <div>
+                <p className="font-medium">Update Agent Policy</p>
+                <p className="text-sm text-[var(--muted)]">Configure collection and response settings</p>
               </div>
-            </div>
+            </button>
+
+            <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
+              <FileText className="w-5 h-5 text-purple-400" />
+              <div>
+                <p className="font-medium">Deploy Playbook</p>
+                <p className="text-sm text-[var(--muted)]">Push automated response playbooks</p>
+              </div>
+            </button>
+
+            <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
+              <CreditCard className="w-5 h-5 text-amber-400" />
+              <div>
+                <p className="font-medium">Update License</p>
+                <p className="text-sm text-[var(--muted)]">Modify license tier or agent limits</p>
+              </div>
+            </button>
+
+            <button className="w-full flex items-center space-x-3 p-3 bg-[var(--surface-hover)]/50 hover:bg-[var(--surface-hover)] rounded-lg text-left">
+              <Download className="w-5 h-5 text-green-400" />
+              <div>
+                <p className="font-medium">Export Reports</p>
+                <p className="text-sm text-[var(--muted)]">Generate compliance or executive reports</p>
+              </div>
+            </button>
           </div>
-        )}
+          <DialogFooter>
+            <button
+              onClick={() => setShowBulkActions(false)}
+              className="px-4 py-2 text-[var(--muted)] hover:text-[var(--fg)]"
+            >
+              Cancel
+            </button>
+          </DialogFooter>
+        </Dialog>
       </div>
     </div>
   );

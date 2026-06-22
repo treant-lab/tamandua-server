@@ -24,7 +24,7 @@ import {
 import { cn, safeInitial } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useRef } from 'react'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import { Dialog, DialogFooter, Select, SelectItem, Checkbox } from '@/components/ui/baseui'
 import type { TenantSettingsPageProps, APIKey, TenantSettings as TenantSettingsType } from '@/types'
 
 const tabs = [
@@ -565,99 +565,105 @@ function APIKeysTab({ apiKeys, tenantId }: { apiKeys: APIKey[]; tenantId: string
       </div>
 
       {/* Create Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-[var(--surface)] rounded-xl border border-[var(--surface-border)] w-full max-w-md p-6">
-            {createdKey ? (
-              <>
-                <h3 className="text-lg font-semibold text-[var(--fg)] mb-4">API Key Created</h3>
-                <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
-                  <p className="text-sm text-green-300 mb-2">
-                    Copy this key now. You won't be able to see it again.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 text-sm bg-[var(--surface-inset)] px-3 py-2 rounded text-[var(--fg)] font-mono break-all">
-                      {createdKey}
-                    </code>
-                    <button
-                      onClick={() => copyToClipboard(createdKey)}
-                      className="p-2 bg-[var(--surface-hover)] hover:bg-[var(--surface-active)] rounded"
-                    >
-                      <Copy className="h-4 w-4 text-[var(--fg)]" />
-                    </button>
-                  </div>
-                </div>
+      <Dialog
+        open={showCreateModal}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowCreateModal(false)
+            if (createdKey) {
+              setCreatedKey(null)
+              setNewKeyName('')
+              router.reload()
+            }
+          }
+        }}
+        title={createdKey ? 'API Key Created' : 'Create API Key'}
+      >
+        {createdKey ? (
+          <>
+            <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
+              <p className="text-sm text-green-300 mb-2">
+                Copy this key now. You won't be able to see it again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-sm bg-[var(--surface-inset)] px-3 py-2 rounded text-[var(--fg)] font-mono break-all">
+                  {createdKey}
+                </code>
                 <button
-                  onClick={() => {
-                    setShowCreateModal(false)
-                    setCreatedKey(null)
-                    setNewKeyName('')
-                    router.reload()
-                  }}
-                  className="w-full bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium"
+                  onClick={() => copyToClipboard(createdKey)}
+                  className="p-2 bg-[var(--surface-hover)] hover:bg-[var(--surface-active)] rounded"
                 >
-                  Done
+                  <Copy className="h-4 w-4 text-[var(--fg)]" />
                 </button>
-              </>
-            ) : (
-              <>
-                <h3 className="text-lg font-semibold text-[var(--fg)] mb-4">Create API Key</h3>
-                <form onSubmit={handleCreateKey} className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-1">Name</label>
-                    <input
-                      type="text"
-                      value={newKeyName}
-                      onChange={(e) => setNewKeyName(e.target.value)}
-                      required
-                      className="w-full bg-[var(--surface-hover)] border border-[var(--surface-border)] rounded-lg px-4 py-2 text-[var(--fg)] focus:ring-2 focus:ring-primary-500"
-                      placeholder="Integration API Key"
+              </div>
+            </div>
+            <DialogFooter>
+              <button
+                onClick={() => {
+                  setShowCreateModal(false)
+                  setCreatedKey(null)
+                  setNewKeyName('')
+                  router.reload()
+                }}
+                className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium"
+              >
+                Done
+              </button>
+            </DialogFooter>
+          </>
+        ) : (
+          <form onSubmit={handleCreateKey}>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-1">Name</label>
+                <input
+                  type="text"
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                  required
+                  className="w-full bg-[var(--surface-hover)] border border-[var(--surface-border)] rounded-lg px-4 py-2 text-[var(--fg)] focus:ring-2 focus:ring-primary-500"
+                  placeholder="Integration API Key"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-2">Scopes</label>
+                <div className="space-y-2">
+                  {availableScopes.map(scope => (
+                    <Checkbox
+                      key={scope}
+                      checked={newKeyScopes.includes(scope)}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setNewKeyScopes([...newKeyScopes, scope])
+                        } else {
+                          setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
+                        }
+                      }}
+                      label={<span className="font-mono">{scope}</span>}
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-[var(--fg-secondary)] mb-2">Scopes</label>
-                    <div className="space-y-2">
-                      {availableScopes.map(scope => (
-                        <label key={scope} className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={newKeyScopes.includes(scope)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setNewKeyScopes([...newKeyScopes, scope])
-                              } else {
-                                setNewKeyScopes(newKeyScopes.filter(s => s !== scope))
-                              }
-                            }}
-                            className="h-4 w-4 rounded border-[var(--surface-border)] bg-[var(--surface-hover)] text-primary-600"
-                          />
-                          <span className="text-sm text-[var(--fg-secondary)] font-mono">{scope}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowCreateModal(false)}
-                      className="px-4 py-2 text-[var(--fg-secondary)] hover:text-[var(--fg)]"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={creating || !newKeyName}
-                      className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
-                    >
-                      {creating ? 'Creating...' : 'Create Key'}
-                    </button>
-                  </div>
-                </form>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+                  ))}
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                className="px-4 py-2 text-[var(--fg-secondary)] hover:text-[var(--fg)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creating || !newKeyName}
+                className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
+              >
+                {creating ? 'Creating...' : 'Create Key'}
+              </button>
+            </DialogFooter>
+          </form>
+        )}
+      </Dialog>
     </div>
   )
 }

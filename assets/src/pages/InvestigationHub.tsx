@@ -12,6 +12,7 @@ import {
 import { cn, formatDate, safeCapitalize, severityColor } from '@/lib/utils';
 import type { InvestigationHubProps, CaseInvestigation } from '@/types';
 import { logger } from '@/lib/logger';
+import { Select, SelectItem, Dialog, DialogFooter, Checkbox } from '@/components/ui/baseui';
 
 // ============================================================================
 // Constants & Types
@@ -430,52 +431,36 @@ function AdvancedFiltersPanel({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
           <label className="block text-xs font-medium text-[var(--muted)] mb-1">Date Range</label>
-          <select
-            value={filters.dateRange}
-            onChange={(e) => onChange({ ...filters, dateRange: e.target.value })}
-            className="input-sentinel w-full"
-          >
+          <Select value={filters.dateRange} onValueChange={(v) => onChange({ ...filters, dateRange: v })} placeholder="Date range" fullWidth>
             {dateRanges.map((r) => (
-              <option key={r.value} value={r.value}>{r.label}</option>
+              <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
           <label className="block text-xs font-medium text-[var(--muted)] mb-1">SLA Status</label>
-          <select
-            value={filters.slaStatus}
-            onChange={(e) => onChange({ ...filters, slaStatus: e.target.value })}
-            className="input-sentinel w-full"
-          >
+          <Select value={filters.slaStatus} onValueChange={(v) => onChange({ ...filters, slaStatus: v })} placeholder="SLA status" fullWidth>
             {slaOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="flex items-end gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filters.hasMitre}
-              onChange={(e) => onChange({ ...filters, hasMitre: e.target.checked })}
-              className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
-            />
-            <span className="text-sm text-[var(--fg-2)]">Has MITRE Tags</span>
-          </label>
+          <Checkbox
+            checked={filters.hasMitre}
+            onCheckedChange={(checked) => onChange({ ...filters, hasMitre: checked })}
+            label="Has MITRE Tags"
+          />
         </div>
 
         <div className="flex items-end gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filters.hasAlerts}
-              onChange={(e) => onChange({ ...filters, hasAlerts: e.target.checked })}
-              className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
-            />
-            <span className="text-sm text-[var(--fg-2)]">Has Linked Alerts</span>
-          </label>
+          <Checkbox
+            checked={filters.hasAlerts}
+            onCheckedChange={(checked) => onChange({ ...filters, hasAlerts: checked })}
+            label="Has Linked Alerts"
+          />
         </div>
       </div>
 
@@ -576,20 +561,16 @@ function CreateInvestigationModal({
     }));
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-[var(--surface)] rounded-xl border border-[var(--border)] w-full max-w-2xl max-h-[90vh] overflow-hidden">
-        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
-          <h2 className="text-lg font-semibold text-[var(--fg)]">Create Investigation Case</h2>
-          <button onClick={onClose} className="p-1 hover:bg-[var(--surface-2)] rounded">
-            <X className="h-5 w-5 text-[var(--muted)]" />
-          </button>
-        </div>
-
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title="Create Investigation Case"
+      maxWidth="42rem"
+    >
+      <div>
         {/* Tabs */}
-        <div className="flex border-b border-[var(--border)]">
+        <div className="flex border-b border-[var(--border)] -mx-6 -mt-5 mb-4 px-6">
           {[
             { id: 'basic', label: 'Basic Info', icon: FileSearch },
             { id: 'mitre', label: 'MITRE ATT&CK', icon: Shield },
@@ -649,34 +630,26 @@ function CreateInvestigationModal({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-[var(--fg-2)] mb-1">Severity</label>
-                  <select
-                    value={form.severity}
-                    onChange={(e) => setForm({ ...form, severity: e.target.value })}
-                    className="input-sentinel w-full"
-                  >
+                  <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v })} placeholder="Severity" fullWidth>
                     {severities.map((s) => {
                       const config = SEVERITY_LEVELS.find(sl => sl.value === s);
                       return (
-                        <option key={s} value={s}>
+                        <SelectItem key={s} value={s}>
                           {safeCapitalize(s)} {config ? `(SLA: ${config.slaHours}h)` : ''}
-                        </option>
+                        </SelectItem>
                       );
                     })}
-                  </select>
+                  </Select>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-[var(--fg-2)] mb-1">Assign To</label>
-                  <select
-                    value={form.assignedTo}
-                    onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
-                    className="input-sentinel w-full"
-                  >
-                    <option value="">Unassigned</option>
+                  <Select value={form.assignedTo} onValueChange={(v) => setForm({ ...form, assignedTo: v })} placeholder="Unassigned" fullWidth>
+                    <SelectItem value="">Unassigned</SelectItem>
                     {users.map((user) => (
-                      <option key={user.id} value={user.id}>{user.name}</option>
+                      <SelectItem key={user.id} value={user.id}>{user.name}</SelectItem>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
@@ -754,35 +727,34 @@ function CreateInvestigationModal({
             </div>
           )}
         </form>
-
-        <div className="flex justify-end gap-3 p-4 border-t border-[var(--border)]">
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn-sentinel btn-sentinel-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={isSubmitting || !form.title.trim()}
-            className="btn-sentinel btn-sentinel-primary"
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              <>
-                <Plus className="h-4 w-4" />
-                Create Case
-              </>
-            )}
-          </button>
-        </div>
       </div>
-    </div>
+      <DialogFooter className="-mx-6 -mb-5">
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn-sentinel btn-sentinel-secondary"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={isSubmitting || !form.title.trim()}
+          className="btn-sentinel btn-sentinel-primary"
+        >
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Creating...
+            </>
+          ) : (
+            <>
+              <Plus className="h-4 w-4" />
+              Create Case
+            </>
+          )}
+        </button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 
@@ -864,97 +836,84 @@ function ExportModal({
     onClose();
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-[var(--surface)] rounded-xl border border-[var(--border)] w-full max-w-md">
-        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
-          <h2 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
-            <Download className="h-5 w-5" />
-            Export Cases
-          </h2>
-          <button onClick={onClose} className="p-1 hover:bg-[var(--surface-2)] rounded">
-            <X className="h-5 w-5 text-[var(--muted)]" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-[var(--fg-2)] mb-2">Format</label>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setFormat('json')}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors',
-                  format === 'json'
-                    ? 'bg-[var(--emerald-glow)] border-[var(--emerald-500)]/50 text-[var(--emerald-400)]'
-                    : 'bg-[var(--surface-2)] border-[var(--border)] text-[var(--muted)] hover:border-[var(--border-strong)]'
-                )}
-              >
-                <FileJson className="h-5 w-5" />
-                JSON
-              </button>
-              <button
-                onClick={() => setFormat('csv')}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors',
-                  format === 'csv'
-                    ? 'bg-[var(--emerald-glow)] border-[var(--emerald-500)]/50 text-[var(--emerald-400)]'
-                    : 'bg-[var(--surface-2)] border-[var(--border)] text-[var(--muted)] hover:border-[var(--border-strong)]'
-                )}
-              >
-                <FileText className="h-5 w-5" />
-                CSV
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeNotes}
-                onChange={(e) => setIncludeNotes(e.target.checked)}
-                className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
-              />
-              <span className="text-sm text-[var(--fg-2)]">Include notes & findings</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={includeClosed}
-                onChange={(e) => setIncludeClosed(e.target.checked)}
-                className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
-              />
-              <span className="text-sm text-[var(--fg-2)]">Include closed/archived cases</span>
-            </label>
-          </div>
-
-          <div className="pt-4 border-t border-[var(--hairline)]">
-            <p className="text-xs text-[var(--muted)]">
-              Exporting {includeClosed ? investigations.length : investigations.filter(i => i.status !== 'closed' && i.status !== 'archived').length} cases
-            </p>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title={
+        <span className="flex items-center gap-2">
+          <Download className="h-5 w-5" />
+          Export Cases
+        </span>
+      }
+      maxWidth="28rem"
+    >
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-[var(--fg-2)] mb-2">Format</label>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setFormat('json')}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors',
+                format === 'json'
+                  ? 'bg-[var(--emerald-glow)] border-[var(--emerald-500)]/50 text-[var(--emerald-400)]'
+                  : 'bg-[var(--surface-2)] border-[var(--border)] text-[var(--muted)] hover:border-[var(--border-strong)]'
+              )}
+            >
+              <FileJson className="h-5 w-5" />
+              JSON
+            </button>
+            <button
+              onClick={() => setFormat('csv')}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors',
+                format === 'csv'
+                  ? 'bg-[var(--emerald-glow)] border-[var(--emerald-500)]/50 text-[var(--emerald-400)]'
+                  : 'bg-[var(--surface-2)] border-[var(--border)] text-[var(--muted)] hover:border-[var(--border-strong)]'
+              )}
+            >
+              <FileText className="h-5 w-5" />
+              CSV
+            </button>
           </div>
         </div>
 
-        <div className="flex justify-end gap-3 p-4 border-t border-[var(--border)]">
-          <button
-            onClick={onClose}
-            className="btn-sentinel btn-sentinel-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleExport}
-            className="btn-sentinel btn-sentinel-primary"
-          >
-            <Download className="h-4 w-4" />
-            Export
-          </button>
+        <div className="space-y-2">
+          <Checkbox
+            checked={includeNotes}
+            onCheckedChange={setIncludeNotes}
+            label="Include notes & findings"
+          />
+          <Checkbox
+            checked={includeClosed}
+            onCheckedChange={setIncludeClosed}
+            label="Include closed/archived cases"
+          />
+        </div>
+
+        <div className="pt-4 border-t border-[var(--hairline)]">
+          <p className="text-xs text-[var(--muted)]">
+            Exporting {includeClosed ? investigations.length : investigations.filter(i => i.status !== 'closed' && i.status !== 'archived').length} cases
+          </p>
         </div>
       </div>
-    </div>
+      <DialogFooter className="-mx-6 -mb-5 mt-4">
+        <button
+          onClick={onClose}
+          className="btn-sentinel btn-sentinel-secondary"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleExport}
+          className="btn-sentinel btn-sentinel-primary"
+        >
+          <Download className="h-4 w-4" />
+          Export
+        </button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 
@@ -982,13 +941,14 @@ function InvestigationCard({
     >
       <div className="flex items-start gap-3">
         {/* Selection checkbox */}
-        <div className="pt-1">
-          <input
-            type="checkbox"
+        <div
+          className="pt-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Checkbox
             checked={isSelected}
-            onChange={() => onSelect(investigation.id)}
-            onClick={(e) => e.stopPropagation()}
-            className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
+            onCheckedChange={() => onSelect(investigation.id)}
+            aria-label="Select investigation"
           />
         </div>
 
@@ -1120,11 +1080,10 @@ function InvestigationTableRow({
       isSelected && 'bg-[var(--surface-2)]/30'
     )}>
       <td className="px-4 py-3">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={isSelected}
-          onChange={() => onSelect(investigation.id)}
-          className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
+          onCheckedChange={() => onSelect(investigation.id)}
+          aria-label="Select investigation"
         />
       </td>
       <td className="px-4 py-3">
@@ -1577,52 +1536,52 @@ export default function InvestigationHub({
             </div>
 
             {/* Quick filters */}
-            <select
+            <Select
               value={filters.status}
-              onChange={(e) => {
-                setFilters({ ...filters, status: e.target.value });
-                handleFilterChange('status', e.target.value);
+              onValueChange={(v) => {
+                setFilters({ ...filters, status: v });
+                handleFilterChange('status', v);
               }}
-              className="input-sentinel"
+              placeholder="All Status"
             >
-              <option value="all">All Status</option>
+              <SelectItem value="all">All Status</SelectItem>
               {statuses.map((s) => (
-                <option key={s} value={s}>
+                <SelectItem key={s} value={s}>
                   {safeCapitalize(s?.replace('_', ' '))}
-                </option>
+                </SelectItem>
               ))}
-            </select>
+            </Select>
 
-            <select
+            <Select
               value={filters.severity}
-              onChange={(e) => {
-                setFilters({ ...filters, severity: e.target.value });
-                handleFilterChange('severity', e.target.value);
+              onValueChange={(v) => {
+                setFilters({ ...filters, severity: v });
+                handleFilterChange('severity', v);
               }}
-              className="input-sentinel"
+              placeholder="All Severity"
             >
-              <option value="all">All Severity</option>
+              <SelectItem value="all">All Severity</SelectItem>
               {severities.map((s) => (
-                <option key={s} value={s}>
+                <SelectItem key={s} value={s}>
                   {safeCapitalize(s)}
-                </option>
+                </SelectItem>
               ))}
-            </select>
+            </Select>
 
-            <select
+            <Select
               value={filters.assignee}
-              onChange={(e) => {
-                setFilters({ ...filters, assignee: e.target.value });
-                handleFilterChange('assigned_to', e.target.value);
+              onValueChange={(v) => {
+                setFilters({ ...filters, assignee: v });
+                handleFilterChange('assigned_to', v);
               }}
-              className="input-sentinel"
+              placeholder="All Assignees"
             >
-              <option value="all">All Assignees</option>
-              <option value="unassigned">Unassigned</option>
+              <SelectItem value="all">All Assignees</SelectItem>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
               {users.map((user) => (
-                <option key={user.id} value={user.id}>{user.name}</option>
+                <SelectItem key={user.id} value={user.id}>{user.name}</SelectItem>
               ))}
-            </select>
+            </Select>
 
             {/* Advanced filters toggle */}
             <button
@@ -1743,11 +1702,10 @@ export default function InvestigationHub({
                 <thead className="bg-[var(--bg-2)]">
                   <tr className="text-left text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
                     <th className="px-4 py-3 w-10">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={selectedIds.size === filteredInvestigations.length && filteredInvestigations.length > 0}
-                        onChange={handleSelectAll}
-                        className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)]"
+                        onCheckedChange={() => handleSelectAll()}
+                        aria-label="Select all investigations"
                       />
                     </th>
                     <th className="px-4 py-3">Title</th>

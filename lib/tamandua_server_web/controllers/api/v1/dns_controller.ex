@@ -21,6 +21,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @default_query_limit 50
+  @max_query_limit 100
   @dns_event_types ["dns_query", "dns", "dns_response", "name_resolution", "domain_lookup"]
   @dns_transport_ports ["53", "5353"]
   @dot_ports ["853"]
@@ -160,11 +162,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       case {params["page"], params["per_page"]} do
         {page, per_page} when not is_nil(page) ->
           p = parse_int(page, 1) |> max(1)
-          pp = parse_int(per_page, 50) |> min(200)
+          pp = parse_int(per_page, @default_query_limit) |> min(@max_query_limit)
           {pp, (p - 1) * pp}
 
         _ ->
-          {parse_int(params["limit"], 100), parse_int(params["offset"], 0)}
+          {parse_int(params["limit"], @default_query_limit) |> min(@max_query_limit), parse_int(params["offset"], 0)}
       end
 
     base =
@@ -276,21 +278,29 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     base = apply_time_filter(base, params["from"], :gte)
     base = apply_time_filter(base, params["to"], :lte)
 
-    total = Repo.aggregate(base, :count, :id)
+    rows =
+      base
+      |> limit(^(limit + 1))
+      |> offset(^offset)
+      |> safe_repo_all("DNS query feed")
+
+    has_more = length(rows) > limit
 
     events =
-      base
-      |> limit(^limit)
-      |> offset(^offset)
-      |> Repo.all()
+      rows
+      |> Enum.take(limit)
       |> Enum.map(&serialize_dns_event/1)
+
+    total = offset + length(events) + if(has_more, do: 1, else: 0)
 
     json(conn, %{
       data: events,
       meta: %{
         total: total,
         limit: limit,
-        offset: offset
+        offset: offset,
+        has_more: has_more,
+        total_is_estimate: true
       }
     })
   end
@@ -365,7 +375,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       })
       |> order_by([e], desc: count(e.id))
       |> limit(20)
-      |> Repo.all()
+      |> safe_repo_all("DNS top domains")
 
     json(conn, %{
       data: results,
@@ -377,6 +387,18 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   # dashboard query inclusive so live and retained events do not disappear.
   defp dns_events_query(queryable) do
     where(queryable, ^dns_event_dynamic())
+  end
+
+  defp safe_repo_all(query, label) do
+    Repo.all(query, timeout: 8_000)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      []
   end
 
   defp dns_event_dynamic do
@@ -406,24 +428,24 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   defp dns_transport_dynamic do
     dynamic(
       [e],
-      e.event_type == "network_connect" and
-        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@dns_transport_ports)
+      e.event_type in ["network_connect", "network_connection"] and
+        ^network_port_dynamic(@dns_transport_ports)
     )
   end
 
   defp dot_dynamic do
     dynamic(
       [e],
-      e.event_type == "network_connect" and
-        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@dot_ports)
+      e.event_type in ["network_connect", "network_connection"] and
+        ^network_port_dynamic(@dot_ports)
     )
   end
 
   defp doh_dynamic do
     dynamic(
       [e],
-      e.event_type == "network_connect" and
-        fragment("?->>'remote_port' = ANY(?::text[])", e.payload, ^@doh_ports) and
+      e.event_type in ["network_connect", "network_connection"] and
+        ^network_port_dynamic(@doh_ports) and
         (fragment("?->>'remote_ip' = ANY(?::text[])", e.payload, ^@known_doh_ips) or
            fragment(
              "lower(COALESCE(?->>'domain', ?->>'remote_domain', ?->>'sni', ?->>'tls_sni', ?->>'host', ?->>'hostname')) = ANY(?::text[])",
@@ -434,6 +456,28 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
              e.payload,
              e.payload,
              ^@known_doh_domains
+           ))
+    )
+  end
+
+  defp network_port_dynamic(ports) do
+    dynamic(
+      [e],
+      fragment(
+        "COALESCE(?->>'remote_port', ?->>'destination_port', ?->>'dst_port', ?->>'port') = ANY(?::text[])",
+        e.payload,
+        e.payload,
+        e.payload,
+        e.payload,
+        ^ports
+      ) or
+        (fragment("lower(COALESCE(?->>'protocol', ?->>'transport'))", e.payload, e.payload) == "udp" and
+           fragment(
+             "COALESCE(?->>'local_port', ?->>'source_port', ?->>'src_port') = ANY(?::text[])",
+             e.payload,
+             e.payload,
+             e.payload,
+             ^ports
            ))
     )
   end
@@ -628,22 +672,28 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         severity -> where(base_query, [a], a.severity == ^severity)
       end
 
-    total = Repo.aggregate(base_query, :count)
+    rows =
+      base_query
+      |> limit(^(limit + 1))
+      |> offset(^offset)
+      |> safe_repo_all("DNS-related alerts")
+
+    has_more = length(rows) > limit
 
     alerts =
-      base_query
-      |> limit(^limit)
-      |> offset(^offset)
-      |> Repo.all()
+      rows
+      |> Enum.take(limit)
       |> Enum.map(&serialize_dns_alert/1)
 
     json(conn, %{
       data: alerts,
       alerts: alerts,
       meta: %{
-        total: total,
+        total: offset + length(alerts) + if(has_more, do: 1, else: 0),
         limit: limit,
-        offset: offset
+        offset: offset,
+        has_more: has_more,
+        total_is_estimate: true
       }
     })
   end
@@ -719,7 +769,20 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     dns_payload = payload["dns"] || payload[:dns] || %{}
     classification = classify_dns_event(event.event_type, payload)
     remote_ip = payload["remote_ip"] || payload[:remote_ip]
-    remote_port = payload["remote_port"] || payload[:remote_port]
+    remote_port =
+      first_present([
+        payload["remote_port"],
+        payload[:remote_port],
+        payload["destination_port"],
+        payload[:destination_port],
+        payload["dst_port"],
+        payload[:dst_port],
+        payload["port"],
+        payload[:port],
+        payload["local_port"],
+        payload[:local_port]
+      ])
+
     transport_target = format_transport_target(remote_ip, remote_port, classification)
 
     %{
@@ -854,7 +917,23 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   end
 
   defp payload_port?(payload, ports) do
-    to_string(payload["remote_port"] || payload[:remote_port] || "") in ports
+    [
+      payload["remote_port"],
+      payload[:remote_port],
+      payload["destination_port"],
+      payload[:destination_port],
+      payload["dst_port"],
+      payload[:dst_port],
+      payload["port"],
+      payload[:port],
+      payload["local_port"],
+      payload[:local_port],
+      payload["source_port"],
+      payload[:source_port],
+      payload["src_port"],
+      payload[:src_port]
+    ]
+    |> Enum.any?(&(to_string(&1 || "") in ports))
   end
 
   defp known_doh_target?(payload) do

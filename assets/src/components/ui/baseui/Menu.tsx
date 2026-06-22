@@ -53,14 +53,34 @@ export function Menu({ trigger, children, side = 'bottom', align = 'start', clas
   )
 }
 
+export type MenuItemTone = 'default' | 'warning' | 'danger'
+
 interface MenuItemProps {
   children: React.ReactNode
   onSelect?: () => void
   disabled?: boolean
+  /**
+   * Visual tone for the item. `danger` maps to `--crit`, `warning` to `--warn`.
+   * Defaults to `default` (foreground color).
+   */
+  tone?: MenuItemTone
+  /** @deprecated Use `tone="danger"` instead. Kept for backwards compatibility. */
   destructive?: boolean
 }
 
-export function MenuItem({ children, onSelect, disabled, destructive }: MenuItemProps) {
+function toneColor(tone: MenuItemTone): string {
+  switch (tone) {
+    case 'danger':
+      return 'var(--crit)'
+    case 'warning':
+      return 'var(--warn)'
+    default:
+      return 'var(--fg)'
+  }
+}
+
+export function MenuItem({ children, onSelect, disabled, tone, destructive }: MenuItemProps) {
+  const resolvedTone: MenuItemTone = tone ?? (destructive ? 'danger' : 'default')
   return (
     <BaseMenu.Item
       onClick={onSelect}
@@ -72,7 +92,7 @@ export function MenuItem({ children, onSelect, disabled, destructive }: MenuItem
         padding: 'var(--spacing-2) var(--spacing-3)',
         borderRadius: 'var(--r-sm)',
         cursor: disabled ? 'not-allowed' : 'pointer',
-        color: destructive ? 'var(--crit)' : 'var(--fg)',
+        color: toneColor(resolvedTone),
         opacity: disabled ? 0.5 : 1,
         fontSize: 'var(--font-size-sm, 0.875rem)',
         outline: 'none',

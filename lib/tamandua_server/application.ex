@@ -378,6 +378,12 @@ defmodule TamanduaServer.Application do
           # Registry for shard-based worker lookup (used by EngineWorker via_shard/1)
           {Registry, keys: :unique, name: TamanduaServer.Detection.ShardRegistry},
 
+          # Per-agent / per-process cache for the agent-side deterministic
+          # risk score snapshot (`behavioral_risk_score` sideband event).
+          # Must start before EngineSupervisor — EngineWorker reads/writes
+          # the ETS table this GenServer owns.
+          TamanduaServer.Detection.AgentRiskScoreStore,
+
           # Start the Sharded Detection Engine Supervisor (replaces single GenServer)
           # Creates ETS tables for rules + stats and spawns 16 EngineWorker shards.
           TamanduaServer.Detection.EngineSupervisor,

@@ -40,7 +40,7 @@ import {
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { ExportDropdown } from '@/components/ExportDropdown'
-import { Select, SelectItem } from '@/components/ui/baseui'
+import { Checkbox, Dialog, DialogFooter, Select, SelectItem } from '@/components/ui/baseui'
 import axios from 'axios'
 import { toast } from 'sonner'
 
@@ -2031,8 +2031,6 @@ function AddIOCModal({
     tags: ''
   })
 
-  if (!isOpen) return null
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     onSubmit({
@@ -2045,10 +2043,13 @@ function AddIOCModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="card-sentinel w-full max-w-md">
-        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Add IOC</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose() }}
+      title="Add IOC"
+    >
+      <form onSubmit={handleSubmit}>
+        <div className="space-y-4">
           <div>
             <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Type</label>
             <Select
@@ -2094,24 +2095,24 @@ function AddIOCModal({
               className="input-sentinel"
             />
           </div>
-          <div className="flex justify-end gap-2 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn-sentinel btn-sentinel-secondary"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn-sentinel btn-sentinel-primary"
-            >
-              Add IOC
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        </div>
+        <DialogFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-sentinel btn-sentinel-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="btn-sentinel btn-sentinel-primary"
+          >
+            Add IOC
+          </button>
+        </DialogFooter>
+      </form>
+    </Dialog>
   )
 }
 
@@ -2133,8 +2134,6 @@ function ConfigureModal({
   const [saving, setSaving] = useState(false)
   const [activeConfigTab, setActiveConfigTab] = useState<'keys' | 'scoring'>('keys')
 
-  if (!isOpen) return null
-
   const handleSave = async () => {
     if (!selectedProvider || !apiKey) return
     setSaving(true)
@@ -2151,10 +2150,12 @@ function ConfigureModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="card-sentinel w-full max-w-lg">
-        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Threat Intel Configuration</h2>
-
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose() }}
+      title="Threat Intel Configuration"
+      maxWidth="36rem"
+    >
         <div className="flex gap-2 mb-4">
           <button
             onClick={() => setActiveConfigTab('keys')}
@@ -2275,26 +2276,25 @@ function ConfigureModal({
           </div>
         )}
 
-        <div className="flex justify-end gap-2 pt-6">
+      <DialogFooter>
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn-sentinel btn-sentinel-secondary"
+        >
+          Close
+        </button>
+        {activeConfigTab === 'keys' && (
           <button
-            type="button"
-            onClick={onClose}
-            className="btn-sentinel btn-sentinel-secondary"
+            onClick={handleSave}
+            disabled={!selectedProvider || !apiKey || saving}
+            className="btn-sentinel btn-sentinel-primary"
           >
-            Close
+            {saving ? 'Saving...' : 'Save Key'}
           </button>
-          {activeConfigTab === 'keys' && (
-            <button
-              onClick={handleSave}
-              disabled={!selectedProvider || !apiKey || saving}
-              className="btn-sentinel btn-sentinel-primary"
-            >
-              {saving ? 'Saving...' : 'Save Key'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+        )}
+      </DialogFooter>
+    </Dialog>
   )
 }
 
@@ -2319,8 +2319,6 @@ function MISPConfigModal({
   })
   const [saving, setSaving] = useState(false)
 
-  if (!isOpen) return null
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
@@ -2342,10 +2340,13 @@ function MISPConfigModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="card-sentinel w-full max-w-lg">
-        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Add MISP Instance</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose() }}
+      title="Add MISP Instance"
+      maxWidth="36rem"
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Instance Name</label>
@@ -2405,58 +2406,42 @@ function MISPConfigModal({
           </div>
 
           <div className="flex flex-wrap gap-4">
-            <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-2)' }}>
-              <input
-                type="checkbox"
-                checked={formData.verify_ssl}
-                onChange={(e) => setFormData({ ...formData, verify_ssl: e.target.checked })}
-                className="rounded"
-                style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}
-              />
-              Verify SSL
-            </label>
-            <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-2)' }}>
-              <input
-                type="checkbox"
-                checked={formData.pull_enabled}
-                onChange={(e) => setFormData({ ...formData, pull_enabled: e.target.checked })}
-                className="rounded"
-                style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}
-              />
-              Pull Events
-            </label>
-            <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-2)' }}>
-              <input
-                type="checkbox"
-                checked={formData.push_enabled}
-                onChange={(e) => setFormData({ ...formData, push_enabled: e.target.checked })}
-                className="rounded"
-                style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}
-              />
-              Push Events
-            </label>
+            <Checkbox
+              checked={formData.verify_ssl}
+              onCheckedChange={(checked) => setFormData({ ...formData, verify_ssl: checked })}
+              label="Verify SSL"
+            />
+            <Checkbox
+              checked={formData.pull_enabled}
+              onCheckedChange={(checked) => setFormData({ ...formData, pull_enabled: checked })}
+              label="Pull Events"
+            />
+            <Checkbox
+              checked={formData.push_enabled}
+              onCheckedChange={(checked) => setFormData({ ...formData, push_enabled: checked })}
+              label="Push Events"
+            />
           </div>
 
-          <div className="flex justify-end gap-2 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn-sentinel btn-sentinel-secondary"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="btn-sentinel btn-sentinel-outline"
-              style={{ borderColor: 'var(--sol-magenta)', color: 'var(--sol-magenta)' }}
-            >
-              {saving ? 'Adding...' : 'Add Instance'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <DialogFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-sentinel btn-sentinel-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="btn-sentinel btn-sentinel-outline"
+            style={{ borderColor: 'var(--sol-magenta)', color: 'var(--sol-magenta)' }}
+          >
+            {saving ? 'Adding...' : 'Add Instance'}
+          </button>
+        </DialogFooter>
+      </form>
+    </Dialog>
   )
 }
 
@@ -2518,8 +2503,6 @@ function ThreatActorModal({
     }
   }, [actor])
 
-  if (!isOpen) return null
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
@@ -2543,12 +2526,13 @@ function ThreatActorModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="card-sentinel w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>
-          {actor ? 'Edit Threat Actor' : 'Add Threat Actor'}
-        </h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => { if (!open) onClose() }}
+      title={actor ? 'Edit Threat Actor' : 'Add Threat Actor'}
+      maxWidth="42rem"
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm mb-1" style={{ color: 'var(--muted)' }}>Name *</label>
@@ -2663,25 +2647,24 @@ function ThreatActorModal({
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 pt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn-sentinel btn-sentinel-secondary"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="btn-sentinel btn-sentinel-danger"
-            >
-              {saving ? 'Saving...' : actor ? 'Update Actor' : 'Create Actor'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <DialogFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-sentinel btn-sentinel-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="btn-sentinel btn-sentinel-danger"
+          >
+            {saving ? 'Saving...' : actor ? 'Update Actor' : 'Create Actor'}
+          </button>
+        </DialogFooter>
+      </form>
+    </Dialog>
   )
 }
 

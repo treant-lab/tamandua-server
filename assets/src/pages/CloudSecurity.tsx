@@ -70,7 +70,7 @@ import {
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useEffect, useCallback } from 'react'
-import { Dialog } from '@/components/ui/baseui'
+import { Dialog, DialogFooter, Select, SelectItem } from '@/components/ui/baseui'
 
 // Types
 interface CloudAccount {
@@ -1227,16 +1227,12 @@ export default function CloudSecurity({
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
-                    <select
-                      value={providerFilter}
-                      onChange={(e) => setProviderFilter(e.target.value)}
-                      className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                    >
-                      <option value="all">All Providers</option>
-                      <option value="aws">AWS</option>
-                      <option value="azure">Azure</option>
-                      <option value="gcp">GCP</option>
-                    </select>
+                    <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                      <SelectItem value="all">All Providers</SelectItem>
+                      <SelectItem value="aws">AWS</SelectItem>
+                      <SelectItem value="azure">Azure</SelectItem>
+                      <SelectItem value="gcp">GCP</SelectItem>
+                    </Select>
                   </div>
                 </div>
 
@@ -1329,27 +1325,19 @@ export default function CloudSecurity({
                       className="w-full bg-slate-700 border border-slate-600 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-300 placeholder-slate-500"
                     />
                   </div>
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
-                  <select
-                    value={selectedAssetType}
-                    onChange={(e) => setSelectedAssetType(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
+                  <Select value={selectedAssetType} onValueChange={setSelectedAssetType} placeholder="Asset Type">
                     {assetTypes.map((type) => (
-                      <option key={type.value} value={type.value}>
+                      <SelectItem key={type.value} value={type.value}>
                         {type.label}
-                      </option>
+                      </SelectItem>
                     ))}
-                  </select>
+                  </Select>
                   <button className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 rounded-lg px-4 py-2 text-sm text-slate-300">
                     <Download className="h-4 w-4" />
                     Export
@@ -1509,16 +1497,12 @@ export default function CloudSecurity({
 
                 {/* Filters */}
                 <div className="flex items-center gap-4">
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
                   <button className="flex items-center gap-2 bg-primary-600 hover:bg-primary-500 rounded-lg px-4 py-2 text-sm text-white">
                     <RefreshCw className="h-4 w-4" />
                     Analyze IAM
@@ -1719,38 +1703,26 @@ export default function CloudSecurity({
                       className="w-full bg-slate-700 border border-slate-600 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-300 placeholder-slate-500"
                     />
                   </div>
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
-                  <select
-                    value={severityFilter}
-                    onChange={(e) => setSeverityFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Severities</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="open">Open</option>
-                    <option value="acknowledged">Acknowledged</option>
-                    <option value="resolved">Resolved</option>
-                    <option value="exception">Exception</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
+                  <Select value={severityFilter} onValueChange={setSeverityFilter} placeholder="All Severities">
+                    <SelectItem value="all">All Severities</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                  </Select>
+                  <Select value={statusFilter} onValueChange={setStatusFilter} placeholder="All Statuses">
+                    <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="acknowledged">Acknowledged</SelectItem>
+                    <SelectItem value="resolved">Resolved</SelectItem>
+                    <SelectItem value="exception">Exception</SelectItem>
+                  </Select>
                   <button
                     onClick={fetchFindings}
                     className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 rounded-lg px-4 py-2 text-sm text-slate-300"
@@ -2035,16 +2007,12 @@ export default function CloudSecurity({
             {activeTab === 'policies' && (
               <div className="space-y-4">
                 <div className="flex items-center gap-4">
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
                   <button className="flex items-center gap-2 bg-primary-600 hover:bg-primary-500 rounded-lg px-4 py-2 text-sm text-white">
                     <Plus className="h-4 w-4" />
                     Create Custom Policy
@@ -2156,16 +2124,12 @@ export default function CloudSecurity({
                       Regional View
                     </button>
                   </div>
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
                 </div>
 
                 {/* Resource Graph View */}
@@ -2511,16 +2475,12 @@ export default function CloudSecurity({
 
                 {/* Filters */}
                 <div className="flex items-center gap-4">
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
                   <button
                     onClick={fetchSecurityGroups}
                     className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 rounded-lg px-4 py-2 text-sm text-slate-300"
@@ -2723,27 +2683,19 @@ export default function CloudSecurity({
 
                 {/* Filters */}
                 <div className="flex items-center gap-4 flex-wrap">
-                  <select
-                    value={providerFilter}
-                    onChange={(e) => setProviderFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Providers</option>
-                    <option value="aws">AWS</option>
-                    <option value="azure">Azure</option>
-                    <option value="gcp">GCP</option>
-                  </select>
-                  <select
-                    value={severityFilter}
-                    onChange={(e) => setSeverityFilter(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-300"
-                  >
-                    <option value="all">All Severities</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
+                  <Select value={providerFilter} onValueChange={setProviderFilter} placeholder="All Providers">
+                    <SelectItem value="all">All Providers</SelectItem>
+                    <SelectItem value="aws">AWS</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
+                    <SelectItem value="gcp">GCP</SelectItem>
+                  </Select>
+                  <Select value={severityFilter} onValueChange={setSeverityFilter} placeholder="All Severities">
+                    <SelectItem value="all">All Severities</SelectItem>
+                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                  </Select>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => exportFindings('csv')}
@@ -2920,29 +2872,25 @@ export default function CloudSecurity({
       </Dialog>
 
       {/* Remediation Code Modal */}
-      {showRemediationModal && selectedFinding && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="card-sentinel rounded-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto" style={{ backgroundColor: 'var(--surface)' }}>
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-xl font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
-                  <Wrench className="h-5 w-5" style={{ color: 'var(--emerald-400)' }} />
-                  Remediation Code
-                </h2>
-                <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>{selectedFinding.title}</p>
-              </div>
-              <button
-                onClick={() => {
-                  setShowRemediationModal(false)
-                  setSelectedFinding(null)
-                }}
-                className="p-2 rounded-lg transition-colors"
-                style={{ color: 'var(--muted)' }}
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
+      <Dialog
+        open={showRemediationModal && !!selectedFinding}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowRemediationModal(false)
+            setSelectedFinding(null)
+          }
+        }}
+        title={
+          <span className="flex items-center gap-2">
+            <Wrench className="h-5 w-5" style={{ color: 'var(--emerald-400)' }} />
+            Remediation Code
+          </span>
+        }
+        description={selectedFinding?.title}
+        maxWidth="64rem"
+      >
+        {selectedFinding && (
+          <>
             {/* Finding Details */}
             <div className="mb-6 p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)' }}>
               <div className="grid grid-cols-2 gap-4">
@@ -3067,39 +3015,38 @@ export default function CloudSecurity({
               )}
             </div>
 
-            {/* Actions */}
-            <div className="flex items-center justify-between mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <div className="text-xs" style={{ color: 'var(--subtle)' }}>
-                Apply remediation code using your preferred IaC tool or click Auto-Fix to apply automatically.
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    setShowRemediationModal(false)
-                    setSelectedFinding(null)
-                  }}
-                  className="px-4 py-2 rounded-lg text-sm transition-colors"
-                  style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg-2)', border: '1px solid var(--border)' }}
-                >
-                  Close
-                </button>
-                <button
-                  onClick={() => {
-                    applyRemediation(selectedFinding.id, 'auto')
-                    setShowRemediationModal(false)
-                    setSelectedFinding(null)
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-white transition-colors"
-                  style={{ backgroundColor: 'var(--emerald-600)' }}
-                >
-                  <Play className="h-4 w-4" />
-                  Apply Auto-Fix
-                </button>
-              </div>
+            <div className="text-xs mt-4" style={{ color: 'var(--subtle)' }}>
+              Apply remediation code using your preferred IaC tool or click Auto-Fix to apply automatically.
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+        <DialogFooter>
+          <button
+            onClick={() => {
+              setShowRemediationModal(false)
+              setSelectedFinding(null)
+            }}
+            className="px-4 py-2 rounded-lg text-sm transition-colors"
+            style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg-2)', border: '1px solid var(--border)' }}
+          >
+            Close
+          </button>
+          {selectedFinding && (
+            <button
+              onClick={() => {
+                applyRemediation(selectedFinding.id, 'auto')
+                setShowRemediationModal(false)
+                setSelectedFinding(null)
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-white transition-colors"
+              style={{ backgroundColor: 'var(--emerald-600)' }}
+            >
+              <Play className="h-4 w-4" />
+              Apply Auto-Fix
+            </button>
+          )}
+        </DialogFooter>
+      </Dialog>
     </MainLayout>
   )
 }

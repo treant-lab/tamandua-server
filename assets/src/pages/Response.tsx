@@ -44,6 +44,7 @@ import {
 import { cn, formatDate, formatBytes } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { Checkbox } from '@/components/ui/baseui'
 import axios from 'axios'
 import { toast } from 'sonner'
 
@@ -1130,11 +1131,9 @@ export default function Response({ agents, recentActions }: ResponseProps) {
 
                     {param.type === 'boolean' ? (
                       <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={params[param.name] ?? param.default ?? false}
-                          onChange={(e) => setParams({ ...params, [param.name]: e.target.checked })}
-                          className="rounded border-[var(--border)] bg-[var(--surface-2)] text-[var(--emerald-500)] focus:ring-[var(--emerald-500)]"
+                          onCheckedChange={(checked) => setParams({ ...params, [param.name]: checked })}
                         />
                         <span className="text-sm text-[var(--muted)]">Enable</span>
                       </label>
