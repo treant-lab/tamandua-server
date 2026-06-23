@@ -515,10 +515,10 @@ defmodule TamanduaServer.Detection.ML.Client do
       Finch.build(
         :post,
         url,
-        [
+        ml_headers([
           {"content-type", "application/json"},
           {"accept", "application/json"}
-        ],
+        ]),
         body
       )
 
@@ -573,10 +573,10 @@ defmodule TamanduaServer.Detection.ML.Client do
       Finch.build(
         :post,
         url,
-        [
+        ml_headers([
           {"content-type", "application/json"},
           {"accept", "application/json"}
-        ],
+        ]),
         body
       )
 
@@ -608,13 +608,13 @@ defmodule TamanduaServer.Detection.ML.Client do
 
   defp do_health_check(state) do
     url = "#{state.url}/health"
-    request = Finch.build(:get, url)
+    request = Finch.build(:get, url, ml_headers())
 
     case Finch.request(request, state.finch, receive_timeout: 5_000) do
       {:ok, %{status: 200, body: body}} ->
         case Jason.decode(body) do
           {:ok, %{"status" => status}} ->
-            status in ["healthy", "ok"]
+            ml_healthy_status?(status)
 
           _ ->
             true
@@ -628,7 +628,7 @@ defmodule TamanduaServer.Detection.ML.Client do
 
   defp do_get_model_info(state) do
     url = "#{state.url}/model/info"
-    request = Finch.build(:get, url, [{"accept", "application/json"}])
+    request = Finch.build(:get, url, ml_headers([{"accept", "application/json"}]))
 
     case request_with_retry(request, state.finch, [receive_timeout: 5_000]) do
       {:ok, %{status: 200, body: body}} ->
@@ -662,10 +662,10 @@ defmodule TamanduaServer.Detection.ML.Client do
       Finch.build(
         :post,
         url,
-        [
+        ml_headers([
           {"content-type", "application/json"},
           {"accept", "application/json"}
-        ],
+        ]),
         body
       )
 
@@ -706,7 +706,7 @@ defmodule TamanduaServer.Detection.ML.Client do
 
   defp do_get_metrics(state) do
     url = "#{state.url}/model/info"
-    request = Finch.build(:get, url, [{"accept", "application/json"}])
+    request = Finch.build(:get, url, ml_headers([{"accept", "application/json"}]))
 
     case request_with_retry(request, state.finch, [receive_timeout: 5_000]) do
       {:ok, %{status: 200, body: body}} ->
@@ -741,7 +741,7 @@ defmodule TamanduaServer.Detection.ML.Client do
 
   defp do_get_training_status(job_id, state) do
     url = "#{state.url}/training/status/#{job_id}"
-    request = Finch.build(:get, url, [{"accept", "application/json"}])
+    request = Finch.build(:get, url, ml_headers([{"accept", "application/json"}]))
 
     case request_with_retry(request, state.finch, [receive_timeout: 10_000]) do
       {:ok, %{status: 200, body: body}} ->
@@ -774,10 +774,10 @@ defmodule TamanduaServer.Detection.ML.Client do
       Finch.build(
         :post,
         url,
-        [
+        ml_headers([
           {"content-type", "application/json"},
           {"accept", "application/json"}
-        ],
+        ]),
         body
       )
 
@@ -794,4 +794,19 @@ defmodule TamanduaServer.Detection.ML.Client do
         {:error, reason}
     end
   end
+
+  defp ml_headers(headers \\ []) do
+    case System.get_env("TAMANDUA_ML_API_KEY") do
+      nil -> headers
+      "" -> headers
+      api_key -> [{"authorization", "Bearer #{api_key}"} | headers]
+    end
+  end
+
+  defp ml_healthy_status?(status) when is_binary(status) do
+    status in ["healthy", "ok", "ready", "alive", "healthy_trained", "healthy_untrained"] or
+      String.starts_with?(status, "healthy")
+  end
+
+  defp ml_healthy_status?(_status), do: false
 end
