@@ -3040,9 +3040,12 @@ defmodule TamanduaServer.Detection.Behavioral do
 
   # Phase 2: profile maps are nested by org_id. We encode the org_id INTO the
   # persisted entity_id (e.g. "ORG_UUID::alice") so the existing
-  # behavioral_baselines schema (entity_type, entity_id, data) keeps working
-  # without a DB migration. Phase 5 will add a dedicated org_id column. The
-  # load path parses the same prefix back into org buckets.
+  # behavioral_baselines (entity_type, entity_id) uniqueness keeps working.
+  # Phase 5 (migration 20260622203457) added a dedicated `organization_id`
+  # column; writes now populate both the prefix-encoded entity_id (kept for
+  # the existing unique key) AND the new column, and reads prefer the column
+  # but fall back to the JSON blob and finally to the prefix parser so
+  # pre-migration rows continue to load.
   @org_id_separator "::"
 
   defp persist_baselines_to_db(state) do
@@ -3102,9 +3105,15 @@ defmodule TamanduaServer.Detection.Behavioral do
   end
 
   defp upsert_baseline(entity_type, entity_id, data) do
-    # Uses Repo to upsert a behavioral_baselines record
-    # Table: behavioral_baselines (entity_type, entity_id, data jsonb, updated_at)
+    # Uses Repo to upsert a behavioral_baselines record.
+    # Table: behavioral_baselines (entity_type, entity_id, organization_id,
+    # data jsonb, updated_at). The unique key is still (entity_type, entity_id)
+    # so the prefix-encoded entity_id remains the conflict target. The
+    # organization_id column (added by migration 20260622203457) is populated
+    # additionally for fast list-by-org queries; it is also kept inside the
+    # JSON `data` blob as a belt-and-braces fallback for legacy readers.
     now = DateTime.utc_now()
+    org_id = extract_org_id(data)
 
     try do
       TamanduaServer.Repo.insert_all(
@@ -3112,10 +3121,13 @@ defmodule TamanduaServer.Detection.Behavioral do
         [%{
           entity_type: to_string(entity_type),
           entity_id: to_string(entity_id),
+          organization_id: org_id,
           data: Jason.encode!(data),
           updated_at: now
         }],
-        on_conflict: {:replace, [:data, :updated_at]},
+        # On conflict, refresh the org column too — late-arriving org context
+        # for what was a "__noorg__::"-prefixed row should win.
+        on_conflict: {:replace, [:organization_id, :data, :updated_at]},
         conflict_target: [:entity_type, :entity_id]
       )
     rescue
@@ -3124,23 +3136,58 @@ defmodule TamanduaServer.Detection.Behavioral do
     end
   end
 
+  # Accepts either atom-keyed (`:organization_id`) or string-keyed
+  # ("organization_id") data maps; both call sites exist in this module.
+  # Returns nil when no org_id is present (legacy `:historical_stats` /
+  # "global" rows have none).
+  defp extract_org_id(data) when is_map(data) do
+    Map.get(data, :organization_id) || Map.get(data, "organization_id")
+  end
+  defp extract_org_id(_), do: nil
+
+  # `Repo.query!` returns uuid columns as raw 16-byte binaries; the rest of
+  # this module keys org buckets by the canonical UUID *string* (that's what
+  # Phase 2 wrote into the JSON blob and what `safe_org_lookup/1` produces).
+  # Normalize back to the string form (or nil) so the three tiers in
+  # `load_persisted_baselines/0` are comparable.
+  defp normalize_org_id(nil), do: nil
+  defp normalize_org_id(uuid) when is_binary(uuid) and byte_size(uuid) == 16 do
+    case Ecto.UUID.load(uuid) do
+      {:ok, str} -> str
+      _ -> nil
+    end
+  end
+  defp normalize_org_id(uuid) when is_binary(uuid), do: uuid
+  defp normalize_org_id(_), do: nil
+
   # Phase 2: returns {%{org_id => %{user_id => UserProfile}},
   #                   %{org_id => %{proc_name => ProcessProfile}}}
   defp load_persisted_baselines do
     try do
       rows = TamanduaServer.Repo.query!(
-        "SELECT entity_type, entity_id, data FROM behavioral_baselines"
+        "SELECT entity_type, entity_id, organization_id, data FROM behavioral_baselines"
       ).rows
 
       {user_profiles, process_profiles} =
-        Enum.reduce(rows, {%{}, %{}}, fn [entity_type, raw_entity_id, data_json], {users, procs} ->
+        Enum.reduce(rows, {%{}, %{}}, fn [entity_type, raw_entity_id, column_org_id, data_json], {users, procs} ->
           case Jason.decode(data_json) do
             {:ok, data} ->
               {parsed_org, parsed_id} = parse_scoped_entity_id(raw_entity_id)
-              # Prefer the org_id embedded in the JSON payload; fall back to
-              # the prefix parsed out of the entity_id column. Either may be nil
-              # for legacy/unscoped rows.
-              org_id = data["organization_id"] || parsed_org
+              # 3-tier org_id resolution (Phase 5):
+              #   1. the new `organization_id` column when non-NULL (preferred,
+              #      written by every post-Phase-5 upsert);
+              #   2. the JSON blob "organization_id" key (written by Phase 2,
+              #      covers rows whose column is still NULL because no Phase-5
+              #      upsert has touched them yet);
+              #   3. the "ORG_UUID::entity"/"__noorg__::entity" prefix parsed
+              #      out of entity_id (covers the oldest Phase-2 rows where the
+              #      JSON blob wasn't yet stamped).
+              # All three may yield nil for unscoped/legacy rows — that is fine,
+              # downstream code already handles a nil org bucket key.
+              org_id =
+                normalize_org_id(column_org_id) ||
+                  data["organization_id"] ||
+                  parsed_org
 
               case entity_type do
                 "user" ->
@@ -3921,8 +3968,10 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Phase 2: stats_key is {org_id, entity_type, entity_id, feature} and
   # thresholds_key is {org_id, entity_type, feature}. We encode the org_id
   # via `scoped_entity_id/2` so the row roundtrips through the existing
-  # `behavioral_baselines` schema without a migration (Phase 5 will add a
-  # dedicated organization_id column).
+  # (entity_type, entity_id) unique key. Phase 5 (migration 20260622203457)
+  # also stamps the dedicated `organization_id` column via `upsert_baseline/3`
+  # — the "organization_id" key already present in the data map below is
+  # what `upsert_baseline/3` reads via `extract_org_id/1`.
   defp persist_ets_stats_to_db do
     try do
       count = :ets.foldl(fn

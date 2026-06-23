@@ -8113,6 +8113,7 @@ defmodule TamanduaServerWeb.InertiaController do
         endpoint: "/api/v1/mcp/rpc",
         status: mcp_status,
         healthMessage: health_message,
+        tools: tools,
         toolCount: length(tools),
         contextProviderCount: length(context_providers),
         totalRequests: total_requests,
@@ -9513,25 +9514,25 @@ defmodule TamanduaServerWeb.InertiaController do
     # Get connected agents
     agents =
       try do
-        case Registry.list_agents() do
+        case Registry.list_all() do
           list when is_list(list) ->
             Enum.map(list, fn a ->
               %{
                 id: a.agent_id,
                 hostname: a.hostname,
                 status: a.status,
-                os: a.os,
-                lastSeen: format_datetime(a.last_seen)
+                os: a[:os_type],
+                lastSeen: format_datetime(a[:last_seen_at] || a[:last_seen])
               }
             end)
 
           other ->
-            Logger.warning("Registry.list_agents returned unexpected: #{inspect(other)}")
+            Logger.warning("Registry.list_all returned unexpected: #{inspect(other)}")
             []
         end
       catch
         kind, reason ->
-          Logger.warning("Registry.list_agents failed: #{kind} #{inspect(reason)}")
+          Logger.warning("Registry.list_all failed: #{kind} #{inspect(reason)}")
           []
       end
 
@@ -10386,7 +10387,10 @@ defmodule TamanduaServerWeb.InertiaController do
         a.organization_id == ^org_id and
           (like(a.title, "ML Detection:%") or
           like(a.title, "Malware detected:%") or
-          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml")),
+          like(a.title, "Agent detection: OFFLINE_ML%") or
+          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
+          fragment("?->>'source' = ?", a.detection_metadata, "ml") or
+          fragment("?->>'detection_source' = ?", a.detection_metadata, "ml")),
       order_by: [desc: a.inserted_at],
       limit: ^limit
     )

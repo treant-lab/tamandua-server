@@ -19,6 +19,8 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   use TamanduaServerWeb, :controller
   require Logger
 
+  alias TamanduaServer.Alerts
+  alias TamanduaServer.Alerts.SuppressionRule
   alias TamanduaServer.Detection.Behavioral
   alias TamanduaServer.Detection.IOCs
 
@@ -1360,21 +1362,26 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   # ============================================================================
   # Whitelist / Suppress Patterns API
   # ============================================================================
-
-  @suppression_table :behavioral_suppressions
+  #
+  # Routes through the canonical `TamanduaServer.Alerts.SuppressionRule` schema
+  # (org-scoped via `TenantScope.scope_to_tenant`). Wire shape is preserved for
+  # backwards compatibility: callers still send `pattern_type` + `pattern` and
+  # receive the same flat response shape. Translation lives in
+  # `build_suppression_attrs/3` (in) and `serialize_suppression/1` (out).
+  # ============================================================================
 
   @doc """
   List suppression rules (whitelisted patterns that won't generate alerts).
   """
   def suppressions(conn, _params) do
-    with {:ok, _org_id} <- require_org_id(conn) do
-      suppressions = load_suppressions()
+    with {:ok, org_id} <- require_org_id(conn) do
+      rules =
+        Alerts.list_suppression_rules(organization_id: org_id, enabled_only: true)
+        |> Enum.map(&serialize_suppression/1)
 
       json(conn, %{
-        data: suppressions,
-        meta: %{
-          count: length(suppressions)
-        }
+        data: rules,
+        meta: %{count: length(rules)}
       })
     end
   end
@@ -1390,26 +1397,24 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   - `created_by` - User who created the suppression
   """
   def create_suppression(conn, params) do
-    with {:ok, _org_id} <- require_org_id(conn) do
-      suppression = %{
-        id: Ecto.UUID.generate(),
-        pattern_type: params["pattern_type"],
-        pattern: params["pattern"],
-        reason: params["reason"],
-        created_by: params["created_by"] || conn.assigns[:current_user_id],
-        created_at: DateTime.utc_now(),
-        expires_at: parse_datetime(params["expires_at"]),
-        enabled: true
-      }
+    with {:ok, org_id} <- require_org_id(conn) do
+      attrs = build_suppression_attrs(params, org_id, conn.assigns[:current_user_id])
 
-      # Store in ETS (in production, this would go to database)
-      ensure_suppression_table()
-      :ets.insert(@suppression_table, {suppression.id, suppression})
+      case Alerts.create_suppression_rule(attrs) do
+        {:ok, rule} ->
+          json(conn, %{
+            data: serialize_suppression(rule),
+            success: true
+          })
 
-      json(conn, %{
-        data: suppression,
-        success: true
-      })
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            success: false,
+            errors: format_changeset_errors(changeset)
+          })
+      end
     end
   end
 
@@ -1417,14 +1422,33 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   Delete a suppression rule.
   """
   def delete_suppression(conn, %{"id" => id}) do
-    with {:ok, _org_id} <- require_org_id(conn) do
-      ensure_suppression_table()
-      :ets.delete(@suppression_table, id)
+    with {:ok, org_id} <- require_org_id(conn) do
+      case Alerts.get_suppression_rule_for_org(org_id, id) do
+        {:ok, rule} ->
+          case Alerts.delete_suppression_rule(rule) do
+            {:ok, _} ->
+              json(conn, %{
+                success: true,
+                message: "Suppression rule deleted"
+              })
 
-      json(conn, %{
-        success: true,
-        message: "Suppression rule deleted"
-      })
+            {:error, _changeset} ->
+              conn
+              |> put_status(:internal_server_error)
+              |> json(%{
+                success: false,
+                error: "Failed to delete suppression rule"
+              })
+          end
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{
+            success: false,
+            error: "Suppression rule not found"
+          })
+      end
     end
   end
 
@@ -1531,12 +1555,12 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   Get raw events associated with an anomaly for investigation.
   """
   def anomaly_events(conn, %{"anomaly_id" => anomaly_id} = params) do
-    with {:ok, _org_id} <- require_org_id(conn) do
+    with {:ok, org_id} <- require_org_id(conn) do
       limit = parse_int(params["limit"], 50)
 
       # In production, this would query the telemetry/events table
       # For now, we return a structured response indicating what events would be fetched
-      events = fetch_events_for_anomaly(anomaly_id, limit)
+      events = fetch_events_for_anomaly(org_id, anomaly_id, limit)
 
       json(conn, %{
         data: %{
@@ -1551,9 +1575,11 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
     end
   end
 
-  defp fetch_events_for_anomaly(_anomaly_id, _limit) do
+  defp fetch_events_for_anomaly(_org_id, _anomaly_id, _limit) do
     # In production, query TamanduaServer.Telemetry for events
-    # matching the anomaly's entity and time window
+    # matching the anomaly's entity (scoped to org_id) and time window.
+    # org_id is required at the call site to prevent cross-tenant event leaks
+    # once this stub is filled in.
     []
   end
 
@@ -1721,23 +1747,93 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   # Suppression Helpers
   # ============================================================================
 
-  defp ensure_suppression_table do
-    case :ets.whereis(@suppression_table) do
-      :undefined ->
-        :ets.new(@suppression_table, [:set, :public, :named_table])
-      _ ->
-        :ok
-    end
+  # Translates the shim's wire format ({pattern_type, pattern, reason, ...})
+  # into a SuppressionRule changeset attrs map. Known pattern_types map to
+  # typed columns; unknown ones fall through to the JSON `criteria` field so
+  # the changeset's `validate_has_criteria/1` still passes.
+  defp build_suppression_attrs(params, org_id, current_user_id) do
+    pattern_type = params["pattern_type"]
+    pattern = params["pattern"] || ""
+    reason = params["reason"]
+    expires_at = parse_datetime(params["expires_at"])
+    created_by_id = params["created_by"] || current_user_id
+
+    %{
+      "name" => synth_suppression_name(pattern_type, pattern, reason),
+      "description" => reason,
+      "action" => "suppress",
+      "organization_id" => org_id,
+      "created_by_id" => created_by_id,
+      "enabled" => true
+    }
+    |> Map.merge(translate_pattern(pattern_type, pattern))
+    |> maybe_put_expiry(expires_at)
   end
 
-  defp load_suppressions do
-    ensure_suppression_table()
+  defp synth_suppression_name(pattern_type, pattern, reason) do
+    label = pattern_type || "manual"
+    preview = (reason || "") |> to_string() |> String.slice(0, 40)
 
-    :ets.tab2list(@suppression_table)
-    |> Enum.map(fn {_id, suppression} -> suppression end)
-    |> Enum.filter(fn s ->
-      s.enabled and
-      (is_nil(s.expires_at) or DateTime.compare(s.expires_at, DateTime.utc_now()) == :gt)
+    base = "#{label}: #{pattern}"
+    name = if preview != "", do: "#{base} — #{preview}", else: base
+    String.slice(name, 0, 200)
+  end
+
+  defp translate_pattern("process_name", pattern), do: %{"process_name_pattern" => pattern}
+  defp translate_pattern("rule_id", pattern), do: %{"rule_name_pattern" => pattern}
+  defp translate_pattern("command_line", pattern), do: %{"criteria" => %{"command_line" => pattern}}
+  defp translate_pattern("entity_id", pattern), do: %{"criteria" => %{"entity_id" => pattern}}
+  defp translate_pattern(other, pattern) do
+    %{"criteria" => %{"pattern_type" => other, "pattern" => pattern}}
+  end
+
+  defp maybe_put_expiry(attrs, nil), do: attrs
+  defp maybe_put_expiry(attrs, %DateTime{} = dt) do
+    attrs
+    |> Map.put("time_window_type", "until_date")
+    |> Map.put("expires_at", dt)
+  end
+
+  # Serializes a SuppressionRule back into the legacy flat shape the existing
+  # behavioral UI consumes. derive_pattern/1 reverses translate_pattern/2.
+  defp serialize_suppression(%SuppressionRule{} = rule) do
+    {pattern_type, pattern} = derive_pattern(rule)
+
+    %{
+      id: rule.id,
+      pattern_type: pattern_type,
+      pattern: pattern,
+      reason: rule.description,
+      created_by: rule.created_by_id,
+      created_at: rule.inserted_at,
+      expires_at: rule.expires_at,
+      enabled: rule.enabled
+    }
+  end
+
+  defp derive_pattern(%SuppressionRule{process_name_pattern: p}) when is_binary(p) and p != "" do
+    {"process_name", p}
+  end
+  defp derive_pattern(%SuppressionRule{rule_name_pattern: p}) when is_binary(p) and p != "" do
+    {"rule_id", p}
+  end
+  defp derive_pattern(%SuppressionRule{criteria: %{"command_line" => p}}) when is_binary(p) do
+    {"command_line", p}
+  end
+  defp derive_pattern(%SuppressionRule{criteria: %{"entity_id" => p}}) when is_binary(p) do
+    {"entity_id", p}
+  end
+  defp derive_pattern(%SuppressionRule{criteria: %{"pattern_type" => t, "pattern" => p}})
+       when is_binary(t) and is_binary(p) do
+    {t, p}
+  end
+  defp derive_pattern(_), do: {nil, nil}
+
+  defp format_changeset_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
+        opts |> Keyword.get(String.to_atom(key), key) |> to_string()
+      end)
     end)
   end
 

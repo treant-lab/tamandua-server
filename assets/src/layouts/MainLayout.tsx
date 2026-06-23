@@ -39,6 +39,7 @@ import {
   Workflow,
   Clock,
   Download,
+  GitBranch,
 } from 'lucide-react'
 import { cn, safeInitial } from '@/lib/utils'
 import type { SharedProps, Tenant } from '@/types'
@@ -149,13 +150,12 @@ const navigationGroups: ExtendedNavGroup[] = [
     icon: LayoutDashboard,
     items: [
       { name: 'Overview', href: '/app/dashboard', icon: LayoutDashboard },
+      { name: 'Executive', href: '/app/executive', icon: Activity },
       { name: 'Agents', href: '/app/agents', icon: Monitor },
       { name: 'Deploy Agent', href: '/app/deploy-agent', icon: Download },
       { name: 'Assets', href: '/app/assets', icon: Box },
       { name: 'Alerts', href: '/app/alerts', icon: AlertTriangle },
       { name: 'Events', href: '/app/events', icon: Activity },
-      { name: 'NDR', href: '/app/ndr', icon: Radar },
-      { name: 'Live Response', href: '/app/live-response', icon: Terminal },
       { name: 'Timeline', href: '/app/timeline', icon: Clock },
     ],
   },
@@ -164,9 +164,13 @@ const navigationGroups: ExtendedNavGroup[] = [
     icon: Radar,
     items: [
       { name: 'Detection Rules', href: '/app/detection-rules', icon: Shield },
+      { name: 'Detection Builder', href: '/app/detection-builder', icon: FileCode },
+      { name: 'Dynamic Detection', href: '/app/dynamic-detection', icon: Zap },
+      { name: 'Detection Analytics', href: '/app/detection-analytics', icon: Activity },
       { name: 'Detection Packs', href: '/app/detection-packs', icon: Layers },
       { name: 'MITRE ATT&CK', href: '/app/mitre', icon: Target },
       { name: 'Threat Intel', href: '/app/threat-intel', icon: Eye },
+      { name: 'Predictive Shielding', href: '/app/predictive', icon: ShieldCheck },
       { name: 'Validation Center', href: '/app/validation', icon: ClipboardList },
       { name: 'Benchmarks', href: '/app/validation/benchmark', icon: Activity },
     ],
@@ -175,10 +179,13 @@ const navigationGroups: ExtendedNavGroup[] = [
     name: 'AI & Hunting',
     icon: Brain,
     items: [
+      { name: 'Hunt', href: '/app/hunt', icon: Radar },
       { name: 'NL Hunting', href: '/app/nl-hunt', icon: MessageSquare },
       { name: 'AI Assistant', href: '/app/ai-assistant', icon: Brain },
+      { name: 'AI SIEM', href: '/app/ai-siem', icon: Cpu },
       { name: 'ML Dashboard', href: '/app/ml', icon: Cpu },
       { name: 'Behavioral', href: '/app/behavioral', icon: Bug },
+      { name: 'Agentic Analyst', href: '/app/analyst', icon: FileSearch },
     ],
   },
   {
@@ -186,9 +193,22 @@ const navigationGroups: ExtendedNavGroup[] = [
     icon: FileSearch,
     items: [
       { name: 'Investigations', href: '/app/investigations', icon: FileSearch },
+      { name: 'Process Tree', href: '/app/process-tree', icon: Network },
+      { name: 'Provenance Graph', href: '/app/provenance', icon: GitBranch },
       { name: 'Forensics', href: '/app/forensics', icon: Crosshair },
+    ],
+  },
+  {
+    name: 'Response',
+    icon: Terminal,
+    items: [
+      { name: 'Response Center', href: '/app/response', icon: ShieldCheck },
+      { name: 'Live Response', href: '/app/live-response', icon: Terminal },
       { name: 'Playbooks', href: '/app/playbooks', icon: BookOpen },
       { name: 'Automation', href: '/app/automation', icon: Workflow },
+      { name: 'Prevention Policies', href: '/app/prevention-policies', icon: Shield },
+      { name: 'Device Control', href: '/app/device-control', icon: Box },
+      { name: 'Device Policies', href: '/app/device-control/policies', icon: ClipboardList },
     ],
   },
   {
@@ -200,6 +220,7 @@ const navigationGroups: ExtendedNavGroup[] = [
       { name: 'AI Posture', href: '/app/ai-security/posture', icon: ShieldCheck },
       { name: 'Agent Registry', href: '/app/ai-security/agents', icon: Users },
       { name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
+      { name: 'Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
       { name: 'MCP Governance', href: '/app/mcp-servers', icon: Network },
     ],
   },
@@ -212,11 +233,28 @@ const navigationGroups: ExtendedNavGroup[] = [
     ],
   },
   {
-    name: 'Telemetry',
+    name: 'Exposure',
     icon: Network,
     items: [
       { name: 'Network', href: '/app/network', icon: Network },
       { name: 'DNS', href: '/app/dns', icon: Globe },
+      { name: 'NDR', href: '/app/ndr', icon: Radar },
+      { name: 'Attack Surface', href: '/app/attack-surface', icon: Target },
+      { name: 'Exposure Management', href: '/app/exposure', icon: Eye },
+      { name: 'Attack Paths', href: '/app/exposure/attack-paths', icon: GitBranch },
+      { name: 'Vulnerabilities', href: '/app/vulnerabilities', icon: AlertTriangle },
+      { name: 'Identity', href: '/app/identity', icon: Users },
+      { name: 'Deception', href: '/app/deception', icon: Shield },
+    ],
+  },
+  {
+    name: 'Collaboration',
+    icon: Globe,
+    items: [
+      { name: 'Integrations', href: '/app/integrations', icon: Network },
+      { name: 'Collaboration Security', href: '/app/collaboration', icon: Users },
+      { name: 'Email Security', href: '/app/email-security', icon: MessageSquare },
+      { name: 'Phishing Triage', href: '/app/phishing-triage', icon: FileSearch },
     ],
   },
   {
@@ -233,9 +271,12 @@ const navigationGroups: ExtendedNavGroup[] = [
     icon: Settings,
     items: [
       { name: 'Settings', href: '/app/settings', icon: Settings },
+      { name: 'Tenant Settings', href: '/app/tenant-settings', icon: Building2 },
       { name: 'User Management', href: '/app/users', icon: Users },
       { name: 'RBAC Roles', href: '/app/settings/roles', icon: Shield },
+      { name: 'Reports', href: '/app/reports', icon: ClipboardList },
       { name: 'Audit Log', href: '/app/audit-log', icon: FileSearch },
+      { name: 'Tenants', href: '/app/admin/tenants', icon: Building2, requireRole: 'super_admin' },
     ],
     requireRole: 'admin',
   },

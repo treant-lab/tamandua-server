@@ -1070,6 +1070,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     label = Keyword.get(opts, :label, "Timeline correlation")
     correlate_opts = Keyword.drop(opts, [:label])
 
+    do_safe_correlate_events(events, correlate_opts, label)
+  end
+
+  defp do_safe_correlate_events(events, correlate_opts, label) do
     {CorrelationEvidence.correlate_events(events, correlate_opts), nil}
   rescue
     error ->

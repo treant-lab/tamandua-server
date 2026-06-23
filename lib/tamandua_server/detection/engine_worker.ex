@@ -150,6 +150,16 @@ defmodule TamanduaServer.Detection.EngineWorker do
     detection_context = EventContext.build(event)
     record_precision_event(:event_received, event, detection_context, %{})
 
+    # Fan out normalized event to PubSub subscribers (Detection.Behavioral,
+    # BaselineLearner, UserProfiler, KnowledgeGraph, AIInventory,
+    # EscapeDetector, AgentRuntime). Closes the telemetry-pipeline gap
+    # noted in .planning/BEHAVIORAL_TENANT_SCOPING_DESIGN.md §6.1: the
+    # subscribers have existed since their respective init/1 calls, but
+    # nothing was broadcasting on "telemetry:events". This must run BEFORE
+    # the deterministic detection branches below so UEBA analysis happens
+    # in parallel without blocking the main engine.
+    Phoenix.PubSub.broadcast(TamanduaServer.PubSub, "telemetry:events", {:telemetry_event, event})
+
     # 0. Sideband: agent-side deterministic risk score snapshot. This
     # event type is a periodic, per-process, *enrichment* signal — not
     # an alert source. Store it in the per-agent cache and short-circuit

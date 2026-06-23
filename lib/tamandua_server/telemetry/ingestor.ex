@@ -159,6 +159,13 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     event_type = event["event_type"] || event[:event_type]
 
     cond do
+      offline_verdict_sync_event?(event_type, event) ->
+        handle_offline_verdict_sync_event(event)
+
+        message
+        |> Message.update_data(fn _ -> Map.put(event, :_skip_persist, true) end)
+        |> Message.put_batcher(:default)
+
       event_type in ["system_health", :system_health] ->
         handle_health_event(event)
 
@@ -315,6 +322,122 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       )
 
       Logger.debug("Health metrics updated for agent #{agent_id}")
+    end
+  end
+
+  defp offline_verdict_sync_event?(event_type, event) do
+    payload = event["payload"] || event[:payload] || %{}
+    payload_type = payload["type"] || payload[:type]
+
+    event_type in ["system_health", :system_health] and payload_type == "offline_verdict_sync"
+  end
+
+  defp handle_offline_verdict_sync_event(event) do
+    payload = event["payload"] || event[:payload] || %{}
+    verdicts = payload["verdicts"] || payload[:verdicts] || []
+
+    verdicts
+    |> Enum.take(500)
+    |> Enum.each(fn verdict ->
+      verdict
+      |> offline_verdict_to_detection_event(event)
+      |> safely_create_agent_detection_alert()
+    end)
+  rescue
+    e ->
+      Logger.warning("[Ingestor] Offline verdict sync handling failed: #{Exception.message(e)}")
+      :ok
+  end
+
+  defp offline_verdict_to_detection_event(verdict, parent_event) when is_map(verdict) do
+    agent_id = parent_event["agent_id"] || parent_event[:agent_id]
+    org_id = parent_event["organization_id"] || parent_event[:organization_id] || OrgLookup.get_org_id(agent_id)
+    file_path = verdict["file_path"] || verdict[:file_path]
+    file_hash = verdict["file_hash"] || verdict[:file_hash]
+    combined_verdict = verdict["combined_verdict"] || verdict[:combined_verdict] || "unknown"
+    ml_score = verdict["ml_score"] || verdict[:ml_score]
+    ml_verdict = verdict["ml_verdict"] || verdict[:ml_verdict]
+    yara_matches = verdict["yara_matches"] || verdict[:yara_matches] || []
+
+    detections =
+      []
+      |> maybe_add_offline_ml_detection(verdict, ml_score, ml_verdict, file_path)
+      |> add_offline_yara_detections(yara_matches, file_path)
+
+    %{
+      "event_id" => parent_event["event_id"] || parent_event[:event_id],
+      "event_type" => "ml_detection",
+      "agent_id" => agent_id,
+      "organization_id" => org_id,
+      "timestamp" => verdict["timestamp"] || verdict[:timestamp] || parent_event["timestamp"] || parent_event[:timestamp],
+      "severity" => offline_verdict_severity(combined_verdict, ml_score),
+      "payload" => %{
+        "path" => file_path,
+        "file_hash" => file_hash,
+        "file_size" => verdict["file_size"] || verdict[:file_size],
+        "combined_verdict" => combined_verdict,
+        "ml_score" => ml_score,
+        "ml_verdict" => ml_verdict,
+        "model_version" => verdict["model_version"] || verdict[:model_version],
+        "rules_version" => verdict["rules_version"] || verdict[:rules_version],
+        "source" => "agent_offline_sync"
+      },
+      "metadata" => %{
+        "source" => "agent_offline_ml",
+        "offline_sync" => "true"
+      },
+      "detections" => detections
+    }
+  end
+
+  defp offline_verdict_to_detection_event(_verdict, parent_event), do: parent_event
+
+  defp maybe_add_offline_ml_detection(detections, _verdict, nil, _ml_verdict, _file_path), do: detections
+
+  defp maybe_add_offline_ml_detection(detections, verdict, ml_score, ml_verdict, file_path) do
+    combined_verdict = verdict["combined_verdict"] || verdict[:combined_verdict] || "unknown"
+
+    if combined_verdict in ["malicious", :malicious, "suspicious", :suspicious] do
+      [
+        %{
+          "detection_type" => "ml",
+          "rule_name" => "OFFLINE_ML_#{ml_verdict || combined_verdict}",
+          "confidence" => ml_score,
+          "description" => "Offline ML classified #{file_path || "file"} as #{ml_verdict || combined_verdict}",
+          "mitre_tactics" => ["Execution"],
+          "mitre_techniques" => []
+        }
+        | detections
+      ]
+    else
+      detections
+    end
+  end
+
+  defp add_offline_yara_detections(detections, yara_matches, file_path) when is_list(yara_matches) do
+    yara_detections =
+      Enum.map(yara_matches, fn rule ->
+        %{
+          "detection_type" => "yara",
+          "rule_name" => "OFFLINE_YARA_#{rule}",
+          "confidence" => 0.85,
+          "description" => "Offline YARA rule matched #{rule} on #{file_path || "file"}",
+          "mitre_tactics" => ["Execution"],
+          "mitre_techniques" => []
+        }
+      end)
+
+    detections ++ yara_detections
+  end
+
+  defp add_offline_yara_detections(detections, _yara_matches, _file_path), do: detections
+
+  defp offline_verdict_severity(verdict, score) do
+    cond do
+      verdict in ["malicious", :malicious] and is_number(score) and score >= 0.9 -> "critical"
+      verdict in ["malicious", :malicious] -> "high"
+      verdict in ["suspicious", :suspicious] -> "medium"
+      true -> "info"
     end
   end
 
@@ -781,6 +904,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
             threat_score: detection_threat_score(severity, normalized_detections),
             event: event,
             detections: normalized_detections,
+            detection_metadata: agent_detection_metadata(event, normalized_detections),
             rule_author_pubkey: detection_rule_author_pubkey(event, first_detection)
           }
 
@@ -1176,10 +1300,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     rule = detection[:name] || detection[:rule_name] || detection[:description]
     event_label = event_type |> to_string() |> String.replace("_", " ")
 
-    if rule do
-      "Agent detection: #{rule}"
-    else
-      "Agent detection: #{event_label}"
+    cond do
+      ml_agent_detection?(detection) -> "ML Detection: #{rule || event_label}"
+      rule -> "Agent detection: #{rule}"
+      true -> "Agent detection: #{event_label}"
     end
   end
 
@@ -1219,6 +1343,33 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       get_in(event, ["metadata", "rule_author_pubkey"]) ||
       get_in(event, [:metadata, :rule_author_pubkey])
   end
+
+  defp agent_detection_metadata(event, detections) do
+    first_detection = List.first(detections, %{})
+    payload = event["payload"] || event[:payload] || %{}
+
+    %{
+      "source" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: "agent"),
+      "detection_source" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: "agent"),
+      "detection_type" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: to_string(first_detection[:type] || "agent")),
+      "rule_name" => first_detection[:name] || first_detection[:rule_name],
+      "confidence" => max_detection_confidence(detections),
+      "prediction" => payload["ml_verdict"] || payload[:ml_verdict],
+      "malware_family" => payload["ml_verdict"] || payload[:ml_verdict],
+      "model_version" => payload["model_version"] || payload[:model_version],
+      "event_type" => event["event_type"] || event[:event_type]
+    }
+  end
+
+  defp ml_agent_detection?(detection) when is_map(detection) do
+    type = detection[:type] || detection["type"] || detection[:detection_type] || detection["detection_type"]
+    name = detection[:name] || detection["name"] || detection[:rule_name] || detection["rule_name"] || ""
+
+    normalize_ingestor_text(type) == "ml" or
+      String.starts_with?(to_string(name), "OFFLINE_ML")
+  end
+
+  defp ml_agent_detection?(_), do: false
 
   defp persist_events(events) do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)

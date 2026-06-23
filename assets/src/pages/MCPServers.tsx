@@ -43,6 +43,7 @@ interface MCPServer {
   contextProviderCount?: number
   totalRequests?: number
   successRate?: number
+  healthMessage?: string
   lastHeartbeat?: string
   latencyMs?: number
   requestsToday?: number
@@ -88,6 +89,8 @@ interface MCPServersPageProps {
     successfulRequests?: number
     failedRequests?: number
     actionsExecuted?: number
+    mcpAlive?: boolean
+    healthMessage?: string
   }
 }
 
@@ -115,17 +118,33 @@ export default function MCPServers({
   const handleTestConnection = async (serverId: string) => {
     setLoading(`test-${serverId}`)
     try {
-      const res = await axios.post('/api/v1/mcp/rpc', {
-        jsonrpc: '2.0',
-        method: 'tools/list',
-        params: {},
-        id: Date.now(),
-      })
-      const toolCount = Array.isArray(res.data?.result?.tools) ? res.data.result.tools.length : undefined
+      let toolCount: number | undefined
+
+      try {
+        const res = await axios.post('/api/v1/mcp/rpc', {
+          jsonrpc: '2.0',
+          method: 'tools/list',
+          params: {},
+          id: Date.now(),
+        })
+
+        const rpcTools = res.data?.result?.tools
+        toolCount = Array.isArray(rpcTools) ? rpcTools.length : undefined
+
+        if (res.data?.error) {
+          throw new Error(res.data.error.message || 'MCP JSON-RPC error')
+        }
+      } catch {
+        const res = await axios.get('/api/v1/mcp/tools')
+        const restTools = res.data?.data
+        toolCount = Array.isArray(restTools) ? restTools.length : undefined
+      }
+
       toast.success(toolCount === undefined ? 'MCP endpoint responded' : `MCP endpoint responded with ${toolCount} tools`)
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'MCP protocol check failed')
+      const err = e as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
+      const status = err.response?.status ? `HTTP ${err.response.status}: ` : ''
+      toast.error(`${status}${err.response?.data?.error || err.response?.data?.message || err.message || 'MCP protocol check failed'}`)
     } finally {
       setLoading(null)
     }
@@ -142,11 +161,12 @@ export default function MCPServers({
   const normalizedServers = (servers.length > 0 ? servers : [{
     id: 'tamandua-mcp',
     name: 'Tamandua MCP Server',
-    status: 'active' as const,
+    status: 'disconnected' as const,
+    healthMessage: stats.healthMessage || 'MCP status has not been reported by the server',
     toolCount: _tools.length,
     contextProviderCount: contextProviders.length,
     totalRequests: stats.totalRequests || 0,
-    successRate: stats.totalRequests ? Math.round(((stats.successfulRequests || 0) / stats.totalRequests) * 1000) / 10 : 100,
+    successRate: stats.totalRequests ? Math.round(((stats.successfulRequests || 0) / stats.totalRequests) * 1000) / 10 : 0,
   }]).map(server => ({
     ...server,
     endpoint: server.endpoint || '/api/v1/mcp/rpc',
@@ -321,6 +341,16 @@ export default function MCPServers({
                         </div>
                       </div>
                       <p className="text-sm text-[var(--muted)] font-mono">{server.endpoint}</p>
+                      {server.healthMessage && (
+                        <p className={cn(
+                          'text-xs mt-1',
+                          server.status === 'active' || server.status === 'connected'
+                            ? 'text-[var(--muted)]'
+                            : 'text-red-400'
+                        )}>
+                          {server.healthMessage}
+                        </p>
+                      )}
                       <div className="flex items-center gap-6 mt-2 text-xs text-[var(--muted)]">
                         <span className="flex items-center gap-1">
                           <Wrench className="h-3 w-3" />

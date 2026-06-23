@@ -34,7 +34,8 @@ interface RecentAlert {
   id: string
   title: string
   severity: string
-  inserted_at: string
+  inserted_at?: string
+  created_at?: string
 }
 
 interface MLDashboardProps {
@@ -449,7 +450,7 @@ export default function MLDashboard({
                           style={{ color: 'var(--muted)' }}
                         >
                           <Clock className="h-4 w-4" />
-                          {formatDate(alert.inserted_at)}
+                          {formatDate(alert.inserted_at || alert.created_at)}
                         </div>
                       </td>
                     </tr>

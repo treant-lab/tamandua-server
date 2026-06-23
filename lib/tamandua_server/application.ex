@@ -953,6 +953,9 @@ defmodule TamanduaServer.Application do
       TamanduaServer.Solana.RelayBatch,
       # Fleet Health Attestation (Proof of Health)
       TamanduaServer.Solana.FleetHealthAttestation,
+      # Keep the lightweight cache available for ML prediction caching and
+      # dashboard/lifecycle services without booting the full cache stack.
+      TamanduaServer.Cache,
       # Lightweight IOC cache for lab/demo alert enrichment. External feed
       # syncing remains outside lab-light; this gives the ingestor local IOC
       # lookups without booting the full threat-intel stack.
@@ -975,6 +978,16 @@ defmodule TamanduaServer.Application do
       TamanduaServer.NDR.LateralDetector,
       TamanduaServer.NDR.EncryptedTraffic,
       TamanduaServer.AI.ConversationStore,
+      # AI/Hunting surfaces are visible in lab-light; start their local
+      # GenServers so pages degrade with real state instead of empty/500 data.
+      TamanduaServer.Detection.ML.Client,
+      TamanduaServer.ML.ModelManager,
+      TamanduaServer.ML.AnalystFeedback,
+      TamanduaServer.ML.TrainingScheduler,
+      TamanduaServer.AISecurity.MCPGovernance,
+      TamanduaServer.Integrations.MCPServer,
+      TamanduaServer.Hunting.NLHunter,
+      TamanduaServer.Detection.Behavioral,
       # Live Response REST endpoints and tamandua-ctl rely on this ETS-backed
       # session lifecycle even in lab-light. Without it, session creation
       # returns 500 and the benchmark fallback transport is unusable.

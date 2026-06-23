@@ -366,30 +366,51 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     # Query from alerts that were created by ML
     import Ecto.Query
 
-    query = from a in TamanduaServer.Alerts.Alert,
-      where: like(a.title, "Malware detected:%"),
-      order_by: [desc: a.inserted_at],
-      limit: ^limit,
-      offset: ^offset
+    query =
+      from(a in TamanduaServer.Alerts.Alert,
+        where:
+          like(a.title, "ML Detection:%") or
+            like(a.title, "Malware detected:%") or
+            like(a.title, "Agent detection: OFFLINE_ML%") or
+            fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
+            fragment("?->>'source' = ?", a.detection_metadata, "ml") or
+            fragment("?->>'detection_source' = ?", a.detection_metadata, "ml"),
+        order_by: [desc: a.inserted_at],
+        limit: ^limit,
+        offset: ^offset
+      )
 
-    query = if prediction_type do
-      where(query, [a], fragment("? LIKE ?", a.title, ^"%#{prediction_type}%"))
-    else
-      query
-    end
+    query =
+      if prediction_type do
+        where(
+          query,
+          [a],
+          fragment("? LIKE ?", a.title, ^"%#{prediction_type}%") or
+            fragment("?->>'prediction' = ?", a.detection_metadata, ^prediction_type)
+        )
+      else
+        query
+      end
 
     alerts = TamanduaServer.Repo.all(query)
 
-    predictions = Enum.map(alerts, fn alert ->
-      %{
-        id: alert.id,
-        agent_id: alert.agent_id,
-        prediction: extract_prediction_from_title(alert.title),
-        malware_family: extract_family_from_title(alert.title),
-        threat_score: alert.threat_score,
-        timestamp: alert.inserted_at
-      }
-    end)
+    predictions =
+      Enum.map(alerts, fn alert ->
+        %{
+          id: alert.id,
+          agent_id: alert.agent_id,
+          prediction:
+            get_in(alert.detection_metadata || %{}, ["prediction"]) ||
+              extract_prediction_from_title(alert.title),
+          malware_family:
+            get_in(alert.detection_metadata || %{}, ["malware_family"]) ||
+              extract_family_from_title(alert.title),
+          model_version: get_in(alert.detection_metadata || %{}, ["model_version"]),
+          confidence: get_in(alert.detection_metadata || %{}, ["confidence"]),
+          threat_score: alert.threat_score,
+          timestamp: alert.inserted_at
+        }
+      end)
 
     json(conn, %{
       data: predictions,
@@ -667,11 +688,13 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   end
 
   defp extract_prediction_from_title(title) do
-    if String.contains?(title, "Malware detected"), do: "malicious", else: "unknown"
+    if String.contains?(title, ["Malware detected", "ML Detection"]),
+      do: "malicious",
+      else: "unknown"
   end
 
   defp extract_family_from_title(title) do
-    case Regex.run(~r/Malware detected: (.+)$/, title) do
+    case Regex.run(~r/(?:Malware detected|ML Detection): (.+)$/, title) do
       [_, family] -> family
       _ -> nil
     end
