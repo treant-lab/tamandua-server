@@ -1325,13 +1325,48 @@ defmodule TamanduaServerWeb.InertiaController do
   defp format_bytes(bytes) when is_number(bytes), do: "#{bytes} B"
   defp format_bytes(_), do: "0 B"
 
-  def mitre(conn, _params) do
-    coverage = Detection.Mitre.get_coverage()
-    techniques = Detection.Mitre.list_techniques()
+  def mitre(conn, params) do
+    include_coverage? = params["include_coverage"] in ["true", true]
+
+    coverage =
+      if include_coverage? do
+        try do
+          Detection.Mitre.get_coverage()
+        rescue
+          e ->
+            Logger.warning("Detection.Mitre.get_coverage failed: #{Exception.message(e)}")
+            %{}
+        catch
+          :exit, reason ->
+            Logger.warning("Detection.Mitre.get_coverage failed: exit #{inspect(reason)}")
+            %{}
+        end
+      else
+        %{}
+      end
+
+    technique_limit = params["limit"] |> safe_parse_int(75) |> max(25) |> min(300)
+
+    techniques =
+      try do
+        Detection.Mitre.list_techniques()
+        |> Enum.take(technique_limit)
+      rescue
+        e ->
+          Logger.warning("Detection.Mitre.list_techniques failed: #{Exception.message(e)}")
+          []
+      catch
+        :exit, reason ->
+          Logger.warning("Detection.Mitre.list_techniques failed: exit #{inspect(reason)}")
+          []
+      end
 
     render_inertia(conn, "Mitre", %{
       coverage: coverage,
-      techniques: techniques
+      techniques: techniques,
+      techniqueLimit: technique_limit,
+      techniquesTruncated: length(techniques) >= technique_limit,
+      coverageDeferred: not include_coverage?
     })
   end
 
@@ -1746,11 +1781,15 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Parse pagination params
     page = params["page"] |> safe_parse_int(1) |> max(1)
-    per_page = params["per_page"] |> safe_parse_int(50) |> max(1) |> min(100)
+    per_page = params["per_page"] |> safe_parse_int(25) |> max(1) |> min(50)
     offset = (page - 1) * per_page
+    include_payloads? = params["include_payloads"] in ["true", true]
 
     # Build filter options
-    filters = %{limit: per_page + 1, offset: offset}
+    filters = %{limit: per_page + 1, offset: offset, skip_agent_lookup: true}
+
+    filters =
+      if org_id, do: Map.put(filters, :organization_id, org_id), else: filters
 
     filters =
       if params["event_type"] && params["event_type"] != "",
@@ -1817,8 +1856,8 @@ defmodule TamanduaServerWeb.InertiaController do
           timestamp: format_datetime(event.timestamp),
           severity: event.severity || infer_severity(event.event_type),
           hostname: Map.get(agent_hostname_map, event.agent_id, "Unknown"),
-          payload: json_safe(payload),
-          enrichment: json_safe(event.enrichment || %{}),
+          payload: if(include_payloads?, do: json_safe(payload), else: %{}),
+          enrichment: if(include_payloads?, do: json_safe(event.enrichment || %{}), else: %{}),
           summary: build_event_summary(event.event_type, payload)
         }
       end)
@@ -1829,39 +1868,28 @@ defmodule TamanduaServerWeb.InertiaController do
         %{id: Map.get(a, :id) || Map.get(a, :agent_id), hostname: a.hostname}
       end)
 
-    # Get dynamic event types from database
+    # Keep initial render cheap. Dynamic facets can be requested explicitly once
+    # the UI is mounted; querying distinct values on a large telemetry table is
+    # too expensive for every page load.
     event_types =
-      try do
-        db_types = Telemetry.get_distinct_event_types()
-
-        if Enum.empty?(db_types) do
-          [
-            "process_create",
-            "process_terminate",
-            "file_create",
-            "file_modify",
-            "file_delete",
-            "network_connect",
-            "dns_query",
-            "registry_modify"
-          ]
-        else
-          db_types
+      if params["include_facets"] in ["true", true] do
+        try do
+          case Telemetry.get_distinct_event_types() do
+            [] -> default_event_types()
+            db_types when is_list(db_types) -> db_types
+            _ -> default_event_types()
+          end
+        rescue
+          e ->
+            Logger.warning("Telemetry.get_distinct_event_types failed: #{Exception.message(e)}")
+            default_event_types()
+        catch
+          :exit, reason ->
+            Logger.warning("Telemetry.get_distinct_event_types failed: exit #{inspect(reason)}")
+            default_event_types()
         end
-      rescue
-        e ->
-          Logger.warning("Telemetry.get_distinct_event_types failed: #{Exception.message(e)}")
-
-          [
-            "process_create",
-            "process_terminate",
-            "file_create",
-            "file_modify",
-            "file_delete",
-            "network_connect",
-            "dns_query",
-            "registry_modify"
-          ]
+      else
+        default_event_types()
       end
 
     # Event stats by type
@@ -1900,6 +1928,19 @@ defmodule TamanduaServerWeb.InertiaController do
         timeRange: params["time_range"] || ""
       }
     })
+  end
+
+  defp default_event_types do
+    [
+      "process_create",
+      "process_terminate",
+      "file_create",
+      "file_modify",
+      "file_delete",
+      "network_connect",
+      "dns_query",
+      "registry_modify"
+    ]
   end
 
   # Build a human-readable summary for an event
@@ -2323,6 +2364,7 @@ defmodule TamanduaServerWeb.InertiaController do
   def timeline(conn, params) do
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
+    include_payloads? = params["include_payloads"] in ["true", true]
 
     # Get time range from params (default 24h)
     time_window_minutes =
@@ -2397,7 +2439,10 @@ defmodule TamanduaServerWeb.InertiaController do
       try do
         alias TamanduaServer.Telemetry
 
-        Telemetry.list_events(%{limit: 75})
+        timeline_filters = %{limit: 25, skip_agent_lookup: true}
+        timeline_filters = if org_id, do: Map.put(timeline_filters, :organization_id, org_id), else: timeline_filters
+
+        Telemetry.list_events(timeline_filters)
         |> Enum.map(fn event ->
           payload = event.payload || %{}
 
@@ -2409,7 +2454,7 @@ defmodule TamanduaServerWeb.InertiaController do
             severity: to_string(Map.get(event, :severity, "info")),
             summary: build_event_summary(event.event_type, payload),
             hostname: Map.get(agent_hostnames, event.agent_id, "Unknown"),
-            payload: json_safe(payload)
+            payload: if(include_payloads?, do: json_safe(payload), else: %{})
           }
         end)
       rescue
@@ -10228,14 +10273,19 @@ defmodule TamanduaServerWeb.InertiaController do
   Shows model status, prediction statistics, and training controls.
   """
   def ml_dashboard(conn, _params) do
-    healthy = safe_ml_service_healthy?()
-    model_info = safe_ml_model_info()
+    org_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+
+    ml_client_alive? = Process.whereis(TamanduaServer.Detection.ML.Client) != nil
+    healthy = ml_client_alive? and safe_ml_service_healthy?()
+    model_info = if ml_client_alive?, do: safe_ml_model_info(), else: nil
 
     # Get detection statistics
     stats = safe_detection_engine_stats()
 
     # Get recent ML-triggered alerts
-    recent_alerts = get_recent_ml_alerts(10)
+    recent_alerts = get_recent_ml_alerts(org_id, 10)
 
     render_inertia(conn, "MLDashboard", %{
       page_title: "ML Malware Detection",
@@ -10326,14 +10376,17 @@ defmodule TamanduaServerWeb.InertiaController do
       %{}
   end
 
-  defp get_recent_ml_alerts(limit) do
+  defp get_recent_ml_alerts(nil, _limit), do: []
+
+  defp get_recent_ml_alerts(org_id, limit) do
     import Ecto.Query
 
     from(a in TamanduaServer.Alerts.Alert,
       where:
-        like(a.title, "ML Detection:%") or
+        a.organization_id == ^org_id and
+          (like(a.title, "ML Detection:%") or
           like(a.title, "Malware detected:%") or
-          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml"),
+          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml")),
       order_by: [desc: a.inserted_at],
       limit: ^limit
     )
@@ -10919,134 +10972,170 @@ defmodule TamanduaServerWeb.InertiaController do
   # NDR (Network Detection & Response)
   # ============================================================================
 
-  def ndr(conn, _params) do
+  def ndr(conn, params) do
     alias TamanduaServer.NDR.{FlowAnalyzer, ProtocolAnalyzer, LateralDetector, EncryptedTraffic}
+
+    include_details? = params["include_details"] in ["true", true]
 
     # Get overall NDR statistics
     stats =
-      try do
-        flow_stats = FlowAnalyzer.get_stats()
-        protocol_stats = ProtocolAnalyzer.get_stats()
-        lateral_stats = LateralDetector.get_stats()
-        encrypted_stats = EncryptedTraffic.get_stats()
+      if include_details? do
+        try do
+          flow_stats = FlowAnalyzer.get_stats()
+          protocol_stats = ProtocolAnalyzer.get_stats()
+          lateral_stats = LateralDetector.get_stats()
+          encrypted_stats = EncryptedTraffic.get_stats()
 
-        %{
-          flow_analyzer: flow_stats,
-          protocol_analyzer: protocol_stats,
-          lateral_detector: lateral_stats,
-          encrypted_traffic: encrypted_stats,
-          summary: %{
-            total_flows_processed: flow_stats[:flows_processed] || 0,
-            total_events_analyzed:
-              (protocol_stats[:events_analyzed] || 0) +
-                (lateral_stats[:events_analyzed] || 0) +
-                (encrypted_stats[:events_analyzed] || 0),
-            total_anomalies:
-              (flow_stats[:anomalies_detected] || 0) +
-                (lateral_stats[:lateral_movements_detected] || 0),
-            total_alerts:
-              (flow_stats[:alerts_created] || 0) +
-                (protocol_stats[:alerts_created] || 0) +
-                (lateral_stats[:alerts_created] || 0) +
-                (encrypted_stats[:alerts_created] || 0)
-          }
-        }
-      catch
-        _kind, _reason ->
           %{
-            flow_analyzer: %{},
-            protocol_analyzer: %{},
-            lateral_detector: %{},
-            encrypted_traffic: %{},
+            flow_analyzer: flow_stats,
+            protocol_analyzer: protocol_stats,
+            lateral_detector: lateral_stats,
+            encrypted_traffic: encrypted_stats,
             summary: %{
-              total_flows_processed: 0,
-              total_events_analyzed: 0,
-              total_anomalies: 0,
-              total_alerts: 0
+              total_flows_processed: flow_stats[:flows_processed] || 0,
+              total_events_analyzed:
+                (protocol_stats[:events_analyzed] || 0) +
+                  (lateral_stats[:events_analyzed] || 0) +
+                  (encrypted_stats[:events_analyzed] || 0),
+              total_anomalies:
+                (flow_stats[:anomalies_detected] || 0) +
+                  (lateral_stats[:lateral_movements_detected] || 0),
+              total_alerts:
+                (flow_stats[:alerts_created] || 0) +
+                  (protocol_stats[:alerts_created] || 0) +
+                  (lateral_stats[:alerts_created] || 0) +
+                  (encrypted_stats[:alerts_created] || 0)
             }
           }
+        catch
+          kind, reason ->
+            Logger.warning("NDR stats failed: #{kind} #{inspect(reason)}")
+            default_ndr_stats()
+        rescue
+          e ->
+            Logger.warning("NDR stats failed: #{Exception.message(e)}")
+            default_ndr_stats()
+        end
+      else
+        default_ndr_stats()
       end
 
     # Get flow statistics
     flow_stats =
-      try do
-        FlowAnalyzer.get_flow_stats(time_range: :hour)
-      catch
-        _kind, _reason -> %{}
+      if include_details? do
+        try do
+          FlowAnalyzer.get_flow_stats(time_range: :hour)
+        catch
+          _kind, _reason -> %{}
+        rescue
+          _ -> %{}
+        end
+      else
+        %{}
       end
 
     # Get top talkers
     top_talkers =
-      try do
-        FlowAnalyzer.get_top_talkers(limit: 10)
-        |> Enum.map(fn t ->
-          %{
-            ip: t[:ip],
-            agent_id: t[:agent_id],
-            bytes_sent: t[:bytes_sent] || 0,
-            bytes_received: t[:bytes_received] || 0,
-            total_bytes: t[:total_bytes] || 0,
-            connection_count: t[:connection_count] || 0
-          }
-        end)
-      catch
-        _kind, _reason -> []
+      if include_details? do
+        try do
+          FlowAnalyzer.get_top_talkers(limit: 10)
+          |> Enum.map(fn t ->
+            %{
+              ip: t[:ip],
+              agent_id: t[:agent_id],
+              bytes_sent: t[:bytes_sent] || 0,
+              bytes_received: t[:bytes_received] || 0,
+              total_bytes: t[:total_bytes] || 0,
+              connection_count: t[:connection_count] || 0
+            }
+          end)
+        catch
+          _kind, _reason -> []
+        rescue
+          _ -> []
+        end
+      else
+        []
       end
 
     # Get protocol distribution
     protocols =
-      try do
-        FlowAnalyzer.get_protocol_distribution([])
-      catch
-        _kind, _reason -> []
+      if include_details? do
+        try do
+          FlowAnalyzer.get_protocol_distribution([])
+        catch
+          _kind, _reason -> []
+        rescue
+          _ -> []
+        end
+      else
+        []
       end
 
     # Get recent lateral movements
     lateral_movements =
-      try do
-        LateralDetector.get_lateral_movement(limit: 20)
-        |> Enum.map(fn m ->
-          %{
-            type: m[:type],
-            src_ip: m[:src_ip],
-            dst_ip: m[:dst_ip],
-            port: m[:port],
-            ports_scanned: m[:ports_scanned],
-            hosts_scanned: m[:hosts_scanned],
-            username: m[:username],
-            timestamp: format_datetime(m[:timestamp])
-          }
-        end)
-      catch
-        _kind, _reason -> []
+      if include_details? do
+        try do
+          LateralDetector.get_lateral_movement(limit: 20)
+          |> Enum.map(fn m ->
+            %{
+              type: m[:type],
+              src_ip: m[:src_ip],
+              dst_ip: m[:dst_ip],
+              port: m[:port],
+              ports_scanned: m[:ports_scanned],
+              hosts_scanned: m[:hosts_scanned],
+              username: m[:username],
+              timestamp: format_datetime(m[:timestamp])
+            }
+          end)
+        catch
+          _kind, _reason -> []
+        rescue
+          _ -> []
+        end
+      else
+        []
       end
 
     # Get JA3 stats
     ja3_stats =
-      try do
-        EncryptedTraffic.get_ja3_stats(limit: 20)
-        |> Enum.map(fn s ->
-          %{
-            ja3_hash: s[:ja3_hash],
-            occurrence_count: s[:occurrence_count] || 0,
-            unique_agents: s[:unique_agents] || 0,
-            unique_destinations: s[:unique_destinations] || 0,
-            is_malicious: s[:is_malicious] || false,
-            malware_info: s[:malware_info],
-            first_seen: format_datetime(s[:first_seen]),
-            last_seen: format_datetime(s[:last_seen])
-          }
-        end)
-      catch
-        _kind, _reason -> []
+      if include_details? do
+        try do
+          EncryptedTraffic.get_ja3_stats(limit: 20)
+          |> Enum.map(fn s ->
+            %{
+              ja3_hash: s[:ja3_hash],
+              occurrence_count: s[:occurrence_count] || 0,
+              unique_agents: s[:unique_agents] || 0,
+              unique_destinations: s[:unique_destinations] || 0,
+              is_malicious: s[:is_malicious] || false,
+              malware_info: s[:malware_info],
+              first_seen: format_datetime(s[:first_seen]),
+              last_seen: format_datetime(s[:last_seen])
+            }
+          end)
+        catch
+          _kind, _reason -> []
+        rescue
+          _ -> []
+        end
+      else
+        []
       end
 
     # Get network topology
     topology =
-      try do
-        FlowAnalyzer.get_topology([])
-      catch
-        _kind, _reason -> %{nodes: [], edges: [], summary: %{}}
+      if include_details? do
+        try do
+          FlowAnalyzer.get_topology([])
+        catch
+          _kind, _reason -> %{nodes: [], edges: [], summary: %{}}
+        rescue
+          _ -> %{nodes: [], edges: [], summary: %{}}
+        end
+      else
+        %{nodes: [], edges: [], summary: %{}}
       end
 
     render_inertia(conn, "NDR", %{
@@ -11059,6 +11148,21 @@ defmodule TamanduaServerWeb.InertiaController do
       ja3_stats: ja3_stats,
       topology: topology
     })
+  end
+
+  defp default_ndr_stats do
+    %{
+      flow_analyzer: %{},
+      protocol_analyzer: %{},
+      lateral_detector: %{},
+      encrypted_traffic: %{},
+      summary: %{
+        total_flows_processed: 0,
+        total_events_analyzed: 0,
+        total_anomalies: 0,
+        total_alerts: 0
+      }
+    }
   end
 
   # ============================================================================

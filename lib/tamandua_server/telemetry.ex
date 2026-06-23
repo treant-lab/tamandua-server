@@ -634,6 +634,11 @@ defmodule TamanduaServer.Telemetry do
     query =
       if filters[:agent_id], do: where(query, [e], e.agent_id == ^filters[:agent_id]), else: query
 
+    query =
+      if filters[:organization_id],
+        do: where(query, [e], e.organization_id == ^filters[:organization_id]),
+        else: query
+
     # Support multiple event types (comma-separated or list)
     query =
       case filters[:event_type] do
@@ -665,13 +670,19 @@ defmodule TamanduaServer.Telemetry do
     limit = filters[:limit] || 100
     offset = filters[:offset] || 0
 
-    query
-    |> limit(^limit)
-    |> offset(^offset)
-    |> Repo.all()
-    |> Enum.map(fn event ->
-      Map.put(event, :agent_hostname, get_agent_hostname(event.agent_id))
-    end)
+    events =
+      query
+      |> limit(^limit)
+      |> offset(^offset)
+      |> Repo.all()
+
+    if filters[:skip_agent_lookup] do
+      events
+    else
+      Enum.map(events, fn event ->
+        Map.put(event, :agent_hostname, get_agent_hostname(event.agent_id))
+      end)
+    end
   end
 
   @doc """
