@@ -337,7 +337,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   const isMultiTenant = tenantContext?.isMultiTenant ?? (tenantList.length > 1)
 
   // Determine if user can see admin sections
-  const isSuperAdmin = is_super_admin || userRole === 'admin' // Adjust based on your role system
+  const isSuperAdmin = Boolean(is_super_admin || userRole === 'super_admin')
   const isAdmin = userRole === 'admin' || isSuperAdmin
 
   // Filter navigation based on user role
@@ -848,6 +848,10 @@ export function MainLayout({ children, title }: MainLayoutProps) {
 
           {/* Notifications */}
           <button
+            type="button"
+            onClick={() => router.visit('/app/alerts')}
+            aria-label="Open alerts"
+            title="Open alerts"
             className="relative p-2 rounded-lg"
             style={{ color: 'var(--muted)' }}
             onMouseEnter={(e) => {

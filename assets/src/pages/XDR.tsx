@@ -1861,7 +1861,7 @@ function UnifiedIncidentsView({
                 </div>
                 <div className="flex items-center gap-2">
                   <a
-                    href={`/app/incidents/${incident.id}`}
+                    href={`/app/timeline/${incident.id}`}
                     className="text-sm text-primary-400 hover:text-primary-300 flex items-center gap-1"
                   >
                     View Details <ExternalLink className="h-3.5 w-3.5" />
@@ -1990,7 +1990,7 @@ function CrossSourceTimelineView({
 
                     {event.incidentId && (
                       <a
-                        href={`/app/incidents/${event.incidentId}`}
+                        href={`/app/timeline/${event.incidentId}`}
                         className="text-xs text-primary-400 hover:text-primary-300 mt-1 inline-flex items-center gap-1"
                       >
                         <Link2 className="h-3 w-3" /> Linked to incident
