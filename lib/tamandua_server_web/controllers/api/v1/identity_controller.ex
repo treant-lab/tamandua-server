@@ -215,16 +215,8 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     |> maybe_add_opt(:user_id, params["user_id"])
     |> maybe_add_opt(:status, params["status"])
     |> maybe_add_opt(:risk_level, params["risk_level"])
-    |> maybe_add_opt(:limit, parse_int(params["limit"], 100))
-
-    opts = if params["since"] do
-      case DateTime.from_iso8601(params["since"]) do
-        {:ok, dt, _} -> Keyword.put(opts, :since, dt)
-        _ -> opts
-      end
-    else
-      opts
-    end
+    |> maybe_add_opt(:limit, bounded_limit(params["limit"], 100))
+    |> maybe_add_since(params["since"])
 
     case AzureAD.get_sign_ins(opts) do
       {:ok, sign_ins} ->
@@ -250,7 +242,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     opts = []
     |> maybe_add_opt(:risk_level, params["risk_level"])
     |> maybe_add_opt(:risk_state, params["risk_state"])
-    |> maybe_add_opt(:limit, parse_int(params["limit"], 100))
+    |> maybe_add_opt(:limit, bounded_limit(params["limit"], 100))
 
     case AzureAD.get_risky_users(opts) do
       {:ok, users} ->
@@ -297,7 +289,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     opts = []
     |> maybe_add_opt(:app_id, params["app_id"])
     |> maybe_add_opt(:display_name, params["display_name"])
-    |> maybe_add_opt(:limit, parse_int(params["limit"], 100))
+    |> maybe_add_opt(:limit, bounded_limit(params["limit"], 100))
 
     case AzureAD.get_service_principals(opts) do
       {:ok, principals} ->
@@ -323,16 +315,8 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     opts = []
     |> maybe_add_opt(:activity_display_name, params["activity"])
     |> maybe_add_opt(:category, params["category"])
-    |> maybe_add_opt(:limit, parse_int(params["limit"], 100))
-
-    opts = if params["since"] do
-      case DateTime.from_iso8601(params["since"]) do
-        {:ok, dt, _} -> Keyword.put(opts, :since, dt)
-        _ -> opts
-      end
-    else
-      opts
-    end
+    |> maybe_add_opt(:limit, bounded_limit(params["limit"], 100))
+    |> maybe_add_since(params["since"])
 
     case AzureAD.get_directory_audits(opts) do
       {:ok, audits} ->
@@ -477,6 +461,22 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
+  defp maybe_add_since(opts, nil), do: opts
+  defp maybe_add_since(opts, since) when is_binary(since) do
+    case DateTime.from_iso8601(since) do
+      {:ok, dt, _} -> Keyword.put(opts, :since, dt)
+      _ -> opts
+    end
+  end
+  defp maybe_add_since(opts, _), do: opts
+
+  defp bounded_limit(value, default) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(500)
+  end
+
   defp parse_int(nil, default), do: default
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
@@ -485,6 +485,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     end
   end
   defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
 
   defp safe_to_existing_atom(value, allowed) when is_binary(value) and is_list(allowed) do
     if value in allowed do
