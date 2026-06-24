@@ -1178,6 +1178,14 @@ export default function DNS({
           ...normalizeBlocklistEntry(entry, index),
           selected: false,
         })))
+        if (Array.isArray(data.meta?.default_feeds)) {
+          const fallbackFeeds = {
+            enabled: true,
+            totalIocs: 0,
+            feeds: data.meta.default_feeds.map((feed: Record<string, unknown>) => normalizeThreatIntelFeed(feed)),
+          }
+          setThreatIntelFeeds(current => current ?? fallbackFeeds)
+        }
       } else {
         setApiError(`DNS blocklist failed with HTTP ${res.status}`)
       }

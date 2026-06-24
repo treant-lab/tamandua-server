@@ -85,6 +85,20 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     "dns.nextdns.io",
     "dns.cleanbrowsing.org"
   ]
+  @default_dns_feed_names [
+    "abusech_feodo",
+    "abusech_urlhaus",
+    "abusech_threatfox",
+    "abusech_malware_bazaar",
+    "abusech_ssl_blacklist",
+    "emergingthreats",
+    "tor_exit_nodes",
+    "phishtank",
+    "openphish",
+    "spamhaus_drop",
+    "firehol_level1",
+    "c2_intel_feeds"
+  ]
 
   # ==========================================================================
   # GET /api/v1/dns/stats
@@ -593,7 +607,16 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
           }
         end)
 
-      json(conn, %{data: entries})
+      json(conn, %{
+        data: entries,
+        meta: %{
+          explicit_overrides: length(entries),
+          default_feed_count: length(@default_dns_feed_names),
+          default_feeds: default_dns_feed_summaries(),
+          feed_status_endpoint: "/api/v1/threat-intel/feed-status",
+          scope: "tenant_dns_blocklist_overrides"
+        }
+      })
     else
       {:error, :missing_organization} -> missing_organization_response(conn)
     end
@@ -1243,6 +1266,18 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     value
     |> parse_int(0)
     |> max(0)
+  end
+
+  defp default_dns_feed_summaries do
+    Enum.map(@default_dns_feed_names, fn name ->
+      %{
+        name: name,
+        enabled: true,
+        health: "configured",
+        ioc_count: 0,
+        inserted: 0
+      }
+    end)
   end
 
   defp get_current_user(conn) do
