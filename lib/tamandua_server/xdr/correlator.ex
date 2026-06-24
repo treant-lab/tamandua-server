@@ -44,6 +44,11 @@ defmodule TamanduaServer.XDR.Correlator do
   @entity_graph_table :xdr_entity_graph
   @ml_features_table :xdr_ml_features
 
+  @call_timeout 15_000
+  @default_timeline_limit 100
+  @max_timeline_limit 500
+  @max_timeline_build_events 1_000
+
   # Default configuration
   @default_config %{
     # Time window for correlation (15 minutes)
@@ -426,7 +431,7 @@ defmodule TamanduaServer.XDR.Correlator do
   """
   @spec build_timeline(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def build_timeline(correlation_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:build_timeline, correlation_id, opts})
+    GenServer.call(__MODULE__, {:build_timeline, correlation_id, opts}, @call_timeout)
   end
 
   @doc """
@@ -450,7 +455,7 @@ defmodule TamanduaServer.XDR.Correlator do
   """
   @spec list_timelines(keyword()) :: {:ok, [map()]}
   def list_timelines(opts \\ []) do
-    GenServer.call(__MODULE__, {:list_timelines, opts})
+    GenServer.call(__MODULE__, {:list_timelines, opts}, @call_timeout)
   end
 
   @doc """
@@ -603,10 +608,15 @@ defmodule TamanduaServer.XDR.Correlator do
 
   @impl true
   def handle_call({:list_timelines, opts}, _from, state) do
-    timelines = :ets.tab2list(@timeline_table)
-    |> Enum.map(fn {_id, timeline} -> timeline end)
-    |> filter_timelines(opts)
-    |> Enum.sort_by(& &1[:updated_at], {:desc, DateTime})
+    limit = timeline_limit(opts)
+
+    timelines =
+      @timeline_table
+      |> :ets.tab2list()
+      |> Stream.map(fn {_id, timeline} -> timeline end)
+      |> filter_timelines(opts)
+      |> Enum.sort_by(&(&1[:updated_at] || &1[:created_at] || DateTime.from_unix!(0)), {:desc, DateTime})
+      |> Enum.take(limit)
 
     {:reply, {:ok, timelines}, state}
   end
@@ -940,10 +950,11 @@ defmodule TamanduaServer.XDR.Correlator do
     :ets.tab2list(@xdr_events_table)
     |> Enum.filter(fn {_id, entry} ->
       entry.event[:correlation_id] == correlation_id ||
-      entry.event[:related_correlation_ids] == correlation_id
+      correlation_id_related?(entry.event[:related_correlation_ids], correlation_id)
     end)
     |> Enum.map(fn {_id, entry} -> entry end)
     |> Enum.sort_by(& &1.indexed_at)
+    |> Enum.take(@max_timeline_build_events)
   end
 
   defp build_new_timeline(correlation_id, events, opts) do
@@ -985,6 +996,12 @@ defmodule TamanduaServer.XDR.Correlator do
       status: :active
     }
   end
+
+  defp correlation_id_related?(related_ids, correlation_id) when is_list(related_ids) do
+    correlation_id in related_ids
+  end
+
+  defp correlation_id_related?(related_id, correlation_id), do: related_id == correlation_id
 
   defp update_existing_timeline(timeline, _window_ms) do
     # Check for new events to add
@@ -1412,7 +1429,24 @@ defmodule TamanduaServer.XDR.Correlator do
     |> maybe_filter_by_status(Keyword.get(opts, :status))
     |> maybe_filter_by_org(Keyword.get(opts, :organization_id))
     |> maybe_filter_by_risk(Keyword.get(opts, :min_risk_score))
-    |> Enum.take(Keyword.get(opts, :limit, 100))
+  end
+
+  defp timeline_limit(opts) do
+    opts
+    |> Keyword.get(:limit, @default_timeline_limit)
+    |> clamp_integer(@default_timeline_limit, 1, @max_timeline_limit)
+  end
+
+  defp clamp_integer(value, default, min_value, max_value) when is_integer(value) do
+    value
+    |> max(min_value)
+    |> min(max_value)
+  end
+
+  defp clamp_integer(_value, default, min_value, max_value) do
+    default
+    |> max(min_value)
+    |> min(max_value)
   end
 
   defp maybe_filter_by_status(timelines, nil), do: timelines

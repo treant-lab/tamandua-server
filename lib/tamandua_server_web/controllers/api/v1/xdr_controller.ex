@@ -552,11 +552,11 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
       organization_id: org_id,
       status: parse_atom(params["status"]),
       min_risk_score: parse_float(params["min_risk_score"]),
-      limit: parse_int(params["limit"], 100)
+      limit: params["limit"] |> parse_int(100) |> max(1) |> min(500)
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-    case Correlator.list_timelines(opts) do
+    case safe_correlator_call("XDR timeline list", fn -> Correlator.list_timelines(opts) end) do
       {:ok, timelines} ->
         json(conn, %{data: timelines})
 
@@ -580,14 +580,14 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
   """
   def build_timeline(conn, %{"correlation_id" => correlation_id} = params) do
     org_id = current_organization_id(conn)
-    time_window_ms = parse_int(params["time_window_ms"], 30 * 60 * 1000)
+    time_window_ms = params["time_window_ms"] |> parse_int(30 * 60 * 1000) |> max(60_000) |> min(24 * 60 * 60 * 1000)
 
     opts = [
       organization_id: org_id,
       time_window_ms: time_window_ms
     ]
 
-    case Correlator.build_timeline(correlation_id, opts) do
+    case safe_correlator_call("XDR timeline build", fn -> Correlator.build_timeline(correlation_id, opts) end) do
       {:ok, timeline} ->
         conn
         |> put_status(:created)
@@ -1061,6 +1061,18 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     :exit, reason ->
       Logger.warning("#{label} failed: exit #{inspect(reason)}")
       default
+  end
+
+  defp safe_correlator_call(label, fun) when is_function(fun, 0) do
+    fun.()
+  rescue
+    error ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      {:error, :unavailable}
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      {:error, :unavailable}
   end
 
   defp format_errors(%Ecto.Changeset{} = changeset) do
