@@ -964,6 +964,20 @@ const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
 // Main Component
 // ============================================================================
 
+function dnsApiWarning(response: Record<string, any>, label: string): string | null {
+  const meta = response?.meta
+  if (!meta?.partial) return null
+
+  if (typeof meta.message === 'string' && meta.message.trim()) {
+    return meta.message
+  }
+
+  const unavailable = Array.isArray(meta.unavailable) ? meta.unavailable.filter(Boolean) : []
+  return unavailable.length > 0
+    ? `${label} returned partial data: ${unavailable.join('; ')}`
+    : `${label} returned partial data`
+}
+
 export default function DNS({
   stats: initialStats,
   queries: initialQueries,
@@ -1075,7 +1089,7 @@ export default function DNS({
       if (res.ok) {
         const json = await res.json()
         const d = json.data || json
-        setApiError(null)
+        setApiError(dnsApiWarning(json, 'DNS stats'))
         setStats({
           totalQueries: d.total_queries_today ?? d.totalQueries ?? 0,
           uniqueDomains: d.unique_domains ?? d.uniqueDomains ?? 0,
@@ -1108,7 +1122,7 @@ export default function DNS({
       if (res.ok) {
         const data = await res.json()
         const rawQueries = data.queries || data.data || []
-        setApiError(null)
+        setApiError(dnsApiWarning(data, 'DNS query feed'))
         setQueries(Array.isArray(rawQueries) ? rawQueries.map((query: Record<string, unknown>) => normalizeDnsQuery(query)) : [])
         if (data.pagination) {
           setPagination(data.pagination)
@@ -1141,7 +1155,7 @@ export default function DNS({
       if (res.ok) {
         const data = await res.json()
         const rawDomains = data.domains || data.data || []
-        setApiError(null)
+        setApiError(dnsApiWarning(data, 'Top DNS domains'))
         setTopDomains(Array.isArray(rawDomains) ? rawDomains : [])
       } else {
         setApiError(`Top domains failed with HTTP ${res.status}`)
@@ -1159,7 +1173,7 @@ export default function DNS({
       })
       if (res.ok) {
         const data = await res.json()
-        setApiError(null)
+        setApiError(dnsApiWarning(data, 'DNS blocklist'))
         setBlocklist((data.blocklist || data.data || []).map((entry: unknown, index: number) => ({
           ...normalizeBlocklistEntry(entry, index),
           selected: false,
@@ -1208,7 +1222,7 @@ export default function DNS({
       })
       if (res.ok) {
         const data = await res.json()
-        setApiError(null)
+        setApiError(dnsApiWarning(data, 'DNS detections'))
         setAlerts(data.alerts || data.data || [])
       } else {
         setApiError(`DNS detections failed with HTTP ${res.status}`)

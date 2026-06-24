@@ -120,12 +120,12 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
 
-    total_queries_today =
-      safe_repo_value("DNS stats total queries", 0, fn ->
+    {total_queries_today, total_queries_error} =
+      safe_repo_value_with_meta("DNS stats total queries", 0, fn ->
         Repo.aggregate(base_query, :count, :id)
       end)
 
-    unique_domains =
+    {unique_domains, unique_domains_error} =
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
@@ -146,30 +146,38 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         )
       )
       |> then(fn query ->
-        safe_repo_value("DNS stats unique domains", 0, fn -> Repo.one(query) || 0 end)
+        safe_repo_value_with_meta("DNS stats unique domains", 0, fn -> Repo.one(query) || 0 end)
       end)
 
     # Blocked count: DNS events that matched a blocklist detection
-    blocked_count =
+    {blocked_count, blocked_count_error} =
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
       |> then(fn query ->
-        safe_repo_value("DNS stats blocked count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+        safe_repo_value_with_meta("DNS stats blocked count", 0, fn -> Repo.aggregate(query, :count, :id) end)
       end)
 
     # Suspicious count: events with severity above info
-    suspicious_count =
+    {suspicious_count, suspicious_count_error} =
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], e.severity in ["medium", "high", "critical"])
       |> then(fn query ->
-        safe_repo_value("DNS stats suspicious count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+        safe_repo_value_with_meta("DNS stats suspicious count", 0, fn -> Repo.aggregate(query, :count, :id) end)
       end)
+
+    meta =
+      dns_partial_meta([
+        total_queries_error,
+        unique_domains_error,
+        blocked_count_error,
+        suspicious_count_error
+      ])
 
     json(conn, %{
       data: %{
@@ -177,7 +185,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         unique_domains: unique_domains,
         blocked_count: blocked_count,
         suspicious_count: suspicious_count
-      }
+      },
+      meta: meta
     })
   end
 
@@ -322,11 +331,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     base = apply_time_filter(base, params["from"], :gte)
     base = apply_time_filter(base, params["to"], :lte)
 
-    rows =
+    {rows, query_error} =
       base
       |> limit(^(limit + 1))
       |> offset(^offset)
-      |> safe_repo_all("DNS query feed")
+      |> safe_repo_all_with_meta("DNS query feed")
 
     has_more = length(rows) > limit
 
@@ -339,13 +348,13 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
     json(conn, %{
       data: events,
-      meta: %{
+      meta: Map.merge(%{
         total: total,
         limit: limit,
         offset: offset,
         has_more: has_more,
         total_is_estimate: true
-      }
+      }, dns_partial_meta([query_error]))
     })
   end
 
@@ -364,7 +373,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     start_time = parse_time_range(time_range)
     now = DateTime.utc_now()
 
-    results =
+    {results, top_domains_error} =
       Event
       |> dns_events_query()
       |> where([e], e.timestamp >= ^start_time)
@@ -419,11 +428,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       })
       |> order_by([e], desc: count(e.id))
       |> limit(20)
-      |> safe_repo_all("DNS top domains")
+      |> safe_repo_all_with_meta("DNS top domains")
 
     json(conn, %{
       data: results,
-      meta: %{time_range: time_range}
+      meta: Map.merge(%{time_range: time_range}, dns_partial_meta([top_domains_error]))
     })
   end
 
@@ -433,28 +442,46 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     where(queryable, ^dns_event_dynamic())
   end
 
-  defp safe_repo_all(query, label) do
-    Repo.all(query, timeout: 8_000)
+  defp safe_repo_all_with_meta(query, label) do
+    {Repo.all(query, timeout: 8_000), nil}
   rescue
     error in [DBConnection.ConnectionError, Postgrex.Error] ->
       Logger.warning("#{label} failed: #{Exception.message(error)}")
-      []
+      {[], "#{label}: #{Exception.message(error)}"}
   catch
     :exit, reason ->
       Logger.warning("#{label} failed: exit #{inspect(reason)}")
-      []
+      {[], "#{label}: exit #{inspect(reason)}"}
   end
 
-  defp safe_repo_value(label, default, fun) when is_function(fun, 0) do
-    fun.()
+  defp safe_repo_value_with_meta(label, default, fun) when is_function(fun, 0) do
+    {fun.(), nil}
   rescue
     error in [DBConnection.ConnectionError, Postgrex.Error] ->
       Logger.warning("#{label} failed: #{Exception.message(error)}")
-      default
+      {default, "#{label}: #{Exception.message(error)}"}
   catch
     :exit, reason ->
       Logger.warning("#{label} failed: exit #{inspect(reason)}")
-      default
+      {default, "#{label}: exit #{inspect(reason)}"}
+  end
+
+  defp dns_partial_meta(errors) do
+    unavailable =
+      errors
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    %{
+      partial: unavailable != [],
+      unavailable: unavailable,
+      message:
+        if unavailable == [] do
+          nil
+        else
+          "DNS telemetry is partially unavailable; zero values may be fallback values."
+        end
+    }
   end
 
   defp dns_event_dynamic do
@@ -728,11 +755,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         severity -> where(base_query, [a], a.severity == ^severity)
       end
 
-    rows =
+    {rows, alerts_error} =
       base_query
       |> limit(^(limit + 1))
       |> offset(^offset)
-      |> safe_repo_all("DNS-related alerts")
+      |> safe_repo_all_with_meta("DNS-related alerts")
 
     has_more = length(rows) > limit
 
@@ -744,13 +771,13 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     json(conn, %{
       data: alerts,
       alerts: alerts,
-      meta: %{
+      meta: Map.merge(%{
         total: offset + length(alerts) + if(has_more, do: 1, else: 0),
         limit: limit,
         offset: offset,
         has_more: has_more,
         total_is_estimate: true
-      }
+      }, dns_partial_meta([alerts_error]))
     })
   end
 
