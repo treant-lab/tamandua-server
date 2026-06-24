@@ -340,6 +340,34 @@ function nodeTime(node: StorylineNode): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function truncateMiddle(value: unknown, maxLength = 26): string {
+  const text = asText(value).trim();
+  if (text.length <= maxLength) return text;
+  const keep = Math.max(6, Math.floor((maxLength - 3) / 2));
+  return `${text.slice(0, keep)}...${text.slice(-keep)}`;
+}
+
+function componentHeight(nodes: StorylineNode[], laneHeight: number, ySpacing: number): number {
+  const laneCounts = new Map<number, number>();
+  const lanes: Record<StorylineNode['type'], number> = {
+    process: 0,
+    user: 1,
+    file: 2,
+    registry: 3,
+    dns: 4,
+    network: 5,
+  };
+
+  nodes.forEach((node) => {
+    const lane = lanes[node.type] ?? 0;
+    laneCounts.set(lane, (laneCounts.get(lane) || 0) + 1);
+  });
+
+  const laneCount = Math.max(1, ...Array.from(laneCounts.keys()).map((lane) => lane + 1));
+  const maxStack = Math.max(1, ...Array.from(laneCounts.values()));
+  return laneCount * laneHeight + Math.max(0, maxStack - 1) * ySpacing + 90;
+}
+
 function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], mode = 'timeline'): Map<string, { x: number; y: number }> {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, StorylineEdge[]>();
@@ -473,9 +501,10 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         return;
       }
       const placedIndex = positions.size;
-      const ring = 1 + Math.floor(placedIndex / 10);
-      const angle = ((placedIndex % 10) / 10) * Math.PI * 2 - Math.PI / 2;
-      const radius = radiusBase + (ring - 1) * 150;
+      const ringCapacity = 10 + Math.floor(Math.sqrt(nodes.length));
+      const ring = 1 + Math.floor(placedIndex / ringCapacity);
+      const angle = ((placedIndex % ringCapacity) / ringCapacity) * Math.PI * 2 - Math.PI / 2 + ring * 0.23;
+      const radius = radiusBase + (ring - 1) * 185;
       positions.set(node.id, {
         x: centerX + Math.cos(angle) * radius,
         y: centerY + Math.sin(angle) * radius,
@@ -485,9 +514,17 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     return positions;
   }
 
-  const xSpacing = 300;
-  const ySpacing = 118;
-  const laneHeight = 155;
+  const xSpacing = Math.max(320, Math.min(420, 260 + nodes.length * 3));
+  const ySpacing = 130;
+  const laneHeight = 172;
+  const componentGap = 170;
+  const componentOffsets = new Map<number, number>();
+  let runningOffset = 0;
+
+  components.forEach((component, index) => {
+    componentOffsets.set(index, runningOffset);
+    runningOffset += componentHeight(component, laneHeight, ySpacing) + componentGap;
+  });
 
   Array.from(grouped.entries())
     .sort(([a], [b]) => a - b)
@@ -505,13 +542,13 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         laneCounts.set(lane, index + 1);
         if (mode === 'hierarchical') {
           positions.set(node.id, {
-            x: 160 + componentIndex * 720 + lane * 250 + index * 80,
-            y: 110 + lvl * 175,
+            x: 160 + lane * 280 + index * 92,
+            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 190,
           });
         } else {
           positions.set(node.id, {
             x: 140 + lvl * xSpacing,
-            y: 110 + componentIndex * 780 + lane * laneHeight + index * ySpacing,
+            y: 120 + (componentOffsets.get(componentIndex) || 0) + lane * laneHeight + index * ySpacing,
           });
         }
       });
@@ -741,16 +778,41 @@ function NodeIntelligenceCards({
 }) {
   const inbound = countConnected(edges, node.id, 'in');
   const outbound = countConnected(edges, node.id, 'out');
+  const incomingEdges = edges.filter((edge) => edge.target === node.id);
+  const outgoingEdges = edges.filter((edge) => edge.source === node.id);
+  const firstParent = incomingEdges[0]
+    ? allNodes.find((candidate) => candidate.id === incomingEdges[0].source)
+    : null;
+  const childNodes = outgoingEdges
+    .map((edge) => allNodes.find((candidate) => candidate.id === edge.target))
+    .filter((candidate): candidate is StorylineNode => Boolean(candidate));
   const connectedTypes = edges
     .filter((edge) => edge.source === node.id || edge.target === node.id)
     .map((edge) => allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source))?.type)
     .filter(Boolean);
   const uniqueConnectedTypes = Array.from(new Set(connectedTypes)).join(', ') || 'None';
+  const mitreTechniques = Array.from(
+    new Set(node.detections.flatMap((detection) => detection.mitreTechniques || []))
+  );
+  const riskSignals = [
+    node.suspicious ? 'Suspicious' : null,
+    node.highlighted ? 'Highlighted' : null,
+    node.detections.length ? `${node.detections.length} detection${node.detections.length === 1 ? '' : 's'}` : null,
+    mitreTechniques.length ? `${mitreTechniques.length} MITRE` : null,
+    node.data.is_elevated ? 'Elevated' : null,
+    node.data.is_signed === false ? 'Unsigned' : null,
+  ].filter(Boolean);
 
   const common = [
     { label: 'Inbound links', value: inbound },
     { label: 'Outbound links', value: outbound },
     { label: 'Related entity types', value: uniqueConnectedTypes },
+  ];
+
+  const context = [
+    { label: 'Reached from', value: firstParent?.label || 'No parent in graph' },
+    { label: 'Next hops', value: childNodes.length ? childNodes.slice(0, 3).map((child) => child.label).join(', ') : 'No outgoing child nodes' },
+    { label: 'Risk signals', value: riskSignals.length ? riskSignals.join(', ') : 'No explicit risk signal' },
   ];
 
   const typed =
@@ -814,12 +876,37 @@ function NodeIntelligenceCards({
 
       <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)' }}>
         <div className="space-y-2">
+          {context.map((item) => (
+            <div key={item.label} className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{item.label}</div>
+              <div className="text-xs break-words" style={{ color: 'var(--fg-2)' }}>{formatNodeValue(item.value)}</div>
+            </div>
+          ))}
           {typed.map((item) => (
             <div key={item.label} className="min-w-0">
               <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{item.label}</div>
               <div className="text-xs font-mono break-words" style={{ color: 'var(--fg-2)' }}>{formatNodeValue(item.value)}</div>
             </div>
           ))}
+          {mitreTechniques.length > 0 && (
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>MITRE techniques</div>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {mitreTechniques.slice(0, 8).map((technique) => (
+                  <a
+                    key={technique}
+                    href={mitreTechniqueHref(technique)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-1.5 py-0.5 rounded text-[10px] font-mono hover:opacity-80"
+                    style={{ backgroundColor: 'rgba(217, 70, 239, 0.16)', color: 'var(--sol-magenta)' }}
+                  >
+                    {technique}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1541,6 +1628,7 @@ export default function Storyline({
   const renderNode = (node: StorylineNode) => {
     const pos = nodePositions.get(node.id) || { x: node.x, y: node.y };
     const Icon = NODE_ICONS[node.type] || Cpu;
+    const displayLabel = truncateMiddle(node.label || node.full_label || node.id, 28);
 
     // Color based on severity if it has detections, otherwise use type color
     const hasDetections = node.detections && node.detections.length > 0;
@@ -1568,6 +1656,8 @@ export default function Storyline({
         onDoubleClick={() => handleNodeDoubleClick(node)}
         style={{ cursor: 'pointer' }}
       >
+        <title>{node.full_label || node.label || node.id}</title>
+
         {/* Root cause indicator */}
         {isRootCause && (
           <circle
@@ -1649,7 +1739,7 @@ export default function Storyline({
               fontWeight={isSelected ? 600 : 400}
               className="select-none"
             >
-              {node.label}
+              {displayLabel}
             </text>
 
             {/* PID badge for process nodes */}
