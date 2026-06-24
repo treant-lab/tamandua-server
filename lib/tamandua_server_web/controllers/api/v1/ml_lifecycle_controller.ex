@@ -20,6 +20,13 @@ defmodule TamanduaServerWeb.API.V1.MLLifecycleController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @valid_feedback_verdicts %{
+    "true_positive" => :true_positive,
+    "false_positive" => :false_positive,
+    "true_negative" => :true_negative,
+    "false_negative" => :false_negative
+  }
+
   def action(conn, _opts) do
     apply(__MODULE__, action_name(conn), [conn, conn.params])
   rescue
@@ -315,33 +322,35 @@ defmodule TamanduaServerWeb.API.V1.MLLifecycleController do
     alert_id = params["alert_id"]
     verdict_str = params["verdict"]
 
-    if is_nil(alert_id) or is_nil(verdict_str) do
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "invalid_request", message: "alert_id and verdict are required"})
-    else
-      verdict = String.to_existing_atom(verdict_str)
-      analyst_id = params["analyst_id"] || get_current_user_id(conn)
+    cond do
+      is_nil(alert_id) or is_nil(verdict_str) ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_request", message: "alert_id and verdict are required"})
 
-      opts = %{
-        model_type: params["model_type"] || "malware_smell",
-        model_version: params["model_version"],
-        sample_hash: params["sample_hash"],
-        confidence: parse_float(params["confidence"])
-      }
+      is_nil(Map.get(@valid_feedback_verdicts, verdict_str)) ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{
+          error: "invalid_verdict",
+          message: "Invalid verdict. Use: true_positive, false_positive, true_negative, false_negative"
+        })
 
-      AnalystFeedback.record_verdict(alert_id, verdict, analyst_id, opts)
+      true ->
+        verdict = Map.fetch!(@valid_feedback_verdicts, verdict_str)
+        analyst_id = params["analyst_id"] || get_current_user_id(conn)
 
-      json(conn, %{data: %{status: "recorded", alert_id: alert_id, verdict: verdict_str}})
+        opts = %{
+          model_type: params["model_type"] || "malware_smell",
+          model_version: params["model_version"],
+          sample_hash: params["sample_hash"],
+          confidence: parse_float(params["confidence"])
+        }
+
+        AnalystFeedback.record_verdict(alert_id, verdict, analyst_id, opts)
+
+        json(conn, %{data: %{status: "recorded", alert_id: alert_id, verdict: verdict_str}})
     end
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{
-        error: "invalid_verdict",
-        message: "Invalid verdict. Use: true_positive, false_positive, true_negative, false_negative"
-      })
   end
 
   # ── Model Manager Stats ──────────────────────────────────────────────
