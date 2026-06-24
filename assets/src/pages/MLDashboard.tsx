@@ -14,6 +14,8 @@ import {
   Play,
   Server,
   Loader2,
+  ExternalLink,
+  GitBranch,
 } from 'lucide-react'
 import { cn, formatDate, severityColor } from '@/lib/utils'
 
@@ -48,6 +50,12 @@ interface RecentPrediction {
   confidence?: number | string | null
   threat_score?: number | string | null
   timestamp?: string
+}
+
+interface MLLifecycleStats {
+  model_manager?: Record<string, unknown>
+  feedback?: Record<string, unknown>
+  training_scheduler?: Record<string, unknown>
 }
 
 interface MLDashboardProps {
@@ -91,6 +99,8 @@ export default function MLDashboard({
   const [trainingError, setTrainingError] = useState<string | null>(null)
   const [predictionHistory, setPredictionHistory] = useState<RecentPrediction[]>(recentPredictions || [])
   const [predictionHistoryError, setPredictionHistoryError] = useState<string | null>(null)
+  const [lifecycleStats, setLifecycleStats] = useState<MLLifecycleStats | null>(null)
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null)
 
   const stats = statistics || { total_predictions: 0, total_detections: 0, alerts_created: 0 }
   const alerts = recentAlerts || []
@@ -101,6 +111,18 @@ export default function MLDashboard({
     const numeric = Number(value)
     if (!Number.isFinite(numeric)) return 'n/a'
     return numeric <= 1 ? `${Math.round(numeric * 100)}%` : `${Math.round(numeric)}`
+  }
+
+  const formatCount = (value: unknown) => {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? numeric.toLocaleString() : '0'
+  }
+
+  const metricValue = (section: keyof MLLifecycleStats, key: string) =>
+    lifecycleStats?.[section]?.[key]
+
+  const openOperationalView = (href: string) => {
+    window.location.assign(href)
   }
 
   const handleStartTraining = async () => {
@@ -137,6 +159,32 @@ export default function MLDashboard({
   useEffect(() => {
     let cancelled = false
 
+    async function loadLifecycleStats() {
+      try {
+        const response = await fetch('/api/v1/ml/lifecycle/stats', {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        })
+
+        if (!response.ok) {
+          throw new Error(`ML lifecycle stats failed (status ${response.status})`)
+        }
+
+        const payload = await response.json()
+
+        if (!cancelled) {
+          setLifecycleStats(payload?.data || null)
+          setLifecycleError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load ML lifecycle stats'
+          setLifecycleError(message)
+          logger.warn('ML lifecycle stats load failed:', err)
+        }
+      }
+    }
+
     async function loadPredictionHistory() {
       try {
         const response = await fetch('/api/v1/ml/predictions/history?limit=50', {
@@ -168,6 +216,7 @@ export default function MLDashboard({
       }
     }
 
+    loadLifecycleStats()
     loadPredictionHistory()
 
     return () => {
@@ -621,6 +670,105 @@ export default function MLDashboard({
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Model Operations */}
+        <div className="card-sentinel rounded-xl">
+          <div
+            className="p-4 border-b"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <h2
+              className="text-lg font-semibold flex items-center gap-2"
+              style={{ color: 'var(--fg)' }}
+            >
+              <GitBranch className="h-5 w-5" style={{ color: 'var(--primary)' }} />
+              Model Operations
+            </h2>
+          </div>
+          <div className="p-6 space-y-4">
+            {lifecycleError && (
+              <div
+                className="rounded-lg px-4 py-3 text-sm"
+                style={{
+                  backgroundColor: 'rgba(var(--warn-rgb, 245, 158, 11), 0.1)',
+                  border: '1px solid rgba(var(--warn-rgb, 245, 158, 11), 0.3)',
+                  color: 'var(--warn)',
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  <span>{lifecycleError}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm" style={{ color: 'var(--muted)' }}>Registered Models</span>
+                  <Brain className="h-4 w-4" style={{ color: 'var(--primary)' }} />
+                </div>
+                <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+                  {formatCount(metricValue('model_manager', 'model_count'))}
+                </p>
+              </div>
+              <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm" style={{ color: 'var(--muted)' }}>Predictions</span>
+                  <Activity className="h-4 w-4" style={{ color: 'var(--primary)' }} />
+                </div>
+                <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+                  {formatCount(metricValue('model_manager', 'prediction_count'))}
+                </p>
+              </div>
+              <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm" style={{ color: 'var(--muted)' }}>Feedback Items</span>
+                  <BarChart3 className="h-4 w-4" style={{ color: 'var(--primary)' }} />
+                </div>
+                <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+                  {formatCount(metricValue('feedback', 'feedback_count'))}
+                </p>
+              </div>
+              <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm" style={{ color: 'var(--muted)' }}>Active Jobs</span>
+                  <Clock className="h-4 w-4" style={{ color: 'var(--primary)' }} />
+                </div>
+                <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+                  {formatCount(metricValue('training_scheduler', 'active_jobs'))}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {[
+                { label: 'AI Models', href: '/live/ai-security/models', icon: Brain },
+                { label: 'ML Processes', href: '/live/ml-processes', icon: Cpu },
+                { label: 'AI Runtime', href: '/live/ai/runtime', icon: Activity },
+                { label: 'Registries', href: '/live/registries', icon: Database },
+              ].map((item) => (
+                <button
+                  key={item.href}
+                  type="button"
+                  onClick={() => openOperationalView(item.href)}
+                  className="flex items-center justify-between gap-3 rounded-lg px-4 py-3 text-sm transition-colors"
+                  style={{
+                    backgroundColor: 'var(--surface-elevated)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--fg)',
+                  }}
+                >
+                  <span className="flex items-center gap-2">
+                    <item.icon className="h-4 w-4" style={{ color: 'var(--primary)' }} />
+                    {item.label}
+                  </span>
+                  <ExternalLink className="h-4 w-4" style={{ color: 'var(--muted)' }} />
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
