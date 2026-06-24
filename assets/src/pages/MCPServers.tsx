@@ -102,6 +102,36 @@ const defaultStats = {
   requestsToday: 0,
 }
 
+function normalizeTools(payload: unknown): MCPTool[] {
+  const data = payload as {
+    data?: unknown
+    result?: { tools?: unknown }
+    tools?: unknown
+  }
+  const candidate =
+    Array.isArray(data?.data) ? data.data :
+    Array.isArray(data?.tools) ? data.tools :
+    Array.isArray(data?.result?.tools) ? data.result?.tools :
+    []
+
+  return (candidate as unknown[])
+    .map((tool) => {
+      if (!tool || typeof tool !== 'object') return null
+      const raw = tool as Record<string, unknown>
+      const name = String(raw.name || '')
+      if (!name) return null
+      return {
+        name,
+        description: String(raw.description || ''),
+        inputSchema: (raw.inputSchema || raw.input_schema || {}) as Record<string, unknown>,
+        requiredPermissions: (raw.requiredPermissions || raw.required_permissions || []) as string[],
+        lastUsed: raw.lastUsed ? String(raw.lastUsed) : undefined,
+        usageCount: typeof raw.usageCount === 'number' ? raw.usageCount : undefined,
+      }
+    })
+    .filter((tool): tool is MCPTool => Boolean(tool))
+}
+
 export default function MCPServers({
   servers = [],
   tools: _tools = [],
@@ -118,29 +148,21 @@ export default function MCPServers({
   const handleTestConnection = async (serverId: string) => {
     setLoading(`test-${serverId}`)
     try {
-      let toolCount: number | undefined
+      const rpcRes = await axios.post('/api/v1/mcp/rpc', {
+        jsonrpc: '2.0',
+        method: 'tools/list',
+        params: {},
+        id: Date.now(),
+      }, {
+        headers: { Accept: 'application/json' },
+      })
 
-      try {
-        const res = await axios.post('/api/v1/mcp/rpc', {
-          jsonrpc: '2.0',
-          method: 'tools/list',
-          params: {},
-          id: Date.now(),
-        })
-
-        const rpcTools = res.data?.result?.tools
-        toolCount = Array.isArray(rpcTools) ? rpcTools.length : undefined
-
-        if (res.data?.error) {
-          throw new Error(res.data.error.message || 'MCP JSON-RPC error')
-        }
-      } catch {
-        const res = await axios.get('/api/v1/mcp/tools')
-        const restTools = res.data?.data
-        toolCount = Array.isArray(restTools) ? restTools.length : undefined
+      if (rpcRes.data?.error) {
+        throw new Error(rpcRes.data.error.message || 'MCP JSON-RPC error')
       }
 
-      toast.success(toolCount === undefined ? 'MCP endpoint responded' : `MCP endpoint responded with ${toolCount} tools`)
+      const rpcTools = normalizeTools(rpcRes.data)
+      toast.success(`MCP JSON-RPC tools/list responded with ${rpcTools.length} tools`)
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
       const status = err.response?.status ? `HTTP ${err.response.status}: ` : ''

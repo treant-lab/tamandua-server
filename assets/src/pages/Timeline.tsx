@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Clock,
@@ -12,7 +12,6 @@ import {
   Network,
   HardDrive,
   ChevronRight,
-  Shield,
   Download,
   ZoomIn,
   ZoomOut,
@@ -164,6 +163,21 @@ interface Storyline {
   processName: string
   events: TimelineEvent[]
   childProcesses: Storyline[]
+}
+
+function normalizeProcessStoryline(raw: Record<string, unknown>, processId: string, events: TimelineEvent[]): Storyline {
+  const targetPid = String(raw.target_pid ?? raw.process_id ?? processId)
+  const chain = Array.isArray(raw.process_chain) ? raw.process_chain as Array<Record<string, unknown>> : []
+  const timeline = Array.isArray(raw.timeline) ? raw.timeline as Array<Record<string, unknown>> : []
+  const chainProcess = chain.find((entry) => String(entry.pid ?? entry.process_id ?? '') === targetPid) || chain[0]
+  const timelineIds = new Set(timeline.map((entry) => String(entry.id ?? entry.event_id ?? '')).filter(Boolean))
+
+  return {
+    processId: targetPid,
+    processName: String(chainProcess?.name ?? chainProcess?.process_name ?? chainProcess?.image ?? `Process ${targetPid}`),
+    events: events.filter((event) => timelineIds.has(event.id)),
+    childProcesses: [],
+  }
 }
 
 interface ReadinessCategory {
@@ -606,18 +620,18 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
     setLoading(true)
     try {
       const response = await axios.post('/api/v1/timeline/build', {
-        process_id: processId,
+        pid: processId,
         agent_id: agentId,
       })
       if (response.data?.data) {
-        setStoryline(response.data.data)
+        setStoryline(normalizeProcessStoryline(response.data.data, processId, allEvents))
       }
     } catch (error) {
       logger.error('Failed to build storyline:', error)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [allEvents])
 
   // Toggle event selection
   const toggleEventSelection = (eventId: string) => {
@@ -1602,10 +1616,6 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
                 )}
 
                 <div className="pt-4 space-y-2">
-                  <button className="w-full flex items-center justify-center gap-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
-                    <Shield className="h-4 w-4" />
-                    Create Alert
-                  </button>
                   {selectedEvent.eventType === 'process' && selectedEvent.details?.pid && (
                     <button
                       onClick={() => buildStoryline(
@@ -1623,13 +1633,16 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
                       Build Process Storyline
                     </button>
                   )}
-                  <button className="w-full flex items-center justify-center gap-2 bg-[var(--surface-hover)] hover:bg-[var(--surface-active)] text-[var(--fg)] px-4 py-2 rounded-lg text-sm">
+                  <button
+                    onClick={() => router.visit(`/app/hunt?q=${encodeURIComponent(`event.id:${selectedEvent.id}`)}`)}
+                    className="w-full flex items-center justify-center gap-2 bg-[var(--surface-hover)] hover:bg-[var(--surface-active)] text-[var(--fg)] px-4 py-2 rounded-lg text-sm"
+                  >
                     View in Hunt
                   </button>
                 </div>
 
                 {/* Storyline View */}
-                {storyline && selectedEvent.details?.pid === storyline.processId && (
+                {storyline && String(selectedEvent.details?.pid ?? '') === storyline.processId && (
                   <div className="pt-4 border-t border-[var(--hairline)]">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-sm font-medium text-[var(--muted)]">Process Storyline</h4>

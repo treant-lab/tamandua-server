@@ -2675,7 +2675,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     alias TamanduaServer.Storyline.Engine
 
-    case safe_storyline_result(fn -> Engine.generate_for_alert(alert_id) end) do
+    case safe_storyline_result(fn -> Engine.generate_for_alert(alert_id, layout: layout) end) do
       {:ok, storyline} ->
         analysis = safe_storyline_analysis(storyline)
 
@@ -2711,64 +2711,72 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def storyline_process(conn, %{"agent_id" => agent_id, "pid" => pid_str} = params) do
-    pid =
-      case Integer.parse(pid_str) do
-        {int, _} -> int
-        :error -> 0
-      end
-
     layout = Map.get(params, "layout", "timeline")
+    parsed_pid = parse_positive_integer(pid_str)
 
-    time_window =
-      case Map.get(params, "time_window") do
-        nil ->
-          60
+    if is_nil(parsed_pid) do
+      render_inertia(conn, "Storyline", %{
+        page_title: "Process Investigation",
+        alert_id: nil,
+        agent_id: agent_id,
+        pid: pid_str,
+        storyline: nil,
+        analysis: nil,
+        layout: layout,
+        error: "Invalid process id: #{pid_str}"
+      })
+    else
+      pid = parsed_pid
+      time_window = parse_positive_integer(Map.get(params, "time_window_minutes") || Map.get(params, "time_window")) || 60
 
-        val when is_binary(val) ->
-          case Integer.parse(val) do
-            {int, _} -> int
-            :error -> 60
-          end
+      alias TamanduaServer.Storyline.Engine
 
-        val when is_integer(val) ->
-          val
+      case safe_storyline_result(fn ->
+             Engine.generate_from_process(agent_id, pid,
+               time_window_minutes: time_window,
+               layout: layout
+             )
+           end) do
+        {:ok, storyline} ->
+          analysis = safe_storyline_analysis(storyline)
 
-        _ ->
-          60
+          render_inertia(conn, "Storyline", %{
+            page_title: "Process Investigation",
+            alert_id: nil,
+            agent_id: agent_id,
+            pid: pid,
+            storyline: serialize_storyline_for_inertia(storyline),
+            analysis: serialize_storyline_analysis(analysis),
+            layout: layout,
+            error: nil
+          })
+
+        {:error, reason} ->
+          render_inertia(conn, "Storyline", %{
+            page_title: "Process Investigation",
+            alert_id: nil,
+            agent_id: agent_id,
+            pid: pid,
+            storyline: nil,
+            analysis: nil,
+            layout: layout,
+            error: "Failed to generate storyline: #{inspect(reason)}"
+          })
       end
-
-    alias TamanduaServer.Storyline.Engine
-
-    case safe_storyline_result(fn ->
-           Engine.generate_from_process(agent_id, pid, time_window_minutes: time_window)
-         end) do
-      {:ok, storyline} ->
-        analysis = safe_storyline_analysis(storyline)
-
-        render_inertia(conn, "Storyline", %{
-          page_title: "Process Investigation",
-          alert_id: nil,
-          agent_id: agent_id,
-          pid: pid,
-          storyline: serialize_storyline_for_inertia(storyline),
-          analysis: serialize_storyline_analysis(analysis),
-          layout: layout,
-          error: nil
-        })
-
-      {:error, reason} ->
-        render_inertia(conn, "Storyline", %{
-          page_title: "Process Investigation",
-          alert_id: nil,
-          agent_id: agent_id,
-          pid: pid,
-          storyline: nil,
-          analysis: nil,
-          layout: layout,
-          error: "Failed to generate storyline: #{inspect(reason)}"
-        })
     end
   end
+
+  defp parse_positive_integer(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_positive_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      {int, _rest} when int > 0 -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_positive_integer(_), do: nil
 
   defp safe_storyline_result(fun) when is_function(fun, 0) do
     fun.()
@@ -2807,7 +2815,18 @@ defmodule TamanduaServerWeb.InertiaController do
         confidence: Map.get(storyline, :confidence_score, 0),
         reason: "Automated storyline analysis unavailable: #{inspect(reason)}"
       },
-      attack_techniques: Map.get(storyline, :mitre_techniques, []),
+      attack_techniques:
+        (Map.get(storyline, :mitre_techniques, []) || [])
+        |> Enum.map(fn
+          value when is_binary(value) ->
+            %{id: value, name: value, tactic: "unknown", description: "Technique observed in storyline telemetry"}
+
+          value when is_map(value) ->
+            value
+
+          value ->
+            %{id: to_string(value), name: to_string(value), tactic: "unknown", description: ""}
+        end),
       recommended_actions: [
         %{
           priority: "medium",
@@ -6724,7 +6743,21 @@ defmodule TamanduaServerWeb.InertiaController do
 
   def attack_paths(conn, _params) do
     # Get attack paths analysis from PredictiveShield
-    {:ok, attack_paths_result} = PredictiveShield.analyze_attack_paths(%{})
+    attack_paths_result =
+      try do
+        case PredictiveShield.analyze_attack_paths(%{}) do
+          {:ok, result} when is_map(result) ->
+            result
+
+          other ->
+            Logger.warning("PredictiveShield.analyze_attack_paths returned #{inspect(other)}")
+            %{paths: []}
+        end
+      catch
+        kind, reason ->
+          Logger.warning("PredictiveShield.analyze_attack_paths failed: #{kind} #{inspect(reason)}")
+          %{paths: []}
+      end
 
     # Format all attack paths
     paths =
@@ -6754,7 +6787,21 @@ defmodule TamanduaServerWeb.InertiaController do
       end)
 
     # Get hardening recommendations
-    {:ok, hardening_result} = PredictiveShield.generate_hardening_recommendations(%{})
+    hardening_result =
+      try do
+        case PredictiveShield.generate_hardening_recommendations(%{}) do
+          {:ok, result} when is_map(result) ->
+            result
+
+          other ->
+            Logger.warning("PredictiveShield.generate_hardening_recommendations returned #{inspect(other)}")
+            %{recommendations: []}
+        end
+      catch
+        kind, reason ->
+          Logger.warning("PredictiveShield.generate_hardening_recommendations failed: #{kind} #{inspect(reason)}")
+          %{recommendations: []}
+      end
 
     # Format recommendations
     recommendations =
@@ -8024,12 +8071,14 @@ defmodule TamanduaServerWeb.InertiaController do
     tools =
       Enum.map(tools_data || [], fn tool ->
         %{
-          name: tool[:name],
-          description: tool[:description],
-          inputSchema: tool[:input_schema],
-          requiredPermissions: tool[:required_permissions] || []
+          name: mcp_field(tool, :name),
+          description: mcp_field(tool, :description, ""),
+          inputSchema: mcp_field(tool, :input_schema) || mcp_field(tool, :inputSchema) || %{},
+          requiredPermissions:
+            mcp_field(tool, :required_permissions) || mcp_field(tool, :requiredPermissions) || []
         }
       end)
+      |> Enum.reject(&is_nil(&1.name))
 
     # Get context providers
     {providers_data, providers_error} =
@@ -8047,11 +8096,15 @@ defmodule TamanduaServerWeb.InertiaController do
     context_providers =
       Enum.map(providers_data || [], fn provider ->
         %{
-          name: provider[:name],
-          description: provider[:description],
-          parameters: provider[:parameters] || %{}
+          name: mcp_field(provider, :name),
+          description: mcp_field(provider, :description),
+          type: mcp_field(provider, :type),
+          status: mcp_field(provider, :status),
+          resourceCount: mcp_field(provider, :resource_count) || mcp_field(provider, :resourceCount),
+          parameters: mcp_field(provider, :parameters, %{})
         }
       end)
+      |> Enum.reject(&is_nil(&1.name))
 
     # Get server stats
     {stats, stats_error} =
@@ -8153,6 +8206,13 @@ defmodule TamanduaServerWeb.InertiaController do
       }
     })
   end
+
+  defp mcp_field(map, key, default \\ nil)
+  defp mcp_field(map, key, default) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key)) || default
+  end
+
+  defp mcp_field(_map, _key, default), do: default
 
   # Phishing Triage
   def phishing_triage(conn, _params) do
@@ -10242,7 +10302,7 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenants(conn, _params) do
-    render_inertia(conn, "Tenants", %{
+    render_inertia(conn, "admin/Tenants", %{
       page_title: "Tenant Management"
     })
   end
@@ -10253,7 +10313,7 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenant_create(conn, _params) do
-    render_inertia(conn, "TenantCreate", %{
+    render_inertia(conn, "admin/TenantCreate", %{
       page_title: "Create Tenant"
     })
   end
@@ -10264,7 +10324,7 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenant_detail(conn, %{"id" => _tenant_id}) do
-    render_inertia(conn, "TenantDetail", %{
+    render_inertia(conn, "admin/TenantDetail", %{
       page_title: "Tenant Details"
     })
   end
@@ -10317,6 +10377,7 @@ defmodule TamanduaServerWeb.InertiaController do
         alerts_created: Map.get(stats, :alerts_created, 0)
       },
       recent_alerts: recent_alerts,
+      recent_predictions: get_recent_ml_predictions(recent_alerts),
       training: %{
         available_datasets: ["synthetic", "telemetry"],
         default_epochs: 50,
@@ -10402,6 +10463,7 @@ defmodule TamanduaServerWeb.InertiaController do
         severity: alert.severity,
         agent_id: alert.agent_id,
         threat_score: alert.threat_score,
+        detection_metadata: alert.detection_metadata || %{},
         created_at: alert.inserted_at
       }
     end)
@@ -10410,6 +10472,43 @@ defmodule TamanduaServerWeb.InertiaController do
       Logger.warning("get_recent_ml_alerts failed: #{Exception.message(e)}")
       []
   end
+
+  defp get_recent_ml_predictions(alerts) do
+    Enum.map(alerts, fn alert ->
+      metadata = alert[:detection_metadata] || alert["detection_metadata"] || %{}
+      title = alert[:title] || alert["title"] || ""
+
+      %{
+        id: alert[:id] || alert["id"],
+        alert_id: alert[:id] || alert["id"],
+        agent_id: alert[:agent_id] || alert["agent_id"],
+        prediction: metadata_field(metadata, "prediction") || prediction_from_ml_title(title),
+        malware_family: metadata_field(metadata, "malware_family"),
+        model_version: metadata_field(metadata, "model_version") || metadata_field(metadata, "onnx_model_version"),
+        confidence: metadata_field(metadata, "confidence"),
+        threat_score: alert[:threat_score] || alert["threat_score"],
+        timestamp: alert[:created_at] || alert["created_at"] || alert[:inserted_at] || alert["inserted_at"]
+      }
+    end)
+  end
+
+  defp metadata_field(metadata, key) when is_map(metadata) do
+    Map.get(metadata, key) || Map.get(metadata, String.to_atom(key))
+  rescue
+    _ -> Map.get(metadata, key)
+  end
+
+  defp metadata_field(_metadata, _key), do: nil
+
+  defp prediction_from_ml_title(title) when is_binary(title) do
+    cond do
+      String.contains?(String.downcase(title), "malicious") -> "malicious"
+      String.contains?(String.downcase(title), "benign") -> "benign"
+      true -> "ml_detection"
+    end
+  end
+
+  defp prediction_from_ml_title(_), do: "ml_detection"
 
   # ===========================================================================
   # Reports

@@ -1,4 +1,4 @@
-import { Head, router } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   MessageSquare,
@@ -9,11 +9,8 @@ import {
   TrendingUp,
   Lock,
   Search,
-  Download,
 } from 'lucide-react'
 import { useState } from 'react'
-import axios from 'axios'
-import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Select, SelectItem } from '@/components/ui/baseui'
 
@@ -112,32 +109,6 @@ export default function Collaboration({
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPlatform, setSelectedPlatform] = useState<string>('all')
   const [selectedSeverity, setSelectedSeverity] = useState<string>('all')
-  const [loading, setLoading] = useState<string | null>(null)
-
-  const handleExport = async () => {
-    setLoading('export')
-    try {
-      const response = await axios.get('/api/v1/collaboration/export', { responseType: 'blob' })
-      const url = window.URL.createObjectURL(new Blob([response.data]))
-      const link = document.createElement('a')
-      link.href = url
-      link.setAttribute('download', `collaboration-export-${new Date().toISOString().split('T')[0]}.csv`)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-      toast.success('Export downloaded')
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to export')
-    } finally {
-      setLoading(null)
-    }
-  }
-
-  const handleConfigurePolicies = () => {
-    router.visit('/app/collaboration')
-  }
 
   // Use events prop if available, otherwise fall back to alerts for backwards compatibility
   const displayAlerts = events.length > 0
@@ -267,14 +238,6 @@ export default function Collaboration({
             <div className="p-6 border-b border-[var(--border)]">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-[var(--fg)]">DLP Alerts</h2>
-                <button
-                  onClick={handleExport}
-                  disabled={loading === 'export'}
-                  className="flex items-center gap-2 text-sm text-[var(--muted)] hover:text-[var(--fg)] disabled:opacity-50"
-                >
-                  <Download className="h-4 w-4" />
-                  {loading === 'export' ? 'Exporting...' : 'Export'}
-                </button>
               </div>
 
               {/* Filters */}
@@ -401,16 +364,6 @@ export default function Collaboration({
                   </div>
                 </div>
               ))}
-            </div>
-
-            <div className="p-4 border-t border-[var(--border)]">
-              <button
-                onClick={handleConfigurePolicies}
-                className="w-full flex items-center justify-center gap-2 bg-[var(--surface-raised)] hover:bg-[var(--surface-elevated)] rounded-lg px-4 py-2 text-sm text-[var(--muted)] transition-colors"
-              >
-                <Shield className="h-4 w-4" />
-                Configure Policies
-              </button>
             </div>
           </div>
         </div>

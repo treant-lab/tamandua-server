@@ -34,6 +34,10 @@ const tabs = [
   { id: 'license', label: 'License & Billing', icon: CreditCard },
 ]
 
+function getCsrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
 function BrandingTab({ tenant, settings, onSave }: {
   tenant: TenantSettingsPageProps['tenant']
   settings: TenantSettingsType
@@ -469,13 +473,22 @@ function APIKeysTab({ apiKeys, tenantId }: { apiKeys: APIKey[]; tenantId: string
     e.preventDefault()
     setCreating(true)
     try {
-      const response = await fetch(`/api/v1/tenant/api-keys`, {
+      const response = await fetch('/api/v1/api-keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newKeyName, scopes: newKeyScopes }),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken(),
+        },
+        body: JSON.stringify({
+          api_key: {
+            name: newKeyName,
+            permissions: newKeyScopes,
+            scope: newKeyScopes,
+          },
+        }),
       })
       const data = await response.json()
-      setCreatedKey(data.key)
+      setCreatedKey(data.raw_key || data.key || null)
     } catch (err) {
       logger.error('Failed to create API key:', err)
     } finally {
@@ -486,8 +499,11 @@ function APIKeysTab({ apiKeys, tenantId }: { apiKeys: APIKey[]; tenantId: string
   const handleRevokeKey = async (keyId: string) => {
     if (!confirm('Are you sure you want to revoke this API key?')) return
     try {
-      await fetch(`/api/v1/tenant/api-keys/${keyId}`, {
+      await fetch(`/api/v1/api-keys/${keyId}`, {
         method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': getCsrfToken(),
+        },
       })
       router.reload()
     } catch (err) {
@@ -840,10 +856,13 @@ export default function TenantSettings({ tenant, settings, api_keys, license, av
 
   const handleSaveSettings = async (data: Partial<TenantSettingsType>) => {
     try {
-      const response = await fetch(`/api/v1/tenant/settings`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+      const response = await fetch(`/api/v1/organizations/${tenant.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken(),
+        },
+        body: JSON.stringify({ settings: { ...settings, ...data } }),
       })
 
       if (!response.ok) {

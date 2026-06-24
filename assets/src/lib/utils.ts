@@ -49,6 +49,41 @@ export function severityDotColor(severity: string): string {
   }
 }
 
+/**
+ * Render a finite numeric value, or the em-dash placeholder for
+ * null/undefined/NaN/non-finite. Use this in any UI cell whose backend
+ * source may legitimately not have a measurement yet — the alternative
+ * (`(undefined as number).toLocaleString()` or `(undefined * 100).toFixed()`)
+ * produces "NaN" which reads as "the product is broken", not "no data yet".
+ */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+export function formatNumber(value: number | null | undefined, fallback: string = '—'): string {
+  return isFiniteNumber(value) ? value.toLocaleString() : fallback
+}
+
+export function formatPercent(
+  ratio: number | null | undefined,
+  fractionDigits: number = 0,
+  fallback: string = '—',
+): string {
+  return isFiniteNumber(ratio) ? `${(ratio * 100).toFixed(fractionDigits)}%` : fallback
+}
+
+export function formatThousands(
+  value: number | null | undefined,
+  fractionDigits: number = 0,
+  fallback: string = '—',
+): string {
+  return isFiniteNumber(value) ? `${(value / 1000).toFixed(fractionDigits)}K` : fallback
+}
+
+export function formatLatency(value: number | null | undefined, fallback: string = '—'): string {
+  return isFiniteNumber(value) ? `${value}ms` : fallback
+}
+
 export function formatBytes(bytes: number, decimals: number = 2): string {
   if (bytes === 0) return '0 Bytes'
 

@@ -1820,6 +1820,7 @@ defmodule TamanduaServerWeb.Router do
     # Integrations (SIEM, SOAR, Ticketing)
     get("/integrations/types", IntegrationsController, :types)
     get("/integrations/stats", IntegrationsController, :stats)
+    get("/integrations/health", IntegrationsController, :health)
     post("/integrations/reload", IntegrationsController, :reload)
     post("/integrations/test-config", IntegrationsController, :test_config)
     resources("/integrations", IntegrationsController, except: [:new, :edit])
@@ -2234,6 +2235,15 @@ defmodule TamanduaServerWeb.Router do
     get("/ready", HealthController, :ready)
     get("/live", HealthController, :live)
     get("/clickhouse", HealthController, :clickhouse)
+  end
+
+  # Compatibility health checks for API clients and older agents.
+  scope "/api/v1/health", TamanduaServerWeb do
+    pipe_through(:api)
+
+    get("/", HealthController, :index)
+    get("/ready", HealthController, :ready)
+    get("/live", HealthController, :live)
   end
 
   # Health checks - Debug endpoints (DEV/TEST only, requires admin auth in prod)

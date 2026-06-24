@@ -185,6 +185,10 @@ interface BehavioralPageProps {
 
 const API_BASE = '/api/v1/behavioral'
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
 const severityConfig: Record<string, { color: string; bg: string; border: string; cssColor: string; cssBg: string }> = {
   critical: { color: 'text-sentinel-crit', bg: 'bg-[var(--crit-bg)]', border: 'border-[var(--crit)]', cssColor: 'var(--crit)', cssBg: 'var(--crit-bg)' },
   high: { color: 'text-sentinel-high', bg: 'bg-[var(--high-bg)]', border: 'border-[var(--high)]', cssColor: 'var(--high)', cssBg: 'var(--high-bg)' },
@@ -306,7 +310,11 @@ async function fetchSuppressions(): Promise<SuppressionRule[]> {
 async function createSuppression(rule: Partial<SuppressionRule>): Promise<SuppressionRule | null> {
   const res = await fetch(`${API_BASE}/suppressions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
+    },
     body: JSON.stringify(rule),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -315,7 +323,13 @@ async function createSuppression(rule: Partial<SuppressionRule>): Promise<Suppre
 }
 
 async function deleteSuppression(id: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/suppressions/${id}`, { method: 'DELETE' })
+  const res = await fetch(`${API_BASE}/suppressions/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
+    },
+  })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return true
 }

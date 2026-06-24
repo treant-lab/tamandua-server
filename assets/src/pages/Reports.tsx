@@ -1377,32 +1377,6 @@ function ComplianceDashboard({
               </div>
               <ChevronRight className="h-4 w-4" style={{ color: 'var(--muted)' }} />
             </button>
-            <button
-              onClick={() => {}}
-              className="w-full flex items-center justify-between p-3 rounded-lg transition-colors hover:opacity-90"
-              style={{ backgroundColor: 'var(--surface-alt)' }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: 'rgba(251, 146, 60, 0.2)' }}>
-                  <AlertTriangle className="h-4 w-4" style={{ color: 'var(--high)' }} />
-                </div>
-                <span className="text-sm" style={{ color: 'var(--fg)' }}>View Gap Analysis</span>
-              </div>
-              <ChevronRight className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-            </button>
-            <button
-              onClick={() => {}}
-              className="w-full flex items-center justify-between p-3 rounded-lg transition-colors hover:opacity-90"
-              style={{ backgroundColor: 'var(--surface-alt)' }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: 'rgba(16, 185, 129, 0.2)' }}>
-                  <TrendingUp className="h-4 w-4" style={{ color: 'var(--emerald-400)' }} />
-                </div>
-                <span className="text-sm" style={{ color: 'var(--fg)' }}>Compliance Trends</span>
-              </div>
-              <ChevronRight className="h-4 w-4" style={{ color: 'var(--muted)' }} />
-            </button>
           </div>
         </div>
       </div>
@@ -1641,22 +1615,6 @@ function FrameworkDetail({ framework, onClose, onGenerateReport }: {
         >
           <FileText className="h-4 w-4" />
           Generate Full Report
-        </button>
-        <button
-          onClick={() => {}}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors"
-          style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' }}
-        >
-          <Eye className="h-4 w-4" />
-          View Controls
-        </button>
-        <button
-          onClick={() => {}}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors"
-          style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' }}
-        >
-          <AlertTriangle className="h-4 w-4" />
-          Gap Analysis
         </button>
       </div>
     </div>

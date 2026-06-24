@@ -771,20 +771,33 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   # serving fabricated data.
 
   defp fetch_ml_models do
-    url = "#{ml_service_url()}/models"
-    request = Finch.build(:get, url, [{"accept", "application/json"}])
+    ["/predict/models", "/models/versions", "/models"]
+    |> Enum.reduce_while({:error, :not_attempted}, fn path, _last_error ->
+      url = "#{ml_service_url()}#{path}"
+      request = Finch.build(:get, url, [{"accept", "application/json"}])
 
-    case Finch.request(request, TamanduaServer.Finch, receive_timeout: 5_000) do
-      {:ok, %{status: 200, body: body}} ->
-        Jason.decode(body)
+      case Finch.request(request, TamanduaServer.Finch, receive_timeout: 5_000) do
+        {:ok, %{status: 200, body: body}} ->
+          case Jason.decode(body) do
+            {:ok, data} -> {:halt, {:ok, normalize_model_list(data)}}
+            {:error, reason} -> {:cont, {:error, {:invalid_json, path, reason}}}
+          end
 
-      {:ok, %{status: status}} ->
-        {:error, {:http_error, status}}
+        {:ok, %{status: status}} ->
+          {:cont, {:error, {:http_error, path, status}}}
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+        {:error, reason} ->
+          {:cont, {:error, {path, reason}}}
+      end
+    end)
   end
+
+  defp normalize_model_list(%{"data" => models}) when is_list(models), do: models
+  defp normalize_model_list(%{"models" => models}) when is_list(models), do: models
+  defp normalize_model_list(%{"versions" => versions}) when is_list(versions), do: versions
+  defp normalize_model_list(models) when is_list(models), do: models
+  defp normalize_model_list(model) when is_map(model), do: [model]
+  defp normalize_model_list(_), do: []
 
   defp forward_training_request(dataset_id, epochs, batch_size) do
     url = "#{ml_service_url()}/train"

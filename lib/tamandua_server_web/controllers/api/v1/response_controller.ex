@@ -23,20 +23,43 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     # Validate agent belongs to current organization before executing action
     _agent = authorize_agent!(conn, agent_id)
 
-    case Executor.kill_process(agent_id, pid) do
+    force? = truthy_param?(Map.get(params, "force", false))
+
+    case Executor.kill_process(agent_id, pid, force: force?) do
       :ok ->
         # Log the response action
         AuditLog.log_response_action(user, "kill_process", agent_id, %{
           pid: pid,
+          force: force?,
           result: "success"
         }, request_metadata(conn))
         record_response_action(conn, user, "kill_process", agent_id, params, "success", %{"message" => "Process kill command sent"})
 
         json(conn, %{success: true, message: "Process kill command sent"})
 
+      {:ok, result_data} ->
+        AuditLog.log_response_action(user, "kill_process", agent_id, %{
+          pid: pid,
+          force: force?,
+          result: "success"
+        }, request_metadata(conn))
+
+        record_response_action(
+          conn,
+          user,
+          "kill_process",
+          agent_id,
+          params,
+          "success",
+          Map.merge(%{"message" => "Process kill command sent"}, stringify_keys(result_data))
+        )
+
+        json(conn, %{success: true, message: "Process kill command sent"})
+
       {:error, reason} ->
         AuditLog.log_response_action(user, "kill_process", agent_id, %{
           pid: pid,
+          force: force?,
           result: "failed",
           error: reason
         }, request_metadata(conn))
@@ -47,6 +70,15 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         |> json(%{success: false, error: reason})
     end
   end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp stringify_keys(_), do: %{}
+
+  defp truthy_param?(value) when value in [true, "true", "1", 1, "yes", "on"], do: true
+  defp truthy_param?(_), do: false
 
   def quarantine_file(conn, %{"agent_id" => agent_id, "path" => path} = params) do
     user = conn.assigns[:current_user]

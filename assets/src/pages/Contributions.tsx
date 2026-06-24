@@ -1,5 +1,5 @@
 import { Head } from '@inertiajs/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Award,
   CheckCircle2,
@@ -471,6 +471,12 @@ export default function Contributions({
   stats,
 }: ContributionsProps) {
   const [activeTab, setActiveTab] = useState<'submissions' | 'bounties' | 'leaderboard'>('submissions')
+
+  useEffect(() => {
+    if (window.location.hash === '#leaderboard') {
+      setActiveTab('leaderboard')
+    }
+  }, [])
 
   const tabs = [
     { id: 'submissions' as const, label: 'Your Submissions', icon: FileCode },

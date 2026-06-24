@@ -18,17 +18,27 @@ import {
   Database,
 } from 'lucide-react'
 import { useState } from 'react'
-import { cn } from '@/lib/utils'
+import {
+  cn,
+  formatLatency,
+  formatNumber,
+  formatPercent,
+  formatThousands,
+} from '@/lib/utils'
 
+// Backend may not yet instrument every numeric field. Optional + nullable
+// fields are rendered through the formatNumber/formatPercent/formatThousands/
+// formatLatency helpers, which render "—" for undefined/null/NaN instead of
+// the literal string "NaN" — see src/lib/utils.ts.
 interface SIEMConnection {
   id: string
   name: string
-  type: 'splunk' | 'elasticsearch' | 'azure_sentinel' | 'qradar' | 'chronicle'
+  type: 'splunk' | 'elasticsearch' | 'azure_sentinel' | 'qradar' | 'chronicle' | 'internal' | 'threat_intel'
   status: 'connected' | 'disconnected' | 'error' | 'syncing'
-  lastSync: string
-  eventsForwarded: number
-  eventsPerSecond: number
-  latencyMs: number
+  lastSync?: string | null
+  eventsForwarded?: number | null
+  eventsPerSecond?: number | null
+  latencyMs?: number | null
 }
 
 interface CorrelationRule {
@@ -36,25 +46,25 @@ interface CorrelationRule {
   name: string
   description: string
   enabled: boolean
-  matches: number
-  lastTriggered?: string
-  confidence: number
+  matches?: number | null
+  lastTriggered?: string | null
+  confidence?: number | null
 }
 
 interface EnrichmentSource {
   id: string
   name: string
   type: string
-  status: 'active' | 'inactive' | 'error'
-  enrichmentsPerformed: number
-  avgLatency: number
+  status: 'active' | 'inactive' | 'error' | 'no_data' | 'unavailable'
+  enrichmentsPerformed?: number | null
+  avgLatency?: number | null
 }
 
 interface DiscoveredPattern {
   id: string
   name: string
   description: string
-  occurrences: number
+  occurrences?: number | null
   severity: string
 }
 
@@ -62,28 +72,28 @@ interface AlertCorrelation {
   id: string
   alerts: string[]
   pattern: string
-  confidence: number
+  confidence?: number | null
 }
 
 interface NoiseMetrics {
-  totalAlerts: number
-  filteredAlerts: number
-  reductionPercentage: number
+  totalAlerts?: number | null
+  filteredAlerts?: number | null
+  reductionPercentage?: number | null
 }
 
 interface IntelligentAlert {
   id: string
   title: string
   severity: string
-  confidence: number
-  relatedEvents: number
+  confidence?: number | null
+  relatedEvents?: number | null
 }
 
 interface AISIEMStats {
-  totalEventsForwarded: number
-  correlationsDetected: number
-  enrichedAlerts: number
-  avgProcessingTime: number
+  totalEventsForwarded?: number | null
+  correlationsDetected?: number | null
+  enrichedAlerts?: number | null
+  avgProcessingTime?: number | null
 }
 
 interface AISIEMPageProps {
@@ -197,7 +207,7 @@ export default function AISIEM({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>Events Forwarded</p>
-                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{(stats.totalEventsForwarded ?? 0).toLocaleString()}</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{formatNumber(stats.totalEventsForwarded)}</p>
               </div>
               <div className="h-12 w-12 rounded-lg flex items-center justify-center" style={{ background: 'var(--med-bg)' }}>
                 <ArrowRight className="h-6 w-6" style={{ color: 'var(--med)' }} />
@@ -209,7 +219,7 @@ export default function AISIEM({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>AI Correlations</p>
-                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{stats.correlationsDetected}</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{formatNumber(stats.correlationsDetected)}</p>
               </div>
               <div className="h-12 w-12 rounded-lg flex items-center justify-center" style={{ background: 'rgba(217, 70, 239, 0.12)' }}>
                 <Brain className="h-6 w-6" style={{ color: 'var(--sol-magenta)' }} />
@@ -221,7 +231,7 @@ export default function AISIEM({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>Enriched Alerts</p>
-                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{(stats.enrichedAlerts ?? 0).toLocaleString()}</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{formatNumber(stats.enrichedAlerts)}</p>
               </div>
               <div className="h-12 w-12 rounded-lg flex items-center justify-center" style={{ background: 'var(--emerald-glow)' }}>
                 <Zap className="h-6 w-6" style={{ color: 'var(--emerald-400)' }} />
@@ -233,7 +243,7 @@ export default function AISIEM({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>Avg Processing Time</p>
-                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{stats.avgProcessingTime}ms</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: 'var(--fg)' }}>{formatLatency(stats.avgProcessingTime)}</p>
               </div>
               <div className="h-12 w-12 rounded-lg flex items-center justify-center" style={{ background: 'var(--high-bg)' }}>
                 <Clock className="h-6 w-6" style={{ color: 'var(--high)' }} />
@@ -299,15 +309,15 @@ export default function AISIEM({
                       <div className="grid grid-cols-3 gap-4 mt-3 pt-3" style={{ borderTop: '1px solid var(--hairline)' }}>
                         <div>
                           <p className="text-xs" style={{ color: 'var(--subtle)' }}>Events/sec</p>
-                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{connection.eventsPerSecond}</p>
+                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{formatNumber(connection.eventsPerSecond)}</p>
                         </div>
                         <div>
                           <p className="text-xs" style={{ color: 'var(--subtle)' }}>Latency</p>
-                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{connection.latencyMs}ms</p>
+                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{formatLatency(connection.latencyMs)}</p>
                         </div>
                         <div>
                           <p className="text-xs" style={{ color: 'var(--subtle)' }}>Total</p>
-                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{(connection.eventsForwarded / 1000).toFixed(0)}K</p>
+                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{formatThousands(connection.eventsForwarded)}</p>
                         </div>
                       </div>
                     </div>
@@ -373,14 +383,14 @@ export default function AISIEM({
                         <span className="font-medium" style={{ color: 'var(--fg)' }}>{rule.name}</span>
                       </div>
                       <span className="badge-sentinel badge-sentinel-sol-magenta">
-                        {(rule.confidence * 100).toFixed(0)}% confidence
+                        {formatPercent(rule.confidence)} confidence
                       </span>
                     </div>
                     <p className="text-sm mb-2" style={{ color: 'var(--muted)' }}>{rule.description}</p>
                     <div className="flex items-center justify-between text-xs" style={{ color: 'var(--subtle)' }}>
                       <span className="flex items-center gap-1">
                         <Activity className="h-3 w-3" />
-                        {rule.matches} matches
+                        {formatNumber(rule.matches)} matches
                       </span>
                       {rule.lastTriggered && (
                         <span className="flex items-center gap-1">
@@ -443,11 +453,11 @@ export default function AISIEM({
                     <div className="flex items-center gap-4 text-xs mt-2" style={{ color: 'var(--subtle)' }}>
                       <span className="flex items-center gap-1">
                         <TrendingUp className="h-3 w-3" />
-                        {(source.enrichmentsPerformed ?? 0).toLocaleString()} enrichments
+                        {formatNumber(source.enrichmentsPerformed)} enrichments
                       </span>
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        {source.avgLatency}ms avg
+                        {formatLatency(source.avgLatency)} avg
                       </span>
                     </div>
                   </div>
@@ -486,7 +496,7 @@ export default function AISIEM({
                       </span>
                     </div>
                     <p className="text-sm" style={{ color: 'var(--muted)' }}>{pattern.description}</p>
-                    <p className="text-xs mt-1" style={{ color: 'var(--subtle)' }}>{pattern.occurrences} occurrences</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--subtle)' }}>{formatNumber(pattern.occurrences)} occurrences</p>
                   </div>
                 ))
               )}
@@ -516,10 +526,10 @@ export default function AISIEM({
                     <div className="flex items-center justify-between mb-1">
                       <span className="font-medium" style={{ color: 'var(--fg)' }}>{correlation.pattern}</span>
                       <span className="badge-sentinel badge-sentinel-info">
-                        {(correlation.confidence * 100).toFixed(0)}% confidence
+                        {formatPercent(correlation.confidence)} confidence
                       </span>
                     </div>
-                    <p className="text-xs" style={{ color: 'var(--muted)' }}>{correlation.alerts.length} related alerts</p>
+                    <p className="text-xs" style={{ color: 'var(--muted)' }}>{formatNumber(correlation.alerts?.length)} related alerts</p>
                   </div>
                 ))
               )}
@@ -533,23 +543,32 @@ export default function AISIEM({
             </div>
             <div className="p-4">
               <div className="text-center mb-4">
-                <p className="text-4xl font-bold" style={{ color: 'var(--emerald-400)' }}>{noiseMetrics.reductionPercentage}%</p>
+                <p className="text-4xl font-bold" style={{ color: 'var(--emerald-400)' }}>
+                  {Number.isFinite(noiseMetrics.reductionPercentage as number)
+                    ? `${noiseMetrics.reductionPercentage}%`
+                    : '—'}
+                </p>
                 <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>Alert noise reduced</p>
               </div>
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-sm">
                   <span style={{ color: 'var(--muted)' }}>Total Alerts</span>
-                  <span className="font-medium" style={{ color: 'var(--fg)' }}>{(noiseMetrics.totalAlerts ?? 0).toLocaleString()}</span>
+                  <span className="font-medium" style={{ color: 'var(--fg)' }}>{formatNumber(noiseMetrics.totalAlerts)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span style={{ color: 'var(--muted)' }}>Filtered Out</span>
-                  <span className="font-medium" style={{ color: 'var(--fg)' }}>{(noiseMetrics.filteredAlerts ?? 0).toLocaleString()}</span>
+                  <span className="font-medium" style={{ color: 'var(--fg)' }}>{formatNumber(noiseMetrics.filteredAlerts)}</span>
                 </div>
               </div>
               <div className="mt-4 h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-3)' }}>
                 <div
                   className="h-full rounded-full"
-                  style={{ width: `${noiseMetrics.reductionPercentage}%`, background: 'var(--emerald-400)' }}
+                  style={{
+                    width: Number.isFinite(noiseMetrics.reductionPercentage as number)
+                      ? `${noiseMetrics.reductionPercentage}%`
+                      : '0%',
+                    background: 'var(--emerald-400)',
+                  }}
                 />
               </div>
             </div>
@@ -586,8 +605,8 @@ export default function AISIEM({
                     </span>
                   </div>
                   <div className="flex items-center gap-4 text-xs" style={{ color: 'var(--subtle)' }}>
-                    <span>{(alert.confidence * 100).toFixed(0)}% confidence</span>
-                    <span>{alert.relatedEvents} related events</span>
+                    <span>{formatPercent(alert.confidence)} confidence</span>
+                    <span>{formatNumber(alert.relatedEvents)} related events</span>
                   </div>
                 </div>
               ))
@@ -599,11 +618,11 @@ export default function AISIEM({
         <div className="card-sentinel">
           <h2 className="card-sentinel-title mb-4">Log Forwarding Metrics (24h)</h2>
           <div className="h-48 flex items-end justify-between gap-1">
-            {stats.totalEventsForwarded > 0 ? (
+            {Number.isFinite(stats.totalEventsForwarded as number) && (stats.totalEventsForwarded as number) > 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center rounded-lg border border-dashed" style={{ borderColor: 'var(--border)', color: 'var(--subtle)' }}>
                 <BarChart3 className="h-8 w-8 mb-2" />
                 <p className="text-sm">Hourly forwarding series unavailable</p>
-                <p className="text-xs mt-1">{stats.totalEventsForwarded.toLocaleString()} events forwarded in the selected window</p>
+                <p className="text-xs mt-1">{formatNumber(stats.totalEventsForwarded)} events forwarded in the selected window</p>
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--subtle)' }}>

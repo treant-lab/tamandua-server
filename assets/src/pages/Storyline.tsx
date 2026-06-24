@@ -18,6 +18,18 @@ import { logger } from '@/lib/logger';
 import { safeCapitalize } from '@/lib/utils';
 import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+}
+
+function jsonApiHeaders(): HeadersInit {
+  const token = getCsrfToken();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'X-CSRF-Token': token } : {}),
+  };
+}
+
 function LongTextPreview({
   value,
   copyLabel = 'Copy',
@@ -436,14 +448,33 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     const rootsSet = new Set(roots.map((node) => node.id));
     const ordered = [...nodes].sort((a, b) => Number(rootsSet.has(b.id)) - Number(rootsSet.has(a.id)) || nodeTime(a) - nodeTime(b));
     const radiusBase = Math.max(210, Math.min(520, nodes.length * 18));
+    const highlighted = ordered.filter((node) => node.highlighted);
+    const highlightSet = new Set(highlighted.map((node) => node.id));
 
-    ordered.forEach((node, index) => {
-      if (index === 0 || node.highlighted) {
+    highlighted.forEach((node, index) => {
+      if (highlighted.length === 1) {
         positions.set(node.id, { x: centerX, y: centerY });
         return;
       }
-      const ring = 1 + Math.floor(index / 10);
-      const angle = ((index % 10) / 10) * Math.PI * 2 - Math.PI / 2;
+
+      const angle = (index / highlighted.length) * Math.PI * 2 - Math.PI / 2;
+      const radius = Math.max(90, Math.min(190, highlighted.length * 28));
+      positions.set(node.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      });
+    });
+
+    ordered.forEach((node, index) => {
+      if (highlightSet.has(node.id)) return;
+
+      if (positions.size === 0 && index === 0) {
+        positions.set(node.id, { x: centerX, y: centerY });
+        return;
+      }
+      const placedIndex = positions.size;
+      const ring = 1 + Math.floor(placedIndex / 10);
+      const angle = ((placedIndex % 10) / 10) * Math.PI * 2 - Math.PI / 2;
       const radius = radiusBase + (ring - 1) * 150;
       positions.set(node.id, {
         x: centerX + Math.cos(angle) * radius,
@@ -980,8 +1011,9 @@ export default function Storyline({
   // Initialize node positions from storyline data
   useEffect(() => {
     if (storyline?.nodes) {
-      setNodePositions(computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType));
-      requestAnimationFrame(handleFitView);
+      const positions = computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType);
+      setNodePositions(positions);
+      requestAnimationFrame(() => handleFitView(positions));
     }
   }, [storyline?.nodes, storyline?.edges, layoutType]);
 
@@ -1174,12 +1206,12 @@ export default function Storyline({
   const handleZoomIn = () => setZoom(z => Math.min(3, z + 0.2));
   const handleZoomOut = () => setZoom(z => Math.max(0.2, z - 0.2));
 
-  const handleFitView = () => {
+  const handleFitView = (positions = nodePositions) => {
     if (filteredNodes.length === 0) return;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     filteredNodes.forEach(node => {
-      const pos = nodePositions.get(node.id) || { x: node.x, y: node.y };
+      const pos = positions.get(node.id) || { x: node.x, y: node.y };
       minX = Math.min(minX, pos.x);
       minY = Math.min(minY, pos.y);
       maxX = Math.max(maxX, pos.x);
@@ -1213,8 +1245,9 @@ export default function Storyline({
 
   const handleResetView = () => {
     if (storyline?.nodes) {
-      setNodePositions(computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType));
-      requestAnimationFrame(handleFitView);
+      const positions = computeStorylineLayout(storyline.nodes, storyline.edges || [], layoutType);
+      setNodePositions(positions);
+      requestAnimationFrame(() => handleFitView(positions));
     } else {
       setZoom(1);
       setPan({ x: 0, y: 0 });
@@ -1261,7 +1294,8 @@ export default function Storyline({
     try {
       const response = await fetch(`/api/v1/agents/${storyline.agent_id}/isolate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: jsonApiHeaders(),
       });
       if (response.ok) {
         toast.success('Endpoint isolated');
@@ -1276,42 +1310,43 @@ export default function Storyline({
     }
   };
 
-  const performKillProcessTree = async (pid: number) => {
+  const performKillProcess = async (pid: number) => {
     if (!storyline?.agent_id) return;
     setActionLoading('kill');
     try {
       const response = await fetch('/api/v1/response/kill', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: jsonApiHeaders(),
         body: JSON.stringify({
           agent_id: storyline.agent_id,
           pid,
-          kill_tree: true,
+          force: true,
         }),
       });
       if (response.ok) {
-        toast.success('Process tree terminated');
+        toast.success('Process kill command sent');
       } else {
-        toast.error(`Failed to kill process tree: ${response.status} ${response.statusText}`);
+        toast.error(`Failed to kill process: ${response.status} ${response.statusText}`);
       }
     } catch (err) {
       logger.error('Failed to kill process:', err);
-      toast.error(`Failed to kill process tree: ${(err as Error).message}`);
+      toast.error(`Failed to kill process: ${(err as Error).message}`);
     } finally {
       setActionLoading(null);
     }
   };
 
-  const handleKillProcessTree = () => {
+  const handleKillProcess = () => {
     if (!storyline?.agent_id || !selectedNode?.pid) return;
     setPendingKill({ pid: selectedNode.pid });
   };
 
-  const confirmKillProcessTree = async () => {
+  const confirmKillProcess = async () => {
     const pending = pendingKill;
     setPendingKill(null);
     if (!pending) return;
-    await performKillProcessTree(pending.pid);
+    await performKillProcess(pending.pid);
   };
 
   const handleQuarantineFile = async () => {
@@ -1321,7 +1356,8 @@ export default function Storyline({
     try {
       const response = await fetch('/api/v1/response/quarantine', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: jsonApiHeaders(),
         body: JSON.stringify({
           agent_id: storyline.agent_id,
           path: selectedNode.data.path || selectedNode.full_label,
@@ -2578,8 +2614,8 @@ export default function Storyline({
                       {selectedNode?.type === 'process' && (
                         <ActionButton
                           icon={Square}
-                          label="Kill Process Tree"
-                          onClick={handleKillProcessTree}
+                          label="Kill Process"
+                          onClick={handleKillProcess}
                           variant="danger"
                           loading={actionLoading === 'kill'}
                         />
@@ -2702,8 +2738,8 @@ export default function Storyline({
       <Dialog
         open={!!pendingKill}
         onOpenChange={(o) => !o && setPendingKill(null)}
-        title="Kill process tree"
-        description={pendingKill ? `Kill process tree starting from PID ${pendingKill.pid}? This will terminate the process and all its descendants.` : ''}
+        title="Kill process"
+        description={pendingKill ? `Kill PID ${pendingKill.pid}? This sends a force kill command for the selected process.` : ''}
       >
         <DialogFooter>
           <button
@@ -2716,9 +2752,9 @@ export default function Storyline({
           <button
             type="button"
             className="btn-sentinel btn-sentinel-danger"
-            onClick={confirmKillProcessTree}
+            onClick={confirmKillProcess}
           >
-            Kill process tree
+            Kill process
           </button>
         </DialogFooter>
       </Dialog>

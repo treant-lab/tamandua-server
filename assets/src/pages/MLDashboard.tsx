@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import { Select, SelectItem } from '@/components/ui/baseui'
@@ -38,6 +38,18 @@ interface RecentAlert {
   created_at?: string
 }
 
+interface RecentPrediction {
+  id: string
+  alert_id?: string
+  agent_id?: string
+  prediction?: string
+  malware_family?: string
+  model_version?: string
+  confidence?: number | string | null
+  threat_score?: number | string | null
+  timestamp?: string
+}
+
 interface MLDashboardProps {
   service: {
     healthy: boolean
@@ -50,6 +62,7 @@ interface MLDashboardProps {
     alerts_created: number
   }
   recent_alerts: RecentAlert[]
+  recent_predictions?: RecentPrediction[]
   training: {
     available_datasets: string[]
     default_epochs: number
@@ -57,11 +70,16 @@ interface MLDashboardProps {
   }
 }
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
 export default function MLDashboard({
   service,
   model,
   statistics,
   recent_alerts: recentAlerts,
+  recent_predictions: recentPredictions = [],
   training,
 }: MLDashboardProps) {
   const [trainingDataset, setTrainingDataset] = useState(
@@ -71,10 +89,19 @@ export default function MLDashboard({
   const [batchSize, setBatchSize] = useState(training?.default_batch_size || 32)
   const [isTraining, setIsTraining] = useState(false)
   const [trainingError, setTrainingError] = useState<string | null>(null)
+  const [predictionHistory, setPredictionHistory] = useState<RecentPrediction[]>(recentPredictions || [])
+  const [predictionHistoryError, setPredictionHistoryError] = useState<string | null>(null)
 
   const stats = statistics || { total_predictions: 0, total_detections: 0, alerts_created: 0 }
   const alerts = recentAlerts || []
+  const predictions = predictionHistory.length > 0 ? predictionHistory : recentPredictions || []
   const isModelTrained = model != null && model.trained
+
+  const formatScore = (value: number | string | null | undefined) => {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return 'n/a'
+    return numeric <= 1 ? `${Math.round(numeric * 100)}%` : `${Math.round(numeric)}`
+  }
 
   const handleStartTraining = async () => {
     setIsTraining(true)
@@ -85,7 +112,9 @@ export default function MLDashboard({
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
+          ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify({
           dataset: trainingDataset,
           epochs,
@@ -104,6 +133,47 @@ export default function MLDashboard({
       setIsTraining(false)
     }
   }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadPredictionHistory() {
+      try {
+        const response = await fetch('/api/v1/ml/predictions/history?limit=50', {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        })
+
+        if (!response.ok) {
+          throw new Error(`Prediction history failed (status ${response.status})`)
+        }
+
+        const payload = await response.json()
+        const rows = Array.isArray(payload?.data) ? payload.data : []
+
+        if (!cancelled) {
+          setPredictionHistory(rows.map((row: RecentPrediction) => ({
+            ...row,
+            alert_id: row.alert_id || row.id,
+            timestamp: row.timestamp,
+          })))
+          setPredictionHistoryError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load ML prediction history'
+          setPredictionHistoryError(message)
+          logger.warn('ML prediction history load failed:', err)
+        }
+      }
+    }
+
+    loadPredictionHistory()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return (
     <MainLayout title="ML Dashboard">
@@ -371,6 +441,99 @@ export default function MLDashboard({
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Agent ONNX / ML Predictions */}
+        <div className="card-sentinel rounded-xl">
+          <div
+            className="p-4 border-b"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <h2
+              className="text-lg font-semibold"
+              style={{ color: 'var(--fg)' }}
+            >
+              Agent ONNX / ML Predictions
+            </h2>
+            <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
+              Recent detections attributed to the ML pipeline and offline agent model.
+            </p>
+            {predictionHistoryError && (
+              <p className="text-xs mt-2" style={{ color: 'var(--amber-400)' }}>
+                Live history unavailable; showing server-rendered ML alert snapshot.
+              </p>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Prediction
+                  </th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Confidence
+                  </th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Family
+                  </th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Model
+                  </th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Agent
+                  </th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>
+                    Time
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {predictions.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-8 text-center" style={{ color: 'var(--muted)' }}>
+                      <Brain className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                      <p>No ML prediction history found</p>
+                      <p className="text-sm mt-1">Agent ONNX and ML service detections will appear here when alerts carry ML metadata.</p>
+                    </td>
+                  </tr>
+                ) : (
+                  predictions.map((prediction) => (
+                    <tr
+                      key={prediction.id}
+                      className="hover:opacity-80 cursor-pointer transition-colors"
+                      style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                      onClick={() => prediction.alert_id && (window.location.href = `/app/alerts/${prediction.alert_id}`)}
+                    >
+                      <td className="p-4">
+                        <span className="badge-sentinel badge-sentinel-default">
+                          {(prediction.prediction || 'ml_detection').replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td className="p-4 font-mono text-sm" style={{ color: 'var(--fg)' }}>
+                        {formatScore(prediction.confidence)}
+                      </td>
+                      <td className="p-4 text-sm" style={{ color: 'var(--fg)' }}>
+                        {prediction.malware_family || 'unknown'}
+                      </td>
+                      <td className="p-4 text-sm font-mono" style={{ color: 'var(--muted)' }}>
+                        {prediction.model_version || model?.version || 'not reported'}
+                      </td>
+                      <td className="p-4 text-sm font-mono" style={{ color: 'var(--muted)' }}>
+                        {prediction.agent_id || 'n/a'}
+                      </td>
+                      <td className="p-4">
+                        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
+                          <Clock className="h-4 w-4" />
+                          {formatDate(prediction.timestamp)}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
 

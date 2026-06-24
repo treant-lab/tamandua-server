@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Shield,
@@ -23,14 +23,9 @@ import {
   RefreshCw,
   ChevronRight,
   Eye,
-  UserX,
-  UserCheck,
   Globe,
   Laptop,
   Server,
-  Settings,
-  MoreVertical,
-  ExternalLink,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { Select, SelectItem } from '@/components/ui/baseui'
@@ -303,7 +298,11 @@ export default function Identity({
                 </button>
               ))}
             </div>
-            <button className="p-2 text-[var(--muted)] hover:text-[var(--fg)] hover:bg-[var(--surface-2)] rounded-lg transition-colors">
+            <button
+              onClick={() => router.reload({ preserveScroll: true })}
+              className="p-2 text-[var(--muted)] hover:text-[var(--fg)] hover:bg-[var(--surface-2)] rounded-lg transition-colors"
+              title="Refresh identity data"
+            >
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
@@ -447,7 +446,13 @@ export default function Identity({
                 <h2 className="card-sentinel-title">User Details</h2>
               </div>
               {selectedUser ? (
-                <UserDetailPanel user={selectedUser} />
+                <UserDetailPanel
+                  user={selectedUser}
+                  onViewActivity={() => {
+                    setSearchTerm(selectedUser.userPrincipalName)
+                    setActiveTab('signins')
+                  }}
+                />
               ) : (
                 <div className="flex-1 flex items-center justify-center text-[var(--muted)]">
                   <div className="text-center">
@@ -490,7 +495,6 @@ export default function Identity({
                     <th className="text-left px-4 py-3">Application</th>
                     <th className="text-left px-4 py-3">Device</th>
                     <th className="text-left px-4 py-3">Status</th>
-                    <th className="text-left px-4 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--hairline)]">
@@ -566,7 +570,6 @@ export default function Identity({
                     <th className="text-left px-4 py-3">Last Sign-in</th>
                     <th className="text-left px-4 py-3">Permissions</th>
                     <th className="text-left px-4 py-3">Risk</th>
-                    <th className="text-left px-4 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--hairline)]">
@@ -716,9 +719,10 @@ function UserRiskRow({ user, onClick, selected }: UserRiskRowProps) {
 // User Detail Panel Component
 interface UserDetailPanelProps {
   user: UserRisk
+  onViewActivity: () => void
 }
 
-function UserDetailPanel({ user }: UserDetailPanelProps) {
+function UserDetailPanel({ user, onViewActivity }: UserDetailPanelProps) {
   const config = riskLevelConfig[user.level] || riskLevelConfig.low
 
   return (
@@ -796,16 +800,8 @@ function UserDetailPanel({ user }: UserDetailPanelProps) {
         <p className="text-sm text-[var(--fg)] mt-1">{formatDate(user.lastUpdated)}</p>
       </div>
 
-      <div className="pt-4 space-y-2">
-        <button className="btn-sentinel btn-sentinel-danger w-full">
-          <UserX className="h-4 w-4" />
-          Confirm Compromised
-        </button>
-        <button className="w-full flex items-center justify-center gap-2 bg-[var(--high)] hover:opacity-90 text-white px-4 py-2 rounded-lg text-sm font-medium transition-opacity">
-          <Key className="h-4 w-4" />
-          Force Password Reset
-        </button>
-        <button className="btn-sentinel btn-sentinel-secondary w-full">
+      <div className="pt-4">
+        <button onClick={onViewActivity} className="btn-sentinel btn-sentinel-secondary w-full">
           <Eye className="h-4 w-4" />
           View Activity
         </button>
@@ -906,11 +902,6 @@ function SignInTableRow({ signIn }: SignInRowProps) {
           </span>
         )}
       </td>
-      <td className="px-4 py-3">
-        <button className="btn-sentinel btn-sentinel-ghost btn-sentinel-icon btn-sentinel-sm">
-          <Eye className="h-4 w-4" />
-        </button>
-      </td>
     </tr>
   )
 }
@@ -1007,16 +998,6 @@ function ServiceAccountRow({ account }: ServiceAccountRowProps) {
             {account.riskLevel}
           </span>
         )}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-1">
-          <button className="btn-sentinel btn-sentinel-ghost btn-sentinel-icon btn-sentinel-sm">
-            <Eye className="h-4 w-4" />
-          </button>
-          <button className="btn-sentinel btn-sentinel-ghost btn-sentinel-icon btn-sentinel-sm">
-            <Settings className="h-4 w-4" />
-          </button>
-        </div>
       </td>
     </tr>
   )

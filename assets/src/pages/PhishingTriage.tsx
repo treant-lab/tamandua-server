@@ -4,12 +4,8 @@ import {
   Fish,
   Mail,
   AlertTriangle,
-  CheckCircle,
   Clock,
   User,
-  Shield,
-  Ban,
-  Trash2,
   Search,
   Filter,
   RefreshCw,
@@ -17,13 +13,10 @@ import {
   Link as LinkIcon,
   Paperclip,
   Brain,
-  Eye,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { Select, SelectItem } from '@/components/ui/baseui'
 import { useState } from 'react'
-import axios from 'axios'
-import { toast } from 'sonner'
 
 // Types
 interface ReportedEmail {
@@ -112,75 +105,9 @@ export default function PhishingTriage({
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'reporters'>('queue')
-  const [loading, setLoading] = useState<string | null>(null)
 
   const handleRefresh = () => {
     router.reload()
-  }
-
-  const handleBlockSender = async () => {
-    if (!selectedEmail) return
-    setLoading('block-sender')
-    try {
-      await axios.post(`/api/v1/phishing/${selectedEmail.id}/block-sender`)
-      toast.success('Sender blocked successfully')
-      router.reload()
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to block sender')
-    } finally {
-      setLoading(null)
-    }
-  }
-
-  const handleQuarantine = async () => {
-    if (!selectedEmail) return
-    setLoading('quarantine')
-    try {
-      await axios.post(`/api/v1/phishing/${selectedEmail.id}/quarantine`)
-      toast.success('Email quarantined')
-      router.reload()
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to quarantine email')
-    } finally {
-      setLoading(null)
-    }
-  }
-
-  const handleReport = async () => {
-    if (!selectedEmail) return
-    setLoading('report')
-    try {
-      await axios.post(`/api/v1/phishing/${selectedEmail.id}/report`)
-      toast.success('Reported to vendor')
-      router.reload()
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to report')
-    } finally {
-      setLoading(null)
-    }
-  }
-
-  const handleMarkSafe = async () => {
-    if (!selectedEmail) return
-    setLoading('mark-safe')
-    try {
-      await axios.post(`/api/v1/phishing/${selectedEmail.id}/mark-safe`)
-      toast.success('Email marked as safe')
-      router.reload()
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to mark as safe')
-    } finally {
-      setLoading(null)
-    }
-  }
-
-  const handleViewEmail = () => {
-    if (!selectedEmail) return
-    window.open(`/api/v1/phishing/${selectedEmail.id}`, '_blank')
   }
 
   const getClassification = (emailId: string) => {
@@ -685,101 +612,6 @@ export default function PhishingTriage({
                 })()}
               </div>
             )}
-
-            {/* Quick Actions */}
-            <div className="card-sentinel bg-[var(--surface)] rounded-xl border border-[var(--border)] p-4">
-              <h3 className="text-lg font-semibold text-[var(--fg)] mb-4 flex items-center gap-2">
-                <Shield className="h-5 w-5 text-primary-400" />
-                Quick Actions
-              </h3>
-
-              <div className="space-y-2">
-                <button
-                  onClick={handleBlockSender}
-                  disabled={!selectedEmail || loading === 'block-sender'}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
-                    selectedEmail && loading !== 'block-sender'
-                      ? 'bg-red-600 hover:bg-red-700 text-white'
-                      : 'bg-[var(--surface-raised)] text-[var(--muted)] cursor-not-allowed'
-                  )}
-                >
-                  <Ban className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">{loading === 'block-sender' ? 'Blocking...' : 'Block Sender'}</p>
-                    <p className="text-xs opacity-75">Add sender to blocklist</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleQuarantine}
-                  disabled={!selectedEmail || loading === 'quarantine'}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
-                    selectedEmail && loading !== 'quarantine'
-                      ? 'bg-orange-600 hover:bg-orange-700 text-white'
-                      : 'bg-[var(--surface-raised)] text-[var(--muted)] cursor-not-allowed'
-                  )}
-                >
-                  <Trash2 className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">{loading === 'quarantine' ? 'Quarantining...' : 'Quarantine'}</p>
-                    <p className="text-xs opacity-75">Move to quarantine folder</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleReport}
-                  disabled={!selectedEmail || loading === 'report'}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
-                    selectedEmail && loading !== 'report'
-                      ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                      : 'bg-[var(--surface-raised)] text-[var(--muted)] cursor-not-allowed'
-                  )}
-                >
-                  <AlertTriangle className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">{loading === 'report' ? 'Reporting...' : 'Report to Vendor'}</p>
-                    <p className="text-xs opacity-75">Submit as malicious sample</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleMarkSafe}
-                  disabled={!selectedEmail || loading === 'mark-safe'}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
-                    selectedEmail && loading !== 'mark-safe'
-                      ? 'bg-green-600 hover:bg-green-700 text-white'
-                      : 'bg-[var(--surface-raised)] text-[var(--muted)] cursor-not-allowed'
-                  )}
-                >
-                  <CheckCircle className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">{loading === 'mark-safe' ? 'Marking...' : 'Mark as Safe'}</p>
-                    <p className="text-xs opacity-75">Release to inbox</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleViewEmail}
-                  disabled={!selectedEmail}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors',
-                    selectedEmail
-                      ? 'bg-[var(--surface-elevated)] hover:bg-[var(--surface-raised)] text-[var(--fg)]'
-                      : 'bg-[var(--surface-raised)] text-[var(--muted)] cursor-not-allowed'
-                  )}
-                >
-                  <Eye className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">View Full Email</p>
-                    <p className="text-xs opacity-75">Open in sandbox viewer</p>
-                  </div>
-                </button>
-              </div>
-            </div>
 
             {/* Email Details */}
             {selectedEmail && (

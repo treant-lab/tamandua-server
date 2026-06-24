@@ -365,6 +365,32 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
   end
 
   @doc """
+  Get integration health summary for the dashboard health tab.
+  """
+  def health(conn, _params) do
+    integrations = IntegrationConfig.list_integrations([])
+    stats = AlertRouter.get_stats()
+
+    enabled_count =
+      Enum.count(integrations, fn integration ->
+        Map.get(integration, :enabled, false)
+      end)
+
+    disabled_count = length(integrations) - enabled_count
+    error_count = integration_stat(stats, :errors, 0)
+    degraded_count = if error_count > 0 and enabled_count > 0, do: 1, else: 0
+
+    json(conn, %{
+      healthy: max(enabled_count - degraded_count, 0),
+      degraded: degraded_count,
+      unhealthy: disabled_count,
+      averageLatencyMs: 0,
+      totalEventsPerMinute: 0,
+      lastUpdated: DateTime.utc_now() |> DateTime.to_iso8601()
+    })
+  end
+
+  @doc """
   Reload routing rules and integrations.
   """
   def reload(conn, _params) do
@@ -984,6 +1010,12 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
     end
   end
   defp mask_value(_), do: "****"
+
+  defp integration_stat(stats, key, default) when is_map(stats) do
+    Map.get(stats, key) || Map.get(stats, Atom.to_string(key)) || default
+  end
+
+  defp integration_stat(_, _, default), do: default
 
   defp serialize_rule(rule) do
     %{

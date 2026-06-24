@@ -221,7 +221,7 @@ const navigationGroups: ExtendedNavGroup[] = [
       { name: 'Agent Registry', href: '/app/ai-security/agents', icon: Users },
       { name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
       { name: 'Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
-      { name: 'MCP Governance', href: '/app/mcp-servers', icon: Network },
+      { name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
     ],
   },
   {
@@ -262,7 +262,7 @@ const navigationGroups: ExtendedNavGroup[] = [
     icon: Globe,
     items: [
       { name: 'Contributions', href: '/app/contributions', icon: FileCode },
-      { name: 'Leaderboard', href: '/live/leaderboard', icon: Award, external: true },
+      { name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: Award },
       { name: 'Detection Packs Preview', href: '/app/detection-packs', icon: Box },
     ],
   },

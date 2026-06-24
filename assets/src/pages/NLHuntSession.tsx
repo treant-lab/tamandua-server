@@ -92,6 +92,10 @@ function getSeverityColor(severity: string) {
 // Main component
 // ---------------------------------------------------------------------------
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
 export default function NLHuntSession({
   sessionId,
   session,
@@ -114,7 +118,10 @@ export default function NLHuntSession({
     try {
       const res = await fetch(`/api/v1/nl-hunt/sessions/${session.id}/query`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
+        },
         credentials: 'include',
         body: JSON.stringify({ query: queryInput }),
       })

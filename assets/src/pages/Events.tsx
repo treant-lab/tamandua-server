@@ -300,7 +300,9 @@ export default function Events({
   const [selectedTimeRange, setSelectedTimeRange] = useState<string>(activeFilters?.timeRange || '')
 
   // Client-side search (instant filter on current page only)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState(() => {
+    return new URLSearchParams(window.location.search).get('event_id') || ''
+  })
 
   // Detail panel
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null)
@@ -423,7 +425,9 @@ export default function Events({
       const hostname = (event.hostname || '').toLowerCase()
       const summary = (event.summary || '').toLowerCase()
       const eventType = event.eventType.toLowerCase()
-      return payloadStr.includes(searchLower) ||
+      const eventId = event.id.toLowerCase()
+      return eventId.includes(searchLower) ||
+        payloadStr.includes(searchLower) ||
         hostname.includes(searchLower) ||
         summary.includes(searchLower) ||
         eventType.includes(searchLower)
@@ -1320,7 +1324,7 @@ function EmptyState({
             icon={UserPlus}
             title="Invite Team Members"
             description="Add analysts to your workspace"
-            onClick={() => router.visit('/app/settings/users')}
+            onClick={() => router.visit('/app/users')}
           />
         </div>
       </div>

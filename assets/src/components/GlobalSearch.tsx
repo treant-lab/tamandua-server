@@ -106,7 +106,7 @@ const searchablePages: QuickAction[] = [
   { id: 'ai-agents', name: 'AI Agent Registry', href: '/app/ai-security/agents', icon: Users },
   { id: 'ai-artifacts', name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
   { id: 'ai-dependency-graph', name: 'AI Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
-  { id: 'mcp-servers', name: 'MCP Governance', href: '/app/mcp-servers', icon: Network },
+  { id: 'mcp-servers', name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
   { id: 'network', name: 'Network', href: '/app/network', icon: Network },
   { id: 'dns', name: 'DNS Monitoring', href: '/app/dns', icon: Globe },
   { id: 'ndr', name: 'NDR', href: '/app/ndr', icon: Radar },
@@ -124,7 +124,7 @@ const searchablePages: QuickAction[] = [
   { id: 'security-status', name: 'Security Status', href: '/app/security-status', icon: ShieldCheck },
   { id: 'public-proofs', name: 'Public Proofs', href: '/app/public-proofs', icon: Database },
   { id: 'contributions', name: 'Contributions', href: '/app/contributions', icon: FileCode },
-  { id: 'leaderboard', name: 'Leaderboard', href: '/live/leaderboard', icon: ClipboardList },
+  { id: 'leaderboard', name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: ClipboardList },
   { id: 'marketplace', name: 'Rule Marketplace', href: '/app/detection-packs', icon: Box },
   { id: 'settings', name: 'Settings', href: '/app/settings', icon: ShieldCheck },
   { id: 'tenant-settings', name: 'Tenant Settings', href: '/app/tenant-settings', icon: Users },
@@ -251,7 +251,7 @@ async function searchLiveData(query: string): Promise<SearchResult[]> {
         type: 'event',
         title: event.description || event.event_type || event.action || id,
         subtitle: event.agent_hostname || event.event_type || 'Event',
-        href: `/app/events/${id}`,
+        href: `/app/events?event_id=${encodeURIComponent(id)}`,
       })
     })
   }
