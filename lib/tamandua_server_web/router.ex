@@ -170,6 +170,7 @@ defmodule TamanduaServerWeb.Router do
   # this route only exposes allowlisted installer artifacts.
   scope "/", TamanduaServerWeb do
     get("/downloads/agents/:filename", AgentDownloadController, :show)
+    get("/downloads/gui/:filename", GuiDownloadController, :show)
   end
 
   # Compatibility redirects for in-app documentation links. The deployment
