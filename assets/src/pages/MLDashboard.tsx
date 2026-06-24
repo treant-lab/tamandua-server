@@ -58,6 +58,32 @@ interface MLLifecycleStats {
   training_scheduler?: Record<string, unknown>
 }
 
+interface MLLifecycleModel {
+  model_type: string
+  version: string
+  status: string
+  registered_at?: string
+  promoted_at?: string | null
+  retired_at?: string | null
+  metadata?: Record<string, unknown>
+  metrics?: {
+    precision?: number
+    recall?: number
+    f1?: number
+    fpr?: number
+    total_predictions?: number
+    last_updated?: string
+  } | null
+}
+
+interface MLCanaryStatus {
+  model_type: string
+  active?: boolean
+  canary_version?: string
+  traffic_pct?: number
+  message?: string
+}
+
 interface MLDashboardProps {
   service: {
     healthy: boolean
@@ -101,6 +127,9 @@ export default function MLDashboard({
   const [predictionHistoryError, setPredictionHistoryError] = useState<string | null>(null)
   const [lifecycleStats, setLifecycleStats] = useState<MLLifecycleStats | null>(null)
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
+  const [lifecycleModels, setLifecycleModels] = useState<MLLifecycleModel[]>([])
+  const [lifecycleModelsError, setLifecycleModelsError] = useState<string | null>(null)
+  const [canaryStatuses, setCanaryStatuses] = useState<MLCanaryStatus[]>([])
 
   const stats = statistics || { total_predictions: 0, total_detections: 0, alerts_created: 0 }
   const alerts = recentAlerts || []
@@ -127,6 +156,30 @@ export default function MLDashboard({
   const openOperationalView = (href: string) => {
     window.location.assign(href)
   }
+
+  const formatLifecycleMetric = (value: number | null | undefined, suffix = '%') => {
+    if (value === undefined || value === null || !Number.isFinite(Number(value))) return '--'
+    return `${Number(value).toFixed(value < 1 ? 2 : 1)}${suffix}`
+  }
+
+  const lifecycleStatusStyle = (status: string) => {
+    switch (status) {
+      case 'active':
+        return 'bg-green-500/20 text-green-400'
+      case 'canary':
+        return 'bg-blue-500/20 text-blue-400'
+      case 'training':
+      case 'validating':
+        return 'bg-yellow-500/20 text-yellow-400'
+      case 'retired':
+        return 'bg-[var(--surface-elevated)] text-[var(--muted)]'
+      default:
+        return 'bg-[var(--surface-elevated)] text-[var(--fg)]'
+    }
+  }
+
+  const canaryFor = (modelType: string) =>
+    canaryStatuses.find((status) => status.model_type === modelType)
 
   const handleStartTraining = async () => {
     setIsTraining(true)
@@ -188,6 +241,40 @@ export default function MLDashboard({
       }
     }
 
+    async function loadLifecycleModels() {
+      try {
+        const [modelsResponse, canaryResponse] = await Promise.all([
+          fetch('/api/v1/ml/lifecycle/models', {
+            headers: { Accept: 'application/json' },
+            credentials: 'include',
+          }),
+          fetch('/api/v1/ml/lifecycle/canary/status', {
+            headers: { Accept: 'application/json' },
+            credentials: 'include',
+          }),
+        ])
+
+        if (!modelsResponse.ok) {
+          throw new Error(`ML lifecycle models failed (status ${modelsResponse.status})`)
+        }
+
+        const modelsPayload = await modelsResponse.json()
+        const canaryPayload = canaryResponse.ok ? await canaryResponse.json() : { data: [] }
+
+        if (!cancelled) {
+          setLifecycleModels(Array.isArray(modelsPayload?.data) ? modelsPayload.data : [])
+          setCanaryStatuses(Array.isArray(canaryPayload?.data) ? canaryPayload.data : [])
+          setLifecycleModelsError(canaryResponse.ok ? null : `Canary status failed (status ${canaryResponse.status})`)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load ML lifecycle models'
+          setLifecycleModelsError(message)
+          logger.warn('ML lifecycle models load failed:', err)
+        }
+      }
+    }
+
     async function loadPredictionHistory() {
       try {
         const response = await fetch('/api/v1/ml/predictions/history?limit=50', {
@@ -220,6 +307,7 @@ export default function MLDashboard({
     }
 
     loadLifecycleStats()
+    loadLifecycleModels()
     loadPredictionHistory()
 
     return () => {
@@ -747,6 +835,100 @@ export default function MLDashboard({
                 <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
                   {formatCount(metricValue('training_scheduler', 'active_jobs'), lifecycleUnavailable)}
                 </p>
+              </div>
+            </div>
+
+            <div
+              className="overflow-hidden rounded-lg"
+              style={{
+                border: '1px solid var(--border)',
+                backgroundColor: 'var(--surface-elevated)',
+              }}
+            >
+              <div
+                className="flex flex-col gap-2 p-4 md:flex-row md:items-center md:justify-between"
+                style={{ borderBottom: '1px solid var(--border)' }}
+              >
+                <div>
+                  <h3 className="text-sm font-semibold" style={{ color: 'var(--fg)' }}>
+                    Model Registry
+                  </h3>
+                  <p className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                    Lifecycle state for registered ML detection models.
+                  </p>
+                </div>
+                {lifecycleModelsError && (
+                  <span className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs" style={{ color: 'var(--warn)' }}>
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {lifecycleModelsError}
+                  </span>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Model</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Version</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Status</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Precision</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Recall</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>FPR</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Canary</th>
+                      <th className="p-3 text-left font-medium" style={{ color: 'var(--muted)' }}>Registered</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lifecycleModels.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="p-6 text-center" style={{ color: 'var(--muted)' }}>
+                          {lifecycleModelsError
+                            ? 'Model lifecycle registry is unavailable.'
+                            : 'No ML model versions have been registered yet.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      lifecycleModels.map((registryModel) => {
+                        const canary = canaryFor(registryModel.model_type)
+                        return (
+                          <tr
+                            key={`${registryModel.model_type}:${registryModel.version}`}
+                            style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                          >
+                            <td className="p-3 font-mono" style={{ color: 'var(--fg)' }}>
+                              {registryModel.model_type}
+                            </td>
+                            <td className="p-3 font-mono" style={{ color: 'var(--fg)' }}>
+                              {registryModel.version}
+                            </td>
+                            <td className="p-3">
+                              <span className={cn('rounded px-2 py-0.5 text-xs font-medium', lifecycleStatusStyle(registryModel.status))}>
+                                {registryModel.status || 'unknown'}
+                              </span>
+                            </td>
+                            <td className="p-3 font-mono" style={{ color: 'var(--muted)' }}>
+                              {formatLifecycleMetric(registryModel.metrics?.precision)}
+                            </td>
+                            <td className="p-3 font-mono" style={{ color: 'var(--muted)' }}>
+                              {formatLifecycleMetric(registryModel.metrics?.recall)}
+                            </td>
+                            <td className="p-3 font-mono" style={{ color: 'var(--muted)' }}>
+                              {formatLifecycleMetric(registryModel.metrics?.fpr)}
+                            </td>
+                            <td className="p-3" style={{ color: 'var(--muted)' }}>
+                              {canary?.active || canary?.canary_version
+                                ? `${canary.canary_version || 'canary'} @ ${canary.traffic_pct ?? 10}%`
+                                : 'none'}
+                            </td>
+                            <td className="p-3" style={{ color: 'var(--muted)' }}>
+                              {formatDate(registryModel.registered_at)}
+                            </td>
+                          </tr>
+                        )
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
 
