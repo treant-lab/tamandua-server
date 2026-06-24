@@ -99,6 +99,11 @@ defmodule TamanduaServer.Integrations.MCPServer do
     GenServer.call(__MODULE__, {:get_context, provider_name, params})
   end
 
+  @doc "Get the aggregate security context exposed to MCP clients."
+  def get_security_context(opts \\ %{}) do
+    GenServer.call(__MODULE__, {:get_security_context, opts})
+  end
+
   @doc "Get server statistics."
   def get_stats, do: GenServer.call(__MODULE__, :get_stats)
 
@@ -356,7 +361,15 @@ defmodule TamanduaServer.Integrations.MCPServer do
   defp authenticate_client(request, ctx, state) do
     api_key = ctx[:api_key] || get_in(request, ["params", "_api_key"]) || extract_bearer(ctx[:authorization])
     method = request["method"]
-    public_methods = ["list_tools", "list_context_providers", "tools/list"]
+    public_methods = [
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "resources/list",
+      "prompts/list",
+      "list_tools",
+      "list_context_providers"
+    ]
 
     case Map.get(state.clients, api_key) do
       nil ->
@@ -495,6 +508,52 @@ defmodule TamanduaServer.Integrations.MCPServer do
     tool.handler.(params, client)
   rescue
     e -> Logger.error("MCP tool error: #{inspect(e)}"); {:error, :internal_error}
+  end
+
+  defp dispatch_method("initialize", request, _client, state) do
+    version =
+      case Application.spec(:tamandua_server, :vsn) do
+        nil -> "dev"
+        vsn -> to_string(vsn)
+      end
+
+    result = %{
+      protocolVersion: "2024-11-05",
+      serverInfo: %{
+        name: "tamandua-mcp",
+        title: "Tamandua MCP Server",
+        version: version
+      },
+      capabilities: %{
+        tools: %{listChanged: false},
+        resources: %{listChanged: false},
+        prompts: %{listChanged: false}
+      }
+    }
+
+    {{:ok, success_response(request["id"], result)}, state}
+  end
+
+  defp dispatch_method("notifications/initialized", request, _client, state) do
+    {{:ok, success_response(request["id"], %{})}, state}
+  end
+
+  defp dispatch_method("resources/list", request, _client, state) do
+    resources =
+      Enum.map(state.context_providers, fn {name, provider} ->
+        %{
+          uri: "tamandua://context/#{name}",
+          name: name,
+          description: provider.description,
+          mimeType: "application/json"
+        }
+      end)
+
+    {{:ok, success_response(request["id"], %{resources: resources})}, state}
+  end
+
+  defp dispatch_method("prompts/list", request, _client, state) do
+    {{:ok, success_response(request["id"], %{prompts: []})}, state}
   end
 
   defp dispatch_method("tools/list", request, _client, state) do
@@ -1281,14 +1340,4 @@ defmodule TamanduaServer.Integrations.MCPServer do
   defp success_response(id, result), do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}
   defp error_response(id, code, msg), do: %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => code, "message" => msg}}
 
-  # ============================================================================
-  # Public API Wrapper Functions
-  # ============================================================================
-
-  @doc """
-  Get the current security context for MCP operations.
-  """
-  def get_security_context(opts \\ %{}) do
-    GenServer.call(__MODULE__, {:get_security_context, opts})
-  end
 end

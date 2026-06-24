@@ -28,7 +28,15 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
 
     conn
     |> put_status(:ok)
-    |> json_rpc_response(MCPServer.handle_request(request, client_context(conn)))
+    |> json_rpc_response(safe_mcp_call(request, fn -> MCPServer.handle_request(request, client_context(conn)) end))
+  end
+
+  def json_rpc(conn, %{"method" => _method} = request) do
+    request = request |> Map.put_new("params", %{}) |> Map.put_new("id", nil)
+
+    conn
+    |> put_status(:ok)
+    |> json_rpc_response(safe_mcp_call(request, fn -> MCPServer.handle_request(request, client_context(conn)) end))
   end
 
   def json_rpc(conn, _params) do
@@ -48,7 +56,7 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
   including their schemas and descriptions.
   """
   def available_tools(conn, _params) do
-    case MCPServer.list_tools() do
+    case safe_mcp_call(nil, fn -> MCPServer.list_tools() end) do
       {:ok, tools} ->
         json(conn, %{
           data: tools,
@@ -58,8 +66,15 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
           }
         })
 
+      {:error, %{error: %{message: message}}} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: message, data: [], meta: %{count: 0, protocol_version: "2024-11-05"}})
+
       {:error, reason} ->
-        {:error, to_string(reason)}
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: to_string(reason), data: [], meta: %{count: 0, protocol_version: "2024-11-05"}})
     end
   end
 
@@ -78,7 +93,7 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
       organization_id: conn.assigns[:current_organization_id] || (user && user.organization_id)
     }
 
-    case MCPServer.get_security_context(opts) do
+    case safe_mcp_call(nil, fn -> MCPServer.get_security_context(opts) end) do
       {:ok, context} ->
         json(conn, %{
           data: context,
@@ -88,9 +103,42 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
           }
         })
 
+      {:error, %{error: %{message: message}}} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: message, data: %{}})
+
       {:error, reason} ->
-        {:error, to_string(reason)}
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: to_string(reason), data: %{}})
     end
+  end
+
+  defp safe_mcp_call(request, fun) when is_function(fun, 0) do
+    try do
+      fun.()
+    rescue
+      error ->
+        {:error, mcp_unavailable_response(request, "MCP server call failed: #{Exception.message(error)}")}
+    catch
+      :exit, {:noproc, _} ->
+        {:error, mcp_unavailable_response(request, "MCP server process is not running")}
+
+      :exit, {:timeout, _} ->
+        {:error, mcp_unavailable_response(request, "MCP server did not respond before timeout")}
+
+      :exit, reason ->
+        {:error, mcp_unavailable_response(request, "MCP server call failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp mcp_unavailable_response(request, message) do
+    %{
+      jsonrpc: "2.0",
+      error: %{code: -32603, message: message},
+      id: request && request["id"]
+    }
   end
 
   defp json_rpc_response(conn, {:ok, response}) when is_map(response), do: json(conn, response)
