@@ -201,6 +201,14 @@ export default function MCPServers({
     totalTools: stats.totalTools ?? _tools.length,
     requestsToday: stats.requestsToday ?? stats.totalRequests ?? 0,
   }
+  const mcpUnavailable =
+    stats.mcpAlive === false ||
+    normalizedServers.some((server) => server.status === 'error' || server.status === 'disconnected')
+  const inventoryUnavailable = mcpUnavailable && visibleStats.totalTools === 0
+  const healthMessage =
+    stats.healthMessage ||
+    normalizedServers.find((server) => server.healthMessage)?.healthMessage ||
+    'MCP server inventory is unavailable'
 
   const filteredServers = normalizedServers.filter((server) =>
     server.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -274,10 +282,22 @@ export default function MCPServers({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-[var(--muted)]">Available Tools</p>
-                <p className="text-2xl font-bold text-[var(--fg)] mt-1">{visibleStats.totalTools}</p>
+                <p className={cn(
+                  'text-2xl font-bold mt-1',
+                  inventoryUnavailable ? 'text-red-400' : 'text-[var(--fg)]'
+                )}>
+                  {inventoryUnavailable ? 'Unavailable' : visibleStats.totalTools}
+                </p>
               </div>
-              <div className="h-12 w-12 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                <Wrench className="h-6 w-6 text-purple-400" />
+              <div className={cn(
+                'h-12 w-12 rounded-lg flex items-center justify-center',
+                inventoryUnavailable ? 'bg-red-500/20' : 'bg-purple-500/20'
+              )}>
+                {inventoryUnavailable ? (
+                  <AlertTriangle className="h-6 w-6 text-red-400" />
+                ) : (
+                  <Wrench className="h-6 w-6 text-purple-400" />
+                )}
               </div>
             </div>
           </div>
@@ -294,6 +314,18 @@ export default function MCPServers({
             </div>
           </div>
         </div>
+
+        {mcpUnavailable && (
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 text-red-400" />
+              <div>
+                <h3 className="text-sm font-medium text-red-300">MCP inventory unavailable</h3>
+                <p className="mt-1 text-sm text-[var(--muted)]">{healthMessage}</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Search and Add */}
         <div className="flex items-center gap-4">
@@ -402,7 +434,15 @@ export default function MCPServers({
                       <h4 className="text-sm font-medium text-[var(--muted)] mb-3">Available Tools</h4>
                       {(server.tools || []).length === 0 ? (
                         <div className="p-4 text-center text-[var(--muted)]">
-                          <p className="text-sm">No MCP tools reported by the server</p>
+                          {server.status === 'active' || server.status === 'connected' ? (
+                            <p className="text-sm">No MCP tools reported by the server</p>
+                          ) : (
+                            <>
+                              <AlertTriangle className="h-6 w-6 mx-auto mb-2 text-red-400" />
+                              <p className="text-sm text-red-300">Tool inventory could not be loaded</p>
+                              <p className="text-xs mt-1">{server.healthMessage || healthMessage}</p>
+                            </>
+                          )}
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
