@@ -113,13 +113,16 @@ export default function MLDashboard({
     return numeric <= 1 ? `${Math.round(numeric * 100)}%` : `${Math.round(numeric)}`
   }
 
-  const formatCount = (value: unknown) => {
+  const formatCount = (value: unknown, unavailable = false) => {
+    if (unavailable || value === undefined || value === null || value === '') return '--'
     const numeric = Number(value)
-    return Number.isFinite(numeric) ? numeric.toLocaleString() : '0'
+    return Number.isFinite(numeric) ? numeric.toLocaleString() : '--'
   }
 
   const metricValue = (section: keyof MLLifecycleStats, key: string) =>
     lifecycleStats?.[section]?.[key]
+
+  const lifecycleUnavailable = Boolean(lifecycleError) || lifecycleStats === null
 
   const openOperationalView = (href: string) => {
     window.location.assign(href)
@@ -543,8 +546,12 @@ export default function MLDashboard({
                   <tr>
                     <td colSpan={6} className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                       <Brain className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>No ML prediction history found</p>
-                      <p className="text-sm mt-1">Agent ONNX and ML service detections will appear here when alerts carry ML metadata.</p>
+                      <p>{predictionHistoryError ? 'ML prediction history unavailable' : 'No ML prediction history found'}</p>
+                      <p className="text-sm mt-1">
+                        {predictionHistoryError
+                          ? 'Prediction history could not be loaded. Server-rendered ML alert data is also empty.'
+                          : 'Agent ONNX and ML service detections will appear here when alerts carry ML metadata.'}
+                      </p>
                     </td>
                   </tr>
                 ) : (
@@ -711,7 +718,7 @@ export default function MLDashboard({
                   <Brain className="h-4 w-4" style={{ color: 'var(--primary)' }} />
                 </div>
                 <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
-                  {formatCount(metricValue('model_manager', 'model_count'))}
+                  {formatCount(metricValue('model_manager', 'model_count'), lifecycleUnavailable)}
                 </p>
               </div>
               <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
@@ -720,7 +727,7 @@ export default function MLDashboard({
                   <Activity className="h-4 w-4" style={{ color: 'var(--primary)' }} />
                 </div>
                 <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
-                  {formatCount(metricValue('model_manager', 'prediction_count'))}
+                  {formatCount(metricValue('model_manager', 'prediction_count'), lifecycleUnavailable)}
                 </p>
               </div>
               <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
@@ -729,7 +736,7 @@ export default function MLDashboard({
                   <BarChart3 className="h-4 w-4" style={{ color: 'var(--primary)' }} />
                 </div>
                 <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
-                  {formatCount(metricValue('feedback', 'feedback_count'))}
+                  {formatCount(metricValue('feedback', 'feedback_count'), lifecycleUnavailable)}
                 </p>
               </div>
               <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--surface-elevated)' }}>
@@ -738,7 +745,7 @@ export default function MLDashboard({
                   <Clock className="h-4 w-4" style={{ color: 'var(--primary)' }} />
                 </div>
                 <p className="mt-2 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
-                  {formatCount(metricValue('training_scheduler', 'active_jobs'))}
+                  {formatCount(metricValue('training_scheduler', 'active_jobs'), lifecycleUnavailable)}
                 </p>
               </div>
             </div>
