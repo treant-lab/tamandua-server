@@ -28,6 +28,50 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   action_fallback(TamanduaServerWeb.FallbackController)
 
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("Timeline action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Timeline service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{
+        status: "error",
+        message: "Timeline service timed out",
+        partial: true
+      })
+
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Timeline correlation service is not running in this boot profile",
+        partial: true
+      })
+
+    kind, reason ->
+      Logger.warning("Timeline action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Timeline service is unavailable",
+        partial: true
+      })
+  end
+
   @default_timeline_limit 150
   @max_timeline_limit 250
   @default_readiness_limit 1_000

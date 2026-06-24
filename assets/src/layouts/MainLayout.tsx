@@ -43,7 +43,7 @@ import {
 } from 'lucide-react'
 import { cn, safeInitial } from '@/lib/utils'
 import type { SharedProps, Tenant } from '@/types'
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { GlobalSearch } from '@/components/GlobalSearch'
 
 // Navigation progress bar — shows while Inertia pages are loading
@@ -360,7 +360,23 @@ export function MainLayout({ children, title }: MainLayoutProps) {
 
   // Use Inertia's page URL for reactive path tracking
   const { url: inertiaUrl } = usePage()
-  const currentPath = inertiaUrl?.split('?')[0] || (typeof window !== 'undefined' ? window.location.pathname : '/')
+  const currentPath = (inertiaUrl?.split('?')[0] || (typeof window !== 'undefined' ? window.location.pathname : '/')).split('#')[0]
+  const visibleNavigationHrefs = useMemo(
+    () => filteredNavigationGroups.flatMap(group => group.items.map(item => item.href.split('?')[0].split('#')[0])),
+    [filteredNavigationGroups]
+  )
+
+  const isNavigationHrefActive = useCallback((href: string) => {
+    const normalizedHref = href.split('?')[0].split('#')[0]
+    if (currentPath === normalizedHref) return true
+    if (normalizedHref === '/app/dashboard' || !currentPath.startsWith(`${normalizedHref}/`)) return false
+
+    return !visibleNavigationHrefs.some(otherHref =>
+      otherHref !== normalizedHref &&
+      otherHref.startsWith(`${normalizedHref}/`) &&
+      currentPath === otherHref
+    )
+  }, [currentPath, visibleNavigationHrefs])
 
   // Auto-expand group containing the active page on navigation
   const prevPathRef = useRef(currentPath)
@@ -372,9 +388,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
       let changed = false
       const next = { ...prev }
       navigationGroups.forEach(group => {
-        const isActive = group.items.some(item =>
-          currentPath === item.href || (item.href !== '/app/dashboard' && currentPath.startsWith(item.href))
-        )
+        const isActive = group.items.some(item => isNavigationHrefActive(item.href))
         if (isActive && !next[group.name]) {
           next[group.name] = true
           changed = true
@@ -386,7 +400,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
       }
       return prev
     })
-  }, [currentPath])
+  }, [currentPath, isNavigationHrefActive])
 
   const handleLogout = () => {
     router.delete('/logout')
@@ -424,7 +438,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   }, [])
 
   const isItemActive = (href: string) => {
-    return currentPath === href || (href !== '/app/dashboard' && currentPath.startsWith(href))
+    return isNavigationHrefActive(href)
   }
 
   const isGroupActive = (group: NavGroup) => {

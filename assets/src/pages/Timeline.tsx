@@ -101,6 +101,17 @@ interface TimelinePageProps {
   incidentId?: string
 }
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status
+    const data = error.response?.data as { message?: string; error?: string } | undefined
+    const detail = data?.message || data?.error || error.message
+    return status ? `${fallback} (HTTP ${status}${detail ? `: ${detail}` : ''})` : `${fallback}: ${detail || 'network error'}`
+  }
+
+  return error instanceof Error ? `${fallback}: ${error.message}` : fallback
+}
+
 interface CorrelationResult {
   id: string
   correlationId?: string
@@ -491,6 +502,7 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
   const [selectionMode, setSelectionMode] = useState(false)
   const [readinessAgents, setReadinessAgents] = useState<ReadinessAgent[]>([])
   const [persistedCandidates, setPersistedCandidates] = useState<PersistedIncidentCandidate[]>([])
+  const [timelineError, setTimelineError] = useState<string | null>(null)
 
   // Real-time WebSocket event stream (all agents)
   const {
@@ -571,6 +583,7 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
       } else {
         setEventList([])
       }
+      setTimelineError(null)
 
       const [readinessResponse, candidatesResponse] = await Promise.allSettled([
         axios.get('/api/v1/timeline/readiness', { params: { hours: timeRange === '7d' ? '168' : '24' } }),
@@ -587,6 +600,7 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
         setPersistedCandidates(Array.isArray(candidates) ? candidates : [])
       }
     } catch (error) {
+      setTimelineError(apiErrorMessage(error, 'Timeline data did not load cleanly'))
       logger.error('Failed to fetch timeline events:', error)
     } finally {
       setLoading(false)
@@ -604,11 +618,13 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
       })
       if (response.data?.data) {
         setCorrelationResult(response.data.data)
+        setTimelineError(null)
         if (Array.isArray(response.data.data.persistedIncidentCandidates)) {
           setPersistedCandidates(response.data.data.persistedIncidentCandidates)
         }
       }
     } catch (error) {
+      setTimelineError(apiErrorMessage(error, 'Timeline correlation failed'))
       logger.error('Failed to correlate events:', error)
     } finally {
       setCorrelating(false)
@@ -625,8 +641,10 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
       })
       if (response.data?.data) {
         setStoryline(normalizeProcessStoryline(response.data.data, processId, allEvents))
+        setTimelineError(null)
       }
     } catch (error) {
+      setTimelineError(apiErrorMessage(error, 'Process storyline build failed'))
       logger.error('Failed to build storyline:', error)
     } finally {
       setLoading(false)
@@ -838,6 +856,25 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
             </button>
           </div>
         </div>
+
+        {timelineError && (
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-400" />
+              <div>
+                <p className="text-sm font-medium text-yellow-100">Timeline is running in degraded mode</p>
+                <p className="mt-1 text-xs text-yellow-200/80">{timelineError}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTimelineError(null)}
+              className="text-xs text-yellow-200/70 hover:text-yellow-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         <div className="bg-[var(--surface)] border border-[var(--hairline)] rounded-xl p-3">
           <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
