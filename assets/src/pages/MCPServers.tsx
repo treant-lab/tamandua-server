@@ -75,6 +75,14 @@ interface ConnectionLog {
   ipAddress?: string
 }
 
+interface MCPTestResult {
+  status: 'success' | 'error'
+  message: string
+  checkedAt: string
+  durationMs?: number
+  toolCount?: number
+}
+
 interface MCPServersPageProps {
   servers?: MCPServer[]
   tools?: MCPTool[]
@@ -144,11 +152,14 @@ export default function MCPServers({
   const [showLogs, setShowLogs] = useState(true)
   const [loading, setLoading] = useState<string | null>(null)
   const [schemaServer, setSchemaServer] = useState<MCPServer | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, MCPTestResult>>({})
 
-  const handleTestConnection = async (serverId: string) => {
+  const handleTestConnection = async (server: MCPServer) => {
+    const serverId = server.id
+    const startedAt = performance.now()
     setLoading(`test-${serverId}`)
     try {
-      const rpcRes = await axios.post('/api/v1/mcp/rpc', {
+      const rpcRes = await axios.post(server.endpoint || '/api/v1/mcp/rpc', {
         jsonrpc: '2.0',
         method: 'tools/list',
         params: {},
@@ -162,11 +173,33 @@ export default function MCPServers({
       }
 
       const rpcTools = normalizeTools(rpcRes.data)
+      const durationMs = Math.round(performance.now() - startedAt)
+      const message = `tools/list returned ${rpcTools.length} tools`
+      setTestResults(prev => ({
+        ...prev,
+        [serverId]: {
+          status: 'success',
+          message,
+          checkedAt: new Date().toISOString(),
+          durationMs,
+          toolCount: rpcTools.length,
+        },
+      }))
       toast.success(`MCP JSON-RPC tools/list responded with ${rpcTools.length} tools`)
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
       const status = err.response?.status ? `HTTP ${err.response.status}: ` : ''
-      toast.error(`${status}${err.response?.data?.error || err.response?.data?.message || err.message || 'MCP protocol check failed'}`)
+      const message = `${status}${err.response?.data?.error || err.response?.data?.message || err.message || 'MCP protocol check failed'}`
+      setTestResults(prev => ({
+        ...prev,
+        [serverId]: {
+          status: 'error',
+          message,
+          checkedAt: new Date().toISOString(),
+          durationMs: Math.round(performance.now() - startedAt),
+        },
+      }))
+      toast.error(message)
     } finally {
       setLoading(null)
     }
@@ -471,7 +504,7 @@ export default function MCPServers({
 
                       <div className="flex gap-2 mt-4">
                         <button
-                          onClick={() => handleTestConnection(server.id)}
+                          onClick={() => handleTestConnection(server)}
                           disabled={loading === `test-${server.id}`}
                           className="flex items-center gap-2 bg-[var(--surface-raised)] hover:bg-[var(--surface-elevated)] rounded-lg px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
                         >
@@ -486,6 +519,27 @@ export default function MCPServers({
                           View Schema
                         </button>
                       </div>
+                      {testResults[server.id] && (
+                        <div
+                          className={cn(
+                            'mt-3 rounded-lg border px-3 py-2 text-xs',
+                            testResults[server.id].status === 'success'
+                              ? 'border-green-500/30 bg-green-500/10 text-green-300'
+                              : 'border-red-500/30 bg-red-500/10 text-red-300'
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium">
+                              {testResults[server.id].status === 'success' ? 'Protocol check passed' : 'Protocol check failed'}
+                            </span>
+                            <span className="text-[var(--muted)]">
+                              {new Date(testResults[server.id].checkedAt).toLocaleTimeString()}
+                              {testResults[server.id].durationMs !== undefined ? ` - ${testResults[server.id].durationMs}ms` : ''}
+                            </span>
+                          </div>
+                          <p className="mt-1">{testResults[server.id].message}</p>
+                        </div>
+                      )}
                       {schemaServer?.id === server.id && (
                         <div className="mt-4 bg-[var(--surface-inset)] rounded-lg p-4 border border-[var(--border)]">
                           <h4 className="text-sm font-medium text-[var(--fg)] mb-2">Tool Schemas</h4>
