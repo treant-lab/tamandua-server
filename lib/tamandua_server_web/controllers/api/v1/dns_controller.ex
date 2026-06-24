@@ -85,7 +85,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
 
-    total_queries_today = Repo.aggregate(base_query, :count, :id)
+    total_queries_today =
+      safe_repo_value("DNS stats total queries", 0, fn ->
+        Repo.aggregate(base_query, :count, :id)
+      end)
 
     unique_domains =
       Event
@@ -107,7 +110,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
           e.payload
         )
       )
-      |> Repo.one() || 0
+      |> then(fn query ->
+        safe_repo_value("DNS stats unique domains", 0, fn -> Repo.one(query) || 0 end)
+      end)
 
     # Blocked count: DNS events that matched a blocklist detection
     blocked_count =
@@ -116,7 +121,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
-      |> Repo.aggregate(:count, :id)
+      |> then(fn query ->
+        safe_repo_value("DNS stats blocked count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+      end)
 
     # Suspicious count: events with severity above info
     suspicious_count =
@@ -125,7 +132,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], e.severity in ["medium", "high", "critical"])
-      |> Repo.aggregate(:count, :id)
+      |> then(fn query ->
+        safe_repo_value("DNS stats suspicious count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+      end)
 
     json(conn, %{
       data: %{
@@ -399,6 +408,18 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     :exit, reason ->
       Logger.warning("#{label} failed: exit #{inspect(reason)}")
       []
+  end
+
+  defp safe_repo_value(label, default, fun) when is_function(fun, 0) do
+    fun.()
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      default
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      default
   end
 
   defp dns_event_dynamic do
