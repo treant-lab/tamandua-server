@@ -1123,10 +1123,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     end
   end
 
-  defp parse_time_range("1h"), do: DateTime.utc_now() |> DateTime.add(-1, :hour)
-  defp parse_time_range("24h"), do: DateTime.utc_now() |> DateTime.add(-24, :hour)
-  defp parse_time_range("7d"), do: DateTime.utc_now() |> DateTime.add(-7, :day)
-  defp parse_time_range(_), do: DateTime.utc_now() |> DateTime.add(-24, :hour)
+  defp parse_time_range("1h"), do: DateTime.utc_now() |> DateTime.add(-60 * 60, :second)
+  defp parse_time_range("24h"), do: DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
+  defp parse_time_range("7d"), do: DateTime.utc_now() |> DateTime.add(-7 * 24 * 60 * 60, :second)
+  defp parse_time_range(_), do: DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
 
   defp format_timestamp(%NaiveDateTime{} = ts), do: NaiveDateTime.to_iso8601(ts)
   defp format_timestamp(%DateTime{} = ts), do: DateTime.to_iso8601(ts)

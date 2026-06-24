@@ -282,6 +282,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   ## Parameters
     - agent_id: Required - the agent ID to get the process tree for
   """
+  def show(conn, %{"incident_id" => incident_id}) do
+    show(conn, %{"id" => incident_id})
+  end
+
   def show(conn, %{"id" => agent_id}) do
     organization_id = get_organization_id(conn)
 
@@ -1000,7 +1004,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   # Apply ISO 8601 time range to the query.
   # The Event schema uses :utc_datetime_usec (DateTime), so we must compare with DateTime values.
   defp apply_time_range(query, start_str, end_str) do
-    start_dt = parse_iso_datetime(start_str) || DateTime.utc_now() |> DateTime.add(-24, :hour)
+    start_dt = parse_iso_datetime(start_str) || DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
     end_dt = parse_iso_datetime(end_str) || DateTime.utc_now()
 
     query

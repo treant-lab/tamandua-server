@@ -986,6 +986,7 @@ defmodule TamanduaServer.Application do
       TamanduaServer.ML.TrainingScheduler,
       TamanduaServer.AISecurity.MCPGovernance,
       TamanduaServer.Integrations.MCPServer,
+      TamanduaServer.Automation.Hyperautomation,
       TamanduaServer.Hunting.NLHunter,
       TamanduaServer.Detection.Behavioral,
       # Live Response REST endpoints and tamandua-ctl rely on this ETS-backed
