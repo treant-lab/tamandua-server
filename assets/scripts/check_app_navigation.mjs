@@ -139,9 +139,24 @@ function collectNavigationHrefs(file) {
   );
 }
 
+function duplicateValues(values) {
+  const counts = new Map();
+  for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value).sort();
+}
+
+function quickActionIds(arrayName) {
+  const content = read('assets/src/components/GlobalSearch.tsx');
+  const match = content.match(new RegExp(`const ${arrayName}: QuickAction\\[\\] = \\[([\\s\\S]*?)\\n\\]`));
+  if (!match) return [];
+  return [...match[1].matchAll(/id:\s*['"]([^'"]+)['"]/g)].map((item) => item[1]);
+}
+
 const layoutNavigationHrefs = collectNavigationHrefs('assets/src/layouts/MainLayout.tsx');
 const globalSearchHrefs = new Set(collectNavigationHrefs('assets/src/components/GlobalSearch.tsx'));
 const missingSearchEntries = layoutNavigationHrefs.filter((href) => !globalSearchHrefs.has(href));
+const duplicateQuickActionIds = duplicateValues(quickActionIds('quickActions'));
+const duplicateSearchPageIds = duplicateValues(quickActionIds('searchablePages'));
 
 const inertiaController = read('lib/tamandua_server_web/controllers/inertia_controller.ex');
 const renderedPages = unique(
@@ -156,7 +171,14 @@ const missingPages = renderedPages.filter((page) => {
   return !candidates.some((candidate) => fs.existsSync(path.join(serverRoot, candidate)));
 });
 
-if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length || missingSearchEntries.length) {
+if (
+  missingAppRoutes.length ||
+  missingLiveRoutes.length ||
+  missingPages.length ||
+  missingSearchEntries.length ||
+  duplicateQuickActionIds.length ||
+  duplicateSearchPageIds.length
+) {
   if (missingAppRoutes.length) {
     console.error('Missing /app routes for static navigation hrefs:');
     for (const item of missingAppRoutes) {
@@ -185,7 +207,21 @@ if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length |
     }
   }
 
+  if (duplicateQuickActionIds.length) {
+    console.error('Duplicate GlobalSearch quick action ids:');
+    for (const id of duplicateQuickActionIds) {
+      console.error(`- ${id}`);
+    }
+  }
+
+  if (duplicateSearchPageIds.length) {
+    console.error('Duplicate GlobalSearch searchable page ids:');
+    for (const id of duplicateSearchPageIds) {
+      console.error(`- ${id}`);
+    }
+  }
+
   process.exit(1);
 }
 
-console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages, ${layoutNavigationHrefs.length} side-nav hrefs searchable.`);
+console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages, ${layoutNavigationHrefs.length} side-nav hrefs searchable, GlobalSearch ids unique.`);
