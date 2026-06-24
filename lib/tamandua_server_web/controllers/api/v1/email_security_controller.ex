@@ -96,7 +96,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def m365_threat_intel(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "100")
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     case Microsoft365.get_threat_intel(opts) do
@@ -114,7 +114,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def m365_quarantine(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50")
+      limit: bounded_limit(params["limit"], 50, 250)
     ]
 
     case Microsoft365.list_quarantine(opts) do
@@ -151,7 +151,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def m365_security_alerts(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "100"),
+      limit: bounded_limit(params["limit"], 100, 500),
       category: params["category"],
       severity: params["severity"],
       status: params["status"]
@@ -172,8 +172,8 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def m365_search_emails(conn, %{"query" => query} = params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "25"),
-      offset: String.to_integer(params["offset"] || "0")
+      limit: bounded_limit(params["limit"], 25, 250),
+      offset: bounded_offset(params["offset"])
     ]
 
     case Microsoft365.search_emails(query, opts) do
@@ -216,13 +216,11 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def google_gmail_logs(conn, params) do
     end_time = DateTime.utc_now()
-    start_time = case params["hours"] do
-      nil -> DateTime.add(end_time, -24, :hour)
-      hours -> DateTime.add(end_time, -String.to_integer(hours), :hour)
-    end
+    hours = bounded_hours(params["hours"], 24, 24 * 30)
+    start_time = DateTime.add(end_time, -hours, :hour)
 
     opts = [
-      limit: String.to_integer(params["limit"] || "100")
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     case GoogleWorkspace.get_gmail_logs(start_time, end_time, opts) do
@@ -240,7 +238,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def google_dlp_incidents(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "100")
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     case GoogleWorkspace.get_dlp_incidents(opts) do
@@ -272,7 +270,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def google_login_events(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "100")
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     case GoogleWorkspace.get_login_events(opts) do
@@ -351,7 +349,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   def analyze_url(conn, %{"url" => url} = params) do
     opts = [
       fetch_content: params["fetch_content"] == true,
-      max_redirects: String.to_integer(params["max_redirects"] || "5")
+      max_redirects: bounded_limit(params["max_redirects"], 5, 20)
     ]
 
     case PhishingTriage.analyze_url_deep(url, opts) do
@@ -369,7 +367,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def detonate_url(conn, %{"url" => url} = params) do
     opts = [
-      timeout: String.to_integer(params["timeout"] || "30"),
+      timeout: bounded_limit(params["timeout"], 30, 300),
       screenshot: params["screenshot"] != false,
       network: params["network"] != false
     ]
@@ -443,7 +441,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def list_attack_chains(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "100"),
+      limit: bounded_limit(params["limit"], 100, 500),
       min_severity: parse_severity(params["min_severity"])
     ] |> Enum.reject(fn {_, v} -> is_nil(v) end)
 
@@ -490,7 +488,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   """
   def get_user_chains(conn, %{"email" => email} = params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50")
+      limit: bounded_limit(params["limit"], 50, 250)
     ]
 
     case EmailCorrelator.get_user_chains(email, opts) do
@@ -519,7 +517,7 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   Get email security dashboard overview.
   """
   def dashboard(conn, params) do
-    hours = String.to_integer(params["hours"] || "24")
+    hours = bounded_hours(params["hours"], 24, 24 * 30)
 
     # Gather stats from all sources
     triage_stats = try do
@@ -535,7 +533,13 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
     end
 
     # Get attack chains for the dashboard
-    {:ok, recent_chains} = EmailCorrelator.list_attack_chains(limit: 10, min_severity: :medium)
+    recent_chains =
+      case EmailCorrelator.list_attack_chains(limit: 10, min_severity: :medium) do
+        {:ok, chains} -> chains
+        {:error, reason} ->
+          Logger.warning("Email security dashboard attack chains failed: #{inspect(reason)}")
+          []
+      end
 
     # Build dashboard data
     dashboard_data = %{
@@ -568,6 +572,38 @@ defmodule TamanduaServerWeb.API.V1.EmailSecurityController do
   defp parse_severity("medium"), do: :medium
   defp parse_severity("low"), do: :low
   defp parse_severity(_), do: nil
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
+  defp bounded_limit(value, default, max_limit) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_limit)
+  end
+
+  defp bounded_offset(value) do
+    value
+    |> parse_int(0)
+    |> max(0)
+  end
+
+  defp bounded_hours(value, default, max_hours) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_hours)
+  end
 
   defp get_integration_status(:microsoft365) do
     try do
