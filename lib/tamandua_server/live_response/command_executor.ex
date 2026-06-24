@@ -86,7 +86,8 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
     "upload_file",
     "kill_process",
     "suspend_process",
-    "dump_process_memory"
+    "dump_process_memory",
+    "shell_execute"
   ]
 
   # All supported command types
@@ -122,6 +123,7 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
     # Memory
     "dump_process_memory",
     "list_loaded_modules",
+    "shell_execute",
     # Evidence collection
     "collect_artifacts"
   ]
@@ -802,6 +804,13 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
           :ok
         else
           {:error, :missing_required_arg_artifacts}
+        end
+
+      "shell_execute" ->
+        if Map.has_key?(args, :command) or Map.has_key?(args, "command") do
+          :ok
+        else
+          {:error, :missing_required_arg_command}
         end
 
       _ ->
