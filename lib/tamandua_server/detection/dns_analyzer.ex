@@ -23,6 +23,8 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   @ets_query_log :dns_query_log
   @ets_subdomain_tracker :dns_subdomain_tracker
   @ets_blocklist :dns_blocklist
+  @analyze_timeout 10_000
+  @read_timeout 15_000
 
   @dns_whitelist [
     "microsoft.com", "windows.com", "windowsupdate.com",
@@ -59,7 +61,7 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   """
   @spec analyze_dns_event(map()) :: [map()]
   def analyze_dns_event(event) do
-    GenServer.call(__MODULE__, {:analyze, event})
+    GenServer.call(__MODULE__, {:analyze, event}, @analyze_timeout)
   end
 
   @doc """
@@ -67,12 +69,12 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   """
   @spec get_blocklist() :: [map()]
   def get_blocklist do
-    GenServer.call(__MODULE__, :get_blocklist)
+    GenServer.call(__MODULE__, :get_blocklist, @read_timeout)
   end
 
   @spec get_blocklist(String.t() | nil) :: [map()]
   def get_blocklist(organization_id) do
-    GenServer.call(__MODULE__, {:get_blocklist, organization_id})
+    GenServer.call(__MODULE__, {:get_blocklist, organization_id}, @read_timeout)
   end
 
   @doc """
@@ -81,13 +83,13 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   """
   @spec add_to_blocklist([String.t()], String.t(), String.t()) :: {:ok, integer()}
   def add_to_blocklist(domains, reason, blocked_by) do
-    GenServer.call(__MODULE__, {:add_blocklist, domains, reason, blocked_by})
+    GenServer.call(__MODULE__, {:add_blocklist, domains, reason, blocked_by}, @read_timeout)
   end
 
   @spec add_to_blocklist([String.t()], String.t(), String.t(), String.t() | nil) ::
           {:ok, integer()} | {:error, atom()}
   def add_to_blocklist(domains, reason, blocked_by, organization_id) do
-    GenServer.call(__MODULE__, {:add_blocklist, organization_id, domains, reason, blocked_by})
+    GenServer.call(__MODULE__, {:add_blocklist, organization_id, domains, reason, blocked_by}, @read_timeout)
   end
 
   @doc """
@@ -96,12 +98,12 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   """
   @spec remove_from_blocklist(String.t()) :: :ok | {:error, :not_found}
   def remove_from_blocklist(domain) do
-    GenServer.call(__MODULE__, {:remove_blocklist, domain})
+    GenServer.call(__MODULE__, {:remove_blocklist, domain}, @read_timeout)
   end
 
   @spec remove_from_blocklist(String.t(), String.t() | nil) :: :ok | {:error, atom()}
   def remove_from_blocklist(domain, organization_id) do
-    GenServer.call(__MODULE__, {:remove_blocklist, organization_id, domain})
+    GenServer.call(__MODULE__, {:remove_blocklist, organization_id, domain}, @read_timeout)
   end
 
   @doc """
@@ -109,12 +111,12 @@ defmodule TamanduaServer.Detection.DNSAnalyzer do
   """
   @spec import_blocklist([String.t()], String.t()) :: {:ok, integer()}
   def import_blocklist(domains, reason \\ "Bulk import") do
-    GenServer.call(__MODULE__, {:import_blocklist, domains, reason})
+    GenServer.call(__MODULE__, {:import_blocklist, domains, reason}, @read_timeout)
   end
 
   @spec import_blocklist([String.t()], String.t(), String.t() | nil) :: {:ok, integer()} | {:error, atom()}
   def import_blocklist(domains, reason, organization_id) do
-    GenServer.call(__MODULE__, {:import_blocklist, organization_id, domains, reason})
+    GenServer.call(__MODULE__, {:import_blocklist, organization_id, domains, reason}, @read_timeout)
   end
 
   # ============================================================================

@@ -21,6 +21,41 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("DNS API action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "dns_service_unavailable",
+        message: "DNS service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "dns_service_unavailable",
+        message: "DNS analyzer is not running in this boot profile"
+      })
+
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{error: "dns_service_timeout", message: "DNS service timed out"})
+
+    kind, reason ->
+      Logger.warning("DNS API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "dns_service_unavailable", message: "DNS service is unavailable"})
+  end
+
   @default_query_limit 50
   @max_query_limit 100
   @dns_event_types ["dns_query", "dns", "dns_response", "name_resolution", "domain_lookup"]
