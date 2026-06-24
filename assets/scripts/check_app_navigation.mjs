@@ -126,6 +126,23 @@ const missingLiveRoutes = hrefs.filter(({ href }) => {
   return !liveRoutePatterns.some((pattern) => pattern.test(normalized));
 });
 
+function normalizedNavigationHref(href) {
+  return href.replace(/[?#].*$/, '');
+}
+
+function collectNavigationHrefs(file) {
+  return unique(
+    collectStaticHrefs(file)
+      .map(({ href }) => href)
+      .filter((href) => href.startsWith('/app') || href.startsWith('/live'))
+      .map(normalizedNavigationHref)
+  );
+}
+
+const layoutNavigationHrefs = collectNavigationHrefs('assets/src/layouts/MainLayout.tsx');
+const globalSearchHrefs = new Set(collectNavigationHrefs('assets/src/components/GlobalSearch.tsx'));
+const missingSearchEntries = layoutNavigationHrefs.filter((href) => !globalSearchHrefs.has(href));
+
 const inertiaController = read('lib/tamandua_server_web/controllers/inertia_controller.ex');
 const renderedPages = unique(
   [...inertiaController.matchAll(/render_inertia\(conn,\s*"([^"]+)"/g)].map((match) => match[1])
@@ -139,7 +156,7 @@ const missingPages = renderedPages.filter((page) => {
   return !candidates.some((candidate) => fs.existsSync(path.join(serverRoot, candidate)));
 });
 
-if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length) {
+if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length || missingSearchEntries.length) {
   if (missingAppRoutes.length) {
     console.error('Missing /app routes for static navigation hrefs:');
     for (const item of missingAppRoutes) {
@@ -161,7 +178,14 @@ if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length) 
     }
   }
 
+  if (missingSearchEntries.length) {
+    console.error('MainLayout navigation hrefs missing from GlobalSearch searchable pages:');
+    for (const href of missingSearchEntries) {
+      console.error(`- ${href}`);
+    }
+  }
+
   process.exit(1);
 }
 
-console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages.`);
+console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages, ${layoutNavigationHrefs.length} side-nav hrefs searchable.`);
