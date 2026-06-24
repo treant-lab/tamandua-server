@@ -181,7 +181,7 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   """
   def action_history(conn, params) do
     org_id = get_org_id(conn)
-    limit = String.to_integer(params["limit"] || "50")
+    limit = bounded_limit(params["limit"], 50, 500)
     status = params["status"]
 
     opts = [organization_id: org_id, limit: limit]
@@ -447,7 +447,7 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   """
   def decision_history(conn, params) do
     org_id = get_org_id(conn)
-    limit = String.to_integer(params["limit"] || "100")
+    limit = bounded_limit(params["limit"], 100, 500)
     user_id = params["user_id"]
 
     opts = [organization_id: org_id, limit: limit]
@@ -687,7 +687,7 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   GET /api/v1/autonomous-response/decisions
   """
   def engine_decisions(conn, params) do
-    limit = String.to_integer(params["limit"] || "100")
+    limit = bounded_limit(params["limit"], 100, 500)
     {:ok, decisions} = AutonomousEngine.get_decisions(limit: limit)
 
     json(conn, %{
@@ -822,5 +822,18 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   end
 
   defp atomize_keys(value), do: value
+
+  defp bounded_limit(value, default, max_limit),
+    do: value |> parse_int(default) |> max(1) |> min(max_limit)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 
 end
