@@ -10775,22 +10775,25 @@ defmodule TamanduaServerWeb.InertiaController do
           case result do
             {:ok, users} ->
               Enum.map(users, fn user ->
+                user_id = identity_text(identity_field(user, :user_id), "unknown-user")
+                risk_level = normalize_identity_risk_level(identity_field(user, :level, :low))
+
                 %{
-                  userId: identity_field(user, :user_id),
-                  userPrincipalName: identity_field(user, :user_id),
-                  displayName: identity_field(user, :display_name) || identity_field(user, :user_id),
+                  userId: user_id,
+                  userPrincipalName: user_id,
+                  displayName: identity_text(identity_field(user, :display_name), user_id),
                   department: identity_field(user, :department),
-                  score: identity_field(user, :score, 0),
-                  level: identity_field(user, :level, :unknown) |> to_string(),
+                  score: identity_number(identity_field(user, :score), 0),
+                  level: risk_level,
                   factors:
                     Enum.map(identity_field(user, :factors, []), fn factor ->
                       %{
-                        name: identity_field(factor, :name),
-                        contribution: identity_field(factor, :contribution, 0),
-                        details: identity_field(factor, :details, %{})
+                        name: identity_text(identity_field(factor, :name), "Risk factor"),
+                        contribution: identity_number(identity_field(factor, :contribution), 0),
+                        details: identity_text(identity_field(factor, :details), "")
                       }
                     end),
-                  trend: identity_field(user, :trend, :stable) |> to_string(),
+                  trend: normalize_identity_trend(identity_field(user, :trend, :stable)),
                   lastUpdated: format_datetime(identity_field(user, :last_updated)),
                   azureAdRiskLevel:
                     user
@@ -10980,59 +10983,142 @@ defmodule TamanduaServerWeb.InertiaController do
 
   defp identity_field(_value, _key, default), do: default
 
+  defp identity_text(value, default \\ "")
+  defp identity_text(value, _default) when is_binary(value), do: value
+  defp identity_text(value, _default) when is_atom(value), do: Atom.to_string(value)
+  defp identity_text(value, _default) when is_number(value), do: to_string(value)
+  defp identity_text(%{} = value, default), do: if(map_size(value) == 0, do: default, else: inspect(value))
+  defp identity_text(nil, default), do: default
+  defp identity_text(value, _default), do: inspect(value)
+
+  defp identity_number(value, default \\ 0)
+  defp identity_number(value, _default) when is_number(value), do: value
+
+  defp identity_number(value, default) when is_binary(value) do
+    case Float.parse(value) do
+      {number, _rest} -> number
+      :error -> default
+    end
+  end
+
+  defp identity_number(_value, default), do: default
+
+  defp identity_list_length(value) when is_list(value), do: length(value)
+  defp identity_list_length(_value), do: 0
+
+  defp normalize_identity_risk_level(value) do
+    case value |> identity_text("low") |> String.downcase() do
+      level when level in ["critical", "high", "medium", "low", "none"] -> level
+      _ -> "low"
+    end
+  end
+
+  defp normalize_identity_trend(value) do
+    case value |> identity_text("stable") |> String.downcase() do
+      trend when trend in ["increasing", "decreasing", "stable"] -> trend
+      _ -> "stable"
+    end
+  end
+
   defp serialize_azure_ad_sign_in(sign_in) do
+    status_error_code = get_in(sign_in, ["status", "errorCode"]) || 0
+
     %{
-      id: sign_in["id"],
-      userPrincipalName: sign_in["userPrincipalName"],
-      userId: sign_in["userId"],
-      timestamp: sign_in["createdDateTime"],
-      ipAddress: sign_in["ipAddress"],
+      id: identity_text(sign_in["id"], "azure-signin-#{System.unique_integer([:positive])}"),
+      userPrincipalName: identity_text(sign_in["userPrincipalName"], "unknown-user"),
+      userId: identity_text(sign_in["userId"], "unknown-user"),
+      timestamp: identity_text(sign_in["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      ipAddress: identity_text(sign_in["ipAddress"], "unknown"),
       location: %{
-        city: get_in(sign_in, ["location", "city"]),
-        state: get_in(sign_in, ["location", "state"]),
-        country: get_in(sign_in, ["location", "countryOrRegion"])
+        city: identity_text(get_in(sign_in, ["location", "city"]), nil),
+        state: identity_text(get_in(sign_in, ["location", "state"]), nil),
+        country: identity_text(get_in(sign_in, ["location", "countryOrRegion"]), "Unknown")
       },
-      appDisplayName: sign_in["appDisplayName"],
-      clientAppUsed: sign_in["clientAppUsed"],
-      riskLevelDuringSignIn: sign_in["riskLevelDuringSignIn"] || "none",
-      riskState: sign_in["riskState"],
-      riskDetail: sign_in["riskDetail"],
-      statusErrorCode: get_in(sign_in, ["status", "errorCode"]) || 0,
-      statusFailureReason: get_in(sign_in, ["status", "failureReason"]),
-      deviceDetail: sign_in["deviceDetail"],
-      conditionalAccessStatus: sign_in["conditionalAccessStatus"],
-      isInteractive: sign_in["isInteractive"]
+      appDisplayName: identity_text(sign_in["appDisplayName"], "Unknown application"),
+      clientAppUsed: identity_text(sign_in["clientAppUsed"], "unknown"),
+      riskLevelDuringSignIn: normalize_identity_risk_level(sign_in["riskLevelDuringSignIn"] || "none"),
+      riskState: identity_text(sign_in["riskState"], "unknown"),
+      riskDetail: identity_text(sign_in["riskDetail"], nil),
+      statusErrorCode: identity_number(status_error_code, 0),
+      statusFailureReason: identity_text(get_in(sign_in, ["status", "failureReason"]), nil),
+      deviceDetail: %{
+        browser: identity_text(get_in(sign_in, ["deviceDetail", "browser"]), "Unknown"),
+        operatingSystem: identity_text(get_in(sign_in, ["deviceDetail", "operatingSystem"]), "Unknown"),
+        deviceId: identity_text(get_in(sign_in, ["deviceDetail", "deviceId"]), nil)
+      },
+      conditionalAccessStatus: identity_text(sign_in["conditionalAccessStatus"], "unknown"),
+      isInteractive: sign_in["isInteractive"] == true
     }
   end
 
   defp serialize_azure_ad_audit(audit) do
     %{
-      id: audit["id"],
-      timestamp: audit["activityDateTime"],
-      activity: audit["activityDisplayName"],
-      category: audit["category"],
+      id: identity_text(audit["id"], "azure-audit-#{System.unique_integer([:positive])}"),
+      timestamp: identity_text(audit["activityDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      activity: identity_text(audit["activityDisplayName"], "Directory audit event"),
+      category: identity_text(audit["category"], "unknown"),
       initiatedBy: %{
-        user: get_in(audit, ["initiatedBy", "user"]),
-        app: get_in(audit, ["initiatedBy", "app"])
+        user: normalize_identity_actor(get_in(audit, ["initiatedBy", "user"])),
+        app: normalize_identity_actor(get_in(audit, ["initiatedBy", "app"]))
       },
-      targetResources: audit["targetResources"] || [],
-      result: audit["result"]
+      targetResources: normalize_identity_targets(audit["targetResources"]),
+      result: identity_text(audit["result"], "unknown")
     }
   end
 
   defp serialize_service_principal(principal) do
     %{
-      id: principal["id"],
-      displayName: principal["displayName"],
-      appId: principal["appId"],
-      servicePrincipalType: principal["servicePrincipalType"],
-      accountEnabled: principal["accountEnabled"],
-      createdDateTime: principal["createdDateTime"],
-      signInActivity: principal["signInActivity"],
+      id: identity_text(principal["id"], "service-principal-#{System.unique_integer([:positive])}"),
+      displayName: identity_text(principal["displayName"], "Unnamed service principal"),
+      appId: identity_text(principal["appId"], "unknown"),
+      servicePrincipalType: identity_text(principal["servicePrincipalType"], "unknown"),
+      accountEnabled: principal["accountEnabled"] == true,
+      createdDateTime: identity_text(principal["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      signInActivity: normalize_service_principal_sign_in(principal["signInActivity"]),
       riskLevel: nil,
-      permissionGrantsCount: length(principal["oauth2PermissionGrants"] || [])
+      permissionGrantsCount: identity_list_length(principal["oauth2PermissionGrants"])
     }
   end
+
+  defp normalize_identity_actor(actor) when is_map(actor) do
+    %{
+      "displayName" => identity_text(actor["displayName"], actor[:displayName] || "Unknown"),
+      "userPrincipalName" => identity_text(actor["userPrincipalName"], actor[:userPrincipalName] || nil)
+    }
+  end
+
+  defp normalize_identity_actor(_actor), do: nil
+
+  defp normalize_identity_targets(targets) when is_list(targets) do
+    Enum.map(targets, fn target ->
+      %{
+        "displayName" => identity_text(identity_field(target, :displayName) || identity_field(target, :display_name), "Unknown"),
+        "type" => identity_text(identity_field(target, :type), "unknown"),
+        "userPrincipalName" => identity_text(identity_field(target, :userPrincipalName) || identity_field(target, :user_principal_name), nil)
+      }
+    end)
+  end
+
+  defp normalize_identity_targets(_targets), do: []
+
+  defp normalize_service_principal_sign_in(activity) when is_map(activity) do
+    %{
+      "lastSignInDateTime" =>
+        identity_text(
+          activity["lastSignInDateTime"] || activity[:lastSignInDateTime] ||
+            activity["last_sign_in_date_time"] || activity[:last_sign_in_date_time],
+          nil
+        ),
+      "lastSignInRequestId" =>
+        identity_text(
+          activity["lastSignInRequestId"] || activity[:lastSignInRequestId] ||
+            activity["last_sign_in_request_id"] || activity[:last_sign_in_request_id],
+          nil
+        )
+    }
+  end
+
+  defp normalize_service_principal_sign_in(_activity), do: %{}
 
   # ===========================================================================
   # Vulnerability Management
