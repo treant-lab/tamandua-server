@@ -127,12 +127,24 @@ interface IdentityStats {
   impossibleTravelDetected: number
 }
 
+type IdentitySourceStatus = 'available' | 'disabled' | 'unavailable'
+
+interface IdentityAvailability {
+  riskScoring?: IdentitySourceStatus
+  highRiskUsers?: IdentitySourceStatus
+  azureAd?: IdentitySourceStatus
+  riskySignIns?: IdentitySourceStatus
+  privilegeChanges?: IdentitySourceStatus
+  serviceAccounts?: IdentitySourceStatus
+}
+
 interface IdentityPageProps {
   stats?: IdentityStats
   highRiskUsers?: UserRisk[]
   riskySignIns?: RiskySignIn[]
   privilegeChanges?: PrivilegeChange[]
   serviceAccounts?: ServiceAccount[]
+  identityAvailability?: IdentityAvailability
 }
 
 const defaultStats: IdentityStats = {
@@ -160,6 +172,7 @@ export default function Identity({
   riskySignIns = [],
   privilegeChanges = [],
   serviceAccounts = [],
+  identityAvailability = {},
 }: IdentityPageProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'signins' | 'privileges' | 'service_accounts'>('overview')
   const [selectedUser, setSelectedUser] = useState<UserRisk | null>(null)
@@ -168,6 +181,21 @@ export default function Identity({
   const [riskFilter, setRiskFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
 
   const identityStats = stats || defaultStats
+  const sourceStatus = (source: keyof IdentityAvailability) => identityAvailability[source] || 'available'
+  const sourceUnavailable = (source: keyof IdentityAvailability) => sourceStatus(source) === 'unavailable'
+  const sourceDisabled = (source: keyof IdentityAvailability) => sourceStatus(source) === 'disabled'
+  const metricValue = (value: number, sources: Array<keyof IdentityAvailability>) =>
+    sources.some(sourceUnavailable) ? '--' : value
+  const riskScoringUnavailable = sourceUnavailable('riskScoring') || sourceUnavailable('highRiskUsers')
+  const azureAdUnavailable = sourceUnavailable('azureAd')
+  const azureAdDisabled = sourceDisabled('azureAd')
+  const unavailableSources = [
+    riskScoringUnavailable ? 'Risk scoring' : null,
+    azureAdUnavailable ? 'Azure AD identity data' : null,
+    sourceUnavailable('riskySignIns') ? 'Risky sign-ins' : null,
+    sourceUnavailable('privilegeChanges') ? 'Privilege changes' : null,
+    sourceUnavailable('serviceAccounts') ? 'Service accounts' : null,
+  ].filter(Boolean)
 
   // Filter users based on search and risk level
   const filteredUsers = highRiskUsers.filter((user) => {
@@ -195,54 +223,68 @@ export default function Identity({
           <StatCard
             icon={Users}
             label="Total Users"
-            value={identityStats.totalUsers}
+            value={metricValue(identityStats.totalUsers, ['riskScoring'])}
             color="primary"
           />
           <StatCard
             icon={ShieldX}
             label="Critical Risk"
-            value={identityStats.highRiskUsers}
+            value={metricValue(identityStats.highRiskUsers, ['riskScoring', 'highRiskUsers'])}
             color="critical"
           />
           <StatCard
             icon={ShieldAlert}
             label="High Risk"
-            value={identityStats.mediumRiskUsers}
+            value={metricValue(identityStats.mediumRiskUsers, ['riskScoring'])}
             color="high"
           />
           <StatCard
             icon={AlertTriangle}
             label="Risky Sign-ins"
-            value={identityStats.riskySignInsToday}
+            value={metricValue(identityStats.riskySignInsToday, ['azureAd', 'riskySignIns'])}
             color="medium"
             subtext="Today"
           />
           <StatCard
             icon={Key}
             label="Privilege Changes"
-            value={identityStats.privilegeChangesToday}
+            value={metricValue(identityStats.privilegeChangesToday, ['azureAd', 'privilegeChanges'])}
             color="sol-magenta"
             subtext="Today"
           />
           <StatCard
             icon={Server}
             label="Service Accounts"
-            value={identityStats.serviceAccounts}
+            value={metricValue(identityStats.serviceAccounts, ['azureAd', 'serviceAccounts'])}
             color="sol-cyan"
           />
           <StatCard
             icon={Globe}
             label="Impossible Travel"
-            value={identityStats.impossibleTravelDetected}
+            value={metricValue(identityStats.impossibleTravelDetected, ['azureAd'])}
             color="critical"
           />
           <StatCard
             icon={Activity}
             label="Avg Risk Score"
-            value={Math.round(identityStats.averageRiskScore)}
+            value={metricValue(Math.round(identityStats.averageRiskScore), ['riskScoring'])}
             color="emerald"
           />
         </div>
+
+        {(unavailableSources.length > 0 || azureAdDisabled) && (
+          <div className="flex items-start gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-400" />
+            <div>
+              <p className="text-sm font-medium text-yellow-100">Identity data is partially available</p>
+              <p className="mt-1 text-xs text-yellow-200/80">
+                {unavailableSources.length > 0
+                  ? `${unavailableSources.join(', ')} unavailable. Empty lists and zero values may be fallback values.`
+                  : 'Azure AD is not configured; cloud sign-in, privilege-change, and service-account views are disabled.'}
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Tabs & Filters */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -333,7 +375,7 @@ export default function Identity({
                 {highRiskUsers.length === 0 && (
                   <div className="p-8 text-center text-[var(--muted)]">
                     <ShieldCheck className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No high risk users detected</p>
+                    <p>{riskScoringUnavailable ? 'Risk scoring data unavailable' : 'No high risk users detected'}</p>
                   </div>
                 )}
               </div>
@@ -357,7 +399,7 @@ export default function Identity({
                 {riskySignIns.length === 0 && (
                   <div className="p-8 text-center text-[var(--muted)]">
                     <ShieldCheck className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No risky sign-ins detected</p>
+                    <p>{sourceUnavailable('riskySignIns') ? 'Risky sign-in data unavailable' : azureAdDisabled ? 'Azure AD sign-in collection disabled' : 'No risky sign-ins detected'}</p>
                   </div>
                 )}
               </div>
@@ -382,7 +424,7 @@ export default function Identity({
                   {privilegeChanges.length === 0 && (
                     <div className="py-8 text-center text-[var(--muted)]">
                       <Lock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>No privilege changes detected</p>
+                      <p>{sourceUnavailable('privilegeChanges') ? 'Privilege change data unavailable' : azureAdDisabled ? 'Azure AD audit collection disabled' : 'No privilege changes detected'}</p>
                     </div>
                   )}
                 </div>
@@ -434,7 +476,7 @@ export default function Identity({
                 {filteredUsers.length === 0 && (
                   <div className="p-8 text-center text-[var(--muted)]">
                     <Users className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No users match the current filters</p>
+                    <p>{riskScoringUnavailable ? 'Risk scoring data unavailable' : 'No users match the current filters'}</p>
                   </div>
                 )}
               </div>
@@ -506,7 +548,7 @@ export default function Identity({
               {filteredSignIns.length === 0 && (
                 <div className="p-8 text-center text-[var(--muted)]">
                   <Key className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No risky sign-ins found</p>
+                  <p>{sourceUnavailable('riskySignIns') ? 'Risky sign-in data unavailable' : azureAdDisabled ? 'Azure AD sign-in collection disabled' : 'No risky sign-ins found'}</p>
                 </div>
               )}
             </div>
@@ -536,7 +578,7 @@ export default function Identity({
               {privilegeChanges.length === 0 && (
                 <div className="py-8 text-center text-[var(--muted)]">
                   <Lock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No privilege changes found</p>
+                  <p>{sourceUnavailable('privilegeChanges') ? 'Privilege change data unavailable' : azureAdDisabled ? 'Azure AD audit collection disabled' : 'No privilege changes found'}</p>
                 </div>
               )}
             </div>
@@ -581,7 +623,7 @@ export default function Identity({
               {serviceAccounts.length === 0 && (
                 <div className="p-8 text-center text-[var(--muted)]">
                   <Server className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No service accounts found</p>
+                  <p>{sourceUnavailable('serviceAccounts') ? 'Service account data unavailable' : azureAdDisabled ? 'Azure AD service-principal collection disabled' : 'No service accounts found'}</p>
                 </div>
               )}
             </div>
@@ -596,7 +638,7 @@ export default function Identity({
 interface StatCardProps {
   icon: React.ElementType
   label: string
-  value: number
+  value: number | string
   color: 'primary' | 'critical' | 'high' | 'medium' | 'sol-magenta' | 'sol-cyan' | 'emerald'
   subtext?: string
 }

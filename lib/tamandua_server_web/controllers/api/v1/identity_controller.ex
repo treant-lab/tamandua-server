@@ -95,9 +95,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "risk_scoring_unavailable", reason)
     end
   end
 
@@ -127,9 +125,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "risk_scoring_unavailable", reason)
     end
   end
 
@@ -145,9 +141,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "risk_scoring_unavailable", reason)
     end
   end
 
@@ -163,9 +157,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "risk_scoring_unavailable", reason)
     end
   end
 
@@ -247,9 +239,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -275,9 +265,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -298,9 +286,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -326,9 +312,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -363,9 +347,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -391,9 +373,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "User not found"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -416,9 +396,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -437,9 +415,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
@@ -458,15 +434,24 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
         |> json(%{status: "error", message: "Azure AD integration not configured"})
 
       {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{status: "error", message: inspect(reason)})
+        identity_dependency_error(conn, "azure_ad_unavailable", reason)
     end
   end
 
   # ============================================================================
   # Private Functions
   # ============================================================================
+
+  defp identity_dependency_error(conn, code, reason) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      status: "error",
+      code: code,
+      message: "Identity dependency is unavailable",
+      detail: inspect(reason)
+    })
+  end
 
   defp serialize_risk_score(risk_data, user_id) do
     %{

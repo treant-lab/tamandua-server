@@ -1819,17 +1819,17 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get events from telemetry. Pull one extra row so large tables do not need
     # an expensive COUNT(*) just to render the first page.
-    events_rows =
+    {events_rows, events_error} =
       try do
-        Telemetry.list_events(filters)
+        {Telemetry.list_events(filters), nil}
       rescue
         e in [DBConnection.ConnectionError, Postgrex.Error] ->
           Logger.warning("Telemetry.list_events failed for Events page: #{Exception.message(e)}")
-          []
+          {[], Exception.message(e)}
       catch
         :exit, reason ->
           Logger.warning("Telemetry.list_events failed for Events page: exit #{inspect(reason)}")
-          []
+          {[], "exit #{inspect(reason)}"}
       end
 
     has_more = length(events_rows) > per_page
@@ -1926,7 +1926,9 @@ defmodule TamanduaServerWeb.InertiaController do
         agentId: params["agent_id"] || "",
         severity: params["severity"] || "",
         timeRange: params["time_range"] || ""
-      }
+      },
+      eventsUnavailable: not is_nil(events_error),
+      eventsError: events_error
     })
   end
 
@@ -10736,132 +10738,189 @@ defmodule TamanduaServerWeb.InertiaController do
     alias TamanduaServer.Identity.RiskScoring
     alias TamanduaServer.Identity.AzureAD
 
-    # Get statistics
+    stats_result = safe_identity_call("Identity risk statistics", fn -> RiskScoring.get_statistics() end)
+
     stats =
-      try do
-        case RiskScoring.get_statistics() do
-          {:ok, s} ->
-            %{
-              totalUsers: s.total_users,
-              highRiskUsers: s.critical_risk + s.high_risk,
-              mediumRiskUsers: s.medium_risk,
-              # Would come from AzureAD
-              riskySignInsToday: 0,
-              # Would come from AzureAD
-              privilegeChangesToday: 0,
-              # Would come from AzureAD
-              serviceAccounts: 0,
-              averageRiskScore: s.average_score,
-              impossibleTravelDetected: 0
-            }
-
-          _ ->
-            default_identity_stats()
-        end
-      rescue
-        _ -> default_identity_stats()
-      end
-
-    # Get high risk users
-    high_risk_users =
-      try do
-        case RiskScoring.get_high_risk_users(min_score: 30, limit: 50) do
-          {:ok, users} ->
-            Enum.map(users, fn user ->
+      case stats_result do
+        {:ok, result} ->
+          case result do
+            {:ok, s} ->
               %{
-                userId: identity_field(user, :user_id),
-                userPrincipalName: identity_field(user, :user_id),
-                displayName: identity_field(user, :display_name) || identity_field(user, :user_id),
-                department: identity_field(user, :department),
-                score: identity_field(user, :score, 0),
-                level: identity_field(user, :level, :unknown) |> to_string(),
-                factors:
-                  Enum.map(identity_field(user, :factors, []), fn factor ->
-                    %{
-                      name: identity_field(factor, :name),
-                      contribution: identity_field(factor, :contribution, 0),
-                      details: identity_field(factor, :details, %{})
-                    }
-                  end),
-                trend: identity_field(user, :trend, :stable) |> to_string(),
-                lastUpdated: format_datetime(identity_field(user, :last_updated)),
-                azureAdRiskLevel:
-                  user
-                  |> identity_field(:external_signals, %{})
-                  |> identity_field(:azure_ad_risk_level),
-                azureAdRiskState:
-                  user
-                  |> identity_field(:external_signals, %{})
-                  |> identity_field(:azure_ad_risk_state)
+                totalUsers: s.total_users,
+                highRiskUsers: s.critical_risk + s.high_risk,
+                mediumRiskUsers: s.medium_risk,
+                riskySignInsToday: 0,
+                privilegeChangesToday: 0,
+                serviceAccounts: 0,
+                averageRiskScore: s.average_score,
+                impossibleTravelDetected: 0
               }
-            end)
 
-          _ ->
-            []
-        end
-      rescue
-        _ -> []
+            _ ->
+              default_identity_stats()
+          end
+
+        {:error, _reason} ->
+          default_identity_stats()
       end
+
+    high_risk_result =
+      safe_identity_call("Identity high risk users", fn ->
+        RiskScoring.get_high_risk_users(min_score: 30, limit: 50)
+      end)
+
+    high_risk_users =
+      case high_risk_result do
+        {:ok, result} ->
+          case result do
+            {:ok, users} ->
+              Enum.map(users, fn user ->
+                %{
+                  userId: identity_field(user, :user_id),
+                  userPrincipalName: identity_field(user, :user_id),
+                  displayName: identity_field(user, :display_name) || identity_field(user, :user_id),
+                  department: identity_field(user, :department),
+                  score: identity_field(user, :score, 0),
+                  level: identity_field(user, :level, :unknown) |> to_string(),
+                  factors:
+                    Enum.map(identity_field(user, :factors, []), fn factor ->
+                      %{
+                        name: identity_field(factor, :name),
+                        contribution: identity_field(factor, :contribution, 0),
+                        details: identity_field(factor, :details, %{})
+                      }
+                    end),
+                  trend: identity_field(user, :trend, :stable) |> to_string(),
+                  lastUpdated: format_datetime(identity_field(user, :last_updated)),
+                  azureAdRiskLevel:
+                    user
+                    |> identity_field(:external_signals, %{})
+                    |> identity_field(:azure_ad_risk_level),
+                  azureAdRiskState:
+                    user
+                    |> identity_field(:external_signals, %{})
+                    |> identity_field(:azure_ad_risk_state)
+                }
+              end)
+
+            _ ->
+              []
+          end
+
+        {:error, _reason} ->
+          []
+      end
+
+    azure_status_result = safe_identity_call("Azure AD status", fn -> AzureAD.status() end)
 
     # Get risky sign-ins (from Azure AD if configured)
+    risky_sign_ins_result =
+      case azure_status_result do
+        {:ok, %{enabled: true}} ->
+          safe_identity_call("Azure AD risky sign-ins", fn ->
+            AzureAD.get_sign_ins(limit: 50, status: "failure")
+          end)
+
+        {:ok, _status} ->
+          {:disabled, []}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
     risky_sign_ins =
-      try do
-        case AzureAD.status() do
-          %{enabled: true} ->
-            case AzureAD.get_sign_ins(limit: 50, status: "failure") do
-              {:ok, sign_ins} ->
-                Enum.map(sign_ins, &serialize_azure_ad_sign_in/1)
+      case risky_sign_ins_result do
+        {:ok, result} ->
+          case result do
+            {:ok, sign_ins} -> Enum.map(sign_ins, &serialize_azure_ad_sign_in/1)
+            _ -> []
+          end
 
-              _ ->
-                []
-            end
-
-          _ ->
-            []
-        end
-      rescue
-        _ -> []
+        _ ->
+          []
       end
 
     # Get privilege changes (from Azure AD if configured)
+    privilege_changes_result =
+      case azure_status_result do
+        {:ok, %{enabled: true}} ->
+          safe_identity_call("Azure AD directory audits", fn ->
+            AzureAD.get_directory_audits(limit: 20)
+          end)
+
+        {:ok, _status} ->
+          {:disabled, []}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
     privilege_changes =
-      try do
-        case AzureAD.status() do
-          %{enabled: true} ->
-            case AzureAD.get_directory_audits(limit: 20) do
-              {:ok, audits} ->
-                Enum.map(audits, &serialize_azure_ad_audit/1)
+      case privilege_changes_result do
+        {:ok, result} ->
+          case result do
+            {:ok, audits} -> Enum.map(audits, &serialize_azure_ad_audit/1)
+            _ -> []
+          end
 
-              _ ->
-                []
-            end
-
-          _ ->
-            []
-        end
-      rescue
-        _ -> []
+        _ ->
+          []
       end
 
     # Get service accounts (from Azure AD if configured)
-    service_accounts =
-      try do
-        case AzureAD.status() do
-          %{enabled: true} ->
-            case AzureAD.get_service_principals(limit: 50) do
-              {:ok, principals} ->
-                Enum.map(principals, &serialize_service_principal/1)
+    service_accounts_result =
+      case azure_status_result do
+        {:ok, %{enabled: true}} ->
+          safe_identity_call("Azure AD service principals", fn ->
+            AzureAD.get_service_principals(limit: 50)
+          end)
 
-              _ ->
-                []
-            end
+        {:ok, _status} ->
+          {:disabled, []}
 
-          _ ->
-            []
-        end
-      rescue
-        _ -> []
+        {:error, reason} ->
+          {:error, reason}
       end
+
+    service_accounts =
+      case service_accounts_result do
+        {:ok, result} ->
+          case result do
+            {:ok, principals} -> Enum.map(principals, &serialize_service_principal/1)
+            _ -> []
+          end
+
+        _ ->
+          []
+      end
+
+    stats =
+      stats
+      |> Map.put(
+        :riskySignInsToday,
+        identity_count_or_default(risky_sign_ins_result, risky_sign_ins, stats.riskySignInsToday)
+      )
+      |> Map.put(
+        :privilegeChangesToday,
+        identity_count_or_default(
+          privilege_changes_result,
+          privilege_changes,
+          stats.privilegeChangesToday
+        )
+      )
+      |> Map.put(
+        :serviceAccounts,
+        identity_count_or_default(service_accounts_result, service_accounts, stats.serviceAccounts)
+      )
+
+    identity_availability = %{
+      riskScoring: identity_result_status(stats_result),
+      highRiskUsers: identity_result_status(high_risk_result),
+      azureAd: azure_status(azure_status_result),
+      riskySignIns: identity_result_status(risky_sign_ins_result),
+      privilegeChanges: identity_result_status(privilege_changes_result),
+      serviceAccounts: identity_result_status(service_accounts_result)
+    }
 
     render_inertia(conn, "Identity", %{
       page_title: "Identity Protection",
@@ -10869,9 +10928,37 @@ defmodule TamanduaServerWeb.InertiaController do
       highRiskUsers: high_risk_users,
       riskySignIns: risky_sign_ins,
       privilegeChanges: privilege_changes,
-      serviceAccounts: service_accounts
+      serviceAccounts: service_accounts,
+      identityAvailability: identity_availability
     })
   end
+
+  defp safe_identity_call(label, fun) when is_function(fun, 0) do
+    {:ok, fun.()}
+  rescue
+    error ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      {:error, Exception.message(error)}
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      {:error, "exit #{inspect(reason)}"}
+  end
+
+  defp identity_result_status({:ok, {:ok, _value}}), do: "available"
+  defp identity_result_status({:ok, {:error, _reason}}), do: "unavailable"
+  defp identity_result_status({:ok, _value}), do: "available"
+  defp identity_result_status({:disabled, _value}), do: "disabled"
+  defp identity_result_status({:error, _reason}), do: "unavailable"
+  defp identity_result_status(_), do: "unavailable"
+
+  defp identity_count_or_default({:ok, {:ok, _value}}, items, _default), do: length(items)
+  defp identity_count_or_default({:disabled, _value}, _items, _default), do: 0
+  defp identity_count_or_default(_result, _items, default), do: default
+
+  defp azure_status({:ok, %{enabled: true}}), do: "available"
+  defp azure_status({:ok, _status}), do: "disabled"
+  defp azure_status({:error, _reason}), do: "unavailable"
 
   defp default_identity_stats do
     %{

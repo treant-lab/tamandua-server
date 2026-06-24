@@ -90,6 +90,8 @@ interface EventsProps {
     ipcStatus?: 'healthy' | 'degraded' | 'offline'
     mtlsStatus?: { valid: boolean; daysToRenewal: number }
   }
+  eventsUnavailable?: boolean
+  eventsError?: string
 }
 
 const eventTypeIcons: Record<string, React.ElementType> = {
@@ -292,6 +294,8 @@ export default function Events({
   stats,
   activeFilters,
   connectedAgent,
+  eventsUnavailable = false,
+  eventsError,
 }: EventsProps) {
   // Server-side filter state (driven by URL params via Inertia)
   const [selectedType, setSelectedType] = useState<string>(activeFilters?.eventType || '')
@@ -452,6 +456,9 @@ export default function Events({
   const eventScopeLabel = selectedAgentRecord?.hostname || (selectedAgent ? selectedAgent : 'Fleet event stream')
   const hasVerifiedAgentContext = Boolean(connectedAgent)
   const hasActiveFilters = Boolean(searchQuery || selectedType || selectedAgent || selectedSeverity || selectedTimeRange)
+  const backendIngestionStatus: 'healthy' | 'degraded' | 'offline' = eventsUnavailable
+    ? 'degraded'
+    : connectedAgent?.ingestionStatus || (hasVerifiedAgentContext ? 'healthy' : 'degraded')
 
   return (
     <MainLayout title="Event Timeline">
@@ -508,7 +515,7 @@ export default function Events({
               <span className="text-xs font-medium uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
                 Backend Ingestion
               </span>
-              <StatusBadge status={connectedAgent?.ingestionStatus || (connectionState === 'connected' ? 'healthy' : 'offline')} />
+              <StatusBadge status={backendIngestionStatus} />
             </div>
 
             {/* Separator */}
@@ -575,6 +582,18 @@ export default function Events({
             </div>
           </div>
         </div>
+
+        {eventsUnavailable && (
+          <div className="flex items-start gap-3 rounded-xl px-4 py-3 border border-yellow-500/30 bg-yellow-500/10">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-400" />
+            <div>
+              <p className="text-sm font-medium text-yellow-100">Event telemetry did not load cleanly</p>
+              <p className="mt-1 text-xs text-yellow-200/80">
+                {eventsError || 'Stored event history is unavailable. Live events may still appear if the socket is connected.'}
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Filters Row */}
         <div
@@ -799,7 +818,7 @@ export default function Events({
             {/* Event Table */}
             <div className="flex-1 overflow-y-auto">
               {filteredEvents.length === 0 ? (
-                <EmptyState agents={agents} hasActiveFilters={hasActiveFilters} />
+                <EmptyState agents={agents} hasActiveFilters={hasActiveFilters} eventsUnavailable={eventsUnavailable} />
               ) : (
                 <table className="w-full">
                   <thead>
@@ -1226,16 +1245,22 @@ function SeverityBadgeCompact({ severity }: { severity: string }) {
 function EmptyState({
   agents,
   hasActiveFilters,
+  eventsUnavailable,
 }: {
   agents: Array<{ id: string; hostname: string }>
   hasActiveFilters: boolean
+  eventsUnavailable: boolean
 }) {
-  const title = agents.length === 0
+  const title = eventsUnavailable
+    ? 'Event history unavailable'
+    : agents.length === 0
     ? 'No enrolled agents'
     : hasActiveFilters
       ? 'No events match the current filters'
       : 'No telemetry events received yet'
-  const description = agents.length === 0
+  const description = eventsUnavailable
+    ? 'The backend could not load stored telemetry for this view. Refresh after the telemetry store recovers; live socket events can still arrive independently.'
+    : agents.length === 0
     ? 'Enroll an agent before event telemetry can appear in this workspace.'
     : hasActiveFilters
       ? 'Relax the search, severity, type, agent, or time filters to inspect the stored event history.'
@@ -1263,15 +1288,15 @@ function EmptyState({
 
       {/* Primary CTA */}
       <button
-        onClick={() => router.visit(agents.length === 0 ? '/app/deploy-agent' : '/app/events')}
+        onClick={() => router.visit(agents.length === 0 && !eventsUnavailable ? '/app/deploy-agent' : '/app/events')}
         className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium text-sm mb-4"
         style={{
           background: 'var(--emerald-600)',
           color: 'white',
         }}
       >
-        {agents.length === 0 ? <Plus className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
-        {agents.length === 0 ? 'Enroll an agent' : 'Clear filters'}
+        {agents.length === 0 && !eventsUnavailable ? <Plus className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
+        {agents.length === 0 && !eventsUnavailable ? 'Enroll an agent' : 'Refresh events'}
       </button>
 
       {/* Secondary Actions */}
