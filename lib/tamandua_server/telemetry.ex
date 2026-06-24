@@ -629,7 +629,13 @@ defmodule TamanduaServer.Telemetry do
   Supports multiple event types (comma-separated string or list).
   """
   def list_events(filters) when is_map(filters) do
-    query = from(e in Event, order_by: [desc: e.timestamp])
+    latest_timestamp = filters[:until] || DateTime.add(DateTime.utc_now(), 5 * 60, :second)
+
+    query =
+      from(e in Event,
+        where: e.timestamp <= ^latest_timestamp,
+        order_by: [desc: e.timestamp]
+      )
 
     query =
       if filters[:agent_id], do: where(query, [e], e.agent_id == ^filters[:agent_id]), else: query

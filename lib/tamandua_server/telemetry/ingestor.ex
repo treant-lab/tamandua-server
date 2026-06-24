@@ -1424,6 +1424,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
             _ ->
               ensure_usec(DateTime.utc_now())
           end
+          |> clamp_future_timestamp()
 
         # Get enrichment data (already added by enrich_event) and preserve
         # source provenance before calculating the event contract.
@@ -2630,6 +2631,17 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
   defp ensure_usec(%DateTime{} = dt), do: dt
   defp ensure_usec(_), do: %{DateTime.utc_now() | microsecond: {0, 6}}
+
+  defp clamp_future_timestamp(%DateTime{} = timestamp) do
+    now = ensure_usec(DateTime.utc_now())
+    max_future = DateTime.add(now, 5 * 60, :second)
+
+    if DateTime.compare(timestamp, max_future) == :gt do
+      now
+    else
+      timestamp
+    end
+  end
 
   defp persist_to_clickhouse(events) do
     # Primary path: use the new ClickHouseWriter with circuit breaker

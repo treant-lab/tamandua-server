@@ -18,6 +18,8 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
 
   import Ecto.Query
 
+  require Logger
+
   action_fallback TamanduaServerWeb.FallbackController
 
   # Rate limiting for webhook endpoints
@@ -168,8 +170,8 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
   """
   def index(conn, params) do
     org_id = current_organization_id(conn)
-    limit = parse_int(params["limit"], 100) |> min(1000)
-    offset = parse_int(params["offset"], 0)
+    limit = params["limit"] |> parse_int(100) |> max(1) |> min(1000)
+    offset = params["offset"] |> parse_int(0) |> max(0)
 
     query = NormalizedEvent
     |> maybe_filter_org(org_id)
@@ -185,8 +187,10 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     |> limit(^limit)
     |> offset(^offset)
 
-    events = Repo.all(query)
-    total = Repo.aggregate(query |> exclude(:limit) |> exclude(:offset), :count)
+    events = safe_repo_all(query, "XDR event index")
+    total = safe_repo_value("XDR event index total", offset + length(events), fn ->
+      Repo.aggregate(query |> exclude(:limit) |> exclude(:offset), :count, timeout: 8_000)
+    end)
 
     json(conn, %{
       data: Enum.map(events, &serialize_event/1),
@@ -207,28 +211,35 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
   def show(conn, %{"id" => id}) do
     org_id = current_organization_id(conn)
 
-    query = NormalizedEvent
-    |> maybe_filter_org(org_id)
-    |> where([e], e.id == ^id)
+    with {:ok, valid_id} <- Ecto.UUID.cast(id) do
+      query = NormalizedEvent
+      |> maybe_filter_org(org_id)
+      |> where([e], e.id == ^valid_id)
 
-    case Repo.one(query) do
-      nil ->
+      case safe_repo_one(query, "XDR event show") do
+        nil ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Event not found"})
+
+        event ->
+          # Get correlated events
+          correlated = Correlator.correlate_with_endpoint(Map.from_struct(event))
+          |> case do
+            {:ok, result} -> result.matches
+            _ -> []
+          end
+
+          json(conn, %{
+            data: serialize_event(event),
+            correlated_events: Enum.take(correlated, 20)
+          })
+      end
+    else
+      :error ->
         conn
-        |> put_status(:not_found)
-        |> json(%{error: "Event not found"})
-
-      event ->
-        # Get correlated events
-        correlated = Correlator.correlate_with_endpoint(Map.from_struct(event))
-        |> case do
-          {:ok, result} -> result.matches
-          _ -> []
-        end
-
-        json(conn, %{
-          data: serialize_event(event),
-          correlated_events: Enum.take(correlated, 20)
-        })
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid event id"})
     end
   end
 
@@ -250,7 +261,7 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     org_id = current_organization_id(conn)
     query_text = params["query"] || ""
     filters = params["filters"] || %{}
-    limit = parse_int(params["limit"], 100) |> min(1000)
+    limit = params["limit"] |> parse_int(100) |> max(1) |> min(1000)
     time_range = params["time_range"] || "24h"
 
     {start_time, end_time} = parse_time_range(time_range, params["start_time"], params["end_time"])
@@ -279,7 +290,7 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     events = base_query
     |> order_by([e], desc: e.timestamp)
     |> limit(^limit)
-    |> Repo.all()
+    |> safe_repo_all("XDR event search")
 
     # Get aggregations
     aggregations = get_search_aggregations(base_query)
@@ -313,7 +324,7 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     |> maybe_filter_source_type(source_type)
     |> order_by([s], asc: s.name)
 
-    sources = Repo.all(query)
+    sources = safe_repo_all(query, "XDR source list")
     json(conn, %{data: Enum.map(sources, &serialize_source/1)})
   end
 
@@ -808,23 +819,34 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     last_hour = DateTime.add(now, -3600, :second)
     last_day = DateTime.add(now, -86400, :second)
 
-    last_hour_count = Repo.aggregate(
-      from(e in NormalizedEvent, where: e.source_id == ^source_id and e.timestamp >= ^last_hour),
-      :count
-    )
+    last_hour_count =
+      safe_repo_value("XDR source stats last hour", 0, fn ->
+        Repo.aggregate(
+          from(e in NormalizedEvent, where: e.source_id == ^source_id and e.timestamp >= ^last_hour),
+          :count,
+          timeout: 8_000
+        )
+      end)
 
-    last_day_count = Repo.aggregate(
-      from(e in NormalizedEvent, where: e.source_id == ^source_id and e.timestamp >= ^last_day),
-      :count
-    )
+    last_day_count =
+      safe_repo_value("XDR source stats last day", 0, fn ->
+        Repo.aggregate(
+          from(e in NormalizedEvent, where: e.source_id == ^source_id and e.timestamp >= ^last_day),
+          :count,
+          timeout: 8_000
+        )
+      end)
 
-    severity_breakdown = Repo.all(
-      from e in NormalizedEvent,
-      where: e.source_id == ^source_id and e.timestamp >= ^last_day,
-      group_by: e.severity,
-      select: {e.severity, count(e.id)}
-    )
-    |> Map.new()
+    severity_breakdown =
+      safe_repo_all(
+        from(e in NormalizedEvent,
+          where: e.source_id == ^source_id and e.timestamp >= ^last_day,
+          group_by: e.severity,
+          select: {e.severity, count(e.id)}
+        ),
+        "XDR source severity breakdown"
+      )
+      |> Map.new()
 
     %{
       events_last_hour: last_hour_count,
@@ -835,28 +857,37 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
 
   defp get_search_aggregations(query) do
     # Get aggregations for search results
-    by_source_type = Repo.all(
-      from e in subquery(query),
-      group_by: e.source_type,
-      select: {e.source_type, count(e.id)}
-    )
-    |> Map.new()
+    by_source_type =
+      safe_repo_all(
+        from(e in subquery(query),
+          group_by: e.source_type,
+          select: {e.source_type, count(e.id)}
+        ),
+        "XDR search aggregation source type"
+      )
+      |> Map.new()
 
-    by_severity = Repo.all(
-      from e in subquery(query),
-      group_by: e.severity,
-      select: {e.severity, count(e.id)}
-    )
-    |> Map.new()
+    by_severity =
+      safe_repo_all(
+        from(e in subquery(query),
+          group_by: e.severity,
+          select: {e.severity, count(e.id)}
+        ),
+        "XDR search aggregation severity"
+      )
+      |> Map.new()
 
-    by_category = Repo.all(
-      from e in subquery(query),
-      where: not is_nil(e.category),
-      group_by: e.category,
-      select: {e.category, count(e.id)},
-      limit: 20
-    )
-    |> Map.new()
+    by_category =
+      safe_repo_all(
+        from(e in subquery(query),
+          where: not is_nil(e.category),
+          group_by: e.category,
+          select: {e.category, count(e.id)},
+          limit: 20
+        ),
+        "XDR search aggregation category"
+      )
+      |> Map.new()
 
     %{
       by_source_type: by_source_type,
@@ -995,6 +1026,42 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     _ -> nil
   end
   defp parse_atom(value) when is_atom(value), do: value
+
+  defp safe_repo_all(query, label) do
+    Repo.all(query, timeout: 8_000)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      []
+  end
+
+  defp safe_repo_one(query, label) do
+    Repo.one(query, timeout: 8_000)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      nil
+  end
+
+  defp safe_repo_value(label, default, fun) when is_function(fun, 0) do
+    fun.()
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      default
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      default
+  end
 
   defp format_errors(%Ecto.Changeset{} = changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
