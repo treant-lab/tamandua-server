@@ -67,14 +67,30 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
         })
 
       {:error, %{error: %{message: message}}} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: message, data: [], meta: %{count: 0, protocol_version: "2024-11-05"}})
+        tools = MCPServer.tool_catalog()
+
+        json(conn, %{
+          data: tools,
+          meta: %{
+            count: length(tools),
+            protocol_version: "2024-11-05",
+            degraded: true,
+            health_message: message
+          }
+        })
 
       {:error, reason} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: to_string(reason), data: [], meta: %{count: 0, protocol_version: "2024-11-05"}})
+        tools = MCPServer.tool_catalog()
+
+        json(conn, %{
+          data: tools,
+          meta: %{
+            count: length(tools),
+            protocol_version: "2024-11-05",
+            degraded: true,
+            health_message: to_string(reason)
+          }
+        })
     end
   end
 
@@ -134,11 +150,47 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
   end
 
   defp mcp_unavailable_response(request, message) do
-    %{
-      jsonrpc: "2.0",
-      error: %{code: -32603, message: message},
-      id: request && request["id"]
-    }
+    case request && request["method"] do
+      "initialize" ->
+        %{
+          jsonrpc: "2.0",
+          result: %{
+            protocolVersion: "2024-11-05",
+            serverInfo: %{name: "tamandua-mcp", title: "Tamandua MCP Server", version: "catalog"},
+            capabilities: %{tools: %{listChanged: false}, resources: %{listChanged: false}, prompts: %{listChanged: false}},
+            degraded: true,
+            healthMessage: message
+          },
+          id: request["id"]
+        }
+
+      "tools/list" ->
+        %{
+          jsonrpc: "2.0",
+          result: %{tools: MCPServer.tool_catalog(:rpc), degraded: true, healthMessage: message},
+          id: request["id"]
+        }
+
+      "resources/list" ->
+        %{
+          jsonrpc: "2.0",
+          result: %{resources: MCPServer.context_provider_catalog(:rpc), degraded: true, healthMessage: message},
+          id: request["id"]
+        }
+
+      "prompts/list" ->
+        %{jsonrpc: "2.0", result: %{prompts: [], degraded: true, healthMessage: message}, id: request["id"]}
+
+      "notifications/initialized" ->
+        %{jsonrpc: "2.0", result: %{}, id: request["id"]}
+
+      _ ->
+        %{
+          jsonrpc: "2.0",
+          error: %{code: -32603, message: message},
+          id: request && request["id"]
+        }
+    end
   end
 
   defp json_rpc_response(conn, {:ok, response}) when is_map(response), do: json(conn, response)

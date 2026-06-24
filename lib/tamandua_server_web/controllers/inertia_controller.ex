@@ -8059,7 +8059,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get available tools from MCPServer module
     {tools_data, tools_error} =
-      mcp_safe_call("list_tools", [], fn ->
+      mcp_safe_call("list_tools", MCPServer.tool_catalog(), fn ->
         MCPServer.list_tools()
       end)
 
@@ -8077,7 +8077,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get context providers
     {providers_data, providers_error} =
-      mcp_safe_call("list_context_providers", [], fn ->
+      mcp_safe_call("list_context_providers", MCPServer.context_provider_catalog(), fn ->
         MCPServer.list_context_providers()
       end)
 

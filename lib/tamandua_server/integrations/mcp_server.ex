@@ -90,6 +90,12 @@ defmodule TamanduaServer.Integrations.MCPServer do
     GenServer.call(__MODULE__, {:handle_request, request, client_context}, 30_000)
   end
 
+  @doc "Static MCP tool catalog used for discovery fallbacks when the GenServer is not running."
+  def tool_catalog(format \\ :api), do: define_tools() |> serialize_tools(format)
+
+  @doc "Static MCP context provider catalog used for discovery fallbacks."
+  def context_provider_catalog(format \\ :api), do: define_context_providers() |> serialize_context_providers(format)
+
   @doc "List available tools with their schemas."
   def list_tools, do: GenServer.call(__MODULE__, :list_tools, @read_timeout)
 
@@ -176,22 +182,13 @@ defmodule TamanduaServer.Integrations.MCPServer do
 
   @impl true
   def handle_call(:list_tools, _from, state) do
-    tools = Enum.map(state.tools, fn {name, tool} ->
-      %{
-        name: name,
-        description: tool.description,
-        input_schema: normalize_json_value(tool.input_schema),
-        required_permissions: normalize_json_value(tool.required_permissions)
-      }
-    end)
+    tools = serialize_tools(state.tools, :api)
     {:reply, {:ok, tools}, state}
   end
 
   @impl true
   def handle_call(:list_context_providers, _from, state) do
-    providers = Enum.map(state.context_providers, fn {name, p} ->
-      %{name: name, description: p.description, parameters: normalize_json_value(p.parameters)}
-    end)
+    providers = serialize_context_providers(state.context_providers, :api)
     {:reply, {:ok, providers}, state}
   end
 
@@ -545,17 +542,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
   end
 
   defp dispatch_method("resources/list", request, _client, state) do
-    resources =
-      Enum.map(state.context_providers, fn {name, provider} ->
-        %{
-          uri: "tamandua://context/#{name}",
-          name: name,
-          description: provider.description,
-          mimeType: "application/json"
-        }
-      end)
-
-    {{:ok, success_response(request["id"], %{resources: resources})}, state}
+    {{:ok, success_response(request["id"], %{resources: serialize_context_providers(state.context_providers, :rpc)})}, state}
   end
 
   defp dispatch_method("prompts/list", request, _client, state) do
@@ -563,40 +550,54 @@ defmodule TamanduaServer.Integrations.MCPServer do
   end
 
   defp dispatch_method("tools/list", request, _client, state) do
-    tools =
-      Enum.map(state.tools, fn {name, tool} ->
-        %{
-          name: name,
-          description: tool.description,
-          inputSchema: normalize_json_value(tool.input_schema),
-          required_permissions: normalize_json_value(tool.required_permissions)
-        }
-      end)
-
-    {{:ok, success_response(request["id"], %{tools: tools})}, state}
+    {{:ok, success_response(request["id"], %{tools: serialize_tools(state.tools, :rpc)})}, state}
   end
 
   defp dispatch_method("list_tools", request, _client, state) do
-    tools =
-      Enum.map(state.tools, fn {name, tool} ->
-        %{
-          name: name,
-          description: tool.description,
-          input_schema: normalize_json_value(tool.input_schema),
-          required_permissions: normalize_json_value(tool.required_permissions)
-        }
-      end)
-
-    {{:ok, success_response(request["id"], tools)}, state}
+    {{:ok, success_response(request["id"], serialize_tools(state.tools, :api))}, state}
   end
 
   defp dispatch_method("list_context_providers", request, _client, state) do
-    providers =
-      Enum.map(state.context_providers, fn {name, provider} ->
-        %{name: name, description: provider.description, parameters: normalize_json_value(provider.parameters)}
-      end)
+    {{:ok, success_response(request["id"], serialize_context_providers(state.context_providers, :api))}, state}
+  end
 
-    {{:ok, success_response(request["id"], providers)}, state}
+  defp serialize_tools(tools, :rpc) do
+    Enum.map(tools, fn {name, tool} ->
+      %{
+        name: name,
+        description: tool.description,
+        inputSchema: normalize_json_value(tool.input_schema),
+        required_permissions: normalize_json_value(tool.required_permissions)
+      }
+    end)
+  end
+
+  defp serialize_tools(tools, _format) do
+    Enum.map(tools, fn {name, tool} ->
+      %{
+        name: name,
+        description: tool.description,
+        input_schema: normalize_json_value(tool.input_schema),
+        required_permissions: normalize_json_value(tool.required_permissions)
+      }
+    end)
+  end
+
+  defp serialize_context_providers(providers, :rpc) do
+    Enum.map(providers, fn {name, provider} ->
+      %{
+        uri: "tamandua://context/#{name}",
+        name: name,
+        description: provider.description,
+        mimeType: "application/json"
+      }
+    end)
+  end
+
+  defp serialize_context_providers(providers, _format) do
+    Enum.map(providers, fn {name, provider} ->
+      %{name: name, description: provider.description, parameters: normalize_json_value(provider.parameters)}
+    end)
   end
 
   defp normalize_json_value(value) when is_map(value) do
