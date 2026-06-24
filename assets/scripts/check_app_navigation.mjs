@@ -37,6 +37,28 @@ function unique(values) {
   return [...new Set(values)].sort();
 }
 
+function listSourceFiles(relativeDir) {
+  const root = path.join(serverRoot, relativeDir);
+  const files = [];
+
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+
+      if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+        files.push(path.relative(serverRoot, fullPath).replaceAll(path.sep, '/'));
+      }
+    }
+  }
+
+  walk(root);
+  return files.sort();
+}
+
 function routeToRegex(route) {
   const escaped = route
     .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -45,18 +67,21 @@ function routeToRegex(route) {
   return new RegExp(`^${escaped}$`);
 }
 
-const sourceFiles = [
-  'assets/src/layouts/MainLayout.tsx',
-  'assets/src/components/GlobalSearch.tsx',
-];
-
-const hrefs = sourceFiles.flatMap((file) => {
+function collectStaticHrefs(file) {
   const content = read(file);
-  return [...content.matchAll(/href:\s*['"]([^'"]+)['"]/g)].map((match) => ({
+  const hrefs = [
+    ...content.matchAll(/href:\s*['"]([^'"]+)['"]/g),
+    ...content.matchAll(/href=(?:\{)?['"]([^'"]+)['"]/g),
+  ];
+
+  return hrefs.map((match) => ({
     href: match[1],
     file,
   }));
-});
+}
+
+const sourceFiles = listSourceFiles('assets/src');
+const hrefs = sourceFiles.flatMap(collectStaticHrefs);
 
 const router = read('lib/tamandua_server_web/router.ex');
 const appRoutes = unique(
@@ -67,10 +92,27 @@ const appRoutes = unique(
 );
 const routePatterns = appRoutes.map(routeToRegex);
 
-const missingRoutes = hrefs.filter(({ href }) => {
+const liveStart = router.indexOf('scope "/live"');
+const liveEnd = liveStart === -1 ? -1 : router.indexOf('scope "/agents"', liveStart);
+const liveScope = liveStart === -1 ? '' : router.slice(liveStart, liveEnd === -1 ? undefined : liveEnd);
+const liveRoutes = unique(
+  [
+    ...liveScope.matchAll(/live\("([^"]+)"/g),
+    ...liveScope.matchAll(/get\("([^"]+)"/g),
+  ].map((match) => `/live${match[1]}`)
+);
+const liveRoutePatterns = liveRoutes.map(routeToRegex);
+
+const missingAppRoutes = hrefs.filter(({ href }) => {
   if (!href.startsWith('/app')) return false;
   const normalized = href.replace(/[?#].*$/, '');
   return !routePatterns.some((pattern) => pattern.test(normalized));
+});
+
+const missingLiveRoutes = hrefs.filter(({ href }) => {
+  if (!href.startsWith('/live')) return false;
+  const normalized = href.replace(/[?#].*$/, '');
+  return !liveRoutePatterns.some((pattern) => pattern.test(normalized));
 });
 
 const inertiaController = read('lib/tamandua_server_web/controllers/inertia_controller.ex');
@@ -86,10 +128,17 @@ const missingPages = renderedPages.filter((page) => {
   return !candidates.some((candidate) => fs.existsSync(path.join(serverRoot, candidate)));
 });
 
-if (missingRoutes.length || missingPages.length) {
-  if (missingRoutes.length) {
+if (missingAppRoutes.length || missingLiveRoutes.length || missingPages.length) {
+  if (missingAppRoutes.length) {
     console.error('Missing /app routes for static navigation hrefs:');
-    for (const item of missingRoutes) {
+    for (const item of missingAppRoutes) {
+      console.error(`- ${item.href} (${item.file})`);
+    }
+  }
+
+  if (missingLiveRoutes.length) {
+    console.error('Missing /live routes for static navigation hrefs:');
+    for (const item of missingLiveRoutes) {
       console.error(`- ${item.href} (${item.file})`);
     }
   }
@@ -104,4 +153,4 @@ if (missingRoutes.length || missingPages.length) {
   process.exit(1);
 }
 
-console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${renderedPages.length} Inertia pages.`);
+console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages.`);
