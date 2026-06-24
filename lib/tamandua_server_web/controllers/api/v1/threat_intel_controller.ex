@@ -27,6 +27,21 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @default_dns_feed_names [
+    "abusech_feodo",
+    "abusech_urlhaus",
+    "abusech_threatfox",
+    "abusech_malware_bazaar",
+    "abusech_ssl_blacklist",
+    "emergingthreats",
+    "tor_exit_nodes",
+    "phishtank",
+    "openphish",
+    "spamhaus_drop",
+    "firehol_level1",
+    "c2_intel_feeds"
+  ]
+
   # ============================================================================
   # Feed Status & Sync
   # ============================================================================
@@ -63,7 +78,23 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
           enabled: false,
           last_sync: nil,
           sync_interval_hours: 4,
-          feeds: [],
+          feeds: default_dns_threat_feeds("unavailable"),
+          iocs_by_source: %{},
+          total_iocs: 0,
+          api_keys_configured: %{misp: false, otx: false, virustotal: false, shodan: false},
+          custom_feeds_count: 0
+        }
+      })
+  catch
+    :exit, reason ->
+      Logger.warning("Error getting feed status: exit #{inspect(reason)}")
+
+      json(conn, %{
+        data: %{
+          enabled: false,
+          last_sync: nil,
+          sync_interval_hours: 4,
+          feeds: default_dns_threat_feeds("unavailable"),
           iocs_by_source: %{},
           total_iocs: 0,
           api_keys_configured: %{misp: false, otx: false, virustotal: false, shodan: false},
@@ -142,7 +173,22 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
           total_iocs: 0,
           iocs_by_type: %{},
           iocs_by_source: %{},
-          feeds: []
+          feeds: default_dns_threat_feeds("unavailable")
+        }
+      })
+  catch
+    :exit, reason ->
+      Logger.warning("Error getting per-feed status: exit #{inspect(reason)}")
+
+      json(conn, %{
+        data: %{
+          enabled: false,
+          last_global_sync: nil,
+          sync_interval_hours: 4,
+          total_iocs: 0,
+          iocs_by_type: %{},
+          iocs_by_source: %{},
+          feeds: default_dns_threat_feeds("unavailable")
         }
       })
   end
@@ -784,6 +830,35 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     end)
   end
   defp serialize_feed_status(_), do: []
+
+  defp default_dns_threat_feeds(health) do
+    Enum.map(@default_dns_feed_names, fn name ->
+      %{
+        name: name,
+        enabled: false,
+        last_sync_at: nil,
+        ioc_count: 0,
+        inserted: 0,
+        health: health,
+        error: "Threat intel feed service is unavailable",
+        description: default_dns_feed_description(name)
+      }
+    end)
+  end
+
+  defp default_dns_feed_description("abusech_feodo"), do: "Abuse.ch Feodo Tracker indicators"
+  defp default_dns_feed_description("abusech_urlhaus"), do: "Abuse.ch URLhaus malware URLs"
+  defp default_dns_feed_description("abusech_threatfox"), do: "Abuse.ch ThreatFox IOCs"
+  defp default_dns_feed_description("abusech_malware_bazaar"), do: "Abuse.ch MalwareBazaar sample intelligence"
+  defp default_dns_feed_description("abusech_ssl_blacklist"), do: "Abuse.ch SSL certificate blacklist"
+  defp default_dns_feed_description("emergingthreats"), do: "Emerging Threats open indicators"
+  defp default_dns_feed_description("tor_exit_nodes"), do: "Tor exit node feed"
+  defp default_dns_feed_description("phishtank"), do: "PhishTank phishing URL feed"
+  defp default_dns_feed_description("openphish"), do: "OpenPhish phishing feed"
+  defp default_dns_feed_description("spamhaus_drop"), do: "Spamhaus DROP blocklist"
+  defp default_dns_feed_description("firehol_level1"), do: "FireHOL level 1 blocklist"
+  defp default_dns_feed_description("c2_intel_feeds"), do: "Command-and-control intelligence feeds"
+  defp default_dns_feed_description(_name), do: "Threat intelligence feed"
 
   defp serialize_ioc(ioc) do
     %{
