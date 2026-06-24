@@ -206,13 +206,15 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   events correlated, suspicious chains detected, and alerts generated.
   """
   def stats(conn, _params) do
-    stats = Correlator.get_stats()
+    {stats, partial_reason} = safe_correlator_stats()
 
     json(conn, %{
       data: %{
         events_correlated: stats[:events_correlated] || 0,
         suspicious_chains: stats[:suspicious_chains] || 0,
-        alerts_generated: stats[:alerts_generated] || 0
+        alerts_generated: stats[:alerts_generated] || 0,
+        partial: not is_nil(partial_reason),
+        partial_reason: partial_reason
       }
     })
   end
@@ -1117,6 +1119,18 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     |> parse_int(default)
     |> max(1)
     |> min(max_limit)
+  end
+
+  defp safe_correlator_stats do
+    {Correlator.get_stats(), nil}
+  rescue
+    error ->
+      Logger.warning("Timeline correlator stats failed: #{Exception.message(error)}")
+      {%{}, "correlator_stats_unavailable"}
+  catch
+    :exit, reason ->
+      Logger.warning("Timeline correlator stats failed: exit #{inspect(reason)}")
+      {%{}, "correlator_stats_unavailable"}
   end
 
   defp safe_repo_all(query, label) do
