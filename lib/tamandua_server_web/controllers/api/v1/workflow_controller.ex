@@ -300,9 +300,10 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
         %{}
 
     steps =
-      first_present(params, ["steps"]) ||
-        actions_to_steps(Map.get(params, "actions")) ||
-        []
+      (first_present(params, ["steps"]) ||
+         actions_to_steps(Map.get(params, "actions")) ||
+         [])
+      |> normalize_steps()
 
     %{
       name: Map.get(params, "name"),
@@ -345,6 +346,46 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   defp normalize_trigger_type("event"), do: "event_stream"
   defp normalize_trigger_type(type) when type in ["manual", "alert", "detection", "schedule", "webhook", "api", "event_stream"], do: type
   defp normalize_trigger_type(_), do: "manual"
+
+  defp normalize_steps(steps) when is_list(steps) do
+    steps
+    |> Enum.with_index(1)
+    |> Enum.map(&normalize_step/1)
+    |> Enum.filter(& &1)
+  end
+
+  defp normalize_steps(_), do: []
+
+  defp normalize_step({%{} = step, index}) do
+    id = Map.get(step, "id") || Map.get(step, :id) || "step-#{index}"
+    type = Map.get(step, "type") || Map.get(step, :type) || Map.get(step, "action") || Map.get(step, :action)
+    params = first_present(step, ["params", :params, "parameters", :parameters, "config", :config]) || %{}
+    name = Map.get(step, "name") || Map.get(step, :name) || Map.get(step, "label") || Map.get(step, :label) || type || "Step #{index}"
+
+    if is_binary(id) and is_binary(type) do
+      step
+      |> stringify_keys()
+      |> Map.merge(%{
+        "id" => id,
+        "type" => type,
+        "name" => name,
+        "params" => params
+      })
+    end
+  end
+
+  defp normalize_step({action, index}) when is_binary(action) do
+    %{"id" => "step-#{index}", "type" => action, "name" => action, "params" => %{}}
+  end
+
+  defp normalize_step(_), do: nil
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
 
   defp actions_to_steps(actions) when is_list(actions) do
     actions

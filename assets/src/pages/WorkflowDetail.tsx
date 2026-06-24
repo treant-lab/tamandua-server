@@ -32,10 +32,13 @@ interface WorkflowStep {
   id: string
   name: string
   type: string
-  action: string
-  parameters: Record<string, unknown>
+  action?: string
+  params?: Record<string, unknown>
+  parameters?: Record<string, unknown>
   onSuccess?: string
   onFailure?: string
+  on_success?: string
+  on_failure?: string
 }
 
 interface WorkflowData {
@@ -319,59 +322,66 @@ export default function WorkflowDetail({
             </div>
           ) : (
             <div className="space-y-0">
-              {workflow.steps.map((step, idx) => (
-                <div key={step.id || idx}>
-                  {/* Step card */}
-                  <div className="rounded-lg border p-4" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center justify-center h-8 w-8 rounded-full bg-blue-500/20 text-blue-400 text-sm font-bold shrink-0">
-                        {idx + 1}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{step.name}</span>
-                          <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}>
-                            {step.type}
-                          </span>
+              {workflow.steps.map((step, idx) => {
+                const action = step.action || step.type
+                const parameters = step.parameters || step.params || {}
+                const onSuccess = step.onSuccess || step.on_success
+                const onFailure = step.onFailure || step.on_failure
+
+                return (
+                  <div key={step.id || idx}>
+                    {/* Step card */}
+                    <div className="rounded-lg border p-4" style={{ borderColor: 'var(--muted)', backgroundColor: 'var(--surface)' }}>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-center h-8 w-8 rounded-full bg-blue-500/20 text-blue-400 text-sm font-bold shrink-0">
+                          {idx + 1}
                         </div>
-                        <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
-                          Action: <span className="font-mono" style={{ color: 'var(--muted)' }}>{step.action}</span>
-                        </p>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{step.name}</span>
+                            <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}>
+                              {step.type}
+                            </span>
+                          </div>
+                          <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                            Action: <span className="font-mono" style={{ color: 'var(--muted)' }}>{action}</span>
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs" style={{ color: 'var(--muted)' }}>
+                          {onSuccess && (
+                            <span className="flex items-center gap-1">
+                              <CheckCircle className="h-3 w-3 text-green-500" />
+                              {onSuccess}
+                            </span>
+                          )}
+                          {onFailure && (
+                            <span className="flex items-center gap-1">
+                              <XCircle className="h-3 w-3 text-red-500" />
+                              {onFailure}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 text-xs" style={{ color: 'var(--muted)' }}>
-                        {step.onSuccess && (
-                          <span className="flex items-center gap-1">
-                            <CheckCircle className="h-3 w-3 text-green-500" />
-                            {step.onSuccess}
-                          </span>
-                        )}
-                        {step.onFailure && (
-                          <span className="flex items-center gap-1">
-                            <XCircle className="h-3 w-3 text-red-500" />
-                            {step.onFailure}
-                          </span>
-                        )}
-                      </div>
+                      {Object.keys(parameters).length > 0 && (
+                        <details className="mt-3">
+                          <summary className="text-xs cursor-pointer hover:opacity-80" style={{ color: 'var(--muted)' }}>
+                            View parameters
+                          </summary>
+                          <pre className="mt-2 text-xs rounded p-2 overflow-x-auto" style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}>
+                            {JSON.stringify(parameters, null, 2)}
+                          </pre>
+                        </details>
+                      )}
                     </div>
-                    {Object.keys(step.parameters).length > 0 && (
-                      <details className="mt-3">
-                        <summary className="text-xs cursor-pointer hover:opacity-80" style={{ color: 'var(--muted)' }}>
-                          View parameters
-                        </summary>
-                        <pre className="mt-2 text-xs rounded p-2 overflow-x-auto" style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}>
-                          {JSON.stringify(step.parameters, null, 2)}
-                        </pre>
-                      </details>
+                    {/* Arrow connector */}
+                    {idx < workflow.steps.length - 1 && (
+                      <div className="flex justify-center py-1">
+                        <ArrowRight className="h-4 w-4 rotate-90" style={{ color: 'var(--muted)' }} />
+                      </div>
                     )}
                   </div>
-                  {/* Arrow connector */}
-                  {idx < workflow.steps.length - 1 && (
-                    <div className="flex justify-center py-1">
-                      <ArrowRight className="h-4 w-4 rotate-90" style={{ color: 'var(--muted)' }} />
-                    </div>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

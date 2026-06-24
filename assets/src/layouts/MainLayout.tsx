@@ -374,7 +374,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
     return !visibleNavigationHrefs.some(otherHref =>
       otherHref !== normalizedHref &&
       otherHref.startsWith(`${normalizedHref}/`) &&
-      currentPath === otherHref
+      (currentPath === otherHref || currentPath.startsWith(`${otherHref}/`))
     )
   }, [currentPath, visibleNavigationHrefs])
 
@@ -534,15 +534,51 @@ export function MainLayout({ children, title }: MainLayoutProps) {
 
               // Collapsed sidebar: show only the group icon as a link to its first item
               if (sidebarCollapsed) {
+                const firstItem = group.items[0]
+                const groupIconClassName = "flex items-center justify-center w-full rounded-lg p-2 transition-colors"
+                const groupIconStyle = { color: isActive ? 'var(--emerald-400)' : 'var(--subtle)' }
+                const groupIconHoverHandlers = {
+                  onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+                    if (!isActive) {
+                      e.currentTarget.style.backgroundColor = 'var(--surface-2)'
+                      e.currentTarget.style.color = 'var(--fg)'
+                    }
+                  },
+                  onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
+                    if (!isActive) {
+                      e.currentTarget.style.backgroundColor = 'transparent'
+                      e.currentTarget.style.color = 'var(--subtle)'
+                    }
+                  },
+                }
+
                 return (
                   <div key={group.name} className="space-y-1">
-                    <div
-                      className="flex items-center justify-center w-full rounded-lg p-2 transition-colors"
-                      style={{ color: isActive ? 'var(--emerald-400)' : 'var(--subtle)' }}
-                    >
-                      <group.icon className="h-4 w-4" />
-                    </div>
-                    {group.items.map((item) => {
+                    <Tooltip content={`${group.name}: ${firstItem.name}`} side="right">
+                      {firstItem.external ? (
+                        <a
+                          href={firstItem.href}
+                          aria-label={`${group.name}: ${firstItem.name}`}
+                          className={groupIconClassName}
+                          style={groupIconStyle}
+                          {...groupIconHoverHandlers}
+                        >
+                          <group.icon className="h-4 w-4" />
+                        </a>
+                      ) : (
+                        <Link
+                          href={firstItem.href}
+                          aria-label={`${group.name}: ${firstItem.name}`}
+                          prefetch="hover"
+                          className={groupIconClassName}
+                          style={groupIconStyle}
+                          {...groupIconHoverHandlers}
+                        >
+                          <group.icon className="h-4 w-4" />
+                        </Link>
+                      )}
+                    </Tooltip>
+                    {group.items.slice(1).map((item) => {
                       const isItemActiveState = isItemActive(item.href)
                       const linkClassName = "nav-link flex items-center justify-center rounded-lg p-2 transition-colors"
                       const linkStyle = {
