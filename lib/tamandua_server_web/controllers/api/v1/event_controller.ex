@@ -29,14 +29,22 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   end
 
   def show(conn, %{"id" => id}) do
-    case Telemetry.get_event(id) do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Event not found"})
+    case Ecto.UUID.cast(id) do
+      {:ok, valid_id} ->
+        case Telemetry.get_event(valid_id) do
+          nil ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Event not found"})
 
-      event ->
-        json(conn, %{data: serialize(event)})
+          event ->
+            json(conn, %{data: serialize(event)})
+        end
+
+      :error ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid event id"})
     end
   end
 

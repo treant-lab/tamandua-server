@@ -41,8 +41,8 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
   """
   def list_high_risk_users(conn, params) do
     opts = [
-      min_score: Map.get(params, "min_score", "60") |> String.to_integer(),
-      limit: Map.get(params, "limit", "100") |> String.to_integer(),
+      min_score: params["min_score"] |> parse_int(60) |> max(0) |> min(100),
+      limit: params["limit"] |> parse_int(100) |> max(1) |> min(500),
       sort: safe_to_existing_atom(Map.get(params, "sort", "score_desc"), ~w(score_desc score_asc name_asc name_desc recent)) || :score_desc
     ]
 
@@ -65,7 +65,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
   """
   def list_risky_sign_ins(conn, params) do
     opts = [
-      limit: Map.get(params, "limit", "50") |> String.to_integer(),
+      limit: params["limit"] |> parse_int(50) |> max(1) |> min(500),
       min_risk: safe_to_existing_atom(Map.get(params, "min_risk", "medium"), ~w(low medium high critical)) || :medium
     ]
 
@@ -459,5 +459,15 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     end
   end
   defp parse_int(value, _default) when is_integer(value), do: value
+
+  defp safe_to_existing_atom(value, allowed) when is_binary(value) and is_list(allowed) do
+    if value in allowed do
+      String.to_existing_atom(value)
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp safe_to_existing_atom(_, _), do: nil
 
 end

@@ -8564,7 +8564,18 @@ defmodule TamanduaServerWeb.InertiaController do
   # SECURITY: Return empty list if no org_id to prevent data leakage
   # In production, all routes should require authentication with org_id
   defp list_agents_for_dashboard(nil), do: []
-  defp list_agents_for_dashboard(org_id), do: Agents.list_all_for_org(org_id)
+
+  defp list_agents_for_dashboard(org_id) do
+    Agents.list_all_for_org(org_id)
+  rescue
+    e in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("Failed to list agents for dashboard: #{Exception.message(e)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("Failed to list agents for dashboard: exit #{inspect(reason)}")
+      []
+  end
 
   defp get_data_source_health_for_agents(agents) do
     agents

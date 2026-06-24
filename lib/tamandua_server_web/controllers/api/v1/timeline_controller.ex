@@ -187,7 +187,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
     correlations =
       query
-      |> Repo.all()
+      |> safe_repo_all("Timeline correlations")
       |> Enum.map(&serialize_event_correlation/1)
 
     json(conn, %{data: correlations})
@@ -352,19 +352,8 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         {:error, :not_found}
 
       {:ok, _agent} ->
-        time_window_ms =
-          case Map.get(params, "time_window_ms") do
-            nil -> :timer.minutes(5)
-            val when is_integer(val) -> val
-            val when is_binary(val) -> String.to_integer(val)
-          end
-
-        limit =
-          case Map.get(params, "limit") do
-            nil -> 100
-            val when is_integer(val) -> val
-            val when is_binary(val) -> String.to_integer(val)
-          end
+        time_window_ms = params["time_window_ms"] |> parse_int(:timer.minutes(5)) |> max(1_000)
+        limit = params["limit"] |> parse_int(100) |> max(1) |> min(@max_timeline_limit)
 
         opts = [time_window_ms: time_window_ms, limit: limit]
 
@@ -405,7 +394,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         where: e.id in ^event_ids and e.agent_id in ^org_agent_ids,
         order_by: [asc: e.timestamp]
       )
-      |> Repo.all()
+      |> safe_repo_all("Selected timeline events")
 
     cond do
       length(event_ids) < 2 ->
@@ -489,13 +478,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         {:error, :not_found}
 
       {:ok, _agent} ->
-        pid =
-          case pid_param do
-            val when is_integer(val) -> val
-            val when is_binary(val) -> String.to_integer(val)
-          end
+        pid = parse_int(pid_param, -1)
 
-        case Correlator.build_storyline(agent_id, pid) do
+        case pid >= 0 && Correlator.build_storyline(agent_id, pid) do
+          false ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{error: "pid must be a valid integer"})
+
           {:ok, storyline} ->
             json(conn, %{
               data: %{
@@ -544,13 +534,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         {:error, :not_found}
 
       {:ok, _agent} ->
-        pid =
-          case pid_param do
-            val when is_integer(val) -> val
-            val when is_binary(val) -> String.to_integer(val)
-          end
+        pid = parse_int(pid_param, -1)
 
-        case Correlator.analyze_chain(agent_id, pid) do
+        case pid >= 0 && Correlator.analyze_chain(agent_id, pid) do
+          false ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{error: "pid must be a valid integer"})
+
           {:ok, detections} ->
             json(conn, %{
               data: %{
@@ -595,22 +586,24 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         {:error, :not_found}
 
       {:ok, _agent} ->
-        pid =
-          case pid_param do
-            val when is_integer(val) -> val
-            val when is_binary(val) -> String.to_integer(val)
-          end
+        pid = parse_int(pid_param, -1)
 
-        events = Correlator.get_process_events(agent_id, pid)
+        if pid < 0 do
+          conn
+          |> put_status(:bad_request)
+          |> json(%{error: "pid must be a valid integer"})
+        else
+          events = Correlator.get_process_events(agent_id, pid)
 
-        json(conn, %{
-          data: %{
-            agent_id: agent_id,
-            pid: pid,
-            events: events,
-            event_count: length(events)
-          }
-        })
+          json(conn, %{
+            data: %{
+              agent_id: agent_id,
+              pid: pid,
+              events: events,
+              event_count: length(events)
+            }
+          })
+        end
     end
   end
 
@@ -639,16 +632,25 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   defp get_org_agent_ids(organization_id) do
     Agents.list_agents_for_org(organization_id)
     |> Enum.map(& &1.id)
+  rescue
+    error ->
+      Logger.warning("Timeline organization agent lookup failed: #{Exception.message(error)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("Timeline organization agent lookup failed: exit #{inspect(reason)}")
+      []
   end
 
   defp serialize_timeline_events(events, organization_id, evidence) do
     links_by_id = evidence.event_links || %{}
+    hostnames_by_agent_id = get_org_agent_hostnames(organization_id)
 
     Enum.map(events, fn event ->
       related = Map.get(links_by_id, event.id, [])
 
       event
-      |> serialize_timeline_event(organization_id)
+      |> serialize_timeline_event(hostnames_by_agent_id)
       |> Map.merge(%{
         relatedEvents: Enum.map(related, & &1.id),
         correlationEvidence: related,
@@ -792,10 +794,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   # Serialize a Telemetry.Event into the shape the Timeline UI expects
-  defp serialize_timeline_event(event, organization_id) do
+  defp serialize_timeline_event(event, hostnames_by_agent_id) do
     payload = event.payload || %{}
     event_type = event.event_type || "unknown"
-    hostname = get_agent_hostname(event.agent_id, organization_id)
+    hostname = Map.get(hostnames_by_agent_id, event.agent_id, "Unknown")
 
     %{
       id: event.id,
@@ -1031,15 +1033,20 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     end
   end
 
-  defp get_agent_hostname(nil, _organization_id), do: "Unknown"
-  defp get_agent_hostname(_agent_id, nil), do: "Unknown"
+  defp get_org_agent_hostnames(nil), do: %{}
 
-  defp get_agent_hostname(agent_id, organization_id) do
-    # Use organization-scoped lookup for multi-tenant isolation
-    case Agents.get_agent_for_org(organization_id, agent_id) do
-      {:ok, agent} -> agent.hostname || "Unknown"
-      {:error, :not_found} -> "Unknown"
-    end
+  defp get_org_agent_hostnames(organization_id) do
+    organization_id
+    |> Agents.list_agents_for_org()
+    |> Map.new(fn agent -> {agent.id, agent.hostname || "Unknown"} end)
+  rescue
+    error ->
+      Logger.warning("Timeline agent hostname lookup failed: #{Exception.message(error)}")
+      %{}
+  catch
+    :exit, reason ->
+      Logger.warning("Timeline agent hostname lookup failed: exit #{inspect(reason)}")
+      %{}
   end
 
   defp format_timestamp(%DateTime{} = ts), do: DateTime.to_iso8601(ts)
