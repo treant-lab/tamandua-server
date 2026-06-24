@@ -13,6 +13,7 @@ import {
   Command,
   Box,
   Brain,
+  Cpu,
   ClipboardList,
   Database,
   Globe,
@@ -43,6 +44,7 @@ interface SearchResult {
   title: string
   subtitle?: string
   href: string
+  external?: boolean
 }
 
 interface QuickAction {
@@ -50,6 +52,7 @@ interface QuickAction {
   name: string
   href: string
   icon: React.ComponentType<{ className?: string }>
+  external?: boolean
 }
 
 const quickActions: QuickAction[] = [
@@ -104,6 +107,10 @@ const searchablePages: QuickAction[] = [
   { id: 'shadow-ai', name: 'Shadow AI', href: '/app/ai-security/shadow-ai', icon: Eye },
   { id: 'ai-posture', name: 'AI Posture', href: '/app/ai-security/posture', icon: ShieldCheck },
   { id: 'ai-agents', name: 'AI Agent Registry', href: '/app/ai-security/agents', icon: Users },
+  { id: 'ai-models', name: 'AI Models', href: '/live/ai-security/models', icon: Brain, external: true },
+  { id: 'ml-processes', name: 'ML Processes', href: '/live/ml-processes', icon: Cpu, external: true },
+  { id: 'ai-runtime', name: 'AI Runtime', href: '/live/ai/runtime', icon: Activity, external: true },
+  { id: 'model-registries', name: 'Model Registries', href: '/live/registries', icon: Database, external: true },
   { id: 'ai-artifacts', name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
   { id: 'ai-dependency-graph', name: 'AI Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
   { id: 'mcp-servers', name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
@@ -185,6 +192,7 @@ async function searchLiveData(query: string): Promise<SearchResult[]> {
       title: page.name,
       subtitle: page.href,
       href: page.href,
+      external: page.external,
     }))
 
   const headers = {
@@ -370,6 +378,14 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
     return items
   }, [query, results, recentSearches])
 
+  const visitResult = useCallback((href: string, external?: boolean) => {
+    if (external) {
+      window.location.assign(href)
+    } else {
+      router.visit(href)
+    }
+  }, [])
+
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     switch (e.key) {
@@ -388,11 +404,11 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
           if (item.type === 'result') {
             const result = item.data as SearchResult
             addRecentSearch(query)
-            router.visit(result.href)
+            visitResult(result.href, result.external)
             onClose()
           } else if (item.type === 'action') {
             const action = item.data as QuickAction
-            router.visit(action.href)
+            visitResult(action.href, action.external)
             onClose()
           } else if (item.type === 'recent') {
             setQuery(item.data as string)
@@ -405,7 +421,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
         onClose()
         break
     }
-  }, [selectableItems, selectedIndex, query, onClose])
+  }, [selectableItems, selectedIndex, query, onClose, visitResult])
 
   // Scroll selected item into view
   useEffect(() => {
@@ -424,12 +440,12 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
 
   const handleResultClick = (result: SearchResult) => {
     addRecentSearch(query)
-    router.visit(result.href)
+    visitResult(result.href, result.external)
     onClose()
   }
 
   const handleActionClick = (action: QuickAction) => {
-    router.visit(action.href)
+    visitResult(action.href, action.external)
     onClose()
   }
 
