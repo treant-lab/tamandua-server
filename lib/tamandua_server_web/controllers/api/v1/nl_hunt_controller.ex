@@ -7,10 +7,43 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
   queries against telemetry data.
   """
   use TamanduaServerWeb, :controller
+  require Logger
 
   alias TamanduaServer.Hunting.NLHunter
 
   action_fallback TamanduaServerWeb.FallbackController
+
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("NL hunting action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "nl_hunter_unavailable",
+        message: "Natural language hunting service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "nl_hunter_unavailable", message: "Natural language hunting service is not running"})
+
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{error: "nl_hunter_timeout", message: "Natural language hunting service timed out"})
+
+    kind, reason ->
+      Logger.warning("NL hunting action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "nl_hunter_unavailable", message: "Natural language hunting service is unavailable"})
+  end
 
   @doc """
   Execute a natural language hunting query.

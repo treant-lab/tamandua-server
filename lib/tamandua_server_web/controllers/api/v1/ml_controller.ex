@@ -11,6 +11,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   """
 
   use TamanduaServerWeb, :controller
+  require Logger
 
   alias TamanduaServer.Detection.ML.Client, as: MLClient
   alias TamanduaServer.Detection.Engine
@@ -19,6 +20,38 @@ defmodule TamanduaServerWeb.API.V1.MLController do
 
   # Default ML service URL from config or environment
   @ml_service_url Application.compile_env(:tamandua_server, :ml_service_url, "http://localhost:8000")
+
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("ML API action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "ml_service_unavailable",
+        message: "ML service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "ml_service_unavailable", message: "ML service is not running in this boot profile"})
+
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{error: "ml_service_timeout", message: "ML service timed out"})
+
+    kind, reason ->
+      Logger.warning("ML API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "ml_service_unavailable", message: "ML service is unavailable"})
+  end
 
   # -------------------------------------------------------------------
   # Model Information
@@ -178,47 +211,47 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   - entropy: Pre-calculated entropy (optional)
   """
   def predict(conn, params) do
-    sample = %{
-      sha256: decode_hash(params["sha256"]),
-      content: Base.decode64!(params["content"] || ""),
-      file_type: params["file_type"] || "unknown",
-      entropy: params["entropy"] || 0.0,
-      metadata: params["metadata"] || %{}
-    }
+    case build_prediction_sample(params) do
+      {:ok, sample} ->
+        case MLClient.predict(sample) do
+          {:ok, prediction} ->
+            # Also trigger alert creation if malicious
+            if prediction.prediction == "malicious" do
+              Engine.analyze_binary(sample)
+            end
 
-    case MLClient.predict(sample) do
-      {:ok, prediction} ->
-        # Also trigger alert creation if malicious
-        if prediction.prediction == "malicious" do
-          Engine.analyze_binary(sample)
+            json(conn, %{
+              data: %{
+                sha256: params["sha256"],
+                prediction: prediction.prediction,
+                confidence: Float.round(prediction.confidence, 4),
+                malware_family: prediction.malware_family,
+                s_space_distance: Float.round(prediction.s_space_distance || 0.0, 4),
+                similar_samples: prediction.similar_samples || [],
+                processing_time_ms: prediction.processing_time_ms,
+                model_version: prediction.model_version,
+                threat_assessment: assess_threat(prediction)
+              }
+            })
+
+          {:error, :ml_service_unavailable} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{
+              error: "ml_service_unavailable",
+              message: "ML service is not reachable. Circuit breaker is open. Try again later."
+            })
+
+          {:error, reason} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{error: "prediction_failed", message: inspect(reason)})
         end
 
-        json(conn, %{
-          data: %{
-            sha256: params["sha256"],
-            prediction: prediction.prediction,
-            confidence: Float.round(prediction.confidence, 4),
-            malware_family: prediction.malware_family,
-            s_space_distance: Float.round(prediction.s_space_distance || 0.0, 4),
-            similar_samples: prediction.similar_samples || [],
-            processing_time_ms: prediction.processing_time_ms,
-            model_version: prediction.model_version,
-            threat_assessment: assess_threat(prediction)
-          }
-        })
-
-      {:error, :ml_service_unavailable} ->
+      {:error, message} ->
         conn
-        |> put_status(:service_unavailable)
-        |> json(%{
-          error: "ml_service_unavailable",
-          message: "ML service is not reachable. Circuit breaker is open. Try again later."
-        })
-
-      {:error, reason} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: "prediction_failed", message: inspect(reason)})
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_request", message: message})
     end
   end
 
@@ -229,52 +262,50 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   - samples: List of sample objects with content, sha256, file_type, entropy
   """
   def predict_batch(conn, %{"samples" => samples}) when is_list(samples) do
-    parsed_samples = Enum.map(samples, fn sample ->
-      %{
-        sha256: decode_hash(sample["sha256"]),
-        content: Base.decode64!(sample["content"] || ""),
-        file_type: sample["file_type"] || "unknown",
-        entropy: sample["entropy"] || 0.0,
-        metadata: sample["metadata"] || %{}
-      }
-    end)
+    case build_prediction_samples(samples) do
+      {:ok, parsed_samples} ->
+        case MLClient.predict_batch(parsed_samples) do
+          {:ok, predictions} ->
+            results = Enum.zip(samples, predictions)
+            |> Enum.map(fn {sample, prediction} ->
+              %{
+                sha256: sample["sha256"],
+                prediction: prediction.prediction,
+                confidence: Float.round(prediction.confidence, 4),
+                malware_family: prediction.malware_family,
+                threat_assessment: assess_threat(prediction)
+              }
+            end)
 
-    case MLClient.predict_batch(parsed_samples) do
-      {:ok, predictions} ->
-        results = Enum.zip(samples, predictions)
-        |> Enum.map(fn {sample, prediction} ->
-          %{
-            sha256: sample["sha256"],
-            prediction: prediction.prediction,
-            confidence: Float.round(prediction.confidence, 4),
-            malware_family: prediction.malware_family,
-            threat_assessment: assess_threat(prediction)
-          }
-        end)
+            # Calculate batch statistics
+            stats = calculate_batch_stats(predictions)
 
-        # Calculate batch statistics
-        stats = calculate_batch_stats(predictions)
+            json(conn, %{
+              data: %{
+                predictions: results,
+                statistics: stats,
+                total_samples: length(samples)
+              }
+            })
 
-        json(conn, %{
-          data: %{
-            predictions: results,
-            statistics: stats,
-            total_samples: length(samples)
-          }
-        })
+          {:error, :ml_service_unavailable} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{
+              error: "ml_service_unavailable",
+              message: "ML service is not reachable. Circuit breaker is open. Try again later."
+            })
 
-      {:error, :ml_service_unavailable} ->
+          {:error, reason} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{error: "batch_prediction_failed", message: inspect(reason)})
+        end
+
+      {:error, message} ->
         conn
-        |> put_status(:service_unavailable)
-        |> json(%{
-          error: "ml_service_unavailable",
-          message: "ML service is not reachable. Circuit breaker is open. Try again later."
-        })
-
-      {:error, reason} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: "batch_prediction_failed", message: inspect(reason)})
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid_request", message: message})
     end
   end
 
@@ -464,7 +495,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       "dataset_id" => dataset_id,
       "epochs" => epochs,
       "batch_size" => batch_size,
-      "requested_by" => conn.assigns[:current_user][:id],
+      "requested_by" => get_current_user_id(conn),
       "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
@@ -611,6 +642,47 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   # -------------------------------------------------------------------
   # Private Helpers
   # -------------------------------------------------------------------
+
+  defp build_prediction_sample(params) when is_map(params) do
+    with {:ok, content} <- decode_sample_content(params["content"]) do
+      {:ok,
+       %{
+         sha256: decode_hash(params["sha256"]),
+         content: content,
+         file_type: params["file_type"] || "unknown",
+         entropy: params["entropy"] || 0.0,
+         metadata: params["metadata"] || %{}
+       }}
+    end
+  end
+
+  defp build_prediction_sample(_params), do: {:error, "sample must be an object"}
+
+  defp build_prediction_samples(samples) do
+    result =
+      samples
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {sample, index}, {:ok, acc} ->
+        case build_prediction_sample(sample) do
+          {:ok, parsed} -> {:cont, {:ok, [parsed | acc]}}
+          {:error, message} -> {:halt, {:error, "samples[#{index}]: #{message}"}}
+        end
+      end)
+
+    case result do
+      {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
+      error -> error
+    end
+  end
+
+  defp decode_sample_content(content) when is_binary(content) and byte_size(content) > 0 do
+    case Base.decode64(content) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, "content must be valid base64"}
+    end
+  end
+
+  defp decode_sample_content(_content), do: {:error, "content is required"}
 
   defp decode_hash(nil), do: <<>>
   defp decode_hash(hex) when is_binary(hex) do

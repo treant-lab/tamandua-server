@@ -14,6 +14,47 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
 
   alias TamanduaServer.Identity.{RiskScoring, AzureAD}
 
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("Identity action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Identity service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Identity service is not running in this boot profile"
+      })
+
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{
+        status: "error",
+        message: "Identity service timed out"
+      })
+
+    kind, reason ->
+      Logger.warning("Identity action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        status: "error",
+        message: "Identity service is unavailable"
+      })
+  end
+
   # ============================================================================
   # Risk Scores
   # ============================================================================

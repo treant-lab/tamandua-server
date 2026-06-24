@@ -14,10 +14,52 @@ defmodule TamanduaServerWeb.API.V1.MLLifecycleController do
   """
 
   use TamanduaServerWeb, :controller
+  require Logger
 
   alias TamanduaServer.ML.{ModelManager, AnalystFeedback, TrainingScheduler}
 
   action_fallback TamanduaServerWeb.FallbackController
+
+  def action(conn, _opts) do
+    apply(__MODULE__, action_name(conn), [conn, conn.params])
+  rescue
+    exception ->
+      Logger.warning("ML lifecycle action #{action_name(conn)} failed: #{Exception.message(exception)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "ml_lifecycle_unavailable",
+        message: "ML lifecycle service is unavailable",
+        detail: Exception.message(exception)
+      })
+  catch
+    :exit, {:noproc, _} ->
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "ml_lifecycle_unavailable",
+        message: "ML lifecycle service is not running in this boot profile"
+      })
+
+    :exit, {:timeout, _} ->
+      conn
+      |> put_status(:gateway_timeout)
+      |> json(%{
+        error: "ml_lifecycle_timeout",
+        message: "ML lifecycle service timed out"
+      })
+
+    kind, reason ->
+      Logger.warning("ML lifecycle action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{
+        error: "ml_lifecycle_unavailable",
+        message: "ML lifecycle service is unavailable"
+      })
+  end
 
   # ── Model Listing ─────────────────────────────────────────────────────
 

@@ -10769,20 +10769,30 @@ defmodule TamanduaServerWeb.InertiaController do
           {:ok, users} ->
             Enum.map(users, fn user ->
               %{
-                userId: user.user_id,
-                userPrincipalName: user.user_id,
-                displayName: user[:display_name] || user.user_id,
-                department: user[:department],
-                score: user.score,
-                level: to_string(user.level),
+                userId: identity_field(user, :user_id),
+                userPrincipalName: identity_field(user, :user_id),
+                displayName: identity_field(user, :display_name) || identity_field(user, :user_id),
+                department: identity_field(user, :department),
+                score: identity_field(user, :score, 0),
+                level: identity_field(user, :level, :unknown) |> to_string(),
                 factors:
-                  Enum.map(user.factors || [], fn f ->
-                    %{name: f.name, contribution: f.contribution, details: f.details}
+                  Enum.map(identity_field(user, :factors, []), fn factor ->
+                    %{
+                      name: identity_field(factor, :name),
+                      contribution: identity_field(factor, :contribution, 0),
+                      details: identity_field(factor, :details, %{})
+                    }
                   end),
-                trend: to_string(user.trend),
-                lastUpdated: format_datetime(user.last_updated),
-                azureAdRiskLevel: get_in(user, [:external_signals, :azure_ad_risk_level]),
-                azureAdRiskState: get_in(user, [:external_signals, :azure_ad_risk_state])
+                trend: identity_field(user, :trend, :stable) |> to_string(),
+                lastUpdated: format_datetime(identity_field(user, :last_updated)),
+                azureAdRiskLevel:
+                  user
+                  |> identity_field(:external_signals, %{})
+                  |> identity_field(:azure_ad_risk_level),
+                azureAdRiskState:
+                  user
+                  |> identity_field(:external_signals, %{})
+                  |> identity_field(:azure_ad_risk_state)
               }
             end)
 
@@ -10875,6 +10885,13 @@ defmodule TamanduaServerWeb.InertiaController do
       impossibleTravelDetected: 0
     }
   end
+
+  defp identity_field(value, key, default \\ nil)
+  defp identity_field(value, key, default) when is_map(value) and is_atom(key) do
+    Map.get(value, key) || Map.get(value, Atom.to_string(key)) || default
+  end
+
+  defp identity_field(_value, _key, default), do: default
 
   defp serialize_azure_ad_sign_in(sign_in) do
     %{
