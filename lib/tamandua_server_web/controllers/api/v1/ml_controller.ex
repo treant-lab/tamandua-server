@@ -390,9 +390,9 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   Get ML prediction history with optional filters.
   """
   def prediction_history(conn, params) do
-    limit = parse_int(params["limit"], 100)
-    offset = parse_int(params["offset"], 0)
-    prediction_type = params["prediction"]
+    limit = bounded_limit(params["limit"], 100, 250)
+    offset = bounded_offset(params["offset"])
+    prediction_type = normalize_filter(params["prediction"])
 
     # Query from alerts that were created by ML
     import Ecto.Query
@@ -400,12 +400,15 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     query =
       from(a in TamanduaServer.Alerts.Alert,
         where:
-          like(a.title, "ML Detection:%") or
-            like(a.title, "Malware detected:%") or
-            like(a.title, "Agent detection: OFFLINE_ML%") or
-            fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
-            fragment("?->>'source' = ?", a.detection_metadata, "ml") or
-            fragment("?->>'detection_source' = ?", a.detection_metadata, "ml"),
+          ilike(a.title, "ML Detection:%") or
+            ilike(a.title, "Malware detected:%") or
+            ilike(a.title, "Agent detection: OFFLINE_ML%") or
+            fragment("lower(coalesce(?->>'detection_type', '')) = 'ml'", a.detection_metadata) or
+            fragment("lower(coalesce(?->>'source', '')) = 'ml'", a.detection_metadata) or
+            fragment("lower(coalesce(?->>'detection_source', '')) = 'ml'", a.detection_metadata) or
+            fragment("lower(coalesce(?->>'rule_name', '')) LIKE 'offline_ml%'", a.detection_metadata) or
+            fragment("coalesce(?->>'onnx_model_version', '') != ''", a.detection_metadata) or
+            fragment("coalesce(?->>'ml_model', '') != ''", a.detection_metadata),
         order_by: [desc: a.inserted_at],
         limit: ^limit,
         offset: ^offset
@@ -416,28 +419,38 @@ defmodule TamanduaServerWeb.API.V1.MLController do
         where(
           query,
           [a],
-          fragment("? LIKE ?", a.title, ^"%#{prediction_type}%") or
-            fragment("?->>'prediction' = ?", a.detection_metadata, ^prediction_type)
+          ilike(a.title, ^"%#{prediction_type}%") or
+            fragment("lower(coalesce(?->>'prediction', '')) = lower(?)", a.detection_metadata, ^prediction_type) or
+            fragment("lower(coalesce(?->>'rule_name', '')) LIKE lower(?)", a.detection_metadata, ^"%#{prediction_type}%")
         )
       else
         query
       end
 
-    alerts = TamanduaServer.Repo.all(query)
+    alerts = safe_repo_all(query, "ML prediction history")
 
     predictions =
       Enum.map(alerts, fn alert ->
+        metadata = alert.detection_metadata || %{}
+
         %{
           id: alert.id,
           agent_id: alert.agent_id,
           prediction:
-            get_in(alert.detection_metadata || %{}, ["prediction"]) ||
+            metadata_field(metadata, "prediction") ||
+              prediction_from_rule_name(metadata_field(metadata, "rule_name")) ||
               extract_prediction_from_title(alert.title),
           malware_family:
-            get_in(alert.detection_metadata || %{}, ["malware_family"]) ||
+            metadata_field(metadata, "malware_family") ||
+              metadata_field(metadata, "family") ||
               extract_family_from_title(alert.title),
-          model_version: get_in(alert.detection_metadata || %{}, ["model_version"]),
-          confidence: get_in(alert.detection_metadata || %{}, ["confidence"]),
+          model_version:
+            metadata_field(metadata, "model_version") ||
+              metadata_field(metadata, "onnx_model_version") ||
+              metadata_field(metadata, "ml_model"),
+          confidence:
+            metadata_field(metadata, "confidence") ||
+              metadata_field(metadata, "ml_confidence"),
           threat_score: alert.threat_score,
           timestamp: alert.inserted_at
         }
@@ -760,17 +773,19 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   end
 
   defp extract_prediction_from_title(title) do
-    if String.contains?(title, ["Malware detected", "ML Detection"]),
+    if is_binary(title) and String.contains?(title, ["Malware detected", "ML Detection", "OFFLINE_ML"]),
       do: "malicious",
       else: "unknown"
   end
 
-  defp extract_family_from_title(title) do
+  defp extract_family_from_title(title) when is_binary(title) do
     case Regex.run(~r/(?:Malware detected|ML Detection): (.+)$/, title) do
       [_, family] -> family
       _ -> nil
     end
   end
+
+  defp extract_family_from_title(_), do: nil
 
   defp parse_int(nil, default), do: default
   defp parse_int(val, default) when is_binary(val) do
@@ -781,6 +796,67 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   end
   defp parse_int(val, _) when is_integer(val), do: val
   defp parse_int(_, default), do: default
+
+  defp bounded_limit(value, default, max_limit) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_limit)
+  end
+
+  defp bounded_offset(value) do
+    value
+    |> parse_int(0)
+    |> max(0)
+  end
+
+  defp normalize_filter(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp normalize_filter(_), do: nil
+
+  defp metadata_field(metadata, key) when is_map(metadata) do
+    Map.get(metadata, key) || Map.get(metadata, metadata_atom_key(key))
+  end
+
+  defp metadata_field(_, _), do: nil
+
+  defp metadata_atom_key("prediction"), do: :prediction
+  defp metadata_atom_key("rule_name"), do: :rule_name
+  defp metadata_atom_key("malware_family"), do: :malware_family
+  defp metadata_atom_key("family"), do: :family
+  defp metadata_atom_key("model_version"), do: :model_version
+  defp metadata_atom_key("onnx_model_version"), do: :onnx_model_version
+  defp metadata_atom_key("ml_model"), do: :ml_model
+  defp metadata_atom_key("confidence"), do: :confidence
+  defp metadata_atom_key("ml_confidence"), do: :ml_confidence
+  defp metadata_atom_key(_), do: nil
+
+  defp prediction_from_rule_name(rule_name) when is_binary(rule_name) do
+    rule_name
+    |> String.downcase()
+    |> then(fn
+      "offline_ml" <> _ -> "malicious"
+      "ml_" <> _ -> "malicious"
+      _ -> nil
+    end)
+  end
+
+  defp prediction_from_rule_name(_), do: nil
+
+  defp safe_repo_all(query, label) do
+    TamanduaServer.Repo.all(query, timeout: 8_000)
+  rescue
+    exception ->
+      Logger.warning("[MLController] #{label} failed: #{Exception.message(exception)}")
+      []
+  catch
+    :exit, reason ->
+      Logger.warning("[MLController] #{label} failed: exit #{inspect(reason)}")
+      []
+  end
 
   # -------------------------------------------------------------------
   # ML Service Communication Helpers
