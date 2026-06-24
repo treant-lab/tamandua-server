@@ -215,11 +215,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       case {params["page"], params["per_page"]} do
         {page, per_page} when not is_nil(page) ->
           p = parse_int(page, 1) |> max(1)
-          pp = parse_int(per_page, @default_query_limit) |> min(@max_query_limit)
+          pp = bounded_limit(per_page, @default_query_limit, @max_query_limit)
           {pp, (p - 1) * pp}
 
         _ ->
-          {parse_int(params["limit"], @default_query_limit) |> min(@max_query_limit), parse_int(params["offset"], 0)}
+          {bounded_limit(params["limit"], @default_query_limit, @max_query_limit), bounded_offset(params["offset"])}
       end
 
     base =
@@ -710,8 +710,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     alias TamanduaServer.Alerts.Alert
     alias TamanduaServer.Agents.Agent
 
-    limit = parse_int(params["limit"], 50)
-    offset = parse_int(params["offset"], 0)
+    limit = bounded_limit(params["limit"], 50, @max_query_limit)
+    offset = bounded_offset(params["offset"])
 
     # Query alerts that are DNS-related based on title, description, or detection metadata
     base_query =
@@ -1230,6 +1230,20 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   end
 
   defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
+  defp bounded_limit(value, default, max_limit) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_limit)
+  end
+
+  defp bounded_offset(value) do
+    value
+    |> parse_int(0)
+    |> max(0)
+  end
 
   defp get_current_user(conn) do
     case conn.assigns[:current_user] do

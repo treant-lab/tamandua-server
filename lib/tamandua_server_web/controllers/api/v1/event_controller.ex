@@ -11,13 +11,13 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   @max_limit 250
 
   def index(conn, params) do
-    limit = params["limit"] |> parse_int(@default_limit) |> min(@max_limit)
+    limit = bounded_limit(params["limit"], @default_limit, @max_limit)
 
     filters = %{
       agent_id: params["agent_id"],
       event_type: params["event_type"],
       limit: limit,
-      offset: parse_int(params["offset"], 0)
+      offset: bounded_offset(params["offset"])
     }
 
     events = safe_list_events(filters, "Event index")
@@ -66,7 +66,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   def search(conn, params) do
     query = params["query"] || ""
     time_range = params["time_range"] || "24h"
-    limit = params["limit"] |> parse_int(@default_limit) |> min(@max_limit)
+    limit = bounded_limit(params["limit"], @default_limit, @max_limit)
 
     results =
       try do
@@ -97,8 +97,8 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     - limit: Maximum number of related events (default: 50)
   """
   def related(conn, %{"id" => event_id, "agent_id" => agent_id} = params) do
-    time_window = parse_int(params["time_window"], 30)
-    limit = parse_int(params["limit"], 50)
+    time_window = bounded_limit(params["time_window"], 30, 24 * 60)
+    limit = bounded_limit(params["limit"], 50, @max_limit)
 
     {related_events, partial_reason} =
       try do
@@ -229,6 +229,20 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     end
   end
   defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
+  defp bounded_limit(value, default, max_limit) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_limit)
+  end
+
+  defp bounded_offset(value) do
+    value
+    |> parse_int(0)
+    |> max(0)
+  end
 
   defp safe_list_events(filters, label) do
     Telemetry.list_events(filters)

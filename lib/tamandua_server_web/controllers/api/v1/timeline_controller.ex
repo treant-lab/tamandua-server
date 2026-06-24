@@ -93,7 +93,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   """
   def index(conn, params) do
     organization_id = get_organization_id(conn)
-    limit = params["limit"] |> parse_int(@default_timeline_limit) |> min(@max_timeline_limit)
+    limit = bounded_limit(params["limit"], @default_timeline_limit, @max_timeline_limit)
 
     # Get agent IDs that belong to this organization for tenant isolation
     org_agent_ids = get_org_agent_ids(organization_id)
@@ -219,7 +219,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   def correlations(conn, params) do
     organization_id = get_organization_id(conn)
-    limit = params["limit"] |> parse_int(100) |> min(500)
+    limit = bounded_limit(params["limit"], 100, 500)
 
     query =
       from(c in EventCorrelation,
@@ -239,7 +239,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   def incident_candidates(conn, params) do
     organization_id = get_organization_id(conn)
-    limit = params["limit"] |> parse_int(50) |> min(200)
+    limit = bounded_limit(params["limit"], 50, 200)
 
     candidates =
       organization_id
@@ -291,11 +291,13 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   def readiness(conn, params) do
     organization_id = get_organization_id(conn)
     org_agent_ids = get_org_agent_ids(organization_id)
-    limit = params["limit"] |> parse_int(@default_readiness_limit) |> min(@max_readiness_limit)
+    limit = bounded_limit(params["limit"], @default_readiness_limit, @max_readiness_limit)
 
     since =
       params["hours"]
       |> parse_int(24)
+      |> max(1)
+      |> min(24 * 30)
       |> then(&DateTime.add(DateTime.utc_now(), -&1 * 60 * 60, :second))
 
     events =
@@ -1108,6 +1110,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
+  defp bounded_limit(value, default, max_limit) do
+    value
+    |> parse_int(default)
+    |> max(1)
+    |> min(max_limit)
+  end
 
   defp safe_repo_all(query, label) do
     Repo.all(query, timeout: 8_000)
