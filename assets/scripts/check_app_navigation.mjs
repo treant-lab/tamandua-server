@@ -60,10 +60,14 @@ function listSourceFiles(relativeDir) {
 }
 
 function routeToRegex(route) {
-  const escaped = route
+  const dynamicRoute = route
+    .replace(/:[A-Za-z0-9_]+/g, '__ROUTE_PARAM__')
+    .replace(/\*path/g, '__ROUTE_SPLAT__');
+
+  const escaped = dynamicRoute
     .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/\\:([A-Za-z0-9_]+)/g, '[^/]+')
-    .replace(/\\\*path/g, '.*');
+    .replace(/__ROUTE_PARAM__/g, '[^/]+')
+    .replace(/__ROUTE_SPLAT__/g, '.*');
   return new RegExp(`^${escaped}$`);
 }
 
@@ -72,10 +76,17 @@ function collectStaticHrefs(file) {
   const hrefs = [
     ...content.matchAll(/href:\s*['"]([^'"]+)['"]/g),
     ...content.matchAll(/href=(?:\{)?['"]([^'"]+)['"]/g),
+    ...content.matchAll(/\brouter\.(?:visit|get)\(\s*['"]([^'"]+)['"]/g),
+    ...content.matchAll(/\bwindow\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/g),
+    ...content.matchAll(/\blocation\.href\s*=\s*['"]([^'"]+)['"]/g),
+    ...content.matchAll(/\brouter\.(?:visit|get)\(\s*`([^`]+)`/g),
+    ...content.matchAll(/\bwindow\.location(?:\.href)?\s*=\s*`([^`]+)`/g),
+    ...content.matchAll(/\blocation\.href\s*=\s*`([^`]+)`/g),
+    ...content.matchAll(/\bwindow\.location\.assign\(\s*`([^`]+)`/g),
   ];
 
   return hrefs.map((match) => ({
-    href: match[1],
+    href: match[1].replace(/\$\{[^}]+\}/g, 'dynamic'),
     file,
   }));
 }
