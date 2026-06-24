@@ -896,5 +896,5 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   defp parse_status("idle"), do: :idle
   defp parse_status("closed"), do: :closed
   defp parse_status("expired"), do: :expired
-  defp parse_status(other), do: String.to_existing_atom(other)
+  defp parse_status(_other), do: nil
 end
