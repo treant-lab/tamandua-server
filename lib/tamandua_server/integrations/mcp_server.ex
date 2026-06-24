@@ -17,6 +17,8 @@ defmodule TamanduaServer.Integrations.MCPServer do
   use GenServer
   require Logger
 
+  @read_timeout 15_000
+
   alias TamanduaServer.{Agents, Alerts, AuditLog, Detection, Response}
   alias TamanduaServer.Agents.Registry
   alias TamanduaServer.AISecurity.MCPGovernance
@@ -89,30 +91,30 @@ defmodule TamanduaServer.Integrations.MCPServer do
   end
 
   @doc "List available tools with their schemas."
-  def list_tools, do: GenServer.call(__MODULE__, :list_tools)
+  def list_tools, do: GenServer.call(__MODULE__, :list_tools, @read_timeout)
 
   @doc "List available context providers."
-  def list_context_providers, do: GenServer.call(__MODULE__, :list_context_providers)
+  def list_context_providers, do: GenServer.call(__MODULE__, :list_context_providers, @read_timeout)
 
   @doc "Get context from a specific provider."
   def get_context(provider_name, params \\ %{}) do
-    GenServer.call(__MODULE__, {:get_context, provider_name, params})
+    GenServer.call(__MODULE__, {:get_context, provider_name, params}, @read_timeout)
   end
 
   @doc "Get the aggregate security context exposed to MCP clients."
   def get_security_context(opts \\ %{}) do
-    GenServer.call(__MODULE__, {:get_security_context, opts})
+    GenServer.call(__MODULE__, {:get_security_context, opts}, @read_timeout)
   end
 
   @doc "Get server statistics."
-  def get_stats, do: GenServer.call(__MODULE__, :get_stats)
+  def get_stats, do: GenServer.call(__MODULE__, :get_stats, @read_timeout)
 
   @doc "Get audit log entries."
-  def get_audit_log(opts \\ []), do: GenServer.call(__MODULE__, {:get_audit_log, opts})
+  def get_audit_log(opts \\ []), do: GenServer.call(__MODULE__, {:get_audit_log, opts}, @read_timeout)
 
   @doc "List pending MCP action approvals."
   def list_pending_approvals(opts \\ []) do
-    GenServer.call(__MODULE__, {:list_pending_approvals, opts})
+    GenServer.call(__MODULE__, {:list_pending_approvals, opts}, @read_timeout)
   end
 
   @doc "Approve and execute a queued MCP action."
@@ -122,16 +124,16 @@ defmodule TamanduaServer.Integrations.MCPServer do
 
   @doc "Reject a queued MCP action without executing it."
   def reject_tool_call(approval_id, approver_context \\ %{}) do
-    GenServer.call(__MODULE__, {:reject_tool_call, approval_id, approver_context})
+    GenServer.call(__MODULE__, {:reject_tool_call, approval_id, approver_context}, @read_timeout)
   end
 
   @doc "Register or update a client API key."
   def register_client(api_key, client_info) do
-    GenServer.call(__MODULE__, {:register_client, api_key, client_info})
+    GenServer.call(__MODULE__, {:register_client, api_key, client_info}, @read_timeout)
   end
 
   @doc "Revoke a client API key."
-  def revoke_client(api_key), do: GenServer.call(__MODULE__, {:revoke_client, api_key})
+  def revoke_client(api_key), do: GenServer.call(__MODULE__, {:revoke_client, api_key}, @read_timeout)
 
   ## Server Callbacks
 
@@ -175,8 +177,12 @@ defmodule TamanduaServer.Integrations.MCPServer do
   @impl true
   def handle_call(:list_tools, _from, state) do
     tools = Enum.map(state.tools, fn {name, tool} ->
-      %{name: name, description: tool.description, input_schema: tool.input_schema,
-        required_permissions: tool.required_permissions}
+      %{
+        name: name,
+        description: tool.description,
+        input_schema: normalize_json_value(tool.input_schema),
+        required_permissions: normalize_json_value(tool.required_permissions)
+      }
     end)
     {:reply, {:ok, tools}, state}
   end
@@ -184,7 +190,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
   @impl true
   def handle_call(:list_context_providers, _from, state) do
     providers = Enum.map(state.context_providers, fn {name, p} ->
-      %{name: name, description: p.description, parameters: p.parameters}
+      %{name: name, description: p.description, parameters: normalize_json_value(p.parameters)}
     end)
     {:reply, {:ok, providers}, state}
   end
@@ -562,8 +568,8 @@ defmodule TamanduaServer.Integrations.MCPServer do
         %{
           name: name,
           description: tool.description,
-          inputSchema: tool.input_schema,
-          required_permissions: tool.required_permissions
+          inputSchema: normalize_json_value(tool.input_schema),
+          required_permissions: normalize_json_value(tool.required_permissions)
         }
       end)
 
@@ -573,8 +579,12 @@ defmodule TamanduaServer.Integrations.MCPServer do
   defp dispatch_method("list_tools", request, _client, state) do
     tools =
       Enum.map(state.tools, fn {name, tool} ->
-        %{name: name, description: tool.description, input_schema: tool.input_schema,
-          required_permissions: tool.required_permissions}
+        %{
+          name: name,
+          description: tool.description,
+          input_schema: normalize_json_value(tool.input_schema),
+          required_permissions: normalize_json_value(tool.required_permissions)
+        }
       end)
 
     {{:ok, success_response(request["id"], tools)}, state}
@@ -583,11 +593,26 @@ defmodule TamanduaServer.Integrations.MCPServer do
   defp dispatch_method("list_context_providers", request, _client, state) do
     providers =
       Enum.map(state.context_providers, fn {name, provider} ->
-        %{name: name, description: provider.description, parameters: provider.parameters}
+        %{name: name, description: provider.description, parameters: normalize_json_value(provider.parameters)}
       end)
 
     {{:ok, success_response(request["id"], providers)}, state}
   end
+
+  defp normalize_json_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {normalize_json_key(key), normalize_json_value(nested_value)}
+    end)
+  end
+
+  defp normalize_json_value(value) when is_list(value), do: Enum.map(value, &normalize_json_value/1)
+  defp normalize_json_value(nil), do: nil
+  defp normalize_json_value(value) when is_boolean(value), do: value
+  defp normalize_json_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_json_value(value), do: value
+
+  defp normalize_json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_json_key(key), do: key
 
   defp dispatch_method("tools/call", request, client, state) do
     params = request["params"] || %{}

@@ -8057,16 +8057,9 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get available tools from MCPServer module
     {tools_data, tools_error} =
-      try do
-        case MCPServer.list_tools() do
-          {:ok, data} -> {data, nil}
-          other -> {[], "list_tools returned #{inspect(other)}"}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("MCPServer.list_tools failed: #{kind} #{inspect(reason)}")
-          {[], "list_tools failed: #{inspect(kind)} #{inspect(reason)}"}
-      end
+      mcp_safe_call("list_tools", [], fn ->
+        MCPServer.list_tools()
+      end)
 
     tools =
       Enum.map(tools_data || [], fn tool ->
@@ -8082,16 +8075,9 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get context providers
     {providers_data, providers_error} =
-      try do
-        case MCPServer.list_context_providers() do
-          {:ok, data} -> {data, nil}
-          other -> {[], "list_context_providers returned #{inspect(other)}"}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("MCPServer.list_context_providers failed: #{kind} #{inspect(reason)}")
-          {[], "list_context_providers failed: #{inspect(kind)} #{inspect(reason)}"}
-      end
+      mcp_safe_call("list_context_providers", [], fn ->
+        MCPServer.list_context_providers()
+      end)
 
     context_providers =
       Enum.map(providers_data || [], fn provider ->
@@ -8108,29 +8094,15 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get server stats
     {stats, stats_error} =
-      try do
-        case MCPServer.get_stats() do
-          {:ok, data} -> {data, nil}
-          other -> {%{}, "get_stats returned #{inspect(other)}"}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("MCPServer.get_stats failed: #{kind} #{inspect(reason)}")
-          {%{}, "get_stats failed: #{inspect(kind)} #{inspect(reason)}"}
-      end
+      mcp_safe_call("get_stats", %{}, fn ->
+        MCPServer.get_stats()
+      end)
 
     # Get audit log for connection logs
     {audit_entries, audit_error} =
-      try do
-        case MCPServer.get_audit_log(limit: 50) do
-          {:ok, data} -> {data, nil}
-          other -> {[], "get_audit_log returned #{inspect(other)}"}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("MCPServer.get_audit_log failed: #{kind} #{inspect(reason)}")
-          {[], "get_audit_log failed: #{inspect(kind)} #{inspect(reason)}"}
-      end
+      mcp_safe_call("get_audit_log", [], fn ->
+        MCPServer.get_audit_log(limit: 50)
+      end)
 
     connection_logs =
       Enum.map(audit_entries || [], fn entry ->
@@ -8213,6 +8185,24 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp mcp_field(_map, _key, default), do: default
+
+  defp mcp_safe_call(operation, fallback, fun) when is_function(fun, 0) do
+    case fun.() do
+      {:ok, data} ->
+        {data, nil}
+
+      other ->
+        {fallback, "#{operation} returned #{inspect(other)}"}
+    end
+  rescue
+    exception ->
+      Logger.warning("MCPServer.#{operation} failed: #{Exception.message(exception)}")
+      {fallback, "#{operation} failed: #{Exception.message(exception)}"}
+  catch
+    kind, reason ->
+      Logger.warning("MCPServer.#{operation} failed: #{kind} #{inspect(reason)}")
+      {fallback, "#{operation} failed: #{inspect(kind)} #{inspect(reason)}"}
+  end
 
   # Phishing Triage
   def phishing_triage(conn, _params) do
