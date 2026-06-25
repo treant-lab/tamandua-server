@@ -427,10 +427,10 @@ end
 
 ## Related Documentation
 
-- [Alert Management Guide](./ALERT_MANAGEMENT_GUIDE.md)
-- [Response Actions Documentation](./RESPONSE_ACTIONS.md)
-- [Comment System Guide](./COMMENT_SYSTEM_GUIDE.md)
 - [vis.js Timeline Documentation](https://visjs.github.io/vis-timeline/docs/timeline/)
+
+Alert management, response action, and comment system runbooks are maintained in the
+private monorepo release materials and are published only after review.
 
 ## Support
 

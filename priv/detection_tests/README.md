@@ -165,4 +165,5 @@ See `.github/workflows/detection_tests.yml` for configuration.
 
 ## Documentation
 
-See [DETECTION_RULE_TESTING.md](../../../DETECTION_RULE_TESTING.md) for complete documentation.
+This README is the public detection rule testing reference for this mirror. Extended
+validation runbooks are maintained in private release materials.
