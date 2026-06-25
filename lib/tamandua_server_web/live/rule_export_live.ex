@@ -605,17 +605,40 @@ defmodule TamanduaServerWeb.RuleExportLive do
 
   @impl true
   def handle_event("select_export_type", %{"type" => type}, socket) do
-    {:noreply, assign(socket, :export_type, type)}
+    case parse_export_type(type) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown export type")}
+
+      export_type ->
+        {:noreply,
+         socket
+         |> assign(:export_type, export_type)
+         |> assign(:export_format, default_export_format(export_type))
+         |> assign(:selected_rules, [])
+         |> assign(:export_result, nil)}
+    end
   end
 
   @impl true
   def handle_event("select_scope", %{"scope" => scope}, socket) do
-    {:noreply, assign(socket, :export_scope, scope)}
+    case parse_export_scope(scope) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown export scope")}
+
+      export_scope ->
+        {:noreply, assign(socket, :export_scope, export_scope)}
+    end
   end
 
   @impl true
   def handle_event("select_format", %{"format" => format}, socket) do
-    {:noreply, assign(socket, :export_format, format)}
+    case parse_export_format(format) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown export format")}
+
+      _format_atom ->
+        {:noreply, assign(socket, :export_format, format)}
+    end
   end
 
   @impl true
@@ -753,36 +776,70 @@ defmodule TamanduaServerWeb.RuleExportLive do
   end
 
   defp perform_export(socket) do
-    opts = [
-      include_metadata: socket.assigns.include_metadata,
-      include_stats: socket.assigns.include_stats,
-      format: String.to_atom(socket.assigns.export_format)
-    ]
+    with format when not is_nil(format) <- parse_export_format(socket.assigns.export_format),
+         export_type when not is_nil(export_type) <- parse_export_type(socket.assigns.export_type),
+         export_scope when not is_nil(export_scope) <- parse_export_scope(socket.assigns.export_scope) do
+      opts = [
+        include_metadata: socket.assigns.include_metadata,
+        include_stats: socket.assigns.include_stats,
+        format: format
+      ]
 
-    case socket.assigns.export_type do
-      "bundle" ->
-        RuleExporter.export_bundle(socket.assigns.organization_id, opts)
+      case export_type do
+        "bundle" ->
+          RuleExporter.export_bundle(socket.assigns.organization_id, opts)
 
-      _ ->
-        rule_ids = case socket.assigns.export_scope do
-          "all" ->
-            get_all_rule_ids(socket.assigns.export_type, socket.assigns.organization_id)
+        _ ->
+          rule_ids = case export_scope do
+            "all" ->
+              get_all_rule_ids(export_type, socket.assigns.organization_id)
 
-          "selected" ->
-            socket.assigns.selected_rules
+            "selected" ->
+              socket.assigns.selected_rules
 
-          "template" ->
-            # Template export is handled separately
-            []
-        end
+            "template" ->
+              # Template export is handled separately
+              []
+          end
 
-        case socket.assigns.export_type do
-          "yara" -> RuleExporter.export_yara_rules(rule_ids, opts)
-          "sigma" -> RuleExporter.export_sigma_rules(rule_ids, opts)
-          "ioc" -> RuleExporter.export_iocs(rule_ids, opts)
-        end
+          case export_type do
+            "yara" -> RuleExporter.export_yara_rules(rule_ids, opts)
+            "sigma" -> RuleExporter.export_sigma_rules(rule_ids, opts)
+            "ioc" -> RuleExporter.export_iocs(rule_ids, opts)
+          end
+      end
+    else
+      nil -> {:error, :invalid_export_options}
     end
   end
+
+  defp parse_export_type("yara"), do: "yara"
+  defp parse_export_type("sigma"), do: "sigma"
+  defp parse_export_type("ioc"), do: "ioc"
+  defp parse_export_type("bundle"), do: "bundle"
+  defp parse_export_type(_), do: nil
+
+  defp parse_export_scope("all"), do: "all"
+  defp parse_export_scope("selected"), do: "selected"
+  defp parse_export_scope("template"), do: "template"
+  defp parse_export_scope(_), do: nil
+
+  defp default_export_format("yara"), do: "native"
+  defp default_export_format("sigma"), do: "yaml"
+  defp default_export_format("ioc"), do: "json"
+  defp default_export_format("bundle"), do: "json"
+
+  defp parse_export_format("native"), do: :native
+  defp parse_export_format("json"), do: :json
+  defp parse_export_format("yaml"), do: :yaml
+  defp parse_export_format("csv"), do: :csv
+  defp parse_export_format("stix"), do: :stix
+  defp parse_export_format(:native), do: :native
+  defp parse_export_format(:json), do: :json
+  defp parse_export_format(:yaml), do: :yaml
+  defp parse_export_format(:csv), do: :csv
+  defp parse_export_format(:stix), do: :stix
+  defp parse_export_format(_), do: nil
 
   defp get_all_rule_ids(export_type, organization_id) do
     case export_type do
