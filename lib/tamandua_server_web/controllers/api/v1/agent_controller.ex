@@ -805,9 +805,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
   defp effective_agent_status(persisted_status, _live_info)
        when persisted_status in [:online, "online", :isolated, "isolated"] do
-    # Persisted DB state can lag behind socket cleanup. Treat it as last-seen
-    # history only; live online/isolated state must come from Registry.
-    "offline"
+    # Dashboard and mTLS ingestion may run in separate runtimes. When there is
+    # no local Registry entry, a recent persisted heartbeat from the ingestion
+    # runtime is still valid live presence for API/GUI display.
+    to_string(persisted_status)
   end
 
   defp effective_agent_status(persisted_status, _live_info), do: to_string(persisted_status || "offline")

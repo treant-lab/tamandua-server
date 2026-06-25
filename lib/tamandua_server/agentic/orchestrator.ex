@@ -436,8 +436,6 @@ defmodule TamanduaServer.Agentic.Orchestrator do
 
   defp do_route_alert(alert) do
     org_id = alert_value(alert, :org_id) || alert_value(alert, :organization_id)
-    severity = alert_value(alert, :severity) || "medium"
-    detection_type = alert_value(alert, :detection_type)
 
     # Get all enabled agents
     agents = if org_id do

@@ -529,10 +529,12 @@ defmodule TamanduaServer.Agents do
 
   defp database_presence_status(%Agent{status: status}) when status == "isolated", do: :isolated
 
-  defp database_presence_status(%Agent{}) do
-    # Database status/last_seen is inventory history, not live socket state.
-    # An endpoint is online only when it has an active Registry/worker entry.
-    :offline
+  defp database_presence_status(%Agent{status: "online", last_seen_at: last_seen_at}) do
+    # Dashboard and mTLS ingestion can run in separate BEAM runtimes. In that
+    # shape the local ETS registry may be empty while the ingestion runtime has
+    # just persisted a heartbeat. Treat only recent persisted presence as live;
+    # stale online rows are still collapsed to offline below.
+    if recent_presence?(last_seen_at), do: :online, else: :offline
   end
 
   defp database_presence_status(_agent), do: :offline

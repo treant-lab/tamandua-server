@@ -1167,7 +1167,7 @@ defmodule TamanduaServerWeb.Broadcaster do
       mitreTechniques: alert.mitre_techniques || [],
       createdAt: format_datetime(alert.inserted_at),
       updatedAt: format_datetime(alert.updated_at),
-      acknowledgedBy: alert.acknowledged_by,
+      acknowledgedBy: stringify(alert.acknowledged_by_id),
       acknowledgedAt: format_datetime(alert.acknowledged_at)
     }
   end

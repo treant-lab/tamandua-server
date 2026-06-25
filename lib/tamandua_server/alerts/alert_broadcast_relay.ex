@@ -69,10 +69,27 @@ defmodule TamanduaServer.Alerts.AlertBroadcastRelay do
 
   @impl true
   def handle_info({:notification, _listener, _ref, @channel, payload}, state) do
+    Logger.debug("[AlertBroadcastRelay] received notification on #{@channel}")
+
     payload
     |> Jason.decode()
     |> handle_notification_payload()
 
+    {:noreply, state}
+  end
+
+  def handle_info({:notification, _listener, @channel, payload}, state) do
+    Logger.debug("[AlertBroadcastRelay] received notification on #{@channel}")
+
+    payload
+    |> Jason.decode()
+    |> handle_notification_payload()
+
+    {:noreply, state}
+  end
+
+  def handle_info({:notification, _listener, _ref, channel, _payload}, state) do
+    Logger.debug("[AlertBroadcastRelay] ignored notification from #{channel}")
     {:noreply, state}
   end
 
@@ -95,9 +112,14 @@ defmodule TamanduaServer.Alerts.AlertBroadcastRelay do
   end
 
   defp handle_remote_notification(%{"event" => "new_alert", "alert_id" => alert_id}) do
-    with {:ok, alert} <- Alerts.get_alert(alert_id) do
-      Broadcaster.broadcast_new_alert(alert)
-      Broadcaster.broadcast_geo_update()
+    case Alerts.get_alert(alert_id) do
+      {:ok, alert} ->
+        Logger.info("[AlertBroadcastRelay] rebroadcasting new alert #{alert_id}")
+        Broadcaster.broadcast_new_alert(alert)
+        Broadcaster.broadcast_geo_update()
+
+      {:error, reason} ->
+        Logger.warning("[AlertBroadcastRelay] alert #{alert_id} lookup failed: #{inspect(reason)}")
     end
   rescue
     error ->
@@ -105,8 +127,13 @@ defmodule TamanduaServer.Alerts.AlertBroadcastRelay do
   end
 
   defp handle_remote_notification(%{"event" => "alert_updated", "alert_id" => alert_id}) do
-    with {:ok, alert} <- Alerts.get_alert(alert_id) do
-      Broadcaster.broadcast_alert_updated(alert)
+    case Alerts.get_alert(alert_id) do
+      {:ok, alert} ->
+        Logger.info("[AlertBroadcastRelay] rebroadcasting alert update #{alert_id}")
+        Broadcaster.broadcast_alert_updated(alert)
+
+      {:error, reason} ->
+        Logger.warning("[AlertBroadcastRelay] alert #{alert_id} lookup failed: #{inspect(reason)}")
     end
   rescue
     error ->
