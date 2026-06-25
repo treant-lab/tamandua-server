@@ -268,7 +268,7 @@ defmodule TamanduaServer.Detection.C2Detector do
     signals = composite_signals(payload, detections)
     strong_count = Enum.count(signals, &(&1[:strength] == :strong))
     medium_count = Enum.count(signals, &(&1[:strength] == :medium))
-    score = signals |> Enum.map(& &1[:weight]) |> Enum.sum() |> min(1.0) |> Float.round(4)
+    score = signals |> Enum.map(& &1[:weight]) |> Enum.sum() |> min(1.0) |> round_float(4)
 
     alertable? =
       cond do
@@ -730,7 +730,7 @@ defmodule TamanduaServer.Detection.C2Detector do
     if Enum.any?(signals, &(&1[:id] == id)) do
       signals
     else
-      [%{id: id, strength: strength, weight: Float.round(weight, 4), label: label} | signals]
+      [%{id: id, strength: strength, weight: round_float(weight, 4), label: label} | signals]
     end
   end
 
@@ -957,32 +957,32 @@ defmodule TamanduaServer.Detection.C2Detector do
           confidence: confidence,
           destination: remote_ip,
           port: port,
-          interval_ms: Float.round(avg_interval * 1000, 0),
-          jitter: Float.round(jitter_pct, 4),
+          interval_ms: round_float(avg_interval * 1000, 0),
+          jitter: round_float(jitter_pct, 4),
           beacon_count: sample_count,
           description: "Strong beaconing detected from #{agent_id} to #{remote_ip}" <>
             (if port, do: ":#{port}", else: "") <> ": " <>
             "avg interval #{format_interval(avg_interval)}, " <>
-            "jitter #{Float.round(jitter_pct * 100, 1)}%, " <>
-            "beacon score #{Float.round(beacon_score, 2)}, " <>
+            "jitter #{round_float(jitter_pct * 100, 1)}%, " <>
+            "beacon score #{round_float(beacon_score, 2)}, " <>
             "#{sample_count} samples over #{format_interval(span_seconds)}",
           mitre_techniques: ["T1071", "T1573"],
           metadata: %{
             remote_ip: remote_ip,
             port: port,
-            avg_interval_seconds: Float.round(avg_interval, 2),
-            median_interval_seconds: Float.round(median_interval * 1.0, 2),
-            stddev: Float.round(stddev, 2),
-            coefficient_of_variation: Float.round(cv, 4),
-            jitter_ratio: Float.round(jitter_pct, 4),
-            jitter_percent_mad: Float.round(mad_jitter_pct, 1),
-            mad_seconds: Float.round(mad * 1.0, 2),
-            min_interval_seconds: Float.round(min_interval * 1.0, 2),
-            max_interval_seconds: Float.round(max_interval * 1.0, 2),
+            avg_interval_seconds: round_float(avg_interval, 2),
+            median_interval_seconds: round_float(median_interval * 1.0, 2),
+            stddev: round_float(stddev, 2),
+            coefficient_of_variation: round_float(cv, 4),
+            jitter_ratio: round_float(jitter_pct, 4),
+            jitter_percent_mad: round_float(mad_jitter_pct, 1),
+            mad_seconds: round_float(mad * 1.0, 2),
+            min_interval_seconds: round_float(min_interval * 1.0, 2),
+            max_interval_seconds: round_float(max_interval * 1.0, 2),
             sample_count: sample_count,
             observation_span_seconds: span_seconds,
-            beacon_score: Float.round(beacon_score, 4),
-            payload_consistency: Float.round(payload_consistency, 4),
+            beacon_score: round_float(beacon_score, 4),
+            payload_consistency: round_float(payload_consistency, 4),
             beacon_type: classify_beacon_type(avg_interval)
           }
         }]
@@ -996,33 +996,33 @@ defmodule TamanduaServer.Detection.C2Detector do
           confidence: confidence,
           destination: remote_ip,
           port: port,
-          interval_ms: Float.round(avg_interval * 1000, 0),
-          jitter: Float.round(jitter_pct, 4),
+          interval_ms: round_float(avg_interval * 1000, 0),
+          jitter: round_float(jitter_pct, 4),
           beacon_count: sample_count,
           description: "Strong beaconing detected from #{agent_id} to #{remote_ip}" <>
             (if port, do: ":#{port}", else: "") <> ": " <>
             "avg interval #{format_interval(avg_interval)}, " <>
-            "CV #{Float.round(cv, 3)}, " <>
-            "jitter #{Float.round(jitter_pct * 100, 1)}%, " <>
-            "beacon score #{Float.round(beacon_score, 2)}, " <>
+            "CV #{round_float(cv, 3)}, " <>
+            "jitter #{round_float(jitter_pct * 100, 1)}%, " <>
+            "beacon score #{round_float(beacon_score, 2)}, " <>
             "#{sample_count} samples over #{format_interval(span_seconds)}",
           mitre_techniques: ["T1071", "T1573"],
           metadata: %{
             remote_ip: remote_ip,
             port: port,
-            avg_interval_seconds: Float.round(avg_interval, 2),
-            median_interval_seconds: Float.round(median_interval * 1.0, 2),
-            stddev: Float.round(stddev, 2),
-            coefficient_of_variation: Float.round(cv, 4),
-            jitter_ratio: Float.round(jitter_pct, 4),
-            jitter_percent_mad: Float.round(mad_jitter_pct, 1),
-            mad_seconds: Float.round(mad * 1.0, 2),
-            min_interval_seconds: Float.round(min_interval * 1.0, 2),
-            max_interval_seconds: Float.round(max_interval * 1.0, 2),
+            avg_interval_seconds: round_float(avg_interval, 2),
+            median_interval_seconds: round_float(median_interval * 1.0, 2),
+            stddev: round_float(stddev, 2),
+            coefficient_of_variation: round_float(cv, 4),
+            jitter_ratio: round_float(jitter_pct, 4),
+            jitter_percent_mad: round_float(mad_jitter_pct, 1),
+            mad_seconds: round_float(mad * 1.0, 2),
+            min_interval_seconds: round_float(min_interval * 1.0, 2),
+            max_interval_seconds: round_float(max_interval * 1.0, 2),
             sample_count: sample_count,
             observation_span_seconds: span_seconds,
-            beacon_score: Float.round(beacon_score, 4),
-            payload_consistency: Float.round(payload_consistency, 4),
+            beacon_score: round_float(beacon_score, 4),
+            payload_consistency: round_float(payload_consistency, 4),
             beacon_type: classify_beacon_type(avg_interval)
           }
         }]
@@ -1036,28 +1036,28 @@ defmodule TamanduaServer.Detection.C2Detector do
           confidence: confidence,
           destination: remote_ip,
           port: port,
-          interval_ms: Float.round(avg_interval * 1000, 0),
-          jitter: Float.round(jitter_pct, 4),
+          interval_ms: round_float(avg_interval * 1000, 0),
+          jitter: round_float(jitter_pct, 4),
           beacon_count: sample_count,
           description: "Moderate beaconing pattern from #{agent_id} to #{remote_ip}" <>
             (if port, do: ":#{port}", else: "") <> ": " <>
             "avg interval #{format_interval(avg_interval)}, " <>
-            "CV #{Float.round(cv, 3)}, " <>
-            "jitter #{Float.round(jitter_pct * 100, 1)}%, " <>
+            "CV #{round_float(cv, 3)}, " <>
+            "jitter #{round_float(jitter_pct * 100, 1)}%, " <>
             "#{sample_count} samples",
           mitre_techniques: ["T1071", "T1573"],
           metadata: %{
             remote_ip: remote_ip,
             port: port,
-            avg_interval_seconds: Float.round(avg_interval, 2),
-            median_interval_seconds: Float.round(median_interval * 1.0, 2),
-            coefficient_of_variation: Float.round(cv, 4),
-            jitter_ratio: Float.round(jitter_pct, 4),
-            jitter_percent_mad: Float.round(mad_jitter_pct, 1),
+            avg_interval_seconds: round_float(avg_interval, 2),
+            median_interval_seconds: round_float(median_interval * 1.0, 2),
+            coefficient_of_variation: round_float(cv, 4),
+            jitter_ratio: round_float(jitter_pct, 4),
+            jitter_percent_mad: round_float(mad_jitter_pct, 1),
             sample_count: sample_count,
             observation_span_seconds: span_seconds,
-            beacon_score: Float.round(beacon_score, 4),
-            payload_consistency: Float.round(payload_consistency, 4)
+            beacon_score: round_float(beacon_score, 4),
+            payload_consistency: round_float(payload_consistency, 4)
           }
         }]
 
@@ -1068,24 +1068,24 @@ defmodule TamanduaServer.Detection.C2Detector do
           confidence: min(0.5, 0.3 + span_boost + sample_boost + payload_boost),
           destination: remote_ip,
           port: port,
-          interval_ms: Float.round(avg_interval * 1000, 0),
-          jitter: Float.round(jitter_pct, 4),
+          interval_ms: round_float(avg_interval * 1000, 0),
+          jitter: round_float(jitter_pct, 4),
           beacon_count: sample_count,
           description: "Potential slow beaconing from #{agent_id} to #{remote_ip}" <>
             (if port, do: ":#{port}", else: "") <> ": " <>
             "avg interval #{format_interval(avg_interval)}, " <>
-            "CV #{Float.round(cv, 3)}",
+            "CV #{round_float(cv, 3)}",
           mitre_techniques: ["T1071"],
           metadata: %{
             remote_ip: remote_ip,
             port: port,
-            avg_interval_seconds: Float.round(avg_interval, 2),
-            coefficient_of_variation: Float.round(cv, 4),
-            jitter_ratio: Float.round(jitter_pct, 4),
+            avg_interval_seconds: round_float(avg_interval, 2),
+            coefficient_of_variation: round_float(cv, 4),
+            jitter_ratio: round_float(jitter_pct, 4),
             sample_count: sample_count,
             observation_span_seconds: span_seconds,
-            beacon_score: Float.round(beacon_score, 4),
-            payload_consistency: Float.round(payload_consistency, 4)
+            beacon_score: round_float(beacon_score, 4),
+            payload_consistency: round_float(payload_consistency, 4)
           }
         }]
 
@@ -1210,7 +1210,7 @@ defmodule TamanduaServer.Detection.C2Detector do
         # Too long: > 10 years is suspicious; legitimate CAs cap at ~398 days for leaf certs
         validity_days > 3650 ->
           [{:long_validity, 0.5,
-            "Certificate validity period unusually long: #{validity_days} days (#{Float.round(validity_days / 365.0, 1)} years), typical of self-generated C2 certs"} | issues]
+            "Certificate validity period unusually long: #{validity_days} days (#{round_float(validity_days / 365.0, 1)} years), typical of self-generated C2 certs"} | issues]
 
         # Moderately long: > 2 years for a leaf certificate is atypical post-2020
         validity_days > 825 ->
@@ -1551,18 +1551,18 @@ defmodule TamanduaServer.Detection.C2Detector do
           type: :c2_dga_https,
           confidence: confidence,
           description: "Potential DGA domain for HTTPS C2: #{domain} " <>
-            "(entropy: #{Float.round(entropy, 2)}, " <>
-            "consonant ratio: #{Float.round(consonant_ratio, 2)}, " <>
-            "bigram deviation: #{Float.round(bigram_score, 2)}, " <>
-            "trigram deviation: #{Float.round(trigram_score, 2)})",
+            "(entropy: #{round_float(entropy, 2)}, " <>
+            "consonant ratio: #{round_float(consonant_ratio, 2)}, " <>
+            "bigram deviation: #{round_float(bigram_score, 2)}, " <>
+            "trigram deviation: #{round_float(trigram_score, 2)})",
           mitre_techniques: ["T1568.002", "T1071", "T1573"],
           metadata: %{
             domain: domain,
             sld: sld,
-            entropy: Float.round(entropy, 3),
-            consonant_ratio: Float.round(consonant_ratio, 3),
-            bigram_deviation: Float.round(bigram_score, 3),
-            trigram_deviation: Float.round(trigram_score, 3),
+            entropy: round_float(entropy, 3),
+            consonant_ratio: round_float(consonant_ratio, 3),
+            bigram_deviation: round_float(bigram_score, 3),
+            trigram_deviation: round_float(trigram_score, 3),
             sld_length: sld_len,
             detection_signals: build_dga_signals(is_dga_by_combined, is_dga_by_entropy, is_dga_by_ngram)
           }
@@ -1877,11 +1877,11 @@ defmodule TamanduaServer.Detection.C2Detector do
             type: :c2_asymmetric_traffic,
             confidence: 0.5,
             description: "Asymmetric traffic pattern to #{remote_ip}: " <>
-              "download/upload ratio #{Float.round(ratio, 1)}:1 over #{updated.connection_count} connections",
+              "download/upload ratio #{round_float(ratio, 1)}:1 over #{updated.connection_count} connections",
             mitre_techniques: ["T1071"],
             metadata: %{
               remote_ip: remote_ip,
-              ratio: Float.round(ratio, 2),
+              ratio: round_float(ratio, 2),
               total_sent: updated.total_sent,
               total_received: updated.total_received,
               connection_count: updated.connection_count
@@ -2027,13 +2027,13 @@ defmodule TamanduaServer.Detection.C2Detector do
           type: :c2_dns_tunnel_entropy,
           confidence: confidence,
           description: "DNS tunneling indicator: subdomain '#{Enum.join(subdomain_labels, ".")}' " <>
-            "has high entropy (#{Float.round(entropy, 2)} bits/char, threshold #{entropy_threshold}), " <>
+            "has high entropy (#{round_float(entropy, 2)} bits/char, threshold #{entropy_threshold}), " <>
             "suggesting encoded C2 data in domain '#{domain}'",
           mitre_techniques: ["T1071.004", "T1573"],
           metadata: %{
             domain: domain,
             subdomain: Enum.join(subdomain_labels, "."),
-            entropy: Float.round(entropy, 3),
+            entropy: round_float(entropy, 3),
             threshold: entropy_threshold,
             subdomain_length: String.length(combined_subdomain)
           }
@@ -2236,12 +2236,12 @@ defmodule TamanduaServer.Detection.C2Detector do
           type: :c2_temporal_correlated,
           confidence: confidence,
           description: "Temporal analysis corroborates C2 activity for agent #{agent_id}: " <>
-            "TemporalScorer detected beacon pattern (entropy #{Float.round(temporal_entropy, 2)})" <>
+            "TemporalScorer detected beacon pattern (entropy #{round_float(temporal_entropy, 2)})" <>
             " alongside #{length(existing_detections)} other C2 indicator(s)",
           mitre_techniques: ["T1071", "T1573"],
           metadata: %{
             temporal_anomalies: length(beacon_anomalies),
-            temporal_entropy: Float.round(temporal_entropy, 3),
+            temporal_entropy: round_float(temporal_entropy, 3),
             existing_detection_count: length(existing_detections),
             agent_id: agent_id
           }
@@ -2291,15 +2291,15 @@ defmodule TamanduaServer.Detection.C2Detector do
         composite_detection = %{
           type: :c2_composite_detection,
           confidence: composite,
-          description: "Multi-signal C2 detection: composite score #{Float.round(composite, 2)} " <>
-            "(beacon=#{Float.round(beacon_score, 2)}, dns=#{Float.round(dns_score, 2)}, " <>
-            "fingerprint=#{Float.round(ja3_score, 2)}) exceeds threshold #{composite_threshold}",
+          description: "Multi-signal C2 detection: composite score #{round_float(composite, 2)} " <>
+            "(beacon=#{round_float(beacon_score, 2)}, dns=#{round_float(dns_score, 2)}, " <>
+            "fingerprint=#{round_float(ja3_score, 2)}) exceeds threshold #{composite_threshold}",
           mitre_techniques: ["T1071", "T1071.004", "T1573"],
           metadata: %{
-            composite_score: Float.round(composite, 4),
-            beacon_score: Float.round(beacon_score, 4),
-            dns_score: Float.round(dns_score, 4),
-            ja3_score: Float.round(ja3_score, 4),
+            composite_score: round_float(composite, 4),
+            beacon_score: round_float(beacon_score, 4),
+            dns_score: round_float(dns_score, 4),
+            ja3_score: round_float(ja3_score, 4),
             signal_count: length(detections),
             threshold: composite_threshold
           }
@@ -2405,7 +2405,7 @@ defmodule TamanduaServer.Detection.C2Detector do
          }) do
       {:ok, _alert} ->
         Logger.warning(
-          "DNS Tunnel alert created: #{title} (confidence: #{Float.round(max_confidence, 2)})"
+          "DNS Tunnel alert created: #{title} (confidence: #{round_float(max_confidence, 2)})"
         )
 
         :ok
@@ -2529,7 +2529,7 @@ defmodule TamanduaServer.Detection.C2Detector do
          }) do
       {:ok, _alert} ->
         Logger.warning(
-          "C2 alert created: #{title} (confidence: #{Float.round(max_confidence, 2)})"
+          "C2 alert created: #{title} (confidence: #{round_float(max_confidence, 2)})"
         )
 
         :ok
@@ -2615,17 +2615,17 @@ defmodule TamanduaServer.Detection.C2Detector do
 
   defp format_interval(seconds) when is_number(seconds) do
     cond do
-      seconds < 60 -> "#{Float.round(seconds, 1)}s"
-      seconds < 3600 -> "#{Float.round(seconds / 60, 1)}m"
-      true -> "#{Float.round(seconds / 3600, 1)}h"
+      seconds < 60 -> "#{round_float(seconds, 1)}s"
+      seconds < 3600 -> "#{round_float(seconds / 60, 1)}m"
+      true -> "#{round_float(seconds / 3600, 1)}h"
     end
   end
 
   defp format_bytes(bytes) when is_number(bytes) do
     cond do
-      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 2)} GB"
-      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 2)} MB"
-      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 2)} KB"
+      bytes >= 1_000_000_000 -> "#{round_float(bytes / 1_000_000_000, 2)} GB"
+      bytes >= 1_000_000 -> "#{round_float(bytes / 1_000_000, 2)} MB"
+      bytes >= 1_000 -> "#{round_float(bytes / 1_000, 2)} KB"
       true -> "#{bytes} B"
     end
   end
@@ -2771,4 +2771,12 @@ defmodule TamanduaServer.Detection.C2Detector do
       end
     end)
   end
+
+  defp round_float(value, precision) when is_number(value) do
+    value
+    |> Kernel.*(1.0)
+    |> Float.round(precision)
+  end
+
+  defp round_float(_value, _precision), do: 0.0
 end

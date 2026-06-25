@@ -435,9 +435,9 @@ defmodule TamanduaServer.Agentic.Orchestrator do
   # ============================================================================
 
   defp do_route_alert(alert) do
-    org_id = alert[:org_id] || alert["org_id"]
-    severity = alert[:severity] || alert["severity"] || "medium"
-    detection_type = alert[:detection_type] || alert["detection_type"]
+    org_id = alert_value(alert, :org_id) || alert_value(alert, :organization_id)
+    severity = alert_value(alert, :severity) || "medium"
+    detection_type = alert_value(alert, :detection_type)
 
     # Get all enabled agents
     agents = if org_id do
@@ -483,7 +483,7 @@ defmodule TamanduaServer.Agentic.Orchestrator do
 
   defp conditions_match_alert?(conditions, alert) do
     Enum.all?(conditions, fn {key, expected} ->
-      actual = Map.get(alert, key) || Map.get(alert, to_string(key))
+      actual = alert_value(alert, key)
       match_value?(actual, expected)
     end)
   end
@@ -501,7 +501,7 @@ defmodule TamanduaServer.Agentic.Orchestrator do
     end), fn -> 0.0 end)
 
     # Score based on data source relevance
-    detection_type = to_string(alert[:detection_type] || alert["detection_type"] || "")
+    detection_type = to_string(alert_value(alert, :detection_type) || "")
     score = score + if(:alerts in agent.data_sources, do: 5.0, else: 0.0)
     score = score + if(:telemetry in agent.data_sources, do: 3.0, else: 0.0)
     score = score + if(:threat_intel in agent.data_sources and String.length(detection_type) > 0, do: 4.0, else: 0.0)
@@ -514,6 +514,16 @@ defmodule TamanduaServer.Agentic.Orchestrator do
     else
       score
     end
+  end
+
+  defp alert_value(alert, key) when is_atom(key) do
+    Map.get(alert, key) || Map.get(alert, to_string(key))
+  end
+
+  defp alert_value(alert, key) when is_binary(key) do
+    Map.get(alert, key) || Map.get(alert, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> Map.get(alert, key)
   end
 
   # ============================================================================

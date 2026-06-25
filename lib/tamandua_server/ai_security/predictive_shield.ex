@@ -631,7 +631,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     updated_stats =
       state.stats
       |> Map.put(:predictions_made, state.stats.predictions_made + map_size(updated_scores))
-      |> Map.put(:average_risk_score, Float.round(avg_risk, 2))
+      |> Map.put(:average_risk_score, round_float(avg_risk, 2))
       |> Map.put(:last_prediction_at, now)
 
     %{updated_state | agent_risk_scores: updated_scores, stats: updated_stats}
@@ -653,7 +653,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     # Combine scores with weighted average
     final_score =
       (base_score * 0.5 + path_risk * 0.35 + trend_adjustment * 0.15)
-      |> Float.round(1)
+      |> round_float(1)
       |> min(100.0)
       |> max(0.0)
 
@@ -719,7 +719,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     case query_ml_risk_service(feature_vector) do
       {:ok, ml_score} ->
         Logger.debug("ML risk score from service: #{ml_score}")
-        Float.round(min(max(ml_score, 0.0), 100.0), 1)
+        round_float(min(max(ml_score, 0.0), 100.0), 1)
 
       {:error, reason} ->
         Logger.debug("ML service unavailable (#{inspect(reason)}), using local scoring")
@@ -896,7 +896,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
         acc + normalized * weight * 100
       end)
 
-    Float.round(min(score, 100.0), 1)
+    round_float(min(score, 100.0), 1)
   end
 
   defp to_float(value) when is_number(value), do: value * 1.0
@@ -1046,7 +1046,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     # Combine with diminishing returns to avoid ceiling effects
     adjusted = base_prob + activity_boost + sequence_boost
     # Ensure probability stays in valid range
-    Float.round(min(max(adjusted, 0.01), 0.99), 4)
+    round_float(min(max(adjusted, 0.01), 0.99), 4)
   end
 
   # Detects if events contain a temporal sequence matching the from->to
@@ -1159,7 +1159,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
       path
       |> Enum.map(fn {_node, prob} -> prob end)
       |> Enum.reduce(1.0, &(&1 * &2))
-      |> Float.round(4)
+      |> round_float(4)
 
     tactics = Enum.map(path, fn {node, _} -> node end)
 
@@ -1190,7 +1190,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
       %{
         hour: hour,
         timestamp: DateTime.utc_now() |> DateTime.add(hour, :hour),
-        predicted_risk: Float.round(value, 1),
+        predicted_risk: round_float(value, 1),
         confidence: calculate_forecast_confidence(hour, length(history))
       }
     end)
@@ -1227,7 +1227,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     # Confidence decreases with forecast horizon and increases with data
     base_confidence = min(history_length / 100, 1.0) * 0.9
     decay = :math.pow(0.95, hour)
-    Float.round(base_confidence * decay * 100, 1)
+    round_float(base_confidence * decay * 100, 1)
   end
 
   # ============================================================================
@@ -1721,7 +1721,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
         |> Enum.sum()
         |> Kernel./(length(cmdlines))
 
-      Float.round(avg_entropy, 2)
+      round_float(avg_entropy, 2)
     end
   end
 
@@ -1768,7 +1768,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
         |> Enum.map(& &1.probability)
         |> Enum.sum()
 
-      Float.round(total / length(top_paths) * 100, 1)
+      round_float(total / length(top_paths) * 100, 1)
     end
   end
 
@@ -1783,7 +1783,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
       recent_scores = Enum.take(history, 5) |> Enum.map(& &1.risk_score)
       trend = calculate_trend(recent_scores)
       # Cap adjustment to +/- 10 points
-      Float.round(min(max(trend * 5, -10), 10), 1)
+      round_float(min(max(trend * 5, -10), 10), 1)
     end
   end
 
@@ -2548,7 +2548,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     network_score = calculate_network_exposure(events).exposure_score / 4
 
     total = ports_score + services_score + privileged_score + network_score
-    Float.round(min(total, 100), 1)
+    round_float(min(total, 100), 1)
   end
 
   # ============================================================================
@@ -2672,7 +2672,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
           end)
 
         accuracy = if total_predictions > 0 do
-          Float.round(correct_predictions / total_predictions * 100, 1)
+          round_float(correct_predictions / total_predictions * 100, 1)
         else
           # Baseline accuracy when no data
           85.0 + :rand.uniform() * 10
@@ -2699,7 +2699,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
       # Simulate improving accuracy over time
       base_accuracy = 82.0 + (30 + days_ago) * 0.3
       noise = (:rand.uniform() - 0.5) * 5
-      accuracy = Float.round(min(max(base_accuracy + noise, 75.0), 98.0), 1)
+      accuracy = round_float(min(max(base_accuracy + noise, 75.0), 98.0), 1)
 
       total = 50 + :rand.uniform(30)
       correct = round(total * accuracy / 100)
@@ -2790,7 +2790,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
       0.0
     end
 
-    Float.round(min(base + history_bonus + path_bonus, 0.95), 2)
+    round_float(min(base + history_bonus + path_bonus, 0.95), 2)
   end
 
   defp estimate_time_to_threat(risk_score) do
@@ -3090,4 +3090,12 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
 
     misconfigurations
   end
+
+  defp round_float(value, precision) when is_number(value) do
+    value
+    |> Kernel.*(1.0)
+    |> Float.round(precision)
+  end
+
+  defp round_float(_value, _precision), do: 0.0
 end
