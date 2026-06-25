@@ -8,7 +8,20 @@ defmodule TamanduaServerWeb.ChangesetJSON do
 
   defp translate_error({msg, opts}) do
     Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-      opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      opts |> get_error_option(key) |> to_string()
     end)
+  end
+
+  defp get_error_option(opts, key) when is_binary(key) do
+    case safe_existing_atom(key) do
+      nil -> key
+      atom_key -> Keyword.get(opts, atom_key, key)
+    end
+  end
+
+  defp safe_existing_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> nil
   end
 end

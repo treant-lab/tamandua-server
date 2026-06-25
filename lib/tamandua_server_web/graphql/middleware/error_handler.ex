@@ -19,7 +19,7 @@ defmodule TamanduaServerWeb.GraphQL.Middleware.ErrorHandler do
   defp format_error(%Ecto.Changeset{} = changeset) do
     errors = Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+        opts |> get_error_option(key) |> to_string()
       end)
     end)
 
@@ -74,5 +74,18 @@ defmodule TamanduaServerWeb.GraphQL.Middleware.ErrorHandler do
       message: inspect(error),
       extensions: %{code: "UNKNOWN_ERROR"}
     }
+  end
+
+  defp get_error_option(opts, key) when is_binary(key) do
+    case safe_existing_atom(key) do
+      nil -> key
+      atom_key -> Keyword.get(opts, atom_key, key)
+    end
+  end
+
+  defp safe_existing_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> nil
   end
 end
