@@ -1725,23 +1725,26 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   defp execute_http_request(params, execution) do
     url = interpolate_string(params["url"], execution.workflow_variables)
-    method = String.to_atom(String.downcase(params["method"] || "get"))
     headers = params["headers"] || %{}
     body = params["body"]
     timeout = (params["timeout_seconds"] || 30) * 1000
 
-    req_opts = [receive_timeout: timeout]
-    req_opts = if body, do: Keyword.put(req_opts, :json, body), else: req_opts
+    with {:ok, method} <- parse_http_method(params["method"] || "get") do
+      req_opts = [receive_timeout: timeout]
+      req_opts = if body, do: Keyword.put(req_opts, :json, body), else: req_opts
 
-    case apply(Req, method, [url, req_opts ++ [headers: headers]]) do
-      {:ok, %Req.Response{status: status, body: resp_body}} when status in 200..299 ->
-        {:ok, %{"status" => status, "body" => resp_body}}
+      case apply(Req, method, [url, req_opts ++ [headers: headers]]) do
+        {:ok, %Req.Response{status: status, body: resp_body}} when status in 200..299 ->
+          {:ok, %{"status" => status, "body" => resp_body}}
 
-      {:ok, %Req.Response{status: status, body: resp_body}} ->
-        {:error, "HTTP #{status}: #{inspect(resp_body)}"}
+        {:ok, %Req.Response{status: status, body: resp_body}} ->
+          {:error, "HTTP #{status}: #{inspect(resp_body)}"}
 
-      {:error, reason} ->
-        {:error, "HTTP request failed: #{inspect(reason)}"}
+        {:error, reason} ->
+          {:error, "HTTP request failed: #{inspect(reason)}"}
+      end
+    else
+      {:error, reason} -> {:error, reason}
     end
   rescue
     e -> {:error, "HTTP request error: #{Exception.message(e)}"}
@@ -1853,7 +1856,7 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   defp matches_trigger_config?(config, event_data) do
     Enum.all?(config, fn {key, expected} ->
-      actual = Map.get(event_data, key) || Map.get(event_data, String.to_atom(key))
+      actual = safe_map_get(event_data, key)
       matches_value?(actual, expected)
     end)
   end
@@ -1895,7 +1898,7 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   defp interpolate_string(string, variables) when is_binary(string) do
     Regex.replace(~r/\{\{(\w+)\}\}/, string, fn _, var_name ->
-      to_string(Map.get(variables, var_name) || Map.get(variables, String.to_atom(var_name)) || "")
+      to_string(safe_map_get(variables, var_name) || "")
     end)
   end
 
@@ -1906,7 +1909,7 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     operator = condition["operator"]
     expected = condition["value"]
 
-    actual = Map.get(variables, field) || Map.get(variables, String.to_atom(field))
+    actual = safe_map_get(variables, field)
 
     case operator do
       "equals" -> actual == expected
@@ -1922,6 +1925,51 @@ defmodule TamanduaServer.Automation.Hyperautomation do
   end
 
   defp evaluate_condition(_, _), do: true
+
+  defp parse_http_method(method) when is_atom(method) do
+    method
+    |> Atom.to_string()
+    |> parse_http_method()
+  end
+
+  defp parse_http_method(method) when is_binary(method) do
+    case String.downcase(method) do
+      "get" -> {:ok, :get}
+      "post" -> {:ok, :post}
+      "put" -> {:ok, :put}
+      "patch" -> {:ok, :patch}
+      "delete" -> {:ok, :delete}
+      "head" -> {:ok, :head}
+      "options" -> {:ok, :options}
+      other -> {:error, "Unsupported HTTP method: #{other}"}
+    end
+  end
+
+  defp parse_http_method(_), do: {:error, "Unsupported HTTP method"}
+
+  defp safe_map_get(map, key) when is_map(map) do
+    cond do
+      Map.has_key?(map, key) ->
+        Map.get(map, key)
+
+      is_atom(key) && Map.has_key?(map, Atom.to_string(key)) ->
+        Map.get(map, Atom.to_string(key))
+
+      is_binary(key) ->
+        Enum.find_value(map, fn
+          {map_key, value} when is_atom(map_key) ->
+            if Atom.to_string(map_key) == key, do: value
+
+          _ ->
+            nil
+        end)
+
+      true ->
+        nil
+    end
+  end
+
+  defp safe_map_get(_map, _key), do: nil
 
   defp status_to_string(:success), do: "completed"
   defp status_to_string(:failed), do: "failed"
