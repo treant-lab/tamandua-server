@@ -33,8 +33,8 @@ defmodule TamanduaServerWeb.AlertsLive do
 
   defp apply_action(socket, :index, params) do
     filters = build_filters(params)
-    sort_by = String.to_existing_atom(params["sort_by"] || "inserted_at")
-    sort_order = String.to_existing_atom(params["sort_order"] || "desc")
+    sort_by = parse_sort_by(params["sort_by"])
+    sort_order = parse_sort_order(params["sort_order"])
     organization_id = socket.assigns.organization_id
 
     alerts = Alerts.search_alerts(filters,
@@ -71,7 +71,7 @@ defmodule TamanduaServerWeb.AlertsLive do
 
   @impl true
   def handle_event("sort", %{"field" => field}, socket) do
-    new_sort_by = String.to_existing_atom(field)
+    new_sort_by = parse_sort_by(field)
     new_sort_order = if socket.assigns.sort_by == new_sort_by and socket.assigns.sort_order == :asc, do: :desc, else: :asc
     path = build_path(socket.assigns.filters, new_sort_by, new_sort_order)
     {:noreply, push_patch(socket, to: path)}
@@ -286,6 +286,20 @@ defmodule TamanduaServerWeb.AlertsLive do
   defp maybe_add_filter(filters, _key, nil), do: filters
   defp maybe_add_filter(filters, _key, ""), do: filters
   defp maybe_add_filter(filters, key, value), do: Map.put(filters, key, value)
+
+  defp parse_sort_by(:severity), do: :severity
+  defp parse_sort_by(:status), do: :status
+  defp parse_sort_by(:inserted_at), do: :inserted_at
+  defp parse_sort_by("severity"), do: :severity
+  defp parse_sort_by("status"), do: :status
+  defp parse_sort_by("inserted_at"), do: :inserted_at
+  defp parse_sort_by(_), do: :inserted_at
+
+  defp parse_sort_order(:asc), do: :asc
+  defp parse_sort_order(:desc), do: :desc
+  defp parse_sort_order("asc"), do: :asc
+  defp parse_sort_order("desc"), do: :desc
+  defp parse_sort_order(_), do: :desc
 
   defp build_path(filters, sort_by, sort_order) do
     query_params =
