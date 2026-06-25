@@ -91,28 +91,30 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
   """
   def run_tactic(conn, %{"tactic" => tactic} = params) do
     agent_id = params["agent_id"]
-    tactic_atom = String.to_existing_atom(tactic)
+    tactic_atom = parse_tactic(tactic)
 
-    if is_nil(agent_id) do
-      conn
-      |> put_status(:bad_request)
-      |> json(%{success: false, error: "agent_id is required"})
-    else
-      case EDRTester.run_tactic_tests(agent_id, tactic_atom) do
-        {:ok, results} ->
-          json(conn, %{success: true, tactic: tactic, results: results.results, summary: results.summary})
+    cond do
+      is_nil(agent_id) ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{success: false, error: "agent_id is required"})
 
-        {:error, reason} ->
-          conn
-          |> put_status(:internal_server_error)
-          |> json(%{success: false, error: inspect(reason)})
-      end
+      is_nil(tactic_atom) ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{success: false, error: "Invalid tactic: #{tactic}"})
+
+      true ->
+        case EDRTester.run_tactic_tests(agent_id, tactic_atom) do
+          {:ok, results} ->
+            json(conn, %{success: true, tactic: tactic, results: results.results, summary: results.summary})
+
+          {:error, reason} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{success: false, error: inspect(reason)})
+        end
     end
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{success: false, error: "Invalid tactic: #{tactic}"})
   end
 
   @doc """
@@ -197,25 +199,44 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
 
   # Helper functions
 
+  @allowed_validation_categories ~w(
+    initial_access execution persistence privilege_escalation defense_evasion
+    credential_access discovery lateral_movement collection command_control
+    command_and_control exfiltration impact
+  )
+
+  defp parse_tactic(tactic), do: safe_to_existing_atom(tactic, @allowed_validation_categories)
+
   defp parse_categories(nil), do: nil
   defp parse_categories("all"), do: :all
   defp parse_categories(categories) when is_binary(categories) do
     categories
     |> String.split(",")
     |> Enum.map(&String.trim/1)
-    |> Enum.map(&String.to_existing_atom/1)
-  rescue
-    _ -> nil
+    |> Enum.map(&safe_to_existing_atom(&1, @allowed_validation_categories))
+    |> Enum.reject(&is_nil/1)
+    |> empty_to_nil()
   end
   defp parse_categories(categories) when is_list(categories) do
     categories
     |> Enum.map(fn c ->
-      if is_binary(c), do: String.to_existing_atom(c), else: c
+      if is_binary(c), do: safe_to_existing_atom(c, @allowed_validation_categories), else: c
     end)
-  rescue
-    _ -> nil
+    |> Enum.reject(&is_nil/1)
+    |> empty_to_nil()
   end
   defp parse_categories(_), do: nil
+
+  defp empty_to_nil([]), do: nil
+  defp empty_to_nil(values), do: values
+
+  defp safe_to_existing_atom(value, allowed) when is_binary(value) and value in allowed do
+    String.to_existing_atom(value)
+  end
+  defp safe_to_existing_atom(value, allowed) when is_atom(value) do
+    if Atom.to_string(value) in allowed, do: value, else: nil
+  end
+  defp safe_to_existing_atom(_, _), do: nil
 
   defp bounded_test_number(value), do: value |> parse_int(1) |> max(1) |> min(100)
 
