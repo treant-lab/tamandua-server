@@ -21,8 +21,8 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
       trigger_type: Map.get(params, "trigger_type"),
       category: Map.get(params, "category"),
       search: Map.get(params, "search"),
-      page: Map.get(params, "page", 1),
-      page_size: Map.get(params, "page_size", 20)
+      page: parse_int(Map.get(params, "page"), 1, 1, 10_000),
+      page_size: parse_int(Map.get(params, "page_size"), 20, 1, 500)
     }
 
     case Hyperautomation.list_workflows(filters) do
@@ -31,8 +31,8 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
           data: Enum.map(workflows, &serialize_workflow/1),
           meta: %{
             total_count: length(workflows),
-            page: parse_int(filters.page, 1),
-            page_size: parse_int(filters.page_size, 20),
+            page: filters.page,
+            page_size: filters.page_size,
             total_pages: 1
           }
         })
@@ -218,16 +218,11 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     # list_actions/0 returns a map of action_name => config
     actions = Hyperautomation.list_actions()
 
+    category_atom = parse_action_category(category_filter)
+
     # Apply optional filters
     filtered_actions = actions
     |> Enum.filter(fn {_name, config} ->
-      category_atom = if category_filter do
-        try do
-          String.to_existing_atom(category_filter)
-        rescue
-          ArgumentError -> nil
-        end
-      end
       category_match = is_nil(category_filter) || config.category == category_atom
       search_match = is_nil(search_filter) || String.contains?(config.description, search_filter)
       category_match && search_match
@@ -436,22 +431,48 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     }
   end
 
-  defp parse_int(value, fallback) when is_integer(value), do: value
+  defp parse_int(value, fallback, min, max) when is_integer(value), do: clamp(value, min, max)
 
-  defp parse_int(value, fallback) when is_binary(value) do
+  defp parse_int(value, fallback, min, max) when is_binary(value) do
     case Integer.parse(value) do
-      {int, _} -> int
+      {int, _} -> clamp(int, min, max)
       :error -> fallback
     end
   end
 
-  defp parse_int(_, fallback), do: fallback
+  defp parse_int(_, fallback, _min, _max), do: fallback
+
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
+
+  defp parse_action_category(nil), do: nil
+  defp parse_action_category("response"), do: :response
+  defp parse_action_category("network"), do: :network
+  defp parse_action_category("identity"), do: :identity
+  defp parse_action_category("investigation"), do: :investigation
+  defp parse_action_category("enrichment"), do: :enrichment
+  defp parse_action_category("notification"), do: :notification
+  defp parse_action_category("siem"), do: :siem
+  defp parse_action_category("cloud"), do: :cloud
+  defp parse_action_category("orchestration"), do: :orchestration
+  defp parse_action_category(_), do: :__invalid_category__
 
   defp format_changeset_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+        opts |> changeset_error_opt(key) |> to_string()
       end)
+    end)
+  end
+
+  defp changeset_error_opt(opts, key) do
+    Enum.find_value(opts, key, fn
+      {opt_key, value} when is_atom(opt_key) ->
+        if Atom.to_string(opt_key) == key, do: value
+
+      {opt_key, value} ->
+        if to_string(opt_key) == key, do: value
     end)
   end
 end
