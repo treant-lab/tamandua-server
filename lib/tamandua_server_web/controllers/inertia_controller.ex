@@ -7977,9 +7977,7 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp artifact_field(data, key, default) when is_map(data) do
-    Map.get(data, key) || Map.get(data, String.to_atom(key)) || default
-  rescue
-    _ -> default
+    safe_string_or_atom_field(data, key, default)
   end
 
   defp artifact_field(_, _, default), do: default
@@ -10496,12 +10494,30 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp metadata_field(metadata, key) when is_map(metadata) do
-    Map.get(metadata, key) || Map.get(metadata, String.to_atom(key))
-  rescue
-    _ -> Map.get(metadata, key)
+    safe_string_or_atom_field(metadata, key, nil)
   end
 
   defp metadata_field(_metadata, _key), do: nil
+
+  defp safe_string_or_atom_field(map, key, default) when is_map(map) and is_binary(key) do
+    cond do
+      Map.has_key?(map, key) ->
+        Map.get(map, key)
+
+      true ->
+        Enum.find_value(map, default, fn
+          {map_key, value} when is_atom(map_key) ->
+            if Atom.to_string(map_key) == key, do: value, else: false
+
+          _ ->
+            false
+        end)
+    end
+  end
+
+  defp safe_string_or_atom_field(map, key, default) when is_map(map) do
+    Map.get(map, key, default)
+  end
 
   defp prediction_from_ml_title(title) when is_binary(title) do
     cond do
