@@ -41,7 +41,7 @@ defmodule Tamandua.Updates.BinarySigner do
   def sign_file(file_path, private_key_b64) do
     with {:ok, private_key} <- decode_private_key(private_key_b64),
          {:ok, file_data} <- File.read(file_path) do
-      signature = sign_data(file_data, private_key)
+      signature = do_sign_data(file_data, private_key)
       {:ok, Base.encode64(signature)}
     else
       {:error, reason} -> {:error, reason}
