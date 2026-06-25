@@ -106,7 +106,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     - `time_window_minutes` (optional): Time window (default: 60)
   """
   def from_process(conn, %{"agent_id" => agent_id, "pid" => pid_str} = params) do
-    pid = parse_integer(pid_str)
+    pid = parse_integer(pid_str, 0, 0, 10_000_000)
     opts = build_opts(params)
 
     with {:ok, storyline} <- Engine.generate_from_process(agent_id, pid, opts),
@@ -427,7 +427,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   """
   def list_active(conn, params) do
     # Return all storylines across all agents by iterating ETS directly
-    limit = parse_integer(Map.get(params, "limit", "50"))
+    limit = parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
     status_filter = parse_status(Map.get(params, "status"))
     min_severity = parse_severity_atom(Map.get(params, "min_severity"))
 
@@ -479,7 +479,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     opts = [
       status: parse_status(Map.get(params, "status")),
       min_severity: parse_severity_atom(Map.get(params, "min_severity")),
-      limit: parse_integer(Map.get(params, "limit", "50"))
+      limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -534,32 +534,36 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
 
   defp build_opts(params) do
     [
-      time_window_minutes: parse_integer(Map.get(params, "time_window_minutes", "30")),
+      time_window_minutes: parse_integer(Map.get(params, "time_window_minutes", "30"), 30, 1, 24 * 60),
       layout: parse_layout(Map.get(params, "layout", "timeline")),
       highlight_malicious: parse_boolean(Map.get(params, "highlight_malicious", "true")),
       highlight_suspicious: parse_boolean(Map.get(params, "highlight_suspicious", "true")),
-      limit: parse_integer(Map.get(params, "limit", "500")),
+      limit: parse_integer(Map.get(params, "limit", "500"), 500, 1, 1_000),
       use_ai: parse_boolean(Map.get(params, "use_ai", "false"))
     ]
   end
 
-  defp parse_integer(val) when is_integer(val), do: val
-  defp parse_integer(val) when is_binary(val) do
+  defp parse_integer(val, _default, min, max) when is_integer(val), do: clamp(val, min, max)
+  defp parse_integer(val, default, min, max) when is_binary(val) do
     case Integer.parse(val) do
-      {int, _} -> int
-      :error -> 0
+      {int, _} -> clamp(int, min, max)
+      :error -> default
     end
   end
-  defp parse_integer(_), do: 0
+  defp parse_integer(_val, default, _min, _max), do: default
+
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
 
   defp parse_boolean(val) when is_boolean(val), do: val
   defp parse_boolean("true"), do: true
   defp parse_boolean("1"), do: true
   defp parse_boolean(_), do: false
 
-  defp parse_layout(layout) when layout in ["timeline", "hierarchical", "force"] do
-    String.to_existing_atom(layout)
-  end
+  defp parse_layout("timeline"), do: :timeline
+  defp parse_layout("hierarchical"), do: :hierarchical
+  defp parse_layout("force"), do: :force
   defp parse_layout(_), do: :timeline
 
   defp atomize_keys(map) when is_map(map) do
@@ -835,7 +839,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
       agent_id: params["agent_id"],
       state: parse_investigation_state(params["state"]),
       min_severity: params["min_severity"],
-      limit: parse_integer(Map.get(params, "limit", "50"))
+      limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
