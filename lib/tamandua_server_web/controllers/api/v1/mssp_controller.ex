@@ -51,7 +51,11 @@ defmodule TamanduaServerWeb.API.V1.MSSPController do
       case Map.get(params, "tier") do
         nil -> query
         "" -> query
-        tier -> from o in query, where: o.license_tier == ^tier
+        tier ->
+          case parse_license_tier(tier) do
+            nil -> from o in query, where: false
+            parsed -> from o in query, where: o.license_tier == ^parsed
+          end
       end
 
     # Search filter
@@ -82,7 +86,7 @@ defmodule TamanduaServerWeb.API.V1.MSSPController do
   - `q` - Search query (minimum 3 characters)
   """
   def search(conn, params) do
-    query = Map.get(params, "q", "")
+    query = params |> Map.get("q", "") |> to_string() |> String.slice(0, 256)
 
     if String.length(query) < 3 do
       json(conn, %{data: [], total: 0, message: "Search query must be at least 3 characters"})
@@ -141,10 +145,22 @@ defmodule TamanduaServerWeb.API.V1.MSSPController do
   defp feature_enabled?(%{features: nil}, _key), do: false
   defp feature_enabled?(%{features: features}, key) when is_map(features) do
     Map.get(features, key, false) == true ||
-      Map.get(features, String.to_atom(key), false) == true
+      Map.get(features, feature_key(key), false) == true
   rescue
     _ -> false
   end
+
+  defp parse_license_tier("trial"), do: :trial
+  defp parse_license_tier("pro"), do: :pro
+  defp parse_license_tier("enterprise"), do: :enterprise
+  defp parse_license_tier(_), do: nil
+
+  defp feature_key("detection"), do: :detection
+  defp feature_key("hunting"), do: :hunting
+  defp feature_key("playbooks"), do: :playbooks
+  defp feature_key("api_access"), do: :api_access
+  defp feature_key("mssp_features"), do: :mssp_features
+  defp feature_key(_), do: nil
 
   defp calculate_health_score(%{is_active: false}, _agents, _critical), do: 0
   defp calculate_health_score(_org, agent_count, critical_alerts) do
