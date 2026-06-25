@@ -26,7 +26,7 @@ defmodule TamanduaServer.Telemetry.IngestorProducer do
     ensure_table_exists()
 
     # Get current queue size
-    queue_size = :ets.info(@queue_table, :size)
+    queue_size = queue_size()
 
     if queue_size + length(messages) > @queue_max_size do
       # Drop oldest messages to make room
@@ -41,10 +41,14 @@ defmodule TamanduaServer.Telemetry.IngestorProducer do
     |> Enum.with_index()
     |> Enum.each(fn {msg, idx} ->
       key = {timestamp, idx}
-      :ets.insert(@queue_table, {key, msg})
+      safe_insert(key, msg)
     end)
 
     :ok
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      :ok
   end
 
   @doc """
@@ -66,14 +70,38 @@ defmodule TamanduaServer.Telemetry.IngestorProducer do
     end
   end
 
+  defp queue_size do
+    case :ets.info(@queue_table, :size) do
+      size when is_integer(size) -> size
+      _ -> 0
+    end
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      0
+  end
+
+  defp safe_insert(key, msg) do
+    :ets.insert(@queue_table, {key, msg})
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      :ets.insert(@queue_table, {key, msg})
+  end
+
   defp drop_oldest(0), do: :ok
+
   defp drop_oldest(n) do
     case :ets.first(@queue_table) do
       :"$end_of_table" -> :ok
       key ->
-        :ets.delete(@queue_table, key)
+        safe_delete(key)
         drop_oldest(n - 1)
     end
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      :ok
   end
 
   # GenStage callbacks
@@ -135,9 +163,34 @@ defmodule TamanduaServer.Telemetry.IngestorProducer do
       :"$end_of_table" ->
         Enum.reverse(acc)
       key ->
-        [{^key, event}] = :ets.lookup(@queue_table, key)
-        :ets.delete(@queue_table, key)
-        take_events_from_ets(count - 1, [event | acc])
+        case safe_lookup(key) do
+          [{^key, event}] ->
+            safe_delete(key)
+            take_events_from_ets(count - 1, [event | acc])
+
+          _ ->
+            take_events_from_ets(count - 1, acc)
+        end
     end
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      Enum.reverse(acc)
+  end
+
+  defp safe_lookup(key) do
+    :ets.lookup(@queue_table, key)
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      []
+  end
+
+  defp safe_delete(key) do
+    :ets.delete(@queue_table, key)
+  rescue
+    ArgumentError ->
+      ensure_table_exists()
+      :ok
   end
 end

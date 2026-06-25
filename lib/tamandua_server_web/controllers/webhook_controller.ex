@@ -757,8 +757,8 @@ defmodule TamanduaServerWeb.WebhookController do
   """
   def webhook_history(conn, %{"integration_id" => integration_id} = params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50"),
-      offset: String.to_integer(params["offset"] || "0"),
+      limit: bounded_limit(params["limit"], 50, 500),
+      offset: bounded_offset(params["offset"]),
       status: params["status"]
     ]
 
@@ -817,6 +817,21 @@ defmodule TamanduaServerWeb.WebhookController do
   # ============================================================================
   # Private Helpers
   # ============================================================================
+
+  defp bounded_limit(value, default, max_limit),
+    do: value |> parse_int(default) |> max(1) |> min(max_limit)
+
+  defp bounded_offset(value), do: value |> parse_int(0) |> max(0)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 
   defp extract_headers(conn) do
     conn.req_headers
