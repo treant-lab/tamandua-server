@@ -155,7 +155,7 @@ defmodule TamanduaServerWeb.DashboardLive do
   end
 
   def handle_event("k8s_toggle_view", %{"mode" => mode}, socket) do
-    view_mode = String.to_atom(mode)
+    view_mode = parse_k8s_view_mode(mode)
 
     grouped_data = case view_mode do
       :by_node -> socket.assigns.k8s_security_data.by_node
@@ -171,6 +171,12 @@ defmodule TamanduaServerWeb.DashboardLive do
   end
 
   # Private functions
+
+  defp parse_k8s_view_mode(:by_node), do: :by_node
+  defp parse_k8s_view_mode(:by_namespace), do: :by_namespace
+  defp parse_k8s_view_mode("by_node"), do: :by_node
+  defp parse_k8s_view_mode("by_namespace"), do: :by_namespace
+  defp parse_k8s_view_mode(_), do: :by_node
 
   defp assign_page_title(socket) do
     assign(socket, page_title: "Dashboard")
