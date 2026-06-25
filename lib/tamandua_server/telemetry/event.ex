@@ -5,6 +5,8 @@ defmodule TamanduaServer.Telemetry.Event do
   alias TamanduaServer.Accounts.Organization
   alias TamanduaServer.Agents.Agent
 
+  @max_future_skew_seconds 300
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "events" do
@@ -44,6 +46,7 @@ defmodule TamanduaServer.Telemetry.Event do
       :sampled
     ])
     |> validate_required([:agent_id, :event_type, :timestamp, :payload])
+    |> validate_change(:timestamp, &validate_timestamp_window/2)
     |> foreign_key_constraint(:agent_id)
   end
 
@@ -59,4 +62,19 @@ defmodule TamanduaServer.Telemetry.Event do
   end
 
   defp normalize_timestamp(attrs), do: attrs
+
+  defp validate_timestamp_window(:timestamp, %DateTime{} = timestamp) do
+    latest_allowed =
+      DateTime.utc_now()
+      |> DateTime.add(@max_future_skew_seconds, :second)
+      |> DateTime.truncate(:microsecond)
+
+    if DateTime.compare(timestamp, latest_allowed) == :gt do
+      [timestamp: "cannot be more than #{@max_future_skew_seconds} seconds in the future"]
+    else
+      []
+    end
+  end
+
+  defp validate_timestamp_window(:timestamp, _timestamp), do: []
 end

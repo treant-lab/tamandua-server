@@ -6,6 +6,38 @@ defmodule TamanduaServer.Telemetry.EventPropertyTest do
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Repo
 
+  describe "Event changeset timestamp validation" do
+    test "rejects timestamps far in the future" do
+      attrs = %{
+        event_type: "process_inject",
+        agent_id: Ecto.UUID.generate(),
+        timestamp: ~U[2365-05-21 13:19:40.928000Z],
+        payload: %{"pid" => 1234},
+        severity: "critical"
+      }
+
+      changeset = Event.changeset(%Event{}, attrs)
+
+      refute changeset.valid?
+      assert {"cannot be more than 300 seconds in the future", _} =
+               Keyword.fetch!(changeset.errors, :timestamp)
+    end
+
+    test "accepts small future skew from endpoint clocks" do
+      attrs = %{
+        event_type: "process_create",
+        agent_id: Ecto.UUID.generate(),
+        timestamp: DateTime.utc_now() |> DateTime.add(60, :second),
+        payload: %{"pid" => 1234},
+        severity: "info"
+      }
+
+      changeset = Event.changeset(%Event{}, attrs)
+
+      assert changeset.valid?
+    end
+  end
+
   describe "Event properties" do
     @tag timeout: 120_000
     property "events can be serialized and deserialized via JSON" do

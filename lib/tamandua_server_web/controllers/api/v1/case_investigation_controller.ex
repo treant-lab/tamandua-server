@@ -31,8 +31,8 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
       severity: params["severity"],
       assigned_to: params["assigned_to"],
       search: params["search"],
-      limit: parse_int(params["limit"], 50),
-      offset: parse_int(params["offset"], 0),
+      limit: parse_int(params["limit"], 50, 1, 500),
+      offset: parse_int(params["offset"], 0, 0, 100_000),
       organization_id: get_org_id(conn)
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
@@ -115,7 +115,6 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
     with {:ok, investigation} <- Investigations.get_investigation(id) do
       attrs = params
       |> Map.take(~w(title description status severity assigned_to notes findings tags mitre_tactics mitre_techniques))
-      |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
 
       case Investigations.update_investigation(investigation, attrs) do
         {:ok, updated} ->
@@ -333,14 +332,18 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
     end)
   end
 
-  defp parse_int(nil, default), do: default
-  defp parse_int(val, _default) when is_integer(val), do: val
-  defp parse_int(val, default) when is_binary(val) do
+  defp parse_int(nil, default, _min, _max), do: default
+  defp parse_int(val, _default, min, max) when is_integer(val), do: clamp(val, min, max)
+  defp parse_int(val, default, min, max) when is_binary(val) do
     case Integer.parse(val) do
-      {int, _} -> int
+      {int, _} -> clamp(int, min, max)
       :error -> default
     end
   end
+
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
 
   defp get_current_user_id(conn) do
     case conn.assigns[:current_user] do
