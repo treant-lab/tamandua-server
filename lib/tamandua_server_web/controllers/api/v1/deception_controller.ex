@@ -96,8 +96,8 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   """
   def list_breadcrumbs(conn, params) do
     opts = [
-      status: parse_atom(params["status"]),
-      type: parse_atom(params["type"]),
+      status: parse_breadcrumb_status(params["status"]),
+      type: parse_decoy_type(params["type"]),
       agent_id: params["agent_id"],
       limit: parse_int(params["limit"], 100)
     ] |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
@@ -137,8 +137,8 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   """
   def deploy_to_agent(conn, %{"agent_id" => agent_id} = params) do
     opts = [
-      types: parse_types(params["types"]),
-      density: parse_atom(params["density"]) || :medium
+      types: parse_decoy_types(params["types"]),
+      density: parse_density(params["density"]) || :medium
     ] |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
 
     case Breadcrumbs.deploy_to_agent(agent_id, opts) do
@@ -236,10 +236,10 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
       id: params["id"],
       name: params["name"],
       description: params["description"],
-      decoy_types: parse_types(params["decoy_types"]),
+      decoy_types: parse_decoy_types(params["decoy_types"]),
       target_paths: params["target_paths"] || [],
       os_types: parse_os_types(params["os_types"]),
-      density: parse_atom(params["density"]) || :medium,
+      density: parse_density(params["density"]) || :medium,
       rotation_interval_hours: parse_int(params["rotation_interval_hours"], 168),
       enabled: params["enabled"] != false
     }
@@ -267,7 +267,7 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   """
   def list_attackers(conn, params) do
     opts = [
-      status: parse_atom(params["status"]),
+      status: parse_attacker_status(params["status"]),
       min_risk_score: parse_int(params["min_risk_score"], 0),
       limit: parse_int(params["limit"], 50)
     ] |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
@@ -305,7 +305,7 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   def timeline(conn, params) do
     opts = [
       agent_id: params["agent_id"],
-      decoy_type: parse_atom(params["decoy_type"]),
+      decoy_type: parse_decoy_type(params["decoy_type"]),
       limit: parse_int(params["limit"], 100)
     ] |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -339,7 +339,7 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   """
   def indicators(conn, params) do
     opts = [
-      type: parse_atom(params["type"]),
+      type: parse_indicator_type(params["type"]),
       min_confidence: parse_float(params["min_confidence"], 0.0),
       limit: parse_int(params["limit"], 100)
     ] |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
@@ -419,7 +419,7 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
       event_id: params["event_id"] || Ecto.UUID.generate(),
       agent_id: params["agent_id"],
       timestamp: parse_timestamp(params["timestamp"]),
-      decoy_type: parse_atom(params["decoy_type"]) || :unknown,
+      decoy_type: parse_decoy_type(params["decoy_type"]) || :unknown,
       decoy_id: params["decoy_id"],
       canary_token: params["canary_token"],
       interaction_type: params["interaction_type"],
@@ -714,36 +714,104 @@ defmodule TamanduaServerWeb.API.V1.DeceptionController do
   end
   defp parse_float(val, _default) when is_float(val), do: val
 
-  defp parse_atom(nil), do: nil
-  defp parse_atom(val) when is_atom(val), do: val
-  defp parse_atom(val) when is_binary(val) do
-    try do
-      String.to_existing_atom(val)
-    rescue
-      ArgumentError -> nil
-    end
-  end
+  defp parse_decoy_type(:credential), do: :credential
+  defp parse_decoy_type(:document), do: :document
+  defp parse_decoy_type(:ssh_key), do: :ssh_key
+  defp parse_decoy_type(:api_token), do: :api_token
+  defp parse_decoy_type(:cloud_credential), do: :cloud_credential
+  defp parse_decoy_type(:browser_password), do: :browser_password
+  defp parse_decoy_type(:kube_config), do: :kube_config
+  defp parse_decoy_type(:env_file), do: :env_file
+  defp parse_decoy_type(:database), do: :database
+  defp parse_decoy_type(:network_share), do: :network_share
+  defp parse_decoy_type("credential"), do: :credential
+  defp parse_decoy_type("document"), do: :document
+  defp parse_decoy_type("ssh_key"), do: :ssh_key
+  defp parse_decoy_type("api_token"), do: :api_token
+  defp parse_decoy_type("cloud_credential"), do: :cloud_credential
+  defp parse_decoy_type("browser_password"), do: :browser_password
+  defp parse_decoy_type("kube_config"), do: :kube_config
+  defp parse_decoy_type("env_file"), do: :env_file
+  defp parse_decoy_type("database"), do: :database
+  defp parse_decoy_type("network_share"), do: :network_share
+  defp parse_decoy_type(_), do: nil
 
-  defp parse_types(nil), do: nil
-  defp parse_types(types) when is_list(types) do
-    Enum.map(types, &parse_atom/1)
+  defp parse_breadcrumb_status(:active), do: :active
+  defp parse_breadcrumb_status(:accessed), do: :accessed
+  defp parse_breadcrumb_status(:rotated), do: :rotated
+  defp parse_breadcrumb_status(:removed), do: :removed
+  defp parse_breadcrumb_status("active"), do: :active
+  defp parse_breadcrumb_status("accessed"), do: :accessed
+  defp parse_breadcrumb_status("rotated"), do: :rotated
+  defp parse_breadcrumb_status("removed"), do: :removed
+  defp parse_breadcrumb_status(_), do: nil
+
+  defp parse_attacker_status(:active), do: :active
+  defp parse_attacker_status(:dormant), do: :dormant
+  defp parse_attacker_status(:neutralized), do: :neutralized
+  defp parse_attacker_status("active"), do: :active
+  defp parse_attacker_status("dormant"), do: :dormant
+  defp parse_attacker_status("neutralized"), do: :neutralized
+  defp parse_attacker_status(_), do: nil
+
+  defp parse_density(:low), do: :low
+  defp parse_density(:medium), do: :medium
+  defp parse_density(:high), do: :high
+  defp parse_density("low"), do: :low
+  defp parse_density("medium"), do: :medium
+  defp parse_density("high"), do: :high
+  defp parse_density(_), do: nil
+
+  defp parse_indicator_type(:ip), do: :ip
+  defp parse_indicator_type(:domain), do: :domain
+  defp parse_indicator_type(:hash), do: :hash
+  defp parse_indicator_type(:username), do: :username
+  defp parse_indicator_type(:credential), do: :credential
+  defp parse_indicator_type(:user_agent), do: :user_agent
+  defp parse_indicator_type(:tool), do: :tool
+  defp parse_indicator_type("ip"), do: :ip
+  defp parse_indicator_type("domain"), do: :domain
+  defp parse_indicator_type("hash"), do: :hash
+  defp parse_indicator_type("username"), do: :username
+  defp parse_indicator_type("credential"), do: :credential
+  defp parse_indicator_type("user_agent"), do: :user_agent
+  defp parse_indicator_type("tool"), do: :tool
+  defp parse_indicator_type(_), do: nil
+
+  defp parse_os_type(:windows), do: :windows
+  defp parse_os_type(:linux), do: :linux
+  defp parse_os_type(:macos), do: :macos
+  defp parse_os_type("windows"), do: :windows
+  defp parse_os_type("linux"), do: :linux
+  defp parse_os_type("macos"), do: :macos
+  defp parse_os_type(_), do: nil
+
+  defp parse_decoy_types(nil), do: nil
+  defp parse_decoy_types(types) when is_list(types) do
+    types
+    |> Enum.map(&parse_decoy_type/1)
+    |> Enum.reject(&is_nil/1)
   end
-  defp parse_types(types) when is_binary(types) do
+  defp parse_decoy_types(types) when is_binary(types) do
     types
     |> String.split(",")
     |> Enum.map(&String.trim/1)
-    |> Enum.map(&parse_atom/1)
+    |> Enum.map(&parse_decoy_type/1)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp parse_os_types(nil), do: [:windows, :linux, :macos]
   defp parse_os_types(types) when is_list(types) do
-    Enum.map(types, &parse_atom/1)
+    types
+    |> Enum.map(&parse_os_type/1)
+    |> Enum.reject(&is_nil/1)
   end
   defp parse_os_types(types) when is_binary(types) do
     types
     |> String.split(",")
     |> Enum.map(&String.trim/1)
-    |> Enum.map(&parse_atom/1)
+    |> Enum.map(&parse_os_type/1)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp parse_timestamp(nil), do: DateTime.utc_now()
