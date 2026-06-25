@@ -74,8 +74,8 @@ defmodule TamanduaServerWeb.API.V1.RecordingController do
       |> Enum.map(&recording_metadata/1)
       |> Enum.sort_by(& &1.modified_at, {:desc, DateTime})
 
-    page = max(String.to_integer(Map.get(params, "page", "1")), 1)
-    per_page = min(String.to_integer(Map.get(params, "per_page", "20")), 100)
+    page = bounded_page(Map.get(params, "page"))
+    per_page = bounded_per_page(Map.get(params, "per_page"), 20, 100)
 
     paginated =
       entries
@@ -142,7 +142,7 @@ defmodule TamanduaServerWeb.API.V1.RecordingController do
 
     opts =
       if retention_override do
-        [retention_days: String.to_integer(retention_override)]
+        [retention_days: bounded_retention_days(retention_override)]
       else
         []
       end
@@ -227,7 +227,7 @@ defmodule TamanduaServerWeb.API.V1.RecordingController do
 
     opts =
       if params["retention_days"] do
-        Keyword.put(opts, :retention_days, String.to_integer(params["retention_days"]))
+        Keyword.put(opts, :retention_days, bounded_retention_days(params["retention_days"]))
       else
         opts
       end
@@ -342,6 +342,23 @@ defmodule TamanduaServerWeb.API.V1.RecordingController do
   defp maybe_filter_by_agent(recordings, agent_id) do
     Enum.filter(recordings, &String.contains?(&1, agent_id))
   end
+
+  defp bounded_page(value), do: value |> parse_int(1) |> max(1)
+
+  defp bounded_per_page(value, default, max_per_page),
+    do: value |> parse_int(default) |> max(1) |> min(max_per_page)
+
+  defp bounded_retention_days(value), do: value |> parse_int(SessionRecording.retention_days()) |> max(1) |> min(3650)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 
   defp recording_metadata(path) do
     filename = Path.basename(path)
