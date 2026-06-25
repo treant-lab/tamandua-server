@@ -550,7 +550,7 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
 
     opts = [
       organization_id: org_id,
-      status: parse_atom(params["status"]),
+      status: parse_storyline_status(params["status"]),
       min_risk_score: parse_float(params["min_risk_score"]),
       limit: params["limit"] |> parse_int(100) |> max(1) |> min(500)
     ]
@@ -1019,13 +1019,14 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
   defp parse_float(value) when is_float(value), do: value
   defp parse_float(value) when is_integer(value), do: value / 1.0
 
-  defp parse_atom(nil), do: nil
-  defp parse_atom(value) when is_binary(value) do
-    String.to_existing_atom(value)
-  rescue
-    _ -> nil
-  end
-  defp parse_atom(value) when is_atom(value), do: value
+  defp parse_storyline_status(nil), do: nil
+  defp parse_storyline_status("active"), do: :active
+  defp parse_storyline_status("closed"), do: :closed
+  defp parse_storyline_status("investigating"), do: :investigating
+  defp parse_storyline_status(:active), do: :active
+  defp parse_storyline_status(:closed), do: :closed
+  defp parse_storyline_status(:investigating), do: :investigating
+  defp parse_storyline_status(_), do: nil
 
   defp safe_repo_all(query, label) do
     Repo.all(query, timeout: 8_000)
