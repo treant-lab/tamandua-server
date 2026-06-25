@@ -476,15 +476,32 @@ defmodule TamanduaServerWeb.API.V1.LicenseController do
     end)
   end
 
-  @license_actions ~w(
-    view_dashboard view_alerts manage_alerts create_rule update_rule delete_rule
-    kill_process quarantine_file isolate_endpoint execute_hunt create_playbook
-    execute_playbook view_behavioral live_response_session collect_forensics
-    api_request configure_sso generate_compliance_report view_mssp_portal
-    manage_tenants configure_branding ai_query threat_intel_lookup add_agent
-    add_user view_events execute_query
-  )
-
-  defp license_action(action) when action in @license_actions, do: String.to_existing_atom(action)
+  defp license_action("view_dashboard"), do: :view_dashboard
+  defp license_action("view_alerts"), do: :view_alerts
+  defp license_action("manage_alerts"), do: :manage_alerts
+  defp license_action("create_rule"), do: :create_rule
+  defp license_action("update_rule"), do: :update_rule
+  defp license_action("delete_rule"), do: :delete_rule
+  defp license_action("kill_process"), do: :kill_process
+  defp license_action("quarantine_file"), do: :quarantine_file
+  defp license_action("isolate_endpoint"), do: :isolate_endpoint
+  defp license_action("execute_hunt"), do: :execute_hunt
+  defp license_action("create_playbook"), do: :create_playbook
+  defp license_action("execute_playbook"), do: :execute_playbook
+  defp license_action("view_behavioral"), do: :view_behavioral
+  defp license_action("live_response_session"), do: :live_response_session
+  defp license_action("collect_forensics"), do: :collect_forensics
+  defp license_action("api_request"), do: :api_request
+  defp license_action("configure_sso"), do: :configure_sso
+  defp license_action("generate_compliance_report"), do: :generate_compliance_report
+  defp license_action("view_mssp_portal"), do: :view_mssp_portal
+  defp license_action("manage_tenants"), do: :manage_tenants
+  defp license_action("configure_branding"), do: :configure_branding
+  defp license_action("ai_query"), do: :ai_query
+  defp license_action("threat_intel_lookup"), do: :threat_intel_lookup
+  defp license_action("add_agent"), do: :add_agent
+  defp license_action("add_user"), do: :add_user
+  defp license_action("view_events"), do: :view_events
+  defp license_action("execute_query"), do: :execute_query
   defp license_action(_), do: nil
 end
