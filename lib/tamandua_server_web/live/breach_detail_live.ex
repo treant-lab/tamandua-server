@@ -47,17 +47,22 @@ defmodule TamanduaServerWeb.BreachDetailLive do
 
   @impl true
   def handle_event("toggle_action", %{"action" => action}, socket) do
-    action_atom = String.to_atom(action)
-    selected = socket.assigns.selected_actions
+    case parse_response_action(action) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown response action")}
 
-    new_selected =
-      if action_atom in selected do
-        List.delete(selected, action_atom)
-      else
-        [action_atom | selected]
-      end
+      action_atom ->
+        selected = socket.assigns.selected_actions
 
-    {:noreply, assign(socket, :selected_actions, new_selected)}
+        new_selected =
+          if action_atom in selected do
+            List.delete(selected, action_atom)
+          else
+            [action_atom | selected]
+          end
+
+        {:noreply, assign(socket, :selected_actions, new_selected)}
+    end
   end
 
   @impl true
@@ -381,6 +386,20 @@ defmodule TamanduaServerWeb.BreachDetailLive do
   # ============================================================================
   # Private Functions
   # ============================================================================
+
+  defp parse_response_action(:password_reset), do: :password_reset
+  defp parse_response_action(:account_disable), do: :account_disable
+  defp parse_response_action(:mfa_enforce), do: :mfa_enforce
+  defp parse_response_action(:user_notify), do: :user_notify
+  defp parse_response_action(:security_team_notify), do: :security_team_notify
+  defp parse_response_action(:create_incident), do: :create_incident
+  defp parse_response_action("password_reset"), do: :password_reset
+  defp parse_response_action("account_disable"), do: :account_disable
+  defp parse_response_action("mfa_enforce"), do: :mfa_enforce
+  defp parse_response_action("user_notify"), do: :user_notify
+  defp parse_response_action("security_team_notify"), do: :security_team_notify
+  defp parse_response_action("create_incident"), do: :create_incident
+  defp parse_response_action(_), do: nil
 
   defp severity_badge_class("critical"), do: "bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300"
   defp severity_badge_class("high"), do: "bg-orange-100 dark:bg-orange-900/30 text-orange-800 dark:text-orange-300"
