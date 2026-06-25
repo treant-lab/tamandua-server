@@ -84,7 +84,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
     opts = [
       min_score: params["min_score"] |> parse_int(60) |> max(0) |> min(100),
       limit: params["limit"] |> parse_int(100) |> max(1) |> min(500),
-      sort: safe_to_existing_atom(Map.get(params, "sort", "score_desc"), ~w(score_desc score_asc name_asc name_desc recent)) || :score_desc
+      sort: parse_risk_sort(Map.get(params, "sort"))
     ]
 
     case RiskScoring.get_high_risk_users(opts) do
@@ -105,7 +105,7 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
   def list_risky_sign_ins(conn, params) do
     opts = [
       limit: params["limit"] |> parse_int(50) |> max(1) |> min(500),
-      min_risk: safe_to_existing_atom(Map.get(params, "min_risk", "medium"), ~w(low medium high critical)) || :medium
+      min_risk: parse_risk_level(Map.get(params, "min_risk"))
     ]
 
     opts = if params["since"] do
@@ -487,14 +487,15 @@ defmodule TamanduaServerWeb.API.V1.IdentityController do
   defp parse_int(value, _default) when is_integer(value), do: value
   defp parse_int(_, default), do: default
 
-  defp safe_to_existing_atom(value, allowed) when is_binary(value) and is_list(allowed) do
-    if value in allowed do
-      String.to_existing_atom(value)
-    end
-  rescue
-    ArgumentError -> nil
-  end
+  defp parse_risk_sort("score_asc"), do: :score_asc
+  defp parse_risk_sort("name_asc"), do: :name_asc
+  defp parse_risk_sort("name_desc"), do: :name_desc
+  defp parse_risk_sort("recent"), do: :recent
+  defp parse_risk_sort(_), do: :score_desc
 
-  defp safe_to_existing_atom(_, _), do: nil
+  defp parse_risk_level("low"), do: :low
+  defp parse_risk_level("high"), do: :high
+  defp parse_risk_level("critical"), do: :critical
+  defp parse_risk_level(_), do: :medium
 
 end
