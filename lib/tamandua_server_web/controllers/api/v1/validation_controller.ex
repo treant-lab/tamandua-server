@@ -199,13 +199,7 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
 
   # Helper functions
 
-  @allowed_validation_categories ~w(
-    initial_access execution persistence privilege_escalation defense_evasion
-    credential_access discovery lateral_movement collection command_control
-    command_and_control exfiltration impact
-  )
-
-  defp parse_tactic(tactic), do: safe_to_existing_atom(tactic, @allowed_validation_categories)
+  defp parse_tactic(tactic), do: parse_validation_category(tactic)
 
   defp parse_categories(nil), do: nil
   defp parse_categories("all"), do: :all
@@ -213,14 +207,14 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
     categories
     |> String.split(",")
     |> Enum.map(&String.trim/1)
-    |> Enum.map(&safe_to_existing_atom(&1, @allowed_validation_categories))
+    |> Enum.map(&parse_validation_category/1)
     |> Enum.reject(&is_nil/1)
     |> empty_to_nil()
   end
   defp parse_categories(categories) when is_list(categories) do
     categories
     |> Enum.map(fn c ->
-      if is_binary(c), do: safe_to_existing_atom(c, @allowed_validation_categories), else: c
+      parse_validation_category(c)
     end)
     |> Enum.reject(&is_nil/1)
     |> empty_to_nil()
@@ -230,13 +224,33 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
   defp empty_to_nil([]), do: nil
   defp empty_to_nil(values), do: values
 
-  defp safe_to_existing_atom(value, allowed) when is_binary(value) and value in allowed do
-    String.to_existing_atom(value)
-  end
-  defp safe_to_existing_atom(value, allowed) when is_atom(value) do
-    if Atom.to_string(value) in allowed, do: value, else: nil
-  end
-  defp safe_to_existing_atom(_, _), do: nil
+  defp parse_validation_category("initial_access"), do: :initial_access
+  defp parse_validation_category("execution"), do: :execution
+  defp parse_validation_category("persistence"), do: :persistence
+  defp parse_validation_category("privilege_escalation"), do: :privilege_escalation
+  defp parse_validation_category("defense_evasion"), do: :defense_evasion
+  defp parse_validation_category("credential_access"), do: :credential_access
+  defp parse_validation_category("discovery"), do: :discovery
+  defp parse_validation_category("lateral_movement"), do: :lateral_movement
+  defp parse_validation_category("collection"), do: :collection
+  defp parse_validation_category("command_control"), do: :command_control
+  defp parse_validation_category("command_and_control"), do: :command_and_control
+  defp parse_validation_category("exfiltration"), do: :exfiltration
+  defp parse_validation_category("impact"), do: :impact
+  defp parse_validation_category(:initial_access), do: :initial_access
+  defp parse_validation_category(:execution), do: :execution
+  defp parse_validation_category(:persistence), do: :persistence
+  defp parse_validation_category(:privilege_escalation), do: :privilege_escalation
+  defp parse_validation_category(:defense_evasion), do: :defense_evasion
+  defp parse_validation_category(:credential_access), do: :credential_access
+  defp parse_validation_category(:discovery), do: :discovery
+  defp parse_validation_category(:lateral_movement), do: :lateral_movement
+  defp parse_validation_category(:collection), do: :collection
+  defp parse_validation_category(:command_control), do: :command_control
+  defp parse_validation_category(:command_and_control), do: :command_and_control
+  defp parse_validation_category(:exfiltration), do: :exfiltration
+  defp parse_validation_category(:impact), do: :impact
+  defp parse_validation_category(_), do: nil
 
   defp bounded_test_number(value), do: value |> parse_int(1) |> max(1) |> min(100)
 
