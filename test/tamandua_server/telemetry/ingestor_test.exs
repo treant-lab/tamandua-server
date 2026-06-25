@@ -2,6 +2,7 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
   use ExUnit.Case, async: false
 
   alias Broadway.Message
+  alias TamanduaServer.Detection.Evidence
   alias TamanduaServer.Telemetry.Ingestor
 
   setup do
@@ -72,6 +73,57 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
 
       assert normalized[:severity] == "high"
       refute enrichment(normalized)["timeline_severity_adjusted"]
+    end
+  end
+
+  describe "agent ML detection contract" do
+    test "preserves high severity for ML detection events" do
+      event =
+        base_event(
+          [
+            %{
+              "detection_type" => "ml",
+              "rule_name" => "ML_MALWARE_TROJAN",
+              "confidence" => 1.0,
+              "description" => "ML model detected trojan malware",
+              "mitre_tactics" => ["execution"],
+              "mitre_techniques" => ["T1204"]
+            }
+          ],
+          %{
+            "event_type" => "file_create",
+            "severity" => "critical",
+            "payload" => %{
+              "path" => "D:\\ProgramData\\Tamandua\\ml-bench\\samples\\malware_00000.bin",
+              "ml_verdict" => "trojan",
+              "model_version" => "malware_smell_knn"
+            }
+          }
+        )
+
+      normalized = ingest(event)
+
+      assert normalized[:severity] == "critical"
+      assert normalized["severity"] == "critical"
+      refute enrichment(normalized)["timeline_severity_adjusted"]
+    end
+
+    test "extracts ml source metadata from agent detection payload" do
+      metadata =
+        Evidence.extract_detection_info([
+          %{
+            "detection_type" => "ml",
+            "rule_name" => "ML_MALWARE_TROJAN",
+            "confidence" => 1.0,
+            "description" => "ML model detected trojan malware"
+          }
+        ])
+
+      assert metadata.source == "ml"
+      assert metadata.detection_source == "ml"
+      assert metadata.detection_type == "ml"
+      assert metadata.rule_name == "ML_MALWARE_TROJAN"
+      assert metadata.confidence == 1.0
     end
   end
 
