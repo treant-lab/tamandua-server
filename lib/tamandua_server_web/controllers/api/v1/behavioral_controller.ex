@@ -55,9 +55,9 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   def entities(conn, params) do
     with {:ok, org_id} <- require_org_id(conn) do
       entity_type = params["type"]
-      min_risk = parse_int(params["min_risk_score"], 0)
-      limit = parse_int(params["limit"], 100)
-      offset = parse_int(params["offset"], 0)
+      min_risk = params["min_risk_score"] |> parse_int(0) |> max(0) |> min(100)
+      limit = params["limit"] |> parse_int(100) |> max(1) |> min(500)
+      offset = params["offset"] |> parse_int(0) |> max(0) |> min(100_000)
 
       entities = list_entities(org_id, entity_type, limit, offset)
       |> Enum.filter(fn e -> e.risk_score >= min_risk end)
@@ -462,10 +462,15 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   end
 
   defp get_risk_score(org_id, entity_type, entity_id) do
-    type_atom = String.to_existing_atom(entity_type)
-    case safe_behavioral_risk_score(org_id, type_atom, entity_id) do
-      {:ok, score} -> score
-      _ -> 0
+    case parse_entity_type(entity_type) do
+      nil ->
+        0
+
+      type_atom ->
+        case safe_behavioral_risk_score(org_id, type_atom, entity_id) do
+          {:ok, score} -> score
+          _ -> 0
+        end
     end
   rescue
     _ -> 0
@@ -1832,10 +1837,24 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   defp format_changeset_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_atom(key), key) |> to_string()
+        opts |> changeset_error_opt(key) |> to_string()
       end)
     end)
   end
+
+  defp changeset_error_opt(opts, "count"), do: Keyword.get(opts, :count, "count")
+  defp changeset_error_opt(opts, "validation"), do: Keyword.get(opts, :validation, "validation")
+  defp changeset_error_opt(opts, "kind"), do: Keyword.get(opts, :kind, "kind")
+  defp changeset_error_opt(opts, "type"), do: Keyword.get(opts, :type, "type")
+  defp changeset_error_opt(_opts, key), do: key
+
+  defp parse_entity_type("user"), do: :user
+  defp parse_entity_type("process"), do: :process
+  defp parse_entity_type("host"), do: :host
+  defp parse_entity_type(:user), do: :user
+  defp parse_entity_type(:process), do: :process
+  defp parse_entity_type(:host), do: :host
+  defp parse_entity_type(_), do: nil
 
   defp parse_int(nil, default), do: default
   defp parse_int(value, default) when is_binary(value) do
