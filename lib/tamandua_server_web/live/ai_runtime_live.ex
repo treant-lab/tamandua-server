@@ -157,9 +157,9 @@ defmodule TamanduaServerWeb.AIRuntimeLive do
   @impl true
   def handle_event("filter_detections", params, socket) do
     filter = %{
-      type: empty_to_nil(params["type"]),
-      severity: empty_to_nil(params["severity"]),
-      time_range: params["time_range"] || "24h"
+      type: parse_detection_type(params["type"]),
+      severity: parse_detection_severity(params["severity"]),
+      time_range: parse_time_range(params["time_range"])
     }
 
     {:noreply, assign(socket, :detection_filter, filter) |> load_detections()}
@@ -808,8 +808,32 @@ defmodule TamanduaServerWeb.AIRuntimeLive do
   defp parse_tab("kill_switch"), do: :kill_switch
   defp parse_tab(_), do: :overview
 
-  defp empty_to_nil(""), do: nil
-  defp empty_to_nil(val), do: String.to_existing_atom(val)
+  defp parse_detection_type(nil), do: nil
+  defp parse_detection_type(""), do: nil
+  defp parse_detection_type("prompt_injection"), do: :prompt_injection
+  defp parse_detection_type("token_anomaly"), do: :token_anomaly
+  defp parse_detection_type("output_validation"), do: :output_validation
+  defp parse_detection_type(:prompt_injection), do: :prompt_injection
+  defp parse_detection_type(:token_anomaly), do: :token_anomaly
+  defp parse_detection_type(:output_validation), do: :output_validation
+  defp parse_detection_type(_), do: nil
+
+  defp parse_detection_severity(nil), do: nil
+  defp parse_detection_severity(""), do: nil
+  defp parse_detection_severity("critical"), do: :critical
+  defp parse_detection_severity("high"), do: :high
+  defp parse_detection_severity("medium"), do: :medium
+  defp parse_detection_severity("low"), do: :low
+  defp parse_detection_severity(:critical), do: :critical
+  defp parse_detection_severity(:high), do: :high
+  defp parse_detection_severity(:medium), do: :medium
+  defp parse_detection_severity(:low), do: :low
+  defp parse_detection_severity(_), do: nil
+
+  defp parse_time_range("1h"), do: "1h"
+  defp parse_time_range("24h"), do: "24h"
+  defp parse_time_range("7d"), do: "7d"
+  defp parse_time_range(_), do: "24h"
 
   defp generate_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
 
