@@ -106,17 +106,16 @@ defmodule TamanduaServerWeb.RegistriesLive do
 
   @impl true
   def handle_event("filter_registry", %{"registry" => registry}, socket) do
-    registry_atom =
-      if registry == "all" do
-        nil
-      else
-        String.to_existing_atom(registry)
-      end
+    case parse_registry_filter(registry) do
+      :unknown ->
+        {:noreply, put_flash(socket, :error, "Unknown registry filter")}
 
-    {:noreply,
-     socket
-     |> assign_registry_filter(registry_atom)
-     |> assign_models()}
+      registry_atom ->
+        {:noreply,
+         socket
+         |> assign_registry_filter(registry_atom)
+         |> assign_models()}
+    end
   end
 
   @impl true
@@ -150,6 +149,18 @@ defmodule TamanduaServerWeb.RegistriesLive do
   end
 
   # Private functions
+
+  defp parse_registry_filter(nil), do: nil
+  defp parse_registry_filter("all"), do: nil
+  defp parse_registry_filter(:huggingface), do: :huggingface
+  defp parse_registry_filter(:mlflow), do: :mlflow
+  defp parse_registry_filter(:wandb), do: :wandb
+  defp parse_registry_filter(:ollama), do: :ollama
+  defp parse_registry_filter("huggingface"), do: :huggingface
+  defp parse_registry_filter("mlflow"), do: :mlflow
+  defp parse_registry_filter("wandb"), do: :wandb
+  defp parse_registry_filter("ollama"), do: :ollama
+  defp parse_registry_filter(_), do: :unknown
 
   defp assign_page_title(socket) do
     assign(socket, page_title: "Model Registries")

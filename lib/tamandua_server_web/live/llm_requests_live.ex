@@ -68,16 +68,20 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
 
   @impl true
   def handle_event("filter_provider", %{"provider" => provider}, socket) do
-    filter = if provider == "", do: nil, else: String.to_existing_atom(provider)
+    case parse_provider_filter(provider) do
+      :unknown ->
+        {:noreply, put_flash(socket, :error, "Unknown provider filter")}
 
-    requests = if socket.assigns.agent_id do
-      opts = if filter, do: [provider: filter, limit: 50], else: [limit: 50]
-      LLMRequestTracker.get_requests(socket.assigns.agent_id, opts)
-    else
-      []
+      filter ->
+        requests = if socket.assigns.agent_id do
+          opts = if filter, do: [provider: filter, limit: 50], else: [limit: 50]
+          LLMRequestTracker.get_requests(socket.assigns.agent_id, opts)
+        else
+          []
+        end
+
+        {:noreply, assign(socket, filter_provider: filter, requests: requests)}
     end
-
-    {:noreply, assign(socket, filter_provider: filter, requests: requests)}
   end
 
   def handle_event("search", %{"query" => query}, socket) do
@@ -259,6 +263,20 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
   end
 
   # Private functions
+
+  defp parse_provider_filter(nil), do: nil
+  defp parse_provider_filter(""), do: nil
+  defp parse_provider_filter(:openai), do: :openai
+  defp parse_provider_filter(:anthropic), do: :anthropic
+  defp parse_provider_filter(:ollama), do: :ollama
+  defp parse_provider_filter(:huggingface), do: :huggingface
+  defp parse_provider_filter(:other), do: :other
+  defp parse_provider_filter("openai"), do: :openai
+  defp parse_provider_filter("anthropic"), do: :anthropic
+  defp parse_provider_filter("ollama"), do: :ollama
+  defp parse_provider_filter("huggingface"), do: :huggingface
+  defp parse_provider_filter("other"), do: :other
+  defp parse_provider_filter(_), do: :unknown
 
   defp render_summary_stats(assigns) do
     provider_counts = Enum.reduce(assigns.requests, %{}, fn request, acc ->
