@@ -12,10 +12,12 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
   def index(conn, params) do
     limit = bounded_limit(params["limit"], @default_limit, @max_limit)
+    organization_id = current_organization_id(conn)
 
     filters = %{
       agent_id: params["agent_id"],
       event_type: params["event_type"],
+      organization_id: organization_id,
       limit: limit,
       offset: bounded_offset(params["offset"])
     }
@@ -24,7 +26,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
     json(conn, %{
       data: Enum.map(events, &serialize/1),
-      meta: %{limit: limit, offset: filters.offset}
+      meta: %{limit: limit, offset: filters.offset, scoped: not is_nil(organization_id)}
     })
   end
 
@@ -242,6 +244,11 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     value
     |> parse_int(0)
     |> max(0)
+  end
+
+  defp current_organization_id(conn) do
+    conn.assigns[:current_organization_id] ||
+      (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
   end
 
   defp safe_list_events(filters, label) do

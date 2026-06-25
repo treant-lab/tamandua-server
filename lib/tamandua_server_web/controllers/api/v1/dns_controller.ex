@@ -118,6 +118,14 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     }
   """
   def stats(conn, _params) do
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      stats_for_org(conn, organization_id)
+    else
+      {:error, :missing_organization} -> missing_organization_response(conn)
+    end
+  end
+
+  defp stats_for_org(conn, organization_id) do
     now = DateTime.utc_now()
 
     today_start =
@@ -131,6 +139,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     base_query =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
 
@@ -142,6 +151,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     {unique_domains, unique_domains_error} =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> select([e],
@@ -167,6 +177,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     {blocked_count, blocked_count_error} =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
@@ -178,6 +189,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     {suspicious_count, suspicious_count_error} =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
       |> where([e], e.severity in ["medium", "high", "critical"])
@@ -200,7 +212,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         blocked_count: blocked_count,
         suspicious_count: suspicious_count
       },
-      meta: meta
+      meta: Map.put(meta, :scope, "organization_dns_telemetry")
     })
   end
 
@@ -222,6 +234,14 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     - offset:     pagination offset (default 0)
   """
   def queries(conn, params) do
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      queries_for_org(conn, params, organization_id)
+    else
+      {:error, :missing_organization} -> missing_organization_response(conn)
+    end
+  end
+
+  defp queries_for_org(conn, params, organization_id) do
     now = DateTime.utc_now()
 
     # Support both limit/offset and page/per_page pagination styles
@@ -239,6 +259,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     base =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp <= ^now)
       |> order_by([e], desc: e.timestamp)
 
@@ -367,7 +388,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         limit: limit,
         offset: offset,
         has_more: has_more,
-        total_is_estimate: true
+        total_is_estimate: true,
+        scope: "organization_dns_telemetry"
       }, dns_partial_meta([query_error]))
     })
   end
@@ -383,6 +405,14 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     - time_range: "1h" | "24h" | "7d" (default "24h")
   """
   def top_domains(conn, params) do
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      top_domains_for_org(conn, params, organization_id)
+    else
+      {:error, :missing_organization} -> missing_organization_response(conn)
+    end
+  end
+
+  defp top_domains_for_org(conn, params, organization_id) do
     time_range = params["time_range"] || "24h"
     start_time = parse_time_range(time_range)
     now = DateTime.utc_now()
@@ -390,6 +420,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     {results, top_domains_error} =
       Event
       |> dns_events_query()
+      |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^start_time)
       |> where([e], e.timestamp <= ^now)
       |> where(
@@ -446,7 +477,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
     json(conn, %{
       data: results,
-      meta: Map.merge(%{time_range: time_range}, dns_partial_meta([top_domains_error]))
+      meta: Map.merge(%{time_range: time_range, scope: "organization_dns_telemetry"}, dns_partial_meta([top_domains_error]))
     })
   end
 
@@ -454,6 +485,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   # dashboard query inclusive so live and retained events do not disappear.
   defp dns_events_query(queryable) do
     where(queryable, ^dns_event_dynamic())
+  end
+
+  defp scope_event_org(queryable, organization_id) do
+    where(queryable, [e], e.organization_id == ^organization_id)
   end
 
   defp safe_repo_all_with_meta(query, label) do
@@ -730,6 +765,14 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     }
   """
   def alerts(conn, params) do
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      alerts_for_org(conn, params, organization_id)
+    else
+      {:error, :missing_organization} -> missing_organization_response(conn)
+    end
+  end
+
+  defp alerts_for_org(conn, params, organization_id) do
     alias TamanduaServer.Alerts.Alert
     alias TamanduaServer.Agents.Agent
 
@@ -741,6 +784,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       from(a in Alert,
         left_join: agent in Agent,
         on: a.agent_id == agent.id,
+        where: a.organization_id == ^organization_id,
         where:
           ilike(a.title, ^"%DNS%") or
             ilike(a.title, ^"%DGA%") or
@@ -799,7 +843,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         limit: limit,
         offset: offset,
         has_more: has_more,
-        total_is_estimate: true
+        total_is_estimate: true,
+        scope: "organization_dns_alerts"
       }, dns_partial_meta([alerts_error]))
     })
   end

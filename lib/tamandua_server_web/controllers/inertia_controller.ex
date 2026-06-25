@@ -8054,43 +8054,32 @@ defmodule TamanduaServerWeb.InertiaController do
   # MCP Servers
   def mcp_servers(conn, _params) do
     mcp_alive? = Process.whereis(MCPServer) != nil
+    catalog_tools = MCPServer.tool_catalog()
+    catalog_providers = MCPServer.context_provider_catalog()
 
     # Get available tools from MCPServer module
     {tools_data, tools_error} =
-      mcp_safe_call("list_tools", MCPServer.tool_catalog(), fn ->
+      mcp_safe_call("list_tools", catalog_tools, fn ->
         MCPServer.list_tools()
       end)
 
-    tools =
-      Enum.map(tools_data || [], fn tool ->
-        %{
-          name: mcp_field(tool, :name),
-          description: mcp_field(tool, :description, ""),
-          inputSchema: mcp_field(tool, :input_schema) || mcp_field(tool, :inputSchema) || %{},
-          requiredPermissions:
-            mcp_field(tool, :required_permissions) || mcp_field(tool, :requiredPermissions) || []
-        }
-      end)
-      |> Enum.reject(&is_nil(&1.name))
+    tools = normalize_mcp_tools(tools_data || [])
+    tools = if tools == [] and catalog_tools != [], do: normalize_mcp_tools(catalog_tools), else: tools
 
     # Get context providers
     {providers_data, providers_error} =
-      mcp_safe_call("list_context_providers", MCPServer.context_provider_catalog(), fn ->
+      mcp_safe_call("list_context_providers", catalog_providers, fn ->
         MCPServer.list_context_providers()
       end)
 
+    context_providers = normalize_mcp_context_providers(providers_data || [])
+
     context_providers =
-      Enum.map(providers_data || [], fn provider ->
-        %{
-          name: mcp_field(provider, :name),
-          description: mcp_field(provider, :description),
-          type: mcp_field(provider, :type),
-          status: mcp_field(provider, :status),
-          resourceCount: mcp_field(provider, :resource_count) || mcp_field(provider, :resourceCount),
-          parameters: mcp_field(provider, :parameters, %{})
-        }
-      end)
-      |> Enum.reject(&is_nil(&1.name))
+      if context_providers == [] and catalog_providers != [] do
+        normalize_mcp_context_providers(catalog_providers)
+      else
+        context_providers
+      end
 
     # Get server stats
     {stats, stats_error} =
@@ -8122,9 +8111,17 @@ defmodule TamanduaServerWeb.InertiaController do
     failed_requests = stats[:failed_requests] || 0
     actions_executed = stats[:actions_executed] || 0
     health_errors = Enum.reject([tools_error, providers_error, stats_error, audit_error], &is_nil/1)
-    mcp_status = if mcp_alive? and health_errors == [], do: "active", else: "error"
+
+    mcp_status =
+      cond do
+        mcp_alive? and health_errors == [] -> "active"
+        tools != [] -> "disconnected"
+        true -> "error"
+      end
+
     health_message =
       cond do
+        not mcp_alive? and tools != [] -> "MCPServer process is not running; showing static tool catalog"
         not mcp_alive? -> "MCPServer process is not running in this boot profile"
         health_errors != [] -> Enum.join(health_errors, "; ")
         true -> "MCP server is running"
@@ -8185,6 +8182,35 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp mcp_field(_map, _key, default), do: default
+
+  defp normalize_mcp_tools(tools_data) do
+    tools_data
+    |> Enum.map(fn tool ->
+      %{
+        name: mcp_field(tool, :name),
+        description: mcp_field(tool, :description, ""),
+        inputSchema: mcp_field(tool, :input_schema) || mcp_field(tool, :inputSchema) || %{},
+        requiredPermissions:
+          mcp_field(tool, :required_permissions) || mcp_field(tool, :requiredPermissions) || []
+      }
+    end)
+    |> Enum.reject(&is_nil(&1.name))
+  end
+
+  defp normalize_mcp_context_providers(providers_data) do
+    providers_data
+    |> Enum.map(fn provider ->
+      %{
+        name: mcp_field(provider, :name),
+        description: mcp_field(provider, :description),
+        type: mcp_field(provider, :type),
+        status: mcp_field(provider, :status),
+        resourceCount: mcp_field(provider, :resource_count) || mcp_field(provider, :resourceCount),
+        parameters: mcp_field(provider, :parameters, %{})
+      }
+    end)
+    |> Enum.reject(&is_nil(&1.name))
+  end
 
   defp mcp_safe_call(operation, fallback, fun) when is_function(fun, 0) do
     case fun.() do
