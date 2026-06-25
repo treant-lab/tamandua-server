@@ -98,7 +98,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def list_pending_reports(conn, params) do
     organization_id = conn.assigns[:organization_id]
-    limit = parse_int(params["limit"], 50)
+    limit = parse_int(params["limit"], 50, 1, 500)
 
     reports = FPAnalysis.get_pending_reviews(organization_id, limit: limit)
     json(conn, %{data: Enum.map(reports, &serialize_report/1)})
@@ -140,7 +140,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def stats(conn, params) do
     organization_id = conn.assigns[:organization_id]
-    days = parse_int(params["days"], 30)
+    days = parse_int(params["days"], 30, 1, 365)
 
     stats = FPAnalysis.get_organization_stats(organization_id, days: days)
     json(conn, %{data: stats})
@@ -175,8 +175,8 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def top_fp_rules(conn, params) do
     organization_id = conn.assigns[:organization_id]
-    limit = parse_int(params["limit"], 10)
-    days = parse_int(params["days"], 30)
+    limit = parse_int(params["limit"], 10, 1, 100)
+    days = parse_int(params["days"], 30, 1, 365)
 
     rules = FPAnalysis.get_top_fp_rules(organization_id, limit: limit, days: days)
     json(conn, %{data: rules})
@@ -204,7 +204,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def quality_dashboard(conn, params) do
     organization_id = conn.assigns[:organization_id]
-    min_alerts = parse_int(params["min_alerts"], 10)
+    min_alerts = parse_int(params["min_alerts"], 10, 1, 10_000)
 
     dashboard = FPAnalysis.get_quality_dashboard(organization_id, min_alerts: min_alerts)
     json(conn, %{data: dashboard})
@@ -217,7 +217,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def quality_trend(conn, params) do
     organization_id = conn.assigns[:organization_id]
-    days = parse_int(params["days"], 30)
+    days = parse_int(params["days"], 30, 1, 365)
 
     trend = FPAnalysis.get_quality_trend(organization_id, days: days)
     json(conn, %{data: trend})
@@ -249,8 +249,8 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
     opts = [
       status: params["status"],
       pattern_type: params["pattern_type"],
-      min_confidence: parse_float(params["min_confidence"], 0.5),
-      limit: parse_int(params["limit"], 50)
+      min_confidence: parse_float(params["min_confidence"], 0.5, 0.0, 1.0),
+      limit: parse_int(params["limit"], 50, 1, 500)
     ]
 
     patterns = FPAnalysis.get_fp_patterns(organization_id, opts)
@@ -356,7 +356,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   def list_recommendations(conn, params) do
     organization_id = conn.assigns[:organization_id]
     status = params["status"] || "pending"
-    limit = parse_int(params["limit"], 50)
+    limit = parse_int(params["limit"], 50, 1, 500)
 
     recommendations = FPAnalysis.get_recommendations(organization_id, status: status, limit: limit)
     json(conn, %{data: Enum.map(recommendations, &serialize_recommendation/1)})
@@ -431,22 +431,23 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def get_baseline(conn, %{"profile_type" => profile_type, "profile_key" => profile_key}) do
     organization_id = conn.assigns[:organization_id]
-    entity_type = String.to_existing_atom(profile_type)
 
-    case FPAnalysis.get_baseline(profile_key, entity_type, organization_id) do
-      nil ->
+    with {:ok, entity_type} <- parse_profile_type(profile_type) do
+      case FPAnalysis.get_baseline(profile_key, entity_type, organization_id) do
+        nil ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Baseline not found"})
+
+        baseline ->
+          json(conn, %{data: serialize_baseline(baseline)})
+      end
+    else
+      {:error, :invalid_profile_type} ->
         conn
-        |> put_status(:not_found)
-        |> json(%{error: "Baseline not found"})
-
-      baseline ->
-        json(conn, %{data: serialize_baseline(baseline)})
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid profile type"})
     end
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Invalid profile type"})
   end
 
   @doc """
@@ -456,24 +457,25 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   """
   def start_baseline(conn, %{"profile_type" => profile_type, "profile_key" => profile_key}) do
     organization_id = conn.assigns[:organization_id]
-    entity_type = String.to_existing_atom(profile_type)
 
-    case FPAnalysis.start_baseline_learning(profile_key, entity_type, organization_id) do
-      {:ok, baseline} ->
-        conn
-        |> put_status(:created)
-        |> json(%{data: serialize_baseline(baseline), message: "Baseline learning started"})
+    with {:ok, entity_type} <- parse_profile_type(profile_type) do
+      case FPAnalysis.start_baseline_learning(profile_key, entity_type, organization_id) do
+        {:ok, baseline} ->
+          conn
+          |> put_status(:created)
+          |> json(%{data: serialize_baseline(baseline), message: "Baseline learning started"})
 
-      {:error, changeset} ->
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: format_changeset_errors(changeset)})
+      end
+    else
+      {:error, :invalid_profile_type} ->
         conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: format_changeset_errors(changeset)})
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid profile type"})
     end
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Invalid profile type"})
   end
 
   @doc """
@@ -572,23 +574,34 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
     }
   end
 
-  defp parse_int(nil, default), do: default
-  defp parse_int(val, _default) when is_integer(val), do: val
-  defp parse_int(val, default) when is_binary(val) do
+  defp parse_profile_type("organization"), do: {:ok, :organization}
+  defp parse_profile_type("agent_group"), do: {:ok, :agent_group}
+  defp parse_profile_type("agent"), do: {:ok, :agent}
+  defp parse_profile_type("user"), do: {:ok, :user}
+  defp parse_profile_type("asset_type"), do: {:ok, :asset_type}
+  defp parse_profile_type(_), do: {:error, :invalid_profile_type}
+
+  defp parse_int(nil, default, _min, _max), do: default
+  defp parse_int(val, _default, min, max) when is_integer(val), do: clamp(val, min, max)
+  defp parse_int(val, default, min, max) when is_binary(val) do
     case Integer.parse(val) do
-      {int, _} -> int
+      {int, _} -> clamp(int, min, max)
       :error -> default
     end
   end
 
-  defp parse_float(nil, default), do: default
-  defp parse_float(val, _default) when is_float(val), do: val
-  defp parse_float(val, default) when is_binary(val) do
+  defp parse_float(nil, default, _min, _max), do: default
+  defp parse_float(val, _default, min, max) when is_float(val), do: clamp(val, min, max)
+  defp parse_float(val, default, min, max) when is_binary(val) do
     case Float.parse(val) do
-      {f, _} -> f
+      {f, _} -> clamp(f, min, max)
       :error -> default
     end
   end
+
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
 
   defp format_changeset_errors(changeset) when is_map(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
