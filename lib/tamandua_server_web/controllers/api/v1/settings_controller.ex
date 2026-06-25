@@ -396,10 +396,11 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
     end)
   end
 
-  defp integration_key(value) when value in ~w(virustotal abuseipdb misp splunk elasticsearch) do
-    String.to_existing_atom(value)
-  end
-
+  defp integration_key("virustotal"), do: :virustotal
+  defp integration_key("abuseipdb"), do: :abuseipdb
+  defp integration_key("misp"), do: :misp
+  defp integration_key("splunk"), do: :splunk
+  defp integration_key("elasticsearch"), do: :elasticsearch
   defp integration_key(_), do: nil
 
   defp serialize_system(settings) do
