@@ -47,6 +47,7 @@ interface WorkflowExecution {
   completedAt: string | null
   triggeredBy: string
   duration: number | null
+  duration_ms?: number | null
 }
 
 interface AutomationWorkflow {
@@ -54,7 +55,7 @@ interface AutomationWorkflow {
   name: string
   description: string
   isEnabled: boolean
-  triggerType: 'alert' | 'detection' | 'schedule' | 'webhook' | 'api' | 'event' | 'event_stream' | 'manual'
+  triggerType: string
   triggerConditions: string[]
   steps: WorkflowStep[]
   executions: {
@@ -93,7 +94,7 @@ interface HyperautomationPageProps {
   recentExecutions?: WorkflowExecution[]
 }
 
-const triggerTypeConfig: Record<AutomationWorkflow['triggerType'], { icon: LucideIcon; color: string; label: string }> = {
+const triggerTypeConfig: Record<string, { icon: LucideIcon; color: string; label: string }> = {
   alert: { icon: AlertTriangle, color: 'text-orange-400 bg-orange-400/10', label: 'Alert' },
   detection: { icon: Target, color: 'text-red-400 bg-red-400/10', label: 'Detection' },
   schedule: { icon: Clock, color: 'text-blue-400 bg-blue-400/10', label: 'Schedule' },
@@ -141,6 +142,21 @@ const getStepConfig = (type: string) => {
   return stepTypeConfig[type] || { color: 'bg-green-500', icon: Play, label: type.replace(/_/g, ' ') }
 }
 
+const getTriggerConfig = (type: string) => {
+  return triggerTypeConfig[type] || {
+    icon: GitBranch,
+    color: 'text-[var(--muted)] bg-[var(--surface-2)]',
+    label: type ? type.replace(/_/g, ' ') : 'Unknown',
+  }
+}
+
+const getExecutionStatusConfig = (status: WorkflowExecution['status'] | string) => {
+  return executionStatusConfig[status as WorkflowExecution['status']] || {
+    color: 'text-[var(--muted)] bg-[var(--surface-2)]',
+    icon: Activity,
+  }
+}
+
 export default function Automation({
   workflows = [],
   availableActions = [],
@@ -149,7 +165,7 @@ export default function Automation({
   recentExecutions = []
 }: HyperautomationPageProps) {
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedTrigger, setSelectedTrigger] = useState<AutomationWorkflow['triggerType'] | 'all'>('all')
+  const [selectedTrigger, setSelectedTrigger] = useState<string>('all')
   const [showEnabledOnly, setShowEnabledOnly] = useState(false)
   const [selectedWorkflow, setSelectedWorkflow] = useState<AutomationWorkflow | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -160,7 +176,7 @@ export default function Automation({
   const [newWorkflow, setNewWorkflow] = useState({
     name: '',
     description: '',
-    triggerType: 'manual' as AutomationWorkflow['triggerType'],
+    triggerType: 'manual',
     enabled: true,
   })
 
@@ -424,12 +440,18 @@ export default function Automation({
             {filteredWorkflows.length === 0 ? (
               <div className="card-sentinel rounded-xl p-12 text-center">
                 <Workflow className="h-16 w-16 mx-auto mb-4" style={{ color: 'var(--dim)' }} />
-                <p className="text-lg" style={{ color: 'var(--muted)' }}>No workflows found</p>
-                <p className="text-sm mt-1" style={{ color: 'var(--subtle)' }}>Try adjusting your filters</p>
+                <p className="text-lg" style={{ color: 'var(--muted)' }}>
+                  {workflows.length === 0 ? 'No workflows configured yet' : 'No workflows match these filters'}
+                </p>
+                <p className="text-sm mt-1" style={{ color: 'var(--subtle)' }}>
+                  {workflows.length === 0
+                    ? 'Create a workflow or check the automation backend if this tenant should already have data'
+                    : 'Try adjusting search, trigger, or enabled filters'}
+                </p>
               </div>
             ) : (
               filteredWorkflows.map((workflow) => {
-                const triggerConf = triggerTypeConfig[workflow.triggerType]
+                const triggerConf = getTriggerConfig(workflow.triggerType)
                 const TriggerIcon = triggerConf.icon
                 const successRate = workflow.executions.total > 0
                   ? ((workflow.executions.successful / workflow.executions.total) * 100).toFixed(1)
@@ -625,7 +647,13 @@ export default function Automation({
                 <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Action Success Rates</h2>
               </div>
               <div className="p-4 space-y-3">
-                {availableActions.slice(0, 5).map((metric) => {
+                {availableActions.length === 0 ? (
+                  <div className="py-6 text-center">
+                    <Activity className="h-8 w-8 mx-auto mb-2" style={{ color: 'var(--dim)' }} />
+                    <p className="text-sm" style={{ color: 'var(--muted)' }}>No action metrics available</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--subtle)' }}>Run a workflow or verify automation metrics ingestion</p>
+                  </div>
+                ) : availableActions.slice(0, 5).map((metric) => {
                   const successRate = metric.total > 0 ? ((metric.successful / metric.total) * 100).toFixed(1) : '0'
 
                   return (
@@ -666,10 +694,19 @@ export default function Automation({
                 <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Recent Executions</h2>
               </div>
               <div className="max-h-[300px] overflow-auto" style={{ borderColor: 'var(--border)' }}>
-                {recentExecutions.map((execution) => {
+                {recentExecutions.length === 0 ? (
+                  <div className="p-6 text-center">
+                    <Clock className="h-8 w-8 mx-auto mb-2" style={{ color: 'var(--dim)' }} />
+                    <p className="text-sm" style={{ color: 'var(--muted)' }}>No recent executions</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--subtle)' }}>Run a workflow to validate execution telemetry</p>
+                  </div>
+                ) : recentExecutions.map((execution) => {
                   const workflow = workflows.find((w) => w.id === execution.workflowId)
-                  const statusConf = executionStatusConfig[execution.status]
+                  const statusConf = getExecutionStatusConfig(execution.status)
                   const StatusIcon = statusConf.icon
+                  const durationSeconds = execution.duration ?? (
+                    typeof execution.duration_ms === 'number' ? execution.duration_ms / 1000 : null
+                  )
 
                   return (
                     <div key={execution.id} className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -681,12 +718,14 @@ export default function Automation({
                           )} />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{workflow?.name}</p>
+                          <p className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
+                            {workflow?.name || execution.workflowId || 'Workflow execution'}
+                          </p>
                           <p className="text-xs truncate mt-0.5" style={{ color: 'var(--muted)' }}>{execution.triggeredBy}</p>
                           <div className="flex items-center gap-2 mt-1">
                             <span className="text-xs" style={{ color: 'var(--subtle)' }}>{formatDate(execution.startedAt)}</span>
-                            {execution.duration && (
-                              <span className="text-xs" style={{ color: 'var(--subtle)' }}>({formatDuration(execution.duration)})</span>
+                            {durationSeconds !== null && durationSeconds !== undefined && (
+                              <span className="text-xs" style={{ color: 'var(--subtle)' }}>({formatDuration(durationSeconds)})</span>
                             )}
                           </div>
                         </div>

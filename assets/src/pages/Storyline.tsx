@@ -1543,7 +1543,25 @@ export default function Storyline({
           <div className="text-center">
             <Info size={48} style={{ color: 'var(--muted)' }} className="mx-auto mb-4" />
             <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--fg)' }}>No Storyline Data</h2>
-            <p style={{ color: 'var(--muted)' }}>No events found to build a storyline.</p>
+            <p className="mb-4" style={{ color: 'var(--muted)' }}>No events found to build a storyline.</p>
+            <div className="flex items-center justify-center gap-3">
+              <Link
+                href={alert_id ? `/app/alerts/${alert_id}` : '/app/alerts'}
+                className="btn-sentinel btn-sentinel-primary"
+              >
+                <ArrowLeft className="inline-block mr-2" size={16} />
+                Back to {alert_id ? 'Alert' : 'Alerts'}
+              </Link>
+              {alert_id && (
+                <Link
+                  href={`/app/alerts/${alert_id}?tab=events`}
+                  className="btn-sentinel btn-sentinel-secondary"
+                >
+                  <ExternalLink className="inline-block mr-2" size={16} />
+                  Open Events
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       </MainLayout>

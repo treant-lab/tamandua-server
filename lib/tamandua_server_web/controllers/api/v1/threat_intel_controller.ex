@@ -149,7 +149,11 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       end
     end)
 
-    all_feeds = feeds ++ configured_not_synced
+    all_feeds =
+      case feeds ++ configured_not_synced do
+        [] -> default_dns_threat_feeds("pending")
+        feed_entries -> feed_entries
+      end
 
     json(conn, %{
       data: %{
@@ -196,9 +200,21 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "POST /api/v1/threat-intel/sync - Trigger sync of all feeds"
   def sync_all(conn, _params) do
     user = conn.assigns[:current_user]
-    ThreatIntelFeeds.sync_all()
-    AuditLog.log_config_change(user, "threat_intel", %{action: "sync_all_feeds"}, request_metadata(conn))
-    json(conn, %{message: "Sync started"})
+
+    case safe_threat_intel_sync(fn -> ThreatIntelFeeds.sync_all() end) do
+      :ok ->
+        AuditLog.log_config_change(user, "threat_intel", %{action: "sync_all_feeds"}, request_metadata(conn))
+        json(conn, %{message: "Sync started"})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          message: "Threat intel sync unavailable",
+          degraded: true,
+          reason: inspect(reason)
+        })
+    end
   end
 
   @doc "POST /api/v1/threat-intel/sync/:feed_name - Sync a specific feed"
@@ -209,9 +225,27 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     rescue
       ArgumentError -> nil
     end
-    if feed_atom, do: ThreatIntelFeeds.sync_feed(feed_atom)
-    AuditLog.log_config_change(user, "threat_intel", %{action: "sync_feed", feed: feed_name}, request_metadata(conn))
-    json(conn, %{message: "Feed sync started", feed: feed_name})
+
+    case feed_atom && safe_threat_intel_sync(fn -> ThreatIntelFeeds.sync_feed(feed_atom) end) do
+      :ok ->
+        AuditLog.log_config_change(user, "threat_intel", %{action: "sync_feed", feed: feed_name}, request_metadata(conn))
+        json(conn, %{message: "Feed sync started", feed: feed_name})
+
+      nil ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: %{message: "Unknown threat intel feed", feed: feed_name}})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          message: "Threat intel feed sync unavailable",
+          degraded: true,
+          feed: feed_name,
+          reason: inspect(reason)
+        })
+    end
   end
 
   # ============================================================================
@@ -2577,6 +2611,20 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   defp bounded_score(value, default), do: value |> parse_int(default) |> max(0) |> min(100)
 
   defp bounded_min_sources(value, default), do: value |> parse_int(default) |> max(1) |> min(25)
+
+  defp safe_threat_intel_sync(fun) when is_function(fun, 0) do
+    case fun.() do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+      _ -> :ok
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+    kind, reason -> {:error, {kind, reason}}
+  end
 
   defp parse_int(nil, default), do: default
   defp parse_int(val, default) when is_binary(val) do

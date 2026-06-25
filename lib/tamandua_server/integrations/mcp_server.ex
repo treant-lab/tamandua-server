@@ -363,6 +363,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
 
   defp authenticate_client(request, ctx, state) do
     api_key = ctx[:api_key] || get_in(request, ["params", "_api_key"]) || extract_bearer(ctx[:authorization])
+    client_key = api_key || anonymous_api_key(ctx)
     method = request["method"]
     public_methods = [
       "initialize",
@@ -374,12 +375,14 @@ defmodule TamanduaServer.Integrations.MCPServer do
       "list_context_providers"
     ]
 
-    case Map.get(state.clients, api_key) do
+    case Map.get(state.clients, client_key) do
       nil ->
         if method in public_methods do
-          {:ok, %ClientState{client_id: "anonymous", permissions: [:read], request_count: 0,
+          client = %ClientState{client_id: client_key, api_key: client_key, permissions: [:read], request_count: 0,
                             action_count: 0, window_start: System.monotonic_time(:millisecond),
-                            authenticated: false}, state}
+                            authenticated: false}
+
+          {:ok, client, %{state | clients: Map.put(state.clients, client_key, client)}}
         else
           {:error, :unauthorized}
         end
@@ -566,7 +569,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
       %{
         name: name,
         description: tool.description,
-        inputSchema: normalize_json_value(tool.input_schema),
+        inputSchema: normalize_input_schema(tool.input_schema),
         required_permissions: normalize_json_value(tool.required_permissions)
       }
     end)
@@ -577,7 +580,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
       %{
         name: name,
         description: tool.description,
-        input_schema: normalize_json_value(tool.input_schema),
+        input_schema: normalize_input_schema(tool.input_schema),
         required_permissions: normalize_json_value(tool.required_permissions)
       }
     end)
@@ -614,6 +617,34 @@ defmodule TamanduaServer.Integrations.MCPServer do
 
   defp normalize_json_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_json_key(key), do: key
+
+  defp normalize_input_schema(schema) do
+    schema
+    |> normalize_json_value()
+    |> case do
+      %{"type" => _} = normalized -> normalized
+      normalized when is_map(normalized) -> Map.put(normalized, "type", "object")
+      _ -> %{"type" => "object", "properties" => %{}, "required" => []}
+    end
+  end
+
+  defp anonymous_api_key(ctx) do
+    peer =
+      ctx[:remote_ip] ||
+        ctx[:ip_address] ||
+        ctx[:client_ip] ||
+        remote_ip_from_conn(ctx[:conn])
+
+    "anonymous:#{format_peer(peer)}"
+  end
+
+  defp format_peer({a, b, c, d}), do: "#{a}.#{b}.#{c}.#{d}"
+  defp format_peer(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> Enum.join(":")
+  defp format_peer(value) when is_binary(value), do: value
+  defp format_peer(_), do: "unknown"
+
+  defp remote_ip_from_conn(%{remote_ip: remote_ip}), do: remote_ip
+  defp remote_ip_from_conn(_), do: nil
 
   defp dispatch_method("tools/call", request, client, state) do
     params = request["params"] || %{}

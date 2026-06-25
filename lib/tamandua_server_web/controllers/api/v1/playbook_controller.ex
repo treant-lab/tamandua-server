@@ -267,7 +267,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   status and results.
   """
   def execution_history(conn, %{"id" => id} = params) do
-    limit = params |> Map.get("per_page", "20") |> to_integer(20)
+    limit = params |> Map.get("per_page", "20") |> bounded_limit(20, 200)
 
     case safe_playbook_call(fn -> Playbook.list_executions(id, %{limit: limit}) end, "Playbook.list_executions") do
       {:ok, executions} ->
@@ -288,7 +288,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   Get recent executions across all playbooks.
   """
   def recent_executions(conn, params) do
-    limit = params |> Map.get("limit", "50") |> to_integer(50)
+    limit = params |> Map.get("limit", "50") |> bounded_limit(50, 200)
 
     case safe_playbook_call(fn -> Playbook.list_recent_executions(limit: limit) end, "Playbook.list_recent_executions") do
       {:ok, executions} ->
@@ -537,6 +537,9 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   end
   defp to_integer(val, _default) when is_integer(val), do: val
   defp to_integer(_, default), do: default
+
+  defp bounded_limit(val, default, max_limit),
+    do: val |> to_integer(default) |> max(1) |> min(max_limit)
 
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)

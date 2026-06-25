@@ -413,23 +413,47 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   end
 
   defp serialize_workflow(workflow) do
+    execution_count = workflow.execution_count || 0
+    success_count = workflow.success_count || 0
+    failed_count = max(execution_count - success_count, 0)
+    avg_duration_seconds = workflow.avg_duration_seconds || 0
+
     %{
       id: workflow.id,
       name: workflow.name,
       description: workflow.description || "",
       enabled: workflow.enabled,
+      isEnabled: workflow.enabled,
       is_enabled: workflow.enabled,
       trigger_type: workflow.trigger_type,
+      triggerType: workflow.trigger_type,
       trigger_config: workflow.trigger_config || %{},
+      triggerConfig: workflow.trigger_config || %{},
+      triggerConditions: workflow_trigger_conditions(workflow.trigger_config || %{}),
       steps: workflow.steps || [],
-      execution_count: workflow.execution_count || 0,
-      success_count: workflow.success_count || 0,
-      avg_duration_seconds: workflow.avg_duration_seconds || 0,
+      execution_count: execution_count,
+      success_count: success_count,
+      avg_duration_seconds: avg_duration_seconds,
+      executions: %{
+        total: execution_count,
+        successful: success_count,
+        failed: failed_count,
+        avgDuration: avg_duration_seconds
+      },
       last_executed_at: workflow.last_executed_at,
+      lastExecuted: workflow.last_executed_at,
       inserted_at: workflow.inserted_at,
-      updated_at: workflow.updated_at
+      createdAt: workflow.inserted_at,
+      updated_at: workflow.updated_at,
+      updatedAt: workflow.updated_at,
+      createdBy: Map.get(workflow, :created_by) || Map.get(workflow, :created_by_id)
     }
   end
+
+  defp workflow_trigger_conditions(config) when is_map(config),
+    do: Map.get(config, "conditions") || Map.get(config, :conditions) || []
+
+  defp workflow_trigger_conditions(_), do: []
 
   defp parse_int(value, fallback, min, max) when is_integer(value), do: clamp(value, min, max)
 

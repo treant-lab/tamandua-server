@@ -1515,6 +1515,7 @@ export default function DNS({
           queries={filteredQueries}
           agents={agents || []}
           loading={loading}
+          apiError={apiError}
           connectionState={connectionState}
           isPaused={isPaused}
           pauseStream={pauseStream}
@@ -1622,6 +1623,7 @@ interface LiveDNSFeedProps {
   queries: DNSQuery[]
   agents: Array<{ id: string; hostname: string }>
   loading: boolean
+  apiError: string | null
   connectionState: WebSocketConnectionState
   isPaused: boolean
   pauseStream: () => void
@@ -1648,6 +1650,7 @@ function LiveDNSFeed({
   queries,
   agents,
   loading,
+  apiError,
   connectionState,
   isPaused,
   pauseStream,
@@ -1773,7 +1776,7 @@ function LiveDNSFeed({
           </Select>
 
           <span className="text-sm text-[var(--muted)]">
-            {queries.length} DNS records
+            {loading ? 'Loading DNS records...' : `${queries.length} DNS records`}
           </span>
         </div>
       </div>
@@ -1797,9 +1800,19 @@ function LiveDNSFeed({
             {queries.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-12 text-center text-[var(--muted)]">
-                  <Globe className="h-12 w-12 mx-auto mb-3 opacity-40" />
-                  <p>No DNS records found</p>
-                  <p className="text-sm mt-1">Adjust filters or wait for DNS query, resolver, DoH, or DoT telemetry</p>
+                  <Globe className={cn('h-12 w-12 mx-auto mb-3 opacity-40', loading && 'animate-pulse')} />
+                  <p>
+                    {loading
+                      ? 'Loading DNS telemetry...'
+                      : 'No DNS records found'}
+                  </p>
+                  <p className="text-sm mt-1">
+                    {loading
+                      ? 'Fetching historical queries, resolver events, DoH, and DoT telemetry'
+                      : apiError
+                        ? 'DNS query feed failed. Check the API error above before treating this as an empty tenant.'
+                        : 'Adjust filters or wait for DNS query, resolver, DoH, or DoT telemetry'}
+                  </p>
                 </td>
               </tr>
             ) : (
