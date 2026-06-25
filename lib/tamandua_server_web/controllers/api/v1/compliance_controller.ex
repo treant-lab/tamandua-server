@@ -328,43 +328,45 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   Returns non-compliant and partially compliant controls with remediation steps.
   """
   def gap_analysis(conn, %{"framework" => framework_str}) do
-    framework = String.to_existing_atom(framework_str)
-    controls = Compliance.get_controls(framework)
+    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+      nil ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid framework"})
 
-    gaps = Enum.filter(controls, fn c ->
-      case :ets.lookup(:compliance_assessments, "latest_#{c.id}") do
-        [{_, a}] -> a.status in [:non_compliant, :partial]
-        [] -> true  # Not assessed = gap
-      end
-    end)
+      framework ->
+        controls = Compliance.get_controls(framework)
 
-    json(conn, %{
-      data: %{
-        framework: framework,
-        gap_count: length(gaps),
-        gaps: Enum.map(gaps, fn control ->
-          assessment = case :ets.lookup(:compliance_assessments, "latest_#{control.id}") do
-            [{_, a}] -> a
-            [] -> nil
+        gaps = Enum.filter(controls, fn c ->
+          case :ets.lookup(:compliance_assessments, "latest_#{c.id}") do
+            [{_, a}] -> a.status in [:non_compliant, :partial]
+            [] -> true  # Not assessed = gap
           end
-
-          %{
-            control: serialize_control(control),
-            current_status: (assessment && assessment.status) || :not_assessed,
-            findings: (assessment && assessment.findings) || [],
-            remediation_steps: control.remediation_steps,
-            priority: priority_score(control.severity, assessment && assessment.status),
-            effort_estimate: estimate_effort(control)
-          }
         end)
-        |> Enum.sort_by(& &1.priority, :desc)
-      }
-    })
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Invalid framework"})
+
+        json(conn, %{
+          data: %{
+            framework: framework,
+            gap_count: length(gaps),
+            gaps: Enum.map(gaps, fn control ->
+              assessment = case :ets.lookup(:compliance_assessments, "latest_#{control.id}") do
+                [{_, a}] -> a
+                [] -> nil
+              end
+
+              %{
+                control: serialize_control(control),
+                current_status: (assessment && assessment.status) || :not_assessed,
+                findings: (assessment && assessment.findings) || [],
+                remediation_steps: control.remediation_steps,
+                priority: priority_score(control.severity, assessment && assessment.status),
+                effort_estimate: estimate_effort(control)
+              }
+            end)
+            |> Enum.sort_by(& &1.priority, :desc)
+          }
+        })
+    end
   end
 
   @doc """
@@ -465,6 +467,49 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   @valid_control_statuses ~w(compliant non_compliant partial unknown not_applicable)
   @valid_control_severities ~w(low medium high critical)
   @valid_control_categories ~w(access_control audit_logging encryption network data_protection identity monitoring incident_response)
+
+  defp safe_to_existing_atom(value, allowed) when is_binary(value) do
+    if value in allowed, do: allowed_atom(value), else: nil
+  end
+  defp safe_to_existing_atom(_, _), do: nil
+
+  defp allowed_atom("pci_dss"), do: :pci_dss
+  defp allowed_atom("hipaa"), do: :hipaa
+  defp allowed_atom("soc2"), do: :soc2
+  defp allowed_atom("nist_800_53"), do: :nist_800_53
+  defp allowed_atom("iso_27001"), do: :iso_27001
+  defp allowed_atom("cis_benchmark"), do: :cis_benchmark
+  defp allowed_atom("gdpr"), do: :gdpr
+  defp allowed_atom("log_review"), do: :log_review
+  defp allowed_atom("access_control_test"), do: :access_control_test
+  defp allowed_atom("encryption_check"), do: :encryption_check
+  defp allowed_atom("network_scan"), do: :network_scan
+  defp allowed_atom("vulnerability_scan"), do: :vulnerability_scan
+  defp allowed_atom("configuration_audit"), do: :configuration_audit
+  defp allowed_atom("policy_review"), do: :policy_review
+  defp allowed_atom("summary"), do: :summary
+  defp allowed_atom("detailed"), do: :detailed
+  defp allowed_atom("audit"), do: :audit
+  defp allowed_atom("json"), do: :json
+  defp allowed_atom("pdf"), do: :pdf
+  defp allowed_atom("csv"), do: :csv
+  defp allowed_atom("compliant"), do: :compliant
+  defp allowed_atom("non_compliant"), do: :non_compliant
+  defp allowed_atom("partial"), do: :partial
+  defp allowed_atom("unknown"), do: :unknown
+  defp allowed_atom("not_applicable"), do: :not_applicable
+  defp allowed_atom("low"), do: :low
+  defp allowed_atom("medium"), do: :medium
+  defp allowed_atom("high"), do: :high
+  defp allowed_atom("critical"), do: :critical
+  defp allowed_atom("access_control"), do: :access_control
+  defp allowed_atom("audit_logging"), do: :audit_logging
+  defp allowed_atom("encryption"), do: :encryption
+  defp allowed_atom("network"), do: :network
+  defp allowed_atom("data_protection"), do: :data_protection
+  defp allowed_atom("identity"), do: :identity
+  defp allowed_atom("monitoring"), do: :monitoring
+  defp allowed_atom("incident_response"), do: :incident_response
 
   defp maybe_filter_status(controls, nil), do: controls
   defp maybe_filter_status(controls, status) do
