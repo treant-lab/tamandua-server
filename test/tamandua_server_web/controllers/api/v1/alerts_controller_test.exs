@@ -70,6 +70,42 @@ defmodule TamanduaServerWeb.Controllers.API.V1.AlertsControllerTest do
       assert Enum.all?(data, fn alert -> alert["status"] == "open" end)
     end
 
+    test "infers legacy ML alert source for filtering and serialization", %{
+      conn: conn,
+      agent: agent,
+      org: org
+    } do
+      ml_alert =
+        insert!(:alert, %{
+          agent_id: agent.id,
+          organization_id: org.id,
+          title: "Legacy ML detection",
+          detection_metadata: %{
+            "rule_name" => "ML_AGENT_MALWARE_CLASSIFICATION",
+            "confidence" => 0.97
+          },
+          raw_event: %{
+            "payload" => %{
+              "detection_type" => "ml",
+              "file_path" => "C:\\ProgramData\\Tamandua\\ml-bench\\malware_00000.bin"
+            }
+          }
+        })
+
+      insert!(:alert, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        title: "Behavioral detection",
+        detection_metadata: %{"source" => "behavioral"}
+      })
+
+      conn = get(conn, "/api/v1/alerts?source=ml")
+
+      data = json_response(conn, 200)["data"]
+      assert Enum.any?(data, fn alert -> alert["id"] == ml_alert.id end)
+      assert Enum.all?(data, fn alert -> alert["source"] == "ml" end)
+    end
+
     test "filters by MITRE technique", %{conn: conn, agent: agent, org: org} do
       insert!(:alert, %{
         agent_id: agent.id,

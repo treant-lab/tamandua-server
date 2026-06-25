@@ -91,11 +91,54 @@ defmodule TamanduaServer.Alerts do
       query,
       [a],
       fragment(
-        "lower(coalesce(?->>'source', ?->>'detection_source', ?->>'source', ?->>'alert_source', ?->>'source', '')) = lower(?)",
+        """
+        lower(
+          coalesce(
+            ?->>'source',
+            ?->>'detection_source',
+            ?->>'source',
+            ?->>'alert_source',
+            ?#>>'{payload,detection_source}',
+            ?#>>'{payload,source}',
+            ?#>>'{metadata,detection_source}',
+            ?#>>'{metadata,source}',
+            ?->>'source',
+            ?->>'detection_source',
+            ?->>'alert_source',
+            case
+              when lower(coalesce(?->>'detection_type', '')) = 'ml' then 'ml'
+              when lower(coalesce(?->>'rule_type', '')) = 'ml' then 'ml'
+              when upper(coalesce(?->>'rule_name', '')) like 'ML\\_%' then 'ml'
+              when lower(coalesce(?#>>'{payload,detection_type}', '')) = 'ml' then 'ml'
+              when lower(coalesce(?#>>'{payload,rule_type}', '')) = 'ml' then 'ml'
+              when upper(coalesce(?#>>'{payload,rule_name}', '')) like 'ML\\_%' then 'ml'
+              when lower(coalesce(?->>'detection_type', '')) = 'ml' then 'ml'
+              when lower(coalesce(?->>'rule_type', '')) = 'ml' then 'ml'
+              when upper(coalesce(?->>'rule_name', '')) like 'ML\\_%' then 'ml'
+              else ''
+            end
+          )
+        ) = lower(?)
+        """,
         a.detection_metadata,
         a.detection_metadata,
         a.raw_event,
         a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
         a.evidence,
         ^value
       )

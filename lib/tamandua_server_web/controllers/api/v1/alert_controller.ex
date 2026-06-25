@@ -1216,15 +1216,52 @@ defmodule TamanduaServerWeb.API.V1.AlertController do
   defp non_empty_list(_value), do: nil
 
   defp alert_source(%Alert{} = alert) do
-    [
-      get_in(alert.detection_metadata || %{}, ["source"]),
-      get_in(alert.detection_metadata || %{}, ["detection_source"]),
-      get_in(alert.raw_event || %{}, ["source"]),
-      get_in(alert.raw_event || %{}, ["alert_source"]),
-      get_in(alert.evidence || %{}, ["source"])
-    ]
-    |> Enum.find("behavioral", &(is_binary(&1) and String.trim(&1) != ""))
+    explicit_source =
+      [
+        get_in(alert.detection_metadata || %{}, ["source"]),
+        get_in(alert.detection_metadata || %{}, ["detection_source"]),
+        get_in(alert.raw_event || %{}, ["source"]),
+        get_in(alert.raw_event || %{}, ["alert_source"]),
+        get_in(alert.raw_event || %{}, ["payload", "detection_source"]),
+        get_in(alert.raw_event || %{}, ["payload", "source"]),
+        get_in(alert.raw_event || %{}, ["metadata", "detection_source"]),
+        get_in(alert.raw_event || %{}, ["metadata", "source"]),
+        get_in(alert.evidence || %{}, ["source"]),
+        get_in(alert.evidence || %{}, ["detection_source"]),
+        get_in(alert.evidence || %{}, ["alert_source"])
+      ]
+      |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
+
+    explicit_source || inferred_alert_source(alert) || "behavioral"
   end
+
+  defp inferred_alert_source(%Alert{} = alert) do
+    [
+      alert.detection_metadata,
+      alert.raw_event,
+      get_in(alert.raw_event || %{}, ["payload"]),
+      alert.evidence
+    ]
+    |> Enum.find_value(&inferred_map_source/1)
+  end
+
+  defp inferred_map_source(metadata) when is_map(metadata) do
+    detection_type = metadata["detection_type"] || metadata[:detection_type]
+    rule_type = metadata["rule_type"] || metadata[:rule_type]
+    rule_name = metadata["rule_name"] || metadata[:rule_name]
+
+    cond do
+      ml_source_value?(detection_type) -> "ml"
+      ml_source_value?(rule_type) -> "ml"
+      is_binary(rule_name) and String.starts_with?(String.upcase(rule_name), "ML_") -> "ml"
+      true -> nil
+    end
+  end
+
+  defp inferred_map_source(_metadata), do: nil
+
+  defp ml_source_value?(value) when is_binary(value), do: String.downcase(value) == "ml"
+  defp ml_source_value?(_value), do: false
 
   defp load_incident_events(%Alert{} = alert) do
     ids =
