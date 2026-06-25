@@ -515,13 +515,19 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
 
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+      {k, v} when is_binary(k) -> {safe_existing_atom(k) || k, v}
       {k, v} -> {k, v}
     end)
   rescue
     _ -> map
   end
   defp atomize_keys(other), do: other
+
+  defp safe_existing_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> nil
+  end
 
   defp to_integer(val, default) when is_binary(val) do
     case Integer.parse(val) do
