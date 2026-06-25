@@ -169,7 +169,13 @@ defmodule TamanduaServerWeb.KillSwitchLive do
 
   @impl true
   def handle_event("show_bulk_confirm", %{"action" => action}, socket) do
-    {:noreply, assign(socket, :show_bulk_confirm, String.to_existing_atom(action))}
+    case parse_bulk_action(action) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown bulk action")}
+
+      bulk_action ->
+        {:noreply, assign(socket, :show_bulk_confirm, bulk_action)}
+    end
   end
 
   @impl true
@@ -613,4 +619,10 @@ defmodule TamanduaServerWeb.KillSwitchLive do
   end
 
   defp bulk_action_warning(_, _), do: "This action affects multiple models."
+
+  defp parse_bulk_action(:arm_all), do: :arm_all
+  defp parse_bulk_action(:disarm_all), do: :disarm_all
+  defp parse_bulk_action("arm_all"), do: :arm_all
+  defp parse_bulk_action("disarm_all"), do: :disarm_all
+  defp parse_bulk_action(_), do: nil
 end
