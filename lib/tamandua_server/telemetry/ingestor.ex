@@ -1608,7 +1608,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp insert_event_maps(event_maps, attempts_left) do
     case TamanduaServer.Repo.insert_all("events", event_maps,
            on_conflict: :nothing,
-           returning: false
+           returning: false,
+           timeout: :timer.seconds(120)
          ) do
       {count, _} ->
         {:ok, count}
