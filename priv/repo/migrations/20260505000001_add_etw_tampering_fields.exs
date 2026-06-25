@@ -17,13 +17,13 @@ defmodule TamanduaServer.Repo.Migrations.AddEtwTamperingFields do
   def change do
     alter table(:alerts) do
       # Target function name (e.g., "NtTraceEvent", "EtwEventWrite", "EtwEventWriteFull")
-      add :target_function, :string
+      add_if_not_exists :target_function, :string
 
       # Original bytes from the function prologue before patching
-      add :original_bytes, :binary
+      add_if_not_exists :original_bytes, :binary
 
       # Patched bytes found during detection
-      add :patched_bytes, :binary
+      add_if_not_exists :patched_bytes, :binary
 
       # Classification of the patch pattern:
       # - "ret" - Simple return (0xC3)
@@ -34,7 +34,7 @@ defmodule TamanduaServer.Repo.Migrations.AddEtwTamperingFields do
       # - "int3_trap" - Breakpoint trap
       # - "ud2" - Undefined instruction
       # - "unknown" - Unclassified pattern
-      add :patch_pattern, :string
+      add_if_not_exists :patch_pattern, :string
 
       # Target memory region where tampering was detected:
       # - "syscall_stub" - ntdll syscall stub
@@ -43,15 +43,15 @@ defmodule TamanduaServer.Repo.Migrations.AddEtwTamperingFields do
       # - "kernel32_text" - kernel32 .text section
       # - "amsi_function" - AMSI-related function
       # - "other" - Other memory region
-      add :target_region, :string
+      add_if_not_exists :target_region, :string
     end
 
     # Index for filtering alerts by ETW tampering details
-    create index(:alerts, [:target_function])
-    create index(:alerts, [:patch_pattern])
-    create index(:alerts, [:target_region])
+    create_if_not_exists index(:alerts, [:target_function])
+    create_if_not_exists index(:alerts, [:patch_pattern])
+    create_if_not_exists index(:alerts, [:target_region])
 
     # Composite index for common ETW tampering queries
-    create index(:alerts, [:target_function, :patch_pattern])
+    create_if_not_exists index(:alerts, [:target_function, :patch_pattern])
   end
 end
