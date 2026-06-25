@@ -93,7 +93,7 @@ defmodule TamanduaServerWeb.TimelineLive do
 
   @impl true
   def handle_event("switch_view", %{"mode" => mode}, socket) do
-    mode = String.to_existing_atom(mode)
+    mode = parse_view_mode(mode)
     {:noreply, assign(socket, :view_mode, mode)}
   end
 
@@ -115,6 +115,14 @@ defmodule TamanduaServerWeb.TimelineLive do
 
   @impl true
   def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp parse_view_mode(:timeline), do: :timeline
+  defp parse_view_mode(:process_tree), do: :process_tree
+  defp parse_view_mode(:mitre), do: :mitre
+  defp parse_view_mode("timeline"), do: :timeline
+  defp parse_view_mode("process_tree"), do: :process_tree
+  defp parse_view_mode("mitre"), do: :mitre
+  defp parse_view_mode(_), do: :timeline
 
   @impl true
   def render(assigns) do
