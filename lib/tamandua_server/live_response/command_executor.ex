@@ -452,7 +452,8 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
     args = %{
       path: path,
       content: Base.encode64(content),
-      overwrite: Keyword.get(opts, :overwrite, false)
+      overwrite: Keyword.get(opts, :overwrite, false),
+      create_dirs: Keyword.get(opts, :create_dirs, false)
     }
 
     execute(session_id, "upload_file", args, opts)
