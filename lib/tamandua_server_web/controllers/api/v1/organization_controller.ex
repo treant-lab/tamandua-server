@@ -175,14 +175,7 @@ defmodule TamanduaServerWeb.API.V1.OrganizationController do
         params
         |> Map.take(["name", "settings"])
         |> Enum.reject(fn {_, v} -> is_nil(v) end)
-        |> Map.new(fn {k, v} ->
-          key = try do
-            String.to_existing_atom(k)
-          rescue
-            ArgumentError -> k
-          end
-          {key, v}
-        end)
+        |> Map.new()
 
       case org
            |> Organization.changeset(attrs)
@@ -346,7 +339,7 @@ defmodule TamanduaServerWeb.API.V1.OrganizationController do
     }
 
     opts = [
-      license_tier: safe_to_existing_atom(params["license_tier"] || "trial", ~w(trial starter professional enterprise)) || :trial
+      license_tier: parse_license_tier(params["license_tier"])
     ]
 
     case Tenants.provision_tenant(org_attrs, admin_attrs, opts) do
@@ -490,6 +483,16 @@ defmodule TamanduaServerWeb.API.V1.OrganizationController do
 
   defp parse_int(int, _default) when is_integer(int), do: int
   defp parse_int(_, default), do: default
+
+  defp parse_license_tier("trial"), do: :trial
+  defp parse_license_tier("starter"), do: :pro
+  defp parse_license_tier("pro"), do: :pro
+  defp parse_license_tier("professional"), do: :enterprise
+  defp parse_license_tier("enterprise"), do: :enterprise
+  defp parse_license_tier(:trial), do: :trial
+  defp parse_license_tier(:pro), do: :pro
+  defp parse_license_tier(:enterprise), do: :enterprise
+  defp parse_license_tier(_), do: :trial
 
   defp parse_datetime(nil), do: nil
   defp parse_datetime(str) when is_binary(str) do
