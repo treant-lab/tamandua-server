@@ -423,8 +423,8 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
       summary = IntegrationLog.get_summary()
       json(conn, %{data: summary, meta: %{type: "summary"}})
     else
-      limit = min(String.to_integer(params["limit"] || "100"), 1000)
-      offset = String.to_integer(params["offset"] || "0")
+      limit = bounded_limit(params["limit"], 100, 1000)
+      offset = bounded_offset(params["offset"])
 
       filter_opts = [
         integration_name: params["integration_name"],
@@ -823,8 +823,8 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
   def webhook_history(conn, params) do
     alias TamanduaServer.Integrations.Webhook.InboundRouter
 
-    limit = min(String.to_integer(params["limit"] || "100"), 1000)
-    offset = String.to_integer(params["offset"] || "0")
+    limit = bounded_limit(params["limit"], 100, 1000)
+    offset = bounded_offset(params["offset"])
 
     opts = [
       source: params["source"],
@@ -1010,6 +1010,21 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
     end
   end
   defp mask_value(_), do: "****"
+
+  defp bounded_limit(value, default, max_limit),
+    do: value |> parse_int(default) |> max(1) |> min(max_limit)
+
+  defp bounded_offset(value), do: value |> parse_int(0) |> max(0)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 
   defp integration_stat(stats, key, default) when is_map(stats) do
     Map.get(stats, key) || Map.get(stats, Atom.to_string(key)) || default
