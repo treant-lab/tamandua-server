@@ -233,10 +233,16 @@ defmodule TamanduaServerWeb.API.V1.YaraRuleController do
   defp format_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+        opts |> changeset_error_opt(key) |> to_string()
       end)
     end)
   end
+
+  defp changeset_error_opt(opts, "count"), do: Keyword.get(opts, :count, "count")
+  defp changeset_error_opt(opts, "validation"), do: Keyword.get(opts, :validation, "validation")
+  defp changeset_error_opt(opts, "kind"), do: Keyword.get(opts, :kind, "kind")
+  defp changeset_error_opt(opts, "type"), do: Keyword.get(opts, :type, "type")
+  defp changeset_error_opt(_opts, key), do: key
 
   @doc """
   GET /api/v1/rules/yara/status

@@ -365,17 +365,16 @@ defmodule TamanduaServerWeb.API.V1.KubernetesAdmissionPolicyController do
 
   defp normalize_params(params) when is_map(params) do
     params
-    |> maybe_atomize_key("action")
-    |> maybe_atomize_key("target")
+    |> maybe_put_allowed_atom("action", &parse_action/1)
+    |> maybe_put_allowed_atom("target", &parse_target/1)
   end
 
-  defp maybe_atomize_key(params, key) do
+  defp maybe_put_allowed_atom(params, key, parser) do
     case Map.get(params, key) do
       val when is_binary(val) ->
-        try do
-          Map.put(params, key, String.to_existing_atom(val))
-        rescue
-          ArgumentError -> params
+        case parser.(val) do
+          nil -> params
+          parsed -> Map.put(params, key, parsed)
         end
 
       _ ->
@@ -383,13 +382,34 @@ defmodule TamanduaServerWeb.API.V1.KubernetesAdmissionPolicyController do
     end
   end
 
+  defp parse_action("allow"), do: :allow
+  defp parse_action("deny"), do: :deny
+  defp parse_action("audit"), do: :audit
+  defp parse_action("warn"), do: :warn
+  defp parse_action("mutate"), do: :mutate
+  defp parse_action(_), do: nil
+
+  defp parse_target("pod"), do: :pod
+  defp parse_target("deployment"), do: :deployment
+  defp parse_target("daemonset"), do: :daemonset
+  defp parse_target("statefulset"), do: :statefulset
+  defp parse_target("job"), do: :job
+  defp parse_target("cronjob"), do: :cronjob
+  defp parse_target(_), do: nil
+
   defp format_changeset_errors(%Ecto.Changeset{} = changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+        opts |> changeset_error_opt(key) |> to_string()
       end)
     end)
   end
+
+  defp changeset_error_opt(opts, "count"), do: Keyword.get(opts, :count, "count")
+  defp changeset_error_opt(opts, "validation"), do: Keyword.get(opts, :validation, "validation")
+  defp changeset_error_opt(opts, "kind"), do: Keyword.get(opts, :kind, "kind")
+  defp changeset_error_opt(opts, "type"), do: Keyword.get(opts, :type, "type")
+  defp changeset_error_opt(_opts, key), do: key
 
   defp parse_int(nil, default), do: default
 
