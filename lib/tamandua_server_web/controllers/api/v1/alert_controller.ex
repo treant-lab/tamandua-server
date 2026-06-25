@@ -1204,11 +1204,15 @@ defmodule TamanduaServerWeb.API.V1.AlertController do
     }
   end
 
-  defp proof_manifest(%Alert{public_manifest: manifest}) when is_map(manifest) and map_size(manifest) > 0 do
-    manifest
-  end
+  defp proof_manifest(%Alert{} = alert) do
+    manifest = Map.get(alert, :public_manifest)
 
-  defp proof_manifest(%Alert{} = alert), do: Attestation.build_public_manifest(alert)
+    if is_map(manifest) and map_size(manifest) > 0 do
+      manifest
+    else
+      Attestation.build_public_manifest(alert)
+    end
+  end
 
   defp manifest_value(manifest, key), do: Map.get(manifest, key) || Map.get(manifest, to_string(key))
 

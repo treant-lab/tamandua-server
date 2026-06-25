@@ -393,17 +393,13 @@ defmodule TamanduaServerWeb.DashboardChannel do
 
   @impl true
   def handle_out("new_alert", payload, socket) do
-    if cross_tenant_allowed?(payload, socket) do
-      push(socket, "new_alert", payload)
-    end
+    push_if_allowed(socket, "new_alert", payload, payload)
 
     {:noreply, socket}
   end
 
   def handle_out("alert_updated", %{alert: alert} = payload, socket) do
-    if cross_tenant_allowed?(alert, socket) do
-      push(socket, "alert_updated", payload)
-    end
+    push_if_allowed(socket, "alert_updated", payload, alert)
 
     {:noreply, socket}
   end
@@ -416,13 +412,26 @@ defmodule TamanduaServerWeb.DashboardChannel do
   # Only deliver when the alert's org matches the subscriber's org. Handles both
   # the serialized payload (organizationId) and a raw Ecto struct
   # (organization_id). Fail closed if either side is missing an org.
+  defp push_if_allowed(socket, event, payload, tenant_payload) do
+    if cross_tenant_allowed?(tenant_payload, socket) do
+      push(socket, event, payload)
+    end
+  rescue
+    error ->
+      Logger.warning("[DashboardChannel] Dropped #{event} broadcast: #{Exception.message(error)}")
+      :ok
+  end
+
   defp cross_tenant_allowed?(payload, socket) do
     org = payload_org_id(payload)
-    socket.assigns[:org_id] != nil && org != nil && socket.assigns[:org_id] == org
+    socket_org = socket.assigns[:org_id]
+    not is_nil(socket_org) and not is_nil(org) and to_string(socket_org) == to_string(org)
   end
 
   defp payload_org_id(%{organizationId: org}) when not is_nil(org), do: org
+  defp payload_org_id(%{"organizationId" => org}) when not is_nil(org), do: org
   defp payload_org_id(%{organization_id: org}), do: org
+  defp payload_org_id(%{"organization_id" => org}), do: org
   defp payload_org_id(_), do: nil
 
   @impl true
@@ -545,6 +554,7 @@ defmodule TamanduaServerWeb.AlertChannel do
   Channel for real-time alert updates.
   """
   use TamanduaServerWeb, :channel
+  require Logger
 
   alias TamanduaServerWeb.DashboardSocket
   alias TamanduaServer.Alerts
@@ -580,17 +590,13 @@ defmodule TamanduaServerWeb.AlertChannel do
 
   @impl true
   def handle_out("new_alert", payload, socket) do
-    if cross_tenant_allowed?(payload, socket) do
-      push(socket, "new_alert", payload)
-    end
+    push_if_allowed(socket, "new_alert", payload, payload)
 
     {:noreply, socket}
   end
 
   def handle_out("alert_updated", %{alert: alert} = payload, socket) do
-    if cross_tenant_allowed?(alert, socket) do
-      push(socket, "alert_updated", payload)
-    end
+    push_if_allowed(socket, "alert_updated", payload, alert)
 
     {:noreply, socket}
   end
@@ -603,13 +609,26 @@ defmodule TamanduaServerWeb.AlertChannel do
   # Only deliver when the alert's org matches the subscriber's org. Handles both
   # the serialized payload (organizationId) and a raw Ecto struct
   # (organization_id, used by the acknowledge broadcast). Fail closed.
+  defp push_if_allowed(socket, event, payload, tenant_payload) do
+    if cross_tenant_allowed?(tenant_payload, socket) do
+      push(socket, event, payload)
+    end
+  rescue
+    error ->
+      Logger.warning("[AlertChannel] Dropped #{event} broadcast: #{Exception.message(error)}")
+      :ok
+  end
+
   defp cross_tenant_allowed?(payload, socket) do
     org = payload_org_id(payload)
-    socket.assigns[:org_id] != nil && org != nil && socket.assigns[:org_id] == org
+    socket_org = socket.assigns[:org_id]
+    not is_nil(socket_org) and not is_nil(org) and to_string(socket_org) == to_string(org)
   end
 
   defp payload_org_id(%{organizationId: org}) when not is_nil(org), do: org
+  defp payload_org_id(%{"organizationId" => org}) when not is_nil(org), do: org
   defp payload_org_id(%{organization_id: org}), do: org
+  defp payload_org_id(%{"organization_id" => org}), do: org
   defp payload_org_id(_), do: nil
 
   defp get_user_org_id(socket) do
@@ -1136,14 +1155,14 @@ defmodule TamanduaServerWeb.Broadcaster do
 
   defp serialize_alert(alert) do
     %{
-      id: alert.id,
-      organizationId: alert.organization_id,
-      agentId: alert.agent_id,
-      severity: alert.severity,
+      id: to_string(alert.id),
+      organizationId: to_string(alert.organization_id),
+      agentId: to_string(alert.agent_id),
+      severity: stringify(alert.severity),
       title: alert.title,
       description: alert.description,
-      status: alert.status,
-      threatScore: alert.threat_score,
+      status: stringify(alert.status),
+      threatScore: json_number(alert.threat_score),
       mitreTactics: alert.mitre_tactics || [],
       mitreTechniques: alert.mitre_techniques || [],
       createdAt: format_datetime(alert.inserted_at),
@@ -1179,6 +1198,21 @@ defmodule TamanduaServerWeb.Broadcaster do
     end)
   end
   defp serialize_detections(_), do: []
+
+  defp stringify(nil), do: nil
+  defp stringify(value) when is_atom(value), do: Atom.to_string(value)
+  defp stringify(value), do: to_string(value)
+
+  defp json_number(nil), do: nil
+  defp json_number(%Decimal{} = value), do: Decimal.to_float(value)
+  defp json_number(value) when is_number(value), do: value
+  defp json_number(value) when is_binary(value) do
+    case Float.parse(value) do
+      {number, ""} -> number
+      _ -> nil
+    end
+  end
+  defp json_number(_value), do: nil
 
   defp generate_event_summary(event) do
     case event.event_type do
