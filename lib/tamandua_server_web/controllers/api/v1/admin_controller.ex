@@ -386,7 +386,7 @@ defmodule TamanduaServerWeb.API.V1.AdminController do
           case Map.get(params, "status") do
             "all" -> [status: :all]
             nil -> [status: :pending]
-            other -> [status: String.to_existing_atom(other)]
+            other -> [status: invitation_status(other)]
           end
 
         {:ok, invitations} = InvitationManager.list(id, opts)
@@ -706,7 +706,7 @@ defmodule TamanduaServerWeb.API.V1.AdminController do
 
   defp get_in_settings(%{settings: nil}, _key), do: nil
   defp get_in_settings(%{settings: settings}, key) when is_map(settings) do
-    Map.get(settings, key) || Map.get(settings, String.to_atom(key))
+    Map.get(settings, key) || Map.get(settings, existing_atom(key))
   rescue
     _ -> nil
   end
@@ -858,4 +858,10 @@ defmodule TamanduaServerWeb.API.V1.AdminController do
   end
   defp parse_int(int, _default) when is_integer(int), do: int
   defp parse_int(_, default), do: default
+
+  defp existing_atom(key) when is_binary(key), do: String.to_existing_atom(key)
+  defp existing_atom(key), do: key
+
+  defp invitation_status(value) when value in ~w(pending accepted expired revoked), do: String.to_existing_atom(value)
+  defp invitation_status(_), do: :pending
 end

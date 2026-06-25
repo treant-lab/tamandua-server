@@ -204,18 +204,20 @@ defmodule TamanduaServerWeb.API.V1.LicenseController do
   def check_action(conn, %{"action" => action}) do
     organization_id = conn.assigns.current_organization_id
 
-    action_atom = String.to_existing_atom(action)
-    allowed = Enforcement.would_allow?(organization_id, action_atom)
+    case license_action(action) do
+      nil ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid action: #{action}"})
 
-    json(conn, %{
-      action: action,
-      allowed: allowed
-    })
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Invalid action: #{action}"})
+      action_atom ->
+        allowed = Enforcement.would_allow?(organization_id, action_atom)
+
+        json(conn, %{
+          action: action,
+          allowed: allowed
+        })
+    end
   end
 
   @doc """
@@ -473,4 +475,16 @@ defmodule TamanduaServerWeb.API.V1.LicenseController do
       end)
     end)
   end
+
+  @license_actions ~w(
+    view_dashboard view_alerts manage_alerts create_rule update_rule delete_rule
+    kill_process quarantine_file isolate_endpoint execute_hunt create_playbook
+    execute_playbook view_behavioral live_response_session collect_forensics
+    api_request configure_sso generate_compliance_report view_mssp_portal
+    manage_tenants configure_branding ai_query threat_intel_lookup add_agent
+    add_user view_events execute_query
+  )
+
+  defp license_action(action) when action in @license_actions, do: String.to_existing_atom(action)
+  defp license_action(_), do: nil
 end

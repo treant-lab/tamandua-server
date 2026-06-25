@@ -204,12 +204,7 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
         "splunk" -> :splunk
         "5" -> :elasticsearch
         "elasticsearch" -> :elasticsearch
-        other when is_binary(other) ->
-          try do
-            String.to_existing_atom(other)
-          rescue
-            ArgumentError -> nil
-          end
+        other when is_binary(other) -> integration_key(other)
         _ -> nil
       end
 
@@ -400,6 +395,12 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
       }
     end)
   end
+
+  defp integration_key(value) when value in ~w(virustotal abuseipdb misp splunk elasticsearch) do
+    String.to_existing_atom(value)
+  end
+
+  defp integration_key(_), do: nil
 
   defp serialize_system(settings) do
     %{
