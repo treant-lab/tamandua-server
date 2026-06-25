@@ -154,7 +154,7 @@ defmodule TamanduaServerWeb.API.V1.DashboardShareController do
   """
   def analytics(conn, %{"id" => id, "time_range" => time_range}) do
     user = conn.assigns.current_user
-    time_range_atom = String.to_existing_atom(time_range)
+    time_range_atom = parse_time_range(time_range)
 
     with {:ok, share} <- fetch_user_share(id, user.id) do
       analytics = Dashboard.get_share_analytics(share.id, time_range: time_range_atom)
@@ -172,7 +172,7 @@ defmodule TamanduaServerWeb.API.V1.DashboardShareController do
   """
   def user_analytics(conn, %{"time_range" => time_range}) do
     user = conn.assigns.current_user
-    time_range_atom = String.to_existing_atom(time_range)
+    time_range_atom = parse_time_range(time_range)
 
     analytics = Dashboard.get_user_analytics(user.id, time_range: time_range_atom)
 
@@ -184,6 +184,12 @@ defmodule TamanduaServerWeb.API.V1.DashboardShareController do
   end
 
   # Private functions
+
+  defp parse_time_range("last_7_days"), do: :last_7_days
+  defp parse_time_range("last_30_days"), do: :last_30_days
+  defp parse_time_range("last_90_days"), do: :last_90_days
+  defp parse_time_range("all_time"), do: :all_time
+  defp parse_time_range(_), do: :last_30_days
 
   defp fetch_user_share(share_id, user_id) do
     case Dashboard.get_share(share_id) do

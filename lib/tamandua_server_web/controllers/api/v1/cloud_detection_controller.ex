@@ -9,8 +9,11 @@ defmodule TamanduaServerWeb.API.V1.CloudDetectionController do
   """
   def index(conn, params) do
     rules = case params do
-      %{"provider" => provider} when provider in ["aws", "azure", "gcp", "all"] ->
-        DetectionRules.get_rules_by_provider(String.to_existing_atom(provider))
+      %{"provider" => provider} ->
+        case parse_provider(provider) do
+          nil -> DetectionRules.all_rules()
+          provider_atom -> DetectionRules.get_rules_by_provider(provider_atom)
+        end
       %{"mitre" => technique} ->
         DetectionRules.get_rules_by_mitre(technique)
       %{"category" => category} ->
@@ -228,6 +231,12 @@ defmodule TamanduaServerWeb.API.V1.CloudDetectionController do
   end
   defp atomize_keys(list) when is_list(list), do: Enum.map(list, &atomize_keys/1)
   defp atomize_keys(value), do: value
+
+  defp parse_provider("aws"), do: :aws
+  defp parse_provider("azure"), do: :azure
+  defp parse_provider("gcp"), do: :gcp
+  defp parse_provider("all"), do: :all
+  defp parse_provider(_), do: nil
 
   defp safe_to_existing_atom(str) when is_binary(str) do
     String.to_existing_atom(str)
