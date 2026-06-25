@@ -26,7 +26,7 @@ defmodule TamanduaServerWeb.MitreAPIController do
   """
   def coverage(conn, params) do
     org_id = get_org_id(conn)
-    time_range = Map.get(params, "time_range", "30") |> String.to_integer()
+    time_range = bounded_days(Map.get(params, "time_range"), 30)
 
     coverage_data = Mitre.get_coverage(
       organization_id: org_id,
@@ -119,7 +119,7 @@ defmodule TamanduaServerWeb.MitreAPIController do
   """
   def navigator_frequency(conn, params) do
     org_id = get_org_id(conn)
-    time_range = Map.get(params, "time_range", "30") |> String.to_integer()
+    time_range = bounded_days(Map.get(params, "time_range"), 30)
     severity_weight = Map.get(params, "severity_weight", "true") == "true"
     agent_id = Map.get(params, "agent_id")
 
@@ -372,4 +372,16 @@ defmodule TamanduaServerWeb.MitreAPIController do
   defp get_org_id(conn) do
     conn.assigns[:current_user][:organization_id]
   end
+
+  defp bounded_days(value, default), do: value |> parse_int(default) |> max(1) |> min(365)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 end
