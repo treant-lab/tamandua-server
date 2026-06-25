@@ -767,13 +767,27 @@ defmodule TamanduaServerWeb.API.V1.ASMController do
   end
 
   defp parse_ports(nil), do: nil
-  defp parse_ports(ports) when is_list(ports), do: ports
+  defp parse_ports(ports) when is_list(ports) do
+    ports
+    |> Enum.map(&parse_port/1)
+    |> Enum.reject(&is_nil/1)
+  end
   defp parse_ports(ports) when is_binary(ports) do
     ports
     |> String.split(",")
     |> Enum.map(&String.trim/1)
-    |> Enum.map(&String.to_integer/1)
+    |> Enum.map(&parse_port/1)
+    |> Enum.reject(&is_nil/1)
   end
+
+  defp parse_port(port) when is_integer(port) and port >= 1 and port <= 65_535, do: port
+  defp parse_port(port) when is_binary(port) do
+    case Integer.parse(port) do
+      {int, ""} when int >= 1 and int <= 65_535 -> int
+      _ -> nil
+    end
+  end
+  defp parse_port(_), do: nil
 
   @allowed_sort_fields ~w(risk_score discovered_at name type severity last_seen)
 

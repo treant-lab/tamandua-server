@@ -31,7 +31,7 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
   """
   def run_test(conn, %{"technique_id" => technique_id} = params) do
     agent_id = params["agent_id"]
-    test_number = String.to_integer(params["test_number"] || "1")
+    test_number = bounded_test_number(params["test_number"])
     simulate = params["simulate"] == "true" or params["simulate"] == true
 
     if is_nil(agent_id) do
@@ -216,4 +216,16 @@ defmodule TamanduaServerWeb.API.V1.ValidationController do
     _ -> nil
   end
   defp parse_categories(_), do: nil
+
+  defp bounded_test_number(value), do: value |> parse_int(1) |> max(1) |> min(100)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 end
