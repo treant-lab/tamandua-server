@@ -60,7 +60,7 @@ defmodule TamanduaServerWeb.API.V1.UBAController do
   Get anomalies for a user.
   """
   def user_anomalies(conn, %{"user_id" => user_id} = params) do
-    days = String.to_integer(params["days"] || "7")
+    days = bounded_days(params["days"], 7)
     severity = params["severity"]
 
     opts = [days: days]
@@ -174,7 +174,7 @@ defmodule TamanduaServerWeb.API.V1.UBAController do
   """
   def behavior_stats(conn, %{"user_id" => user_id} = params) do
     behavior_type = params["behavior_type"]
-    days = String.to_integer(params["days"] || "30")
+    days = bounded_days(params["days"], 30)
 
     stats = UBA.get_behavior_stats(user_id, behavior_type, days)
 
@@ -191,8 +191,8 @@ defmodule TamanduaServerWeb.API.V1.UBAController do
   """
   def behavior_history(conn, %{"user_id" => user_id} = params) do
     behavior_type = params["behavior_type"]
-    days = String.to_integer(params["days"] || "7")
-    limit = String.to_integer(params["limit"] || "100")
+    days = bounded_days(params["days"], 7)
+    limit = bounded_limit(params["limit"], 100, 1000)
 
     behaviors = UBA.get_behavior_history(user_id, behavior_type, days: days, limit: limit)
 
@@ -203,6 +203,21 @@ defmodule TamanduaServerWeb.API.V1.UBAController do
   end
 
   ## Private Functions
+
+  defp bounded_days(value, default), do: value |> parse_int(default) |> max(1) |> min(365)
+
+  defp bounded_limit(value, default, max_limit),
+    do: value |> parse_int(default) |> max(1) |> min(max_limit)
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+  defp parse_int(_, default), do: default
 
   defp get_user_baselines(user_id) do
     alias TamanduaServer.UBA.UserBaseline
