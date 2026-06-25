@@ -71,7 +71,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   - framework: Framework identifier (pci_dss, hipaa, soc2, nist_800_53, cis_benchmark, gdpr)
   """
   def framework_posture(conn, %{"framework" => framework_str}) do
-    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+    case compliance_safe_to_existing_atom(framework_str, @allowed_frameworks) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -122,7 +122,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   - category: Filter by category
   """
   def list_controls(conn, %{"framework" => framework_str} = params) do
-    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+    case compliance_safe_to_existing_atom(framework_str, @allowed_frameworks) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -213,7 +213,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   - evidence_type: Type of evidence to collect
   """
   def collect_evidence(conn, %{"control_id" => control_id, "evidence_type" => evidence_type}) do
-    case safe_to_existing_atom(evidence_type, @allowed_evidence_types) do
+    case compliance_safe_to_existing_atom(evidence_type, @allowed_evidence_types) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -251,7 +251,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   - format: Export format (json, pdf, csv)
   """
   def generate_report(conn, %{"framework" => framework_str} = params) do
-    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+    case compliance_safe_to_existing_atom(framework_str, @allowed_frameworks) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -259,7 +259,10 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
 
       framework ->
         options = %{
-          type: (params["type"] && safe_to_existing_atom(params["type"], ~w(summary detailed audit))) || :summary,
+          type:
+            (params["type"] &&
+               compliance_safe_to_existing_atom(params["type"], ~w(summary detailed audit))) ||
+              :summary,
           period_start: parse_datetime(params["period_start"]) || DateTime.add(DateTime.utc_now(), -30, :day),
           period_end: parse_datetime(params["period_end"]) || DateTime.utc_now(),
           generated_by: get_current_user_id(conn)
@@ -290,7 +293,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   - format: Export format (json, pdf, csv)
   """
   def export_audit(conn, %{"framework" => framework_str} = params) do
-    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+    case compliance_safe_to_existing_atom(framework_str, @allowed_frameworks) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -299,7 +302,9 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
       framework ->
         period_start = parse_datetime(params["period_start"]) || DateTime.add(DateTime.utc_now(), -365, :day)
         period_end = parse_datetime(params["period_end"]) || DateTime.utc_now()
-        format = (params["format"] && safe_to_existing_atom(params["format"], ~w(json pdf csv))) || :json
+        format =
+          (params["format"] && compliance_safe_to_existing_atom(params["format"], ~w(json pdf csv))) ||
+            :json
 
         case Compliance.export_for_audit(framework, period_start, period_end, format) do
           {:ok, data} ->
@@ -328,7 +333,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   Returns non-compliant and partially compliant controls with remediation steps.
   """
   def gap_analysis(conn, %{"framework" => framework_str}) do
-    case safe_to_existing_atom(framework_str, @allowed_frameworks) do
+    case compliance_safe_to_existing_atom(framework_str, @allowed_frameworks) do
       nil ->
         conn
         |> put_status(:bad_request)
@@ -468,10 +473,10 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
   @valid_control_severities ~w(low medium high critical)
   @valid_control_categories ~w(access_control audit_logging encryption network data_protection identity monitoring incident_response)
 
-  defp safe_to_existing_atom(value, allowed) when is_binary(value) do
+  defp compliance_safe_to_existing_atom(value, allowed) when is_binary(value) do
     if value in allowed, do: allowed_atom(value), else: nil
   end
-  defp safe_to_existing_atom(_, _), do: nil
+  defp compliance_safe_to_existing_atom(_, _), do: nil
 
   defp allowed_atom("pci_dss"), do: :pci_dss
   defp allowed_atom("hipaa"), do: :hipaa
@@ -513,7 +518,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
 
   defp maybe_filter_status(controls, nil), do: controls
   defp maybe_filter_status(controls, status) do
-    case safe_to_existing_atom(status, @valid_control_statuses) do
+    case compliance_safe_to_existing_atom(status, @valid_control_statuses) do
       nil -> controls
       status_atom -> Enum.filter(controls, & &1.status == status_atom)
     end
@@ -521,7 +526,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
 
   defp maybe_filter_severity(controls, nil), do: controls
   defp maybe_filter_severity(controls, severity) do
-    case safe_to_existing_atom(severity, @valid_control_severities) do
+    case compliance_safe_to_existing_atom(severity, @valid_control_severities) do
       nil -> controls
       severity_atom -> Enum.filter(controls, & &1.severity == severity_atom)
     end
@@ -529,7 +534,7 @@ defmodule TamanduaServerWeb.API.V1.ComplianceController do
 
   defp maybe_filter_category(controls, nil), do: controls
   defp maybe_filter_category(controls, category) do
-    case safe_to_existing_atom(category, @valid_control_categories) do
+    case compliance_safe_to_existing_atom(category, @valid_control_categories) do
       nil -> controls
       category_atom -> Enum.filter(controls, & &1.category == category_atom)
     end
