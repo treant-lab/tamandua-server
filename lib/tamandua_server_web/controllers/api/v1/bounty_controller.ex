@@ -223,8 +223,13 @@ defmodule TamanduaServerWeb.API.V1.BountyController do
   defp build_filters(params) do
     params
     |> Enum.filter(fn {key, _} -> key in ["status", "type", "organization_id", "contributor_wallet"] end)
-    |> Enum.map(fn {key, value} -> {String.to_existing_atom(key), value} end)
+    |> Enum.map(fn {key, value} -> {bounty_filter_key(key), value} end)
   end
+
+  defp bounty_filter_key("status"), do: :status
+  defp bounty_filter_key("type"), do: :type
+  defp bounty_filter_key("organization_id"), do: :organization_id
+  defp bounty_filter_key("contributor_wallet"), do: :contributor_wallet
 
   defp require_admin(conn) do
     role = conn.assigns.current_user && conn.assigns.current_user.role
