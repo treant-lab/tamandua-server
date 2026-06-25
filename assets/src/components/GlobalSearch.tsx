@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { router } from '@inertiajs/react'
+import { router, usePage } from '@inertiajs/react'
 import {
   Search,
   X,
@@ -32,6 +32,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { SharedProps } from '@/types'
 
 export interface GlobalSearchProps {
   isOpen: boolean
@@ -53,6 +54,7 @@ interface QuickAction {
   href: string
   icon: React.ComponentType<{ className?: string }>
   external?: boolean
+  requireRole?: 'admin' | 'super_admin'
 }
 
 const quickActions: QuickAction[] = [
@@ -132,14 +134,13 @@ const searchablePages: QuickAction[] = [
   { id: 'public-proofs', name: 'Public Proofs', href: '/app/public-proofs', icon: Database },
   { id: 'contributions', name: 'Contributions', href: '/app/contributions', icon: FileCode },
   { id: 'leaderboard', name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: ClipboardList },
-  { id: 'marketplace', name: 'Rule Marketplace', href: '/app/detection-packs', icon: Box },
-  { id: 'settings', name: 'Settings', href: '/app/settings', icon: ShieldCheck },
-  { id: 'tenant-settings', name: 'Tenant Settings', href: '/app/tenant-settings', icon: Users },
-  { id: 'users', name: 'User Management', href: '/app/users', icon: Users },
-  { id: 'roles', name: 'RBAC Roles', href: '/app/settings/roles', icon: Shield },
-  { id: 'reports', name: 'Reports', href: '/app/reports', icon: ClipboardList },
-  { id: 'audit-log', name: 'Audit Log', href: '/app/audit-log', icon: ClipboardList },
-  { id: 'tenants', name: 'Tenants', href: '/app/admin/tenants', icon: Users },
+  { id: 'settings', name: 'Settings', href: '/app/settings', icon: ShieldCheck, requireRole: 'admin' },
+  { id: 'tenant-settings', name: 'Tenant Settings', href: '/app/tenant-settings', icon: Users, requireRole: 'admin' },
+  { id: 'users', name: 'User Management', href: '/app/users', icon: Users, requireRole: 'admin' },
+  { id: 'roles', name: 'RBAC Roles', href: '/app/settings/roles', icon: Shield, requireRole: 'admin' },
+  { id: 'reports', name: 'Reports', href: '/app/reports', icon: ClipboardList, requireRole: 'admin' },
+  { id: 'audit-log', name: 'Audit Log', href: '/app/audit-log', icon: ClipboardList, requireRole: 'admin' },
+  { id: 'tenants', name: 'Tenants', href: '/app/admin/tenants', icon: Users, requireRole: 'super_admin' },
 ]
 
 const typeIcons: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -176,11 +177,22 @@ async function readJsonData(response: Response): Promise<any[]> {
   return Array.isArray(body?.data) ? body.data : []
 }
 
-async function searchLiveData(query: string): Promise<SearchResult[]> {
+function filterSearchablePages(userRole?: string, isSuperAdminProp?: boolean): QuickAction[] {
+  const isSuperAdmin = Boolean(isSuperAdminProp || userRole === 'super_admin')
+  const isAdmin = Boolean(userRole === 'admin' || isSuperAdmin)
+
+  return searchablePages.filter(page => {
+    if (page.requireRole === 'super_admin') return isSuperAdmin
+    if (page.requireRole === 'admin') return isAdmin
+    return true
+  })
+}
+
+async function searchLiveData(query: string, pages: QuickAction[]): Promise<SearchResult[]> {
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  const staticResults: SearchResult[] = searchablePages
+  const staticResults: SearchResult[] = pages
     .filter(page => {
       const haystack = `${page.name} ${page.id} ${page.href}`.toLowerCase()
       return haystack.includes(trimmed.toLowerCase())
@@ -291,6 +303,12 @@ function addRecentSearch(query: string): void {
 }
 
 export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
+  const pageProps = usePage<SharedProps & { is_super_admin?: boolean }>().props
+  const userRole = pageProps.auth?.user?.role
+  const visibleSearchablePages = useMemo(
+    () => filterSearchablePages(userRole, pageProps.is_super_admin),
+    [userRole, pageProps.is_super_admin]
+  )
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -327,7 +345,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
     const timeout = window.setTimeout(() => {
       setIsSearching(true)
       setSearchError(null)
-      searchLiveData(trimmed)
+      searchLiveData(trimmed, visibleSearchablePages)
         .then((liveResults) => {
           if (!controller.signal.aborted) {
             setResults(liveResults)
@@ -350,7 +368,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
       controller.abort()
       window.clearTimeout(timeout)
     }
-  }, [query])
+  }, [query, visibleSearchablePages])
 
   // Search results
 

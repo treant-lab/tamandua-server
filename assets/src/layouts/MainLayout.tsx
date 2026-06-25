@@ -267,7 +267,6 @@ const navigationGroups: ExtendedNavGroup[] = [
     items: [
       { name: 'Contributions', href: '/app/contributions', icon: FileCode },
       { name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: Award },
-      { name: 'Detection Packs Preview', href: '/app/detection-packs', icon: Box },
     ],
   },
   {
