@@ -52,8 +52,8 @@ defmodule TamanduaServerWeb.API.V1.TenantController do
   """
   def index(conn, params) do
     opts = [
-      limit: min(parse_int(params["limit"], 50), 100),
-      offset: parse_int(params["offset"], 0),
+      limit: params["limit"] |> parse_int(50) |> max(1) |> min(100),
+      offset: params["offset"] |> parse_int(0) |> max(0) |> min(100_000),
       active_only: params["active"] == "true"
     ]
 
@@ -142,11 +142,11 @@ defmodule TamanduaServerWeb.API.V1.TenantController do
         if system_admin?(user) do
           params
           |> Map.take(["name", "settings", "max_agents"])
-          |> to_atom_keys()
+          |> compact_params()
         else
           params
           |> Map.take(["name", "settings"])
-          |> to_atom_keys()
+          |> compact_params()
         end
 
       case Tenants.update_organization(org, attrs) do
@@ -326,30 +326,26 @@ defmodule TamanduaServerWeb.API.V1.TenantController do
   defp parse_int(int, _) when is_integer(int), do: int
 
   defp parse_region(nil), do: nil
-  defp parse_region(region) when region in ~w(eu us apac ca uk au jp in) do
-    String.to_existing_atom(region)
-  end
+  defp parse_region("eu"), do: :eu
+  defp parse_region("us"), do: :us
+  defp parse_region("apac"), do: :apac
+  defp parse_region("ca"), do: :ca
+  defp parse_region("uk"), do: :uk
+  defp parse_region("au"), do: :au
+  defp parse_region("jp"), do: :jp
+  defp parse_region("in"), do: :in
   defp parse_region(_), do: nil
 
   defp parse_license_tier(nil), do: :trial
-  defp parse_license_tier(tier) when tier in ~w(trial pro enterprise) do
-    String.to_existing_atom(tier)
-  end
+  defp parse_license_tier("trial"), do: :trial
+  defp parse_license_tier("pro"), do: :pro
+  defp parse_license_tier("enterprise"), do: :enterprise
   defp parse_license_tier(_), do: :trial
 
-  defp to_atom_keys(map) do
+  defp compact_params(map) do
     map
     |> Enum.reject(fn {_, v} -> is_nil(v) end)
-    |> Map.new(fn {k, v} -> {safe_to_atom(k), v} end)
-  end
-
-  defp safe_to_atom(key) when is_atom(key), do: key
-  defp safe_to_atom(key) when is_binary(key) do
-    try do
-      String.to_existing_atom(key)
-    rescue
-      ArgumentError -> key
-    end
+    |> Map.new()
   end
 
   defp format_errors(%Ecto.Changeset{} = changeset) do
