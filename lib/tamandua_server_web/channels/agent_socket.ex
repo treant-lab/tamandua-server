@@ -91,6 +91,13 @@ defmodule TamanduaServerWeb.AgentSocket do
     ca_cert_path = Application.get_env(:tamandua_server, :ca_cert_path)
 
     cond do
+      insecure_agent_socket_allowed?() ->
+        Logger.critical(
+          "SECURITY: TAMANDUA_ALLOW_INSECURE_AGENT_SOCKET=true; agent mTLS enforcement is disabled for this runtime."
+        )
+
+        :ok
+
       # Production requires mTLS to be enabled and configured
       env == :prod and not require_mtls and not lab_light_enabled?() ->
         Logger.critical(
@@ -389,6 +396,10 @@ defmodule TamanduaServerWeb.AgentSocket do
     System.get_env("TAMANDUA_LAB_LIGHT", "false") == "true"
   end
 
+  defp insecure_agent_socket_allowed? do
+    System.get_env("TAMANDUA_ALLOW_INSECURE_AGENT_SOCKET", "false") == "true"
+  end
+
   defp verify_hmac_token(token, agent_id, secret) do
     # Token format: HMAC-SHA256(agent_id + timestamp, secret)
     # Expected: agent_id:timestamp:signature
@@ -491,7 +502,7 @@ defmodule TamanduaServerWeb.AgentSocket do
   end
 
   defp mtls_required?(env) do
-    not lab_light_enabled?() and
+    not lab_light_enabled?() and not insecure_agent_socket_allowed?() and
       (env == :prod || Application.get_env(:tamandua_server, :require_mtls, false))
   end
 
