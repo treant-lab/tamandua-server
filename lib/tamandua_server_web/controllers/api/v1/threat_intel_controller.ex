@@ -1163,7 +1163,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/misp/events - List synced MISP events"
   def list_misp_events(conn, params) do
-    limit = String.to_integer(params["limit"] || "50")
+    limit = bounded_limit(params["limit"], 50, 500)
     instance_id = params["instance_id"]
 
     opts = [limit: limit]
@@ -1371,7 +1371,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "GET /api/v1/threat-intel/actors/db - List threat actors from database"
   def list_db_actors(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50"),
+      limit: bounded_limit(params["limit"], 50, 500),
       active: params["active"] != "false"
     ]
 
@@ -1670,8 +1670,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "GET /api/v1/threat-intel/iocs/high-confidence - Get high confidence IOCs"
   def high_confidence_iocs(conn, params) do
     opts = [
-      min_score: String.to_integer(params["min_score"] || "70"),
-      limit: String.to_integer(params["limit"] || "100")
+      min_score: bounded_score(params["min_score"], 70),
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     opts = if params["type"], do: Keyword.put(opts, :type, params["type"]), else: opts
@@ -1874,8 +1874,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "GET /api/v1/threat-intel/aggregator/multi-source - Get multi-source IOCs"
   def multi_source_iocs(conn, params) do
     opts = [
-      min_sources: String.to_integer(params["min_sources"] || "2"),
-      limit: String.to_integer(params["limit"] || "100")
+      min_sources: bounded_min_sources(params["min_sources"], 2),
+      limit: bounded_limit(params["limit"], 100, 500)
     ]
 
     iocs = TamanduaServer.ThreatIntel.Aggregator.get_multi_source_iocs(opts)
@@ -1962,7 +1962,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "GET /api/v1/threat-intel/attribution/campaigns - List tracked campaigns"
   def list_attribution_campaigns(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50"),
+      limit: bounded_limit(params["limit"], 50, 500),
       status: params["status"]
     ]
 
@@ -2071,8 +2071,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/attributions - List recent alert attributions"
   def list_attributions(conn, params) do
-    limit = String.to_integer(params["limit"] || "50")
-    offset = String.to_integer(params["offset"] || "0")
+    limit = bounded_limit(params["limit"], 50, 500)
+    offset = bounded_offset(params["offset"])
 
     query =
       from(a in TamanduaServer.Alerts.Alert,
@@ -2130,7 +2130,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "GET /api/v1/threat-intel/campaigns/tracked - List auto-detected campaigns"
   def list_tracked_campaigns(conn, params) do
     opts = [
-      limit: String.to_integer(params["limit"] || "50"),
+      limit: bounded_limit(params["limit"], 50, 500),
       status: params["status"]
     ]
 
@@ -2568,6 +2568,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       metadata: node[:metadata] || %{}
     }
   end
+
+  defp bounded_limit(value, default, max_limit),
+    do: value |> parse_int(default) |> max(1) |> min(max_limit)
+
+  defp bounded_offset(value), do: value |> parse_int(0) |> max(0)
+
+  defp bounded_score(value, default), do: value |> parse_int(default) |> max(0) |> min(100)
+
+  defp bounded_min_sources(value, default), do: value |> parse_int(default) |> max(1) |> min(25)
 
   defp parse_int(nil, default), do: default
   defp parse_int(val, default) when is_binary(val) do
