@@ -254,6 +254,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
               event
           end
           |> ensure_event_identity()
+          |> add_agent_protection_detection()
           |> add_server_side_process_detections()
 
         # Run through detection engine asynchronously.
@@ -953,6 +954,55 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   defp add_server_side_process_detections(event), do: event
+
+  defp add_agent_protection_detection(event) when is_map(event) do
+    event_type = event["event_type"] || event[:event_type]
+    payload = (event["payload"] || event[:payload] || %{}) |> ensure_ingestor_map()
+    source = payload["source"] || payload[:source] || payload["category"] || payload[:category]
+    tamper_type = payload["tamper_type"] || payload[:tamper_type]
+
+    if to_string(event_type) == "response_action" and to_string(source) == "agent_protection" and
+         present?(tamper_type) do
+      existing = normalize_event_detections(event["detections"] || event[:detections] || [])
+      severity = normalize_alert_severity(event["severity"] || event[:severity] || "critical")
+      description =
+        payload["description"] || payload[:description] ||
+          "Agent self-protection reported #{tamper_type}."
+
+      generated =
+        detection(
+          "agent_protection_#{normalize_ingestor_text(tamper_type)}",
+          "defense_evasion",
+          description,
+          ["defense_evasion"],
+          [payload["mitre_technique"] || payload[:mitre_technique] || "T1562.001"],
+          severity,
+          1.0,
+          %{
+            "tamper_type" => tamper_type,
+            "source_process" => payload["source_process"] || payload[:source_process],
+            "source_pid" => payload["source_pid"] || payload[:source_pid],
+            "basis" => ["agent_protection", "tamper_type"]
+          },
+          event
+        )
+
+      merged = merge_detections(existing, [generated])
+
+      event
+      |> Map.put("detections", merged)
+      |> Map.put(:detections, merged)
+      |> put_event_value(:severity, strongest_detection_severity(merged, event["severity"] || event[:severity]))
+    else
+      event
+    end
+  rescue
+    e ->
+      Logger.warning("[Ingestor] Agent protection detection enrichment failed: #{Exception.message(e)}")
+      event
+  end
+
+  defp add_agent_protection_detection(event), do: event
 
   defp process_event_type?(event_type) do
     event_type
