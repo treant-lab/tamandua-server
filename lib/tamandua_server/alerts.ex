@@ -1841,6 +1841,7 @@ defmodule TamanduaServer.Alerts do
           try do
             TamanduaServerWeb.Broadcaster.broadcast_new_alert(enriched_alert)
             TamanduaServerWeb.Broadcaster.broadcast_geo_update()
+            TamanduaServer.Alerts.AlertBroadcastRelay.notify_new_alert(enriched_alert)
           rescue
             _ -> :ok
           catch

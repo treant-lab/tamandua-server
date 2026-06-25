@@ -72,6 +72,18 @@ Socket probe follow-up:
 - After that fix, `dashboard:lobby` no longer emitted `phx_error`; however, no
   new ML alert was generated during the post-fix smoke window, so live alert
   socket delivery remains unproven.
+- A later non-deduplicated smoke used `--run-id socket-20260625091550` and
+  successfully created event `16e5f26c-3dee-4746-972c-9bba78be0c60` plus alert
+  `a7e750d0-6566-42ca-acac-f67cd6cf461a`
+  (`ML_MALWARE_TROJAN_SOCKET_20260625091550`).
+- The socket probe was connected to the dashboard runtime on `:4000`, while the
+  mTLS agent ingestion path used `:8443`. The alert was created in the database,
+  but no `new_alert` frame reached `alerts:feed`, isolating the remaining issue
+  to cross-runtime fanout rather than ML detection, mTLS ingestion, DB
+  persistence, or alert creation.
+- Code follow-up: `TamanduaServer.Alerts.AlertBroadcastRelay` now emits and
+  listens for PostgreSQL `NOTIFY` messages on `tamandua_alert_broadcasts`, so
+  dashboard runtimes can rebroadcast alerts created by a separate mTLS runtime.
 
 ## Results
 
@@ -99,19 +111,23 @@ Proven:
   metadata backfill for the already-created lab alerts.
 - Live agent telemetry over mTLS can persist ML verdict events with
   `ml_verdict=trojan` and `model_version=malware_smell_knn.onnx`.
+- A non-deduplicated run ID can force a fresh ML event/alert for repeatable
+  socket proof attempts.
 
 Not proven:
 
 - The live `alerts:feed` socket broadcast carried this specific alert.
-- A fresh post-fix ML alert creation and socket delivery in the same run.
+- End-to-end proof of the PostgreSQL relay delivering that fresh ML alert to a
+  live `alerts:feed` subscriber.
 - The current bootstrap ML model has acceptable production false-positive rate.
 - Browser pixel/screenshot confirmation of the new live alert ID
   `67048401...`.
 
 Next required proof:
 
-1. Trigger a non-deduplicated ML alert after the WebSocket payload fix and
-   capture `new_alert` or `alert_updated` from `alerts:feed`.
+1. Rebuild/redeploy the server image with `AlertBroadcastRelay`, trigger a
+   non-deduplicated ML alert, and capture `new_alert` or `alert_updated` from
+   `alerts:feed`.
 2. Persist `source=ml`/`detection_source=ml` at alert creation time for ML
    detections, not only via API inference/backfill.
 3. Keep lab port ownership explicit: HTTP probes used `:4000`; mTLS telemetry

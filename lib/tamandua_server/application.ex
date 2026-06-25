@@ -79,6 +79,7 @@ defmodule TamanduaServer.Application do
           # and the console are available while heavier integrations initialize.
           TamanduaServerWeb.Presence,
           TamanduaServerWeb.Endpoint,
+          TamanduaServer.Alerts.AlertBroadcastRelay,
 
           # Start Finch for HTTP requests (with pool tuning)
           # Includes a dedicated connection pool for ClickHouse HTTP interface to
@@ -930,6 +931,7 @@ defmodule TamanduaServer.Application do
       # delays from making the console and agent socket look offline.
       TamanduaServerWeb.Presence,
       TamanduaServerWeb.Endpoint,
+      TamanduaServer.Alerts.AlertBroadcastRelay,
       TamanduaServer.PKI.CertificateAuthority,
       %{
         id: :pki_auto_init,
@@ -1090,7 +1092,19 @@ defmodule TamanduaServer.Application do
     lab_light_enabled = System.get_env("TAMANDUA_LAB_LIGHT", "false") == "true"
 
     cond do
-      # Production with LAB_LIGHT is FATAL - refuse to start
+      # Production with LAB_LIGHT is FATAL on public hosts. The lightweight lab
+      # image runs with MIX_ENV=prod for asset/build parity, so allow it only on
+      # private lab hosts or with an explicit operator override.
+      lab_light_enabled and env == :prod and lab_light_prod_allowed?() ->
+        require Logger
+
+        Logger.warning("""
+        [SECURITY] LAB_LIGHT mode enabled with MIX_ENV=prod on a private/acknowledged lab host.
+        Do not expose this runtime to untrusted networks.
+        """)
+
+        :ok
+
       lab_light_enabled and env == :prod ->
         require Logger
 
@@ -1123,6 +1137,31 @@ defmodule TamanduaServer.Application do
       # No LAB_LIGHT - safe
       true ->
         :ok
+    end
+  end
+
+  defp lab_light_prod_allowed? do
+    System.get_env("TAMANDUA_ALLOW_PROD_LAB_LIGHT", "false") == "true" or
+      private_lab_host?(System.get_env("PHX_HOST", ""))
+  end
+
+  defp private_lab_host?(host) do
+    host in ["localhost", "127.0.0.1", "::1"] or
+      String.starts_with?(host, "10.") or
+      String.starts_with?(host, "192.168.") or
+      private_172_host?(host)
+  end
+
+  defp private_172_host?(host) do
+    case String.split(host, ".") do
+      ["172", second | _] ->
+        case Integer.parse(second) do
+          {octet, ""} -> octet >= 16 and octet <= 31
+          _ -> false
+        end
+
+      _ ->
+        false
     end
   end
 

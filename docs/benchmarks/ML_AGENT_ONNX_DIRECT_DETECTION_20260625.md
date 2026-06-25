@@ -141,6 +141,9 @@ Proven:
   into real agent telemetry.
 - The lab backend accepts the ML telemetry over mTLS and creates a critical
   `source=ml` alert.
+- A non-deduplicated smoke run with `--run-id socket-20260625091550` created
+  event `16e5f26c-3dee-4746-972c-9bba78be0c60` and alert
+  `a7e750d0-6566-42ca-acac-f67cd6cf461a`.
 - The API/GUI source path now resolves the live telemetry alert as `source=ml`
   after metadata backfill and server-side source inference work.
 - The lab backend continues to persist ML verdict events over mTLS after the
@@ -154,6 +157,8 @@ Not proven:
 - Browser pixel/visual screenshot confirmation for the new `67048401...` alert.
 - Fresh post-fix ML alert creation plus `alerts:feed` socket delivery in the
   same run.
+- Cross-runtime socket relay proof after rebuilding the server image with
+  `TamanduaServer.Alerts.AlertBroadcastRelay`.
 
 Next work:
 
@@ -161,8 +166,9 @@ Next work:
    `tamandua-ml`.
 2. Run the same smoke from inside LAB-DC01 or WIN-TEMPLATE once remote
    execution is available through a governed action.
-3. Add an automated `alerts:feed` socket probe for the live ML alert path.
-4. Use a non-deduplicated ML sample/run ID for the next socket proof so the
+3. Rebuild/redeploy the server with `AlertBroadcastRelay`, then rerun the
+   automated `alerts:feed` socket probe for the live ML alert path.
+4. Keep using a non-deduplicated ML sample/run ID for socket proof so the
    backend creates or updates an alert during the probe window.
 
 Follow-up evidence:
