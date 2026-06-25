@@ -569,15 +569,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   defp atomize_keys(map) when is_map(map) do
     map
     |> Enum.map(fn {k, v} ->
-      key = if is_binary(k) do
-        try do
-          String.to_existing_atom(k)
-        rescue
-          ArgumentError -> k
-        end
-      else
-        k
-      end
+      key = if is_binary(k), do: safe_existing_atom(k) || k, else: k
       value = atomize_keys(v)
       {key, value}
     end)
@@ -587,6 +579,12 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     Enum.map(list, &atomize_keys/1)
   end
   defp atomize_keys(value), do: value
+
+  defp safe_existing_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> nil
+  end
 
   # Autonomous Storyline helpers
 

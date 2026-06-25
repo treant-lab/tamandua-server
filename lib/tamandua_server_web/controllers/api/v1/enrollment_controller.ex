@@ -30,6 +30,7 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
   use TamanduaServerWeb, :controller
   require Logger
 
+  alias TamanduaServer.Agents.TokenManager
   alias TamanduaServer.Enrollment
 
   # --------------------------------------------------------------------------
@@ -416,7 +417,23 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
     case conn.assigns do
       %{current_agent_id: agent_id} when is_binary(agent_id) -> agent_id
       %{agent_id: agent_id} when is_binary(agent_id) -> agent_id
+      _ -> get_agent_id_from_bearer(conn)
+    end
+  end
+
+  defp get_agent_id_from_bearer(conn) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, claims} <- TokenManager.validate_token(token) do
+      claims["agent_id"] || claims["sub"]
+    else
       _ -> nil
+    end
+  end
+
+  defp extract_bearer_token(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] when byte_size(token) > 0 -> {:ok, token}
+      _ -> {:error, :missing_token}
     end
   end
 
