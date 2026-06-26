@@ -15,6 +15,10 @@ ENV MIX_ENV=prod
 ENV GUARDIAN_SECRET_KEY=dev_secret_key_change_in_production
 ENV SECRET_KEY_BASE=dev_secret_key_base_change_in_production_min_64_chars_required_here
 ENV ERL_COMPILER_OPTIONS=nowarn_unused_vars
+# Lab-light VMs are memory constrained. Keep BEAM compile/runtime scheduler
+# fanout low enough that full image rebuilds do not get OOM-killed.
+ENV ELIXIR_ERL_OPTIONS="+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
+ENV ERL_FLAGS="+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
 
 # Copy mix/config files first for better dependency caching.
 COPY mix.exs ./

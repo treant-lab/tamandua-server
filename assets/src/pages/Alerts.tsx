@@ -1589,6 +1589,21 @@ function getAlertScoreVersion(alert: Alert): string {
   )
 }
 
+function isMlAlert(alert: Alert): boolean {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  const source = String(alert.source || '').toLowerCase()
+  const ruleName = String(metadata.rule_name || '').toUpperCase()
+
+  return (
+    source === 'ml' ||
+    String(metadata.source || '').toLowerCase() === 'ml' ||
+    String(metadata.detection_source || '').toLowerCase() === 'ml' ||
+    String(metadata.detection_type || '').toLowerCase() === 'ml' ||
+    Boolean(metadata.onnx_model_version || metadata.ml_model || metadata.model_version) ||
+    ruleName.startsWith('OFFLINE_ML')
+  )
+}
+
 function AlertRow({
   alert, isNew, isSelected, onSelect, onCreateExclusion, onAcknowledge
 }: {
@@ -1605,6 +1620,7 @@ function AlertRow({
   const mitreTechniques = safeStringArray(alert.mitreTechniques)
   const title = String(alert.title || 'Untitled alert')
   const description = String(alert.description || '')
+  const mlAlert = isMlAlert(alert)
 
   return (
     <div
@@ -1651,6 +1667,11 @@ function AlertRow({
             </h3>
             {isNew && (
               <span className="badge-sentinel badge-sentinel-success badge-sentinel-pill animate-pulse font-semibold">NEW</span>
+            )}
+            {mlAlert && (
+              <span className="badge-sentinel badge-sentinel-pill font-semibold" style={{ color: 'var(--info)', borderColor: 'var(--info)' }}>
+                ML
+              </span>
             )}
           </div>
           <p className="text-sm truncate" style={{ color: 'var(--muted)' }}>{description}</p>

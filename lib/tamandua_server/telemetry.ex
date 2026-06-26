@@ -703,6 +703,8 @@ defmodule TamanduaServer.Telemetry do
   def search_events(query_string, time_range, limit, opts \\ []) do
     start_time = parse_time_range(time_range)
     agent_ids = Keyword.get(opts, :agent_ids)
+    organization_id = Keyword.get(opts, :organization_id)
+    skip_agent_lookup = Keyword.get(opts, :skip_agent_lookup, false)
 
     query =
       from(e in Event,
@@ -726,10 +728,22 @@ defmodule TamanduaServer.Telemetry do
         query
       end
 
-    Repo.all(query)
-    |> Enum.map(fn event ->
-      Map.put(event, :agent_hostname, get_agent_hostname(event.agent_id))
-    end)
+    query =
+      if organization_id do
+        where(query, [e], e.organization_id == ^organization_id)
+      else
+        query
+      end
+
+    events = Repo.all(query)
+
+    if skip_agent_lookup do
+      events
+    else
+      Enum.map(events, fn event ->
+        Map.put(event, :agent_hostname, get_agent_hostname(event.agent_id))
+      end)
+    end
   end
 
   @doc """

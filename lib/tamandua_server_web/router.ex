@@ -216,6 +216,7 @@ defmodule TamanduaServerWeb.Router do
   scope "/api/v1", TamanduaServerWeb.API.V1, as: :api_v1_public do
     pipe_through(:api)
 
+    post("/auth/login", MobileAuthController, :login)
     post("/cli-auth/device", CLIAuthController, :device)
     post("/cli-auth/token", CLIAuthController, :token)
   end
@@ -229,6 +230,9 @@ defmodule TamanduaServerWeb.Router do
 
   scope "/api/v1", TamanduaServerWeb.API.V1, as: :api_v1 do
     pipe_through([:api, :api_auth])
+
+    post("/auth/logout", MobileAuthController, :logout)
+    post("/auth/refresh", MobileAuthController, :refresh)
 
     # Agents
     get("/agents/data-sources/health", AgentController, :data_sources_health)

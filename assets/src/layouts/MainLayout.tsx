@@ -215,7 +215,7 @@ const navigationGroups: ExtendedNavGroup[] = [
     name: 'AI Security',
     icon: Shield,
     items: [
-      { name: 'Attack Surface', href: '/app/ai-security/attack-surface', icon: Target },
+      { name: 'AI Attack Surface', href: '/app/ai-security/attack-surface', icon: Target },
       { name: 'Shadow AI', href: '/app/ai-security/shadow-ai', icon: Eye },
       { name: 'AI Posture', href: '/app/ai-security/posture', icon: ShieldCheck },
       { name: 'Agent Registry', href: '/app/ai-security/agents', icon: Users },

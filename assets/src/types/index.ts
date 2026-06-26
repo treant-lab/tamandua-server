@@ -164,6 +164,7 @@ export interface Alert {
   description: string
   status: 'new' | 'open' | 'investigating' | 'resolved' | 'false_positive'
   threatScore: number
+  source?: string
   mitreTactics: string[]
   mitreTechniques: string[]
   createdAt: string

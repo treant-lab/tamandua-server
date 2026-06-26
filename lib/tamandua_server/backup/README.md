@@ -412,8 +412,7 @@ Total full backup: ~1 hour
 
 ## Disaster Recovery
 
-Complete disaster recovery procedures are maintained in private operational runbooks and
-are published only after release review.
+See [BACKUP_RESTORE.md](../../../../../docs/BACKUP_RESTORE.md) for complete disaster recovery procedures.
 
 ## References
 

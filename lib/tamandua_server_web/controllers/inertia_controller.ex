@@ -8726,6 +8726,9 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp serialize_alert(alert) do
+    detection_metadata = Map.get(alert, :detection_metadata) || %{}
+    source = alert_source(alert, detection_metadata)
+
     %{
       id: alert.id,
       agentId: alert.agent_id,
@@ -8735,6 +8738,8 @@ defmodule TamanduaServerWeb.InertiaController do
       status: alert.status,
       threatScore: Map.get(alert, :threat_score),
       enrichment: Map.get(alert, :enrichment, %{}),
+      source: source,
+      detectionMetadata: detection_metadata,
       sourceEventId: Map.get(alert, :source_event_id),
       mitreTactics: alert.mitre_tactics || [],
       mitreTechniques: alert.mitre_techniques || [],
@@ -8744,6 +8749,18 @@ defmodule TamanduaServerWeb.InertiaController do
       iocs: extract_alert_iocs(alert),
       processChain: serialize_process_chain(Map.get(alert, :process_chain, []))
     }
+  end
+
+  defp alert_source(alert, detection_metadata) do
+    Map.get(alert, :source) ||
+      get_any(detection_metadata, [
+        "source",
+        :source,
+        "detection_source",
+        :detection_source,
+        "detection_type",
+        :detection_type
+      ])
   end
 
   defp extract_alert_iocs(alert) do

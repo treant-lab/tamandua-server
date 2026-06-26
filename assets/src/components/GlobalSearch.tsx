@@ -131,7 +131,6 @@ const searchablePages: QuickAction[] = [
   { id: 'phishing-triage', name: 'Phishing Triage', href: '/app/phishing-triage', icon: FileSearch },
   { id: 'on-chain-proof', name: 'On-Chain Proof', href: '/app/public-proofs', icon: Database },
   { id: 'security-status', name: 'Security Status', href: '/app/security-status', icon: ShieldCheck },
-  { id: 'public-proofs', name: 'Public Proofs', href: '/app/public-proofs', icon: Database },
   { id: 'contributions', name: 'Contributions', href: '/app/contributions', icon: FileCode },
   { id: 'leaderboard', name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: ClipboardList },
   { id: 'settings', name: 'Settings', href: '/app/settings', icon: ShieldCheck, requireRole: 'admin' },

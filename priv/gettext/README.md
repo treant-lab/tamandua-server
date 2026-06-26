@@ -99,10 +99,9 @@ Check translation completeness at:
 
 ## Resources
 
+- [Full i18n Guide](../../../../../I18N_GUIDE.md)
+- [Translation Workflow](../../../../../TRANSLATION_WORKFLOW.md)
 - [Gettext Documentation](https://hexdocs.pm/gettext)
-
-The full i18n guide and translation workflow are maintained in private release materials
-until they are reviewed for public distribution.
 
 ## Contact
 

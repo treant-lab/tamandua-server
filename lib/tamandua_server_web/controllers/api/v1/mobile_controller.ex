@@ -1733,7 +1733,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
           "os_version" => device_attrs["os_version"],
           "agent_version" => "app_guard",
           "mdm_enrolled" => Map.get(device_attrs, "managed", false),
-          "mdm_provider" => Map.get(device_attrs, "mdm_provider", "none")
+          "mdm_provider" => device_attrs["mdm_provider"] || "none"
         }
 
         Mobile.register_device(attrs)

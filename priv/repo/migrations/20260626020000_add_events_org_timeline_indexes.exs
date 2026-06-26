@@ -5,18 +5,18 @@ defmodule TamanduaServer.Repo.Migrations.AddEventsOrgTimelineIndexes do
 
   def up do
     execute """
-    CREATE INDEX IF NOT EXISTS events_org_timestamp_idx
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS events_org_timestamp_idx
     ON events (organization_id, timestamp DESC)
     """
 
     execute """
-    CREATE INDEX IF NOT EXISTS events_org_type_timestamp_idx
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS events_org_type_timestamp_idx
     ON events (organization_id, event_type, timestamp DESC)
     """
   end
 
   def down do
-    execute "DROP INDEX IF EXISTS events_org_type_timestamp_idx"
-    execute "DROP INDEX IF EXISTS events_org_timestamp_idx"
+    execute "DROP INDEX CONCURRENTLY IF EXISTS events_org_type_timestamp_idx"
+    execute "DROP INDEX CONCURRENTLY IF EXISTS events_org_timestamp_idx"
   end
 end

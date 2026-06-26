@@ -86,21 +86,34 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     query = params["query"] || ""
     time_range = params["time_range"] || "24h"
     limit = bounded_limit(params["limit"], @default_limit, @max_limit)
+    organization_id = current_organization_id(conn)
 
-    results =
-      try do
-        Telemetry.search_events(query, time_range, limit)
-      rescue
-        exception ->
-          Logger.warning("[EventController] search failed: #{Exception.message(exception)}")
-          []
-      catch
-        :exit, reason ->
-          Logger.warning("[EventController] search failed: exit #{inspect(reason)}")
-          []
-      end
+    if is_nil(organization_id) do
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "Organization scope is required to search events"})
+    else
+      results =
+        try do
+          Telemetry.search_events(query, time_range, limit,
+            organization_id: organization_id,
+            skip_agent_lookup: true
+          )
+        rescue
+          exception ->
+            Logger.warning("[EventController] search failed: #{Exception.message(exception)}")
+            []
+        catch
+          :exit, reason ->
+            Logger.warning("[EventController] search failed: exit #{inspect(reason)}")
+            []
+        end
 
-    json(conn, %{data: Enum.map(results, &serialize/1), meta: %{query: query, time_range: time_range}})
+      json(conn, %{
+        data: Enum.map(results, &serialize/1),
+        meta: %{query: query, time_range: time_range, scoped: true}
+      })
+    end
   end
 
   @doc """
