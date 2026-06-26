@@ -71,6 +71,46 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert alert.raw_event["payload"]["risk"]["decision"] == "step_up"
     end
 
+    test "ingests RASP-derived App Guard events and creates alerts", %{conn_a: conn, org_a: org} do
+      payload =
+        app_guard_payload()
+        |> put_in(["event_id"], "evt-app-guard-rasp-1")
+        |> put_in(["event_type"], "network_exfiltration_suspected")
+        |> put_in(["severity"], "high")
+        |> put_in(["platform"], "android")
+        |> put_in(["device", "device_id"], "android-rasp-1")
+        |> put_in(["device", "model"], "Pixel 8")
+        |> put_in(["device", "manufacturer"], "Google")
+        |> put_in(["risk", "decision"], "step_up")
+        |> put_in(["risk", "score"], 65)
+        |> put_in(["risk", "reasons"], ["automation_detected", "network_exfiltration_suspected"])
+        |> put_in(["evidence"], %{
+          "collector" => "protected-webview",
+          "privacy_mode" => "metadata_only",
+          "network" => %{
+            "destination_category" => "temporary_tunnel",
+            "host_hash" => "sha256:example",
+            "request_count" => 3
+          }
+        })
+
+      conn = post(conn, "/api/v1/mobile/app_guard/events", payload)
+
+      body = json_response(conn, 201)
+      event = Repo.get!(MobileEvent, body["data"]["id"])
+      alert = Repo.get!(Alert, event.alert_id)
+
+      assert event.organization_id == org.id
+      assert event.event_type == "network_exfiltration_suspected"
+      assert event.title == "App Guard network_exfiltration_suspected"
+      assert event.alerted == true
+      assert alert.title == "[App Guard] App Guard network_exfiltration_suspected"
+      assert alert.detection_metadata["source"] == "app_guard"
+      assert alert.detection_metadata["event_type"] == "network_exfiltration_suspected"
+      assert alert.raw_event["payload"]["evidence"]["privacy_mode"] == "metadata_only"
+      assert "T1446" in alert.mitre_techniques
+    end
+
     test "rejects unsupported App Guard schemas", %{conn_a: conn} do
       conn = post(conn, "/api/v1/mobile/app_guard/events", %{"schema" => "unknown"})
 

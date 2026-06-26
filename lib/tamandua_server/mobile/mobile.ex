@@ -34,7 +34,12 @@ defmodule TamanduaServer.Mobile do
     "hook_framework_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "emulator_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "simulator_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
-    "tampering_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"}
+    "tampering_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
+    "browser_tamper_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
+    "automation_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
+    "network_exfiltration_suspected" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "integrity_snapshot_changed" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
+    "behavior_anomaly_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"}
   }
 
   # ============================================================================
@@ -510,6 +515,11 @@ defmodule TamanduaServer.Mobile do
       "overlay_detected" -> " A screen overlay attack was detected, possibly capturing credentials."
       "location_spoofing" -> " GPS location spoofing was detected on the device."
       "man_in_the_middle" -> " A man-in-the-middle attack was detected on the network connection."
+      "browser_tamper_detected" -> " A protected browser or WebView runtime was modified."
+      "automation_detected" -> " Browser or app automation indicators were detected."
+      "network_exfiltration_suspected" -> " Suspicious protected-app network egress was detected."
+      "integrity_snapshot_changed" -> " A protected app or WebView integrity snapshot changed."
+      "behavior_anomaly_detected" -> " Protected-app behavior deviated from the expected interaction profile."
       _ -> ""
     end
 

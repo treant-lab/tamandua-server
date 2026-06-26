@@ -44,6 +44,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     certificate_pinning_bypass
     man_in_the_middle
     overlay_detected
+    browser_tamper_detected
+    automation_detected
+    network_exfiltration_suspected
+    integrity_snapshot_changed
+    behavior_anomaly_detected
     policy_decision
   )
   @app_guard_severities ~w(info low medium high critical)

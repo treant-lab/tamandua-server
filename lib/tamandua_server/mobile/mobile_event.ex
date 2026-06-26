@@ -37,6 +37,11 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "simulator_detected" => "Simulator detected",
     "app_integrity_violation" => "App integrity violation",
     "tampering_detected" => "Tampering detected",
+    "browser_tamper_detected" => "Browser tamper detected",
+    "automation_detected" => "Automation detected",
+    "network_exfiltration_suspected" => "Network exfiltration suspected",
+    "integrity_snapshot_changed" => "Integrity snapshot changed",
+    "behavior_anomaly_detected" => "Behavior anomaly detected",
     "suspicious_app_installed" => "Suspicious app installed",
     "malware_detected" => "Malware detected",
     "spyware_detected" => "Spyware detected",
@@ -191,7 +196,12 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "certificate_pinning_bypass" => {"T1557", "TA0006"},
     "man_in_the_middle" => {"T1557", "TA0006"},
     "location_spoofing" => {"T1430", "TA0007"},
-    "tampering_detected" => {"T1398", "TA0005"}
+    "tampering_detected" => {"T1398", "TA0005"},
+    "browser_tamper_detected" => {"T1622", "TA0005"},
+    "automation_detected" => {"T1622", "TA0007"},
+    "network_exfiltration_suspected" => {"T1446", "TA0011"},
+    "integrity_snapshot_changed" => {"T1398", "TA0005"},
+    "behavior_anomaly_detected" => {"T1622", "TA0007"}
   }
 
   defp maybe_add_mitre_mapping(changeset) do
