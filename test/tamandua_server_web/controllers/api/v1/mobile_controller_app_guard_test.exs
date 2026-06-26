@@ -3,6 +3,7 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
 
   import TamanduaServer.Factory
 
+  alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Mobile
   alias TamanduaServer.Mobile.MobileEvent
   alias TamanduaServer.Repo
@@ -42,10 +43,48 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert event.timestamp == ~N[2026-06-26 12:00:00]
     end
 
+    test "creates App Guard alerts for high severity SDK events", %{conn_a: conn, org_a: org} do
+      payload =
+        app_guard_payload()
+        |> put_in(["event_type"], "debugger_detected")
+        |> put_in(["severity"], "high")
+        |> put_in(["risk", "decision"], "step_up")
+        |> put_in(["risk", "score"], 82)
+        |> put_in(["risk", "reasons"], ["debugger_detected", "unmanaged_device"])
+
+      conn = post(conn, "/api/v1/mobile/app_guard/events", payload)
+
+      body = json_response(conn, 201)
+      event = Repo.get!(MobileEvent, body["data"]["id"])
+      event = Repo.get!(MobileEvent, event.id)
+      alert = Repo.get!(Alert, event.alert_id)
+
+      assert event.alerted == true
+      assert event.organization_id == org.id
+      assert alert.organization_id == org.id
+      assert alert.severity == "high"
+      assert alert.title == "[App Guard] App Guard debugger_detected"
+      assert alert.detection_metadata["source"] == "app_guard"
+      assert alert.detection_metadata["event_type"] == "debugger_detected"
+      assert alert.detection_metadata["app_bundle_id"] == "com.example.wallet"
+      assert alert.raw_event["mobile_event_id"] == event.id
+      assert alert.raw_event["payload"]["risk"]["decision"] == "step_up"
+    end
+
     test "rejects unsupported App Guard schemas", %{conn_a: conn} do
       conn = post(conn, "/api/v1/mobile/app_guard/events", %{"schema" => "unknown"})
 
       assert json_response(conn, 422)["error"] == "Unsupported App Guard event schema"
+    end
+
+    test "rejects incomplete App Guard contract payloads", %{conn_a: conn} do
+      payload = app_guard_payload() |> put_in(["app", "version"], "")
+
+      conn = post(conn, "/api/v1/mobile/app_guard/events", payload)
+
+      body = json_response(conn, 422)
+      assert body["error"] == "Invalid App Guard event payload"
+      assert "app.version is required" in body["details"]
     end
   end
 
@@ -85,7 +124,8 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       },
       "app" => %{
         "package_or_bundle_id" => "com.example.wallet",
-        "display_name" => "Example Wallet"
+        "display_name" => "Example Wallet",
+        "version" => "1.2.3"
       },
       "risk" => %{
         "decision" => "observe",

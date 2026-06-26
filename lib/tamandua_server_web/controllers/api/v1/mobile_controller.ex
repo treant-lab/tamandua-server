@@ -32,6 +32,24 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
   action_fallback TamanduaServerWeb.FallbackController
 
+  @app_guard_event_types ~w(
+    root_detected
+    jailbreak_detected
+    debugger_detected
+    hook_framework_detected
+    emulator_detected
+    simulator_detected
+    app_integrity_violation
+    tampering_detected
+    certificate_pinning_bypass
+    man_in_the_middle
+    overlay_detected
+    policy_decision
+  )
+  @app_guard_severities ~w(info low medium high critical)
+  @app_guard_platforms ~w(android ios)
+  @app_guard_decisions ~w(allow observe warn step_up block kill_session)
+
   # ============================================================================
   # Device Management
   # ============================================================================
@@ -414,7 +432,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   def ingest_app_guard_event(conn, %{"schema" => "tamandua.app_guard.event/v1"} = params) do
     organization_id = get_organization_id(conn)
 
-    with {:ok, device} <- ensure_app_guard_device(organization_id, params),
+    with :ok <- validate_app_guard_contract(params),
+         {:ok, device} <- ensure_app_guard_device(organization_id, params),
          attrs <- app_guard_event_to_mobile_attrs(params, organization_id, device.id),
          {:ok, event} <- Mobile.ingest_event(attrs) do
       conn
@@ -424,6 +443,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         data: serialize_event(event)
       })
     else
+      {:error, {:invalid_app_guard_contract, errors}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Invalid App Guard event payload", details: errors})
+
       {:error, :invalid_device} ->
         conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid App Guard device payload"})
 
@@ -1744,6 +1768,116 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   end
 
   defp ensure_app_guard_device(_organization_id, _params), do: {:error, :invalid_device}
+
+  defp validate_app_guard_contract(params) do
+    errors =
+      []
+      |> require_string(params, ["schema"])
+      |> require_string(params, ["event_type"])
+      |> require_string(params, ["severity"])
+      |> require_string(params, ["platform"])
+      |> require_string(params, ["timestamp"])
+      |> require_string(params, ["app", "package_or_bundle_id"])
+      |> require_string(params, ["app", "version"])
+      |> require_string(params, ["device", "device_id"])
+      |> require_integer_range(params, ["risk", "score"], 0, 100)
+      |> require_string(params, ["risk", "decision"])
+      |> require_list(params, ["risk", "reasons"])
+      |> validate_enum(params, ["event_type"], @app_guard_event_types)
+      |> validate_enum(params, ["severity"], @app_guard_severities)
+      |> validate_enum(params, ["platform"], @app_guard_platforms)
+      |> validate_enum(params, ["risk", "decision"], @app_guard_decisions)
+      |> validate_timestamp(params, ["timestamp"])
+
+    case Enum.reverse(errors) do
+      [] -> :ok
+      errors -> {:error, {:invalid_app_guard_contract, errors}}
+    end
+  end
+
+  defp require_string(errors, params, path) do
+    case app_guard_contract_value(params, path) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: [field_path(path) <> " is required" | errors], else: errors
+
+      _ ->
+        [field_path(path) <> " is required" | errors]
+    end
+  end
+
+  defp require_integer_range(errors, params, path, min, max) do
+    case app_guard_contract_value(params, path) do
+      value when is_integer(value) and value >= min and value <= max ->
+        errors
+
+      _ ->
+        ["#{field_path(path)} must be an integer from #{min} to #{max}" | errors]
+    end
+  end
+
+  defp require_list(errors, params, path) do
+    case app_guard_contract_value(params, path) do
+      value when is_list(value) ->
+        errors
+
+      _ ->
+        [field_path(path) <> " must be a list" | errors]
+    end
+  end
+
+  defp validate_enum(errors, params, path, allowed) do
+    value = app_guard_contract_value(params, path)
+
+    normalized =
+      if path == ["platform"] and is_binary(value) do
+        value |> String.trim() |> String.downcase()
+      else
+        value
+      end
+
+    cond do
+      is_nil(value) or value == "" ->
+        errors
+
+      normalized in allowed ->
+        errors
+
+      true ->
+        ["#{field_path(path)} must be one of: #{Enum.join(allowed, ", ")}" | errors]
+    end
+  end
+
+  defp validate_timestamp(errors, params, path) do
+    case app_guard_contract_value(params, path) do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        case DateTime.from_iso8601(trimmed) do
+          {:ok, _datetime, _offset} ->
+            errors
+
+          {:error, _reason} ->
+            case NaiveDateTime.from_iso8601(String.replace_suffix(trimmed, "Z", "")) do
+              {:ok, _naive} -> errors
+              {:error, _reason} -> [field_path(path) <> " must be ISO-8601" | errors]
+            end
+        end
+
+      _ ->
+        errors
+    end
+  end
+
+  defp app_guard_contract_value(params, path) do
+    Enum.reduce_while(path, params, fn key, current ->
+      case current do
+        value when is_map(value) -> {:cont, Map.get(value, key)}
+        _ -> {:halt, nil}
+      end
+    end)
+  end
+
+  defp field_path(path), do: Enum.join(path, ".")
 
   defp app_guard_event_to_mobile_attrs(params, organization_id, device_id) do
     app = Map.get(params, "app", %{})
