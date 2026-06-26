@@ -64,6 +64,36 @@ interface MLModelMetrics {
   inferenceLatency: number
 }
 
+interface MLMetricsResponse {
+  status?: string
+  message?: string
+  metrics?: {
+    accuracy?: number
+    precision?: number
+    recall?: number
+    f1_score?: number
+    f1Score?: number
+    samples_processed?: number
+    samplesProcessed?: number
+    inference_latency?: number
+    inferenceLatency?: number
+  }
+  model_name?: string
+  modelName?: string
+  version?: string
+  accuracy?: number
+  precision?: number
+  recall?: number
+  f1_score?: number
+  f1Score?: number
+  last_trained?: string
+  lastTrained?: string
+  samples_processed?: number
+  samplesProcessed?: number
+  inference_latency?: number
+  inferenceLatency?: number
+}
+
 interface EmergingThreat {
   id: string
   name: string
@@ -198,18 +228,22 @@ export default function DynamicDetection({
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
-      const data = await response.json()
+      const data: MLMetricsResponse = await response.json()
+      if (data.status === 'unavailable') {
+        throw new Error(data.message || 'ML service unavailable')
+      }
+      const metricSource = data.metrics || data
       // Map snake_case API response to camelCase interface
       const metrics: MLModelMetrics = {
         modelName: data.model_name ?? data.modelName ?? defaultMLMetrics.modelName,
         version: data.version ?? defaultMLMetrics.version,
-        accuracy: data.accuracy ?? 0,
-        precision: data.precision ?? 0,
-        recall: data.recall ?? 0,
-        f1Score: data.f1_score ?? data.f1Score ?? 0,
+        accuracy: metricSource.accuracy ?? 0,
+        precision: metricSource.precision ?? 0,
+        recall: metricSource.recall ?? 0,
+        f1Score: metricSource.f1_score ?? metricSource.f1Score ?? 0,
         lastTrained: data.last_trained ?? data.lastTrained ?? defaultMLMetrics.lastTrained,
-        samplesProcessed: data.samples_processed ?? data.samplesProcessed ?? 0,
-        inferenceLatency: data.inference_latency ?? data.inferenceLatency ?? 0,
+        samplesProcessed: metricSource.samples_processed ?? metricSource.samplesProcessed ?? 0,
+        inferenceLatency: metricSource.inference_latency ?? metricSource.inferenceLatency ?? 0,
       }
       setMlMetrics(metrics)
       setMlMetricsError(null)
@@ -357,7 +391,9 @@ export default function DynamicDetection({
                 {mlMetricsLoading ? (
                   <Skeleton className="h-8 w-16 mb-1" />
                 ) : (
-                  <p className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>{mlMetrics.accuracy.toFixed(1)}%</p>
+                  <p className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
+                    {mlMetricsError ? '--' : `${mlMetrics.accuracy.toFixed(1)}%`}
+                  </p>
                 )}
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>ML Model Accuracy</p>
               </div>

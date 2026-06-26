@@ -95,16 +95,13 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     organization_id = get_organization_id(conn)
     limit = bounded_limit(params["limit"], @default_timeline_limit, @max_timeline_limit)
 
-    # Get agent IDs that belong to this organization for tenant isolation
-    org_agent_ids = get_org_agent_ids(organization_id)
-
-    # Build base query ordered by timestamp descending, scoped to org's agents
+    # Build base query ordered by timestamp descending and scoped directly by org.
     query =
       from(e in Event,
-        where: e.agent_id in ^org_agent_ids,
         order_by: [desc: e.timestamp],
         limit: ^limit
       )
+      |> scope_events_to_org(organization_id)
 
     # Apply time range filter
     query = apply_time_range(query, params["start_time"], params["end_time"])
@@ -142,7 +139,8 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
         ids_str ->
           ids = String.split(ids_str, ",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-          # Only allow filtering by agents that belong to this organization
+          org_agent_ids = get_org_agent_ids(organization_id)
+          # Only allow filtering by agents that belong to this organization.
           allowed_ids = Enum.filter(ids, &(&1 in org_agent_ids))
 
           if length(allowed_ids) > 0 do
@@ -292,7 +290,6 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   def readiness(conn, params) do
     organization_id = get_organization_id(conn)
-    org_agent_ids = get_org_agent_ids(organization_id)
     limit = bounded_limit(params["limit"], @default_readiness_limit, @max_readiness_limit)
 
     since =
@@ -304,10 +301,11 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
     events =
       from(e in Event,
-        where: e.agent_id in ^org_agent_ids and e.timestamp >= ^since,
+        where: e.timestamp >= ^since,
         order_by: [desc: e.timestamp],
         limit: ^limit
       )
+      |> scope_events_to_org(organization_id)
       |> safe_repo_all("Timeline readiness")
 
     json(conn, %{
@@ -427,7 +425,6 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   def correlate(conn, %{"event_ids" => event_ids}) when is_list(event_ids) do
     organization_id = get_organization_id(conn)
-    org_agent_ids = get_org_agent_ids(organization_id)
 
     event_ids =
       event_ids
@@ -439,9 +436,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
     events =
       from(e in Event,
-        where: e.id in ^event_ids and e.agent_id in ^org_agent_ids,
+        where: e.id in ^event_ids,
         order_by: [asc: e.timestamp]
       )
+      |> scope_events_to_org(organization_id)
       |> safe_repo_all("Selected timeline events")
 
     cond do
@@ -689,6 +687,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       Logger.warning("Timeline organization agent lookup failed: exit #{inspect(reason)}")
       []
   end
+
+  defp scope_events_to_org(query, nil), do: where(query, [e], is_nil(e.organization_id))
+  defp scope_events_to_org(query, organization_id), do: where(query, [e], e.organization_id == ^organization_id)
 
   defp serialize_timeline_events(events, organization_id, evidence) do
     links_by_id = evidence.event_links || %{}

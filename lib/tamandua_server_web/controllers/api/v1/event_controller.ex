@@ -31,9 +31,11 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   end
 
   def show(conn, %{"id" => id}) do
+    organization_id = current_organization_id(conn)
+
     case Ecto.UUID.cast(id) do
       {:ok, valid_id} ->
-        case Telemetry.get_event(valid_id) do
+        case Telemetry.get_event_for_org(valid_id, organization_id) do
           nil ->
             conn
             |> put_status(:not_found)
@@ -52,16 +54,31 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
   def purge(conn, params) do
     event_type = params["event_type"]
+    organization_id = current_organization_id(conn)
 
-    if is_nil(event_type) or event_type == "" do
-      json(conn, %{error: "event_type parameter is required"})
-    else
-      import Ecto.Query
-      alias TamanduaServer.Repo
-      alias TamanduaServer.Telemetry.Event
+    cond do
+      is_nil(event_type) or event_type == "" ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "event_type parameter is required"})
 
-      {count, _} = Repo.delete_all(from e in Event, where: e.event_type == ^event_type)
-      json(conn, %{deleted: count, event_type: event_type})
+      is_nil(organization_id) ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Organization scope is required to purge events"})
+
+      true ->
+        import Ecto.Query
+        alias TamanduaServer.Repo
+        alias TamanduaServer.Telemetry.Event
+
+        {count, _} =
+          Repo.delete_all(
+            from e in Event,
+              where: e.organization_id == ^organization_id and e.event_type == ^event_type
+          )
+
+        json(conn, %{deleted: count, event_type: event_type, scoped: true})
     end
   end
 

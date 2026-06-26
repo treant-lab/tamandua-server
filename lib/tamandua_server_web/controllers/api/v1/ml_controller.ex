@@ -118,7 +118,9 @@ defmodule TamanduaServerWeb.API.V1.MLController do
         json(conn, transform_ml_metrics(metrics))
 
       {:error, :ml_service_unavailable} ->
-        json(conn, unavailable_ml_metrics("ML service is not reachable. The circuit breaker is open."))
+        conn
+        |> put_status(:service_unavailable)
+        |> json(unavailable_ml_metrics("ML service is not reachable. The circuit breaker is open."))
 
       {:error, reason} ->
         # Fall back to fetching directly if the client returned a different error.
@@ -127,7 +129,9 @@ defmodule TamanduaServerWeb.API.V1.MLController do
             json(conn, metrics)
 
           {:error, _} ->
-            json(conn, unavailable_ml_metrics("ML service returned an error: #{inspect(reason)}"))
+            conn
+            |> put_status(:service_unavailable)
+            |> json(unavailable_ml_metrics("ML service returned an error: #{inspect(reason)}"))
         end
     end
   end

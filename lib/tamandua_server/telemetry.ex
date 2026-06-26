@@ -81,6 +81,12 @@ defmodule TamanduaServer.Telemetry do
   """
   def get_event(id), do: Repo.get(Event, id)
 
+  def get_event_for_org(id, nil), do: get_event(id)
+
+  def get_event_for_org(id, organization_id) do
+    Repo.get_by(Event, id: id, organization_id: organization_id)
+  end
+
   @doc """
   Creates a event.
 
