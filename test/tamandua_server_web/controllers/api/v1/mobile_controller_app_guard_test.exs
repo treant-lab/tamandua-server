@@ -26,6 +26,11 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
 
   describe "POST /api/v1/mobile/app_guard/events" do
     test "ingests App Guard SDK events as mobile telemetry", %{conn_a: conn, org_a: org} do
+      Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "mobile:events")
+      Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "app_guard:event")
+      Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "mobile:app_guard_event")
+      Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "security:app_guard")
+
       conn = post(conn, "/api/v1/mobile/app_guard/events", app_guard_payload())
 
       body = json_response(conn, 201)
@@ -41,6 +46,19 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert event.organization_id == org.id
       assert event.payload["schema"] == "tamandua.app_guard.event/v1"
       assert event.timestamp == ~N[2026-06-26 12:00:00]
+
+      assert_receive {:mobile_event, mobile_payload}, 500
+      assert mobile_payload["schema"] == "tamandua.app_guard.event/v1"
+      assert mobile_payload["server_event_id"] == event.id
+      assert mobile_payload["organization_id"] == org.id
+
+      for _ <- 1..3 do
+        assert_receive {:app_guard_event, app_guard_payload}, 500
+        assert app_guard_payload["schema"] == "tamandua.app_guard.event/v1"
+        assert app_guard_payload["event_id"] == "evt-app-guard-1"
+        assert app_guard_payload["device"]["device_id"] == "ios-device-1"
+        assert app_guard_payload["server_event_id"] == event.id
+      end
     end
 
     test "creates App Guard alerts for high severity SDK events", %{conn_a: conn, org_a: org} do

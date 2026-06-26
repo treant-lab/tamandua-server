@@ -17,14 +17,19 @@ defmodule TamanduaServer.Mobile do
   @mobile_mitre_mappings %{
     "jailbreak_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
     "root_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
-    "suspicious_app_installed" => {"T1444", "Masquerade as Legitimate Application", "Initial Access"},
+    "suspicious_app_installed" =>
+      {"T1444", "Masquerade as Legitimate Application", "Initial Access"},
     "malware_detected" => {"T1444", "Masquerade as Legitimate Application", "Initial Access"},
     "spyware_detected" => {"T1444", "Masquerade as Legitimate Application", "Initial Access"},
     "sideload_attempt" => {"T1444", "Masquerade as Legitimate Application", "Initial Access"},
-    "malicious_dns_query" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
-    "suspicious_connection" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
-    "man_in_the_middle" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
-    "certificate_pinning_bypass" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "malicious_dns_query" =>
+      {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "suspicious_connection" =>
+      {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "man_in_the_middle" =>
+      {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "certificate_pinning_bypass" =>
+      {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
     "location_spoofing" => {"T1430", "Location Tracking", "Collection"},
     "geofence_breach" => {"T1430", "Location Tracking", "Collection"},
     "overlay_detected" => {"T1411", "Input Prompt", "Credential Access"},
@@ -37,8 +42,10 @@ defmodule TamanduaServer.Mobile do
     "tampering_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
     "browser_tamper_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "automation_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
-    "network_exfiltration_suspected" => {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
-    "integrity_snapshot_changed" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
+    "network_exfiltration_suspected" =>
+      {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "integrity_snapshot_changed" =>
+      {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
     "behavior_anomaly_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"}
   }
 
@@ -76,21 +83,25 @@ defmodule TamanduaServer.Mobile do
   defp maybe_filter_platform(query, %{"platform" => platform}) when platform != "" do
     Device.by_platform(query, platform)
   end
+
   defp maybe_filter_platform(query, _), do: query
 
   defp maybe_filter_status(query, %{"status" => status}) when status != "" do
     Device.by_status(query, status)
   end
+
   defp maybe_filter_status(query, _), do: query
 
   defp maybe_filter_risk(query, %{"high_risk" => true}) do
     Device.high_risk(query)
   end
+
   defp maybe_filter_risk(query, _), do: query
 
   defp maybe_filter_mdm(query, %{"mdm_enrolled" => true}) do
     Device.mdm_enrolled(query)
   end
+
   defp maybe_filter_mdm(query, _), do: query
 
   defp count_devices(organization_id, filters) do
@@ -366,6 +377,7 @@ defmodule TamanduaServer.Mobile do
     %MobileEvent{}
     |> MobileEvent.ingest_changeset(attrs)
     |> Repo.insert()
+    |> maybe_broadcast_event()
     |> maybe_create_alert()
   end
 
@@ -380,9 +392,84 @@ defmodule TamanduaServer.Mobile do
     if event.severity in ["high", "critical"] do
       create_alert_from_mobile_event(event)
     end
+
     result
   end
+
   defp maybe_create_alert(error), do: error
+
+  defp maybe_broadcast_event({:ok, %MobileEvent{} = event} = result) do
+    broadcast_mobile_event(event)
+    result
+  end
+
+  defp maybe_broadcast_event(result), do: result
+
+  defp broadcast_mobile_event(%MobileEvent{} = event) do
+    payload = mobile_event_broadcast_payload(event)
+
+    Phoenix.PubSub.broadcast(
+      TamanduaServer.PubSub,
+      "mobile:events",
+      {:mobile_event, payload}
+    )
+
+    if app_guard_event?(event) do
+      Enum.each(["app_guard:event", "mobile:app_guard_event", "security:app_guard"], fn topic ->
+        Phoenix.PubSub.broadcast(TamanduaServer.PubSub, topic, {:app_guard_event, payload})
+      end)
+
+      broadcast_app_guard_endpoint_event(event, payload)
+    end
+
+    try do
+      TamanduaServer.Streaming.StreamManager.broadcast_event(payload)
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[Mobile] Failed to broadcast mobile event #{event.id}: #{Exception.message(error)}"
+      )
+
+      :ok
+  end
+
+  defp app_guard_event?(%MobileEvent{payload: %{"schema" => "tamandua.app_guard.event/v1"}}),
+    do: true
+
+  defp app_guard_event?(_event), do: false
+
+  defp mobile_event_broadcast_payload(%MobileEvent{} = event) do
+    base =
+      event.payload || %{}
+
+    Map.merge(base, %{
+      "server_event_id" => event.id,
+      "organization_id" => event.organization_id,
+      "device_db_id" => event.device_id,
+      "event_type" => event.event_type,
+      "severity" => event.severity,
+      "timestamp" => event.timestamp && NaiveDateTime.to_iso8601(event.timestamp),
+      "title" => event.title,
+      "description" => event.description,
+      "app_bundle_id" => event.app_bundle_id,
+      "app_name" => event.app_name,
+      "domain" => event.domain
+    })
+  end
+
+  defp broadcast_app_guard_endpoint_event(%MobileEvent{} = event, payload) do
+    TamanduaServerWeb.Endpoint.broadcast("events:all", "app_guard:event", payload)
+    TamanduaServerWeb.Endpoint.broadcast("events:#{event.device_id}", "app_guard:event", payload)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   @doc """
   Creates an alert from a high/critical severity mobile event.
@@ -398,7 +485,8 @@ defmodule TamanduaServer.Mobile do
 
     alert_attrs = %{
       severity: event.severity,
-      title: "[#{alert_source_label(event)}] #{event.title || MobileEvent.event_type_description(event.event_type)}",
+      title:
+        "[#{alert_source_label(event)}] #{event.title || MobileEvent.event_type_description(event.event_type)}",
       description: build_alert_description(event, device),
       organization_id: event.organization_id,
       mitre_techniques: if(mitre_technique, do: [mitre_technique], else: []),
@@ -434,15 +522,13 @@ defmodule TamanduaServer.Mobile do
 
         Logger.info(
           "[Mobile] Alert created: id=#{alert.id} severity=#{event.severity} " <>
-          "type=#{event.event_type} device=#{event.device_id}"
+            "type=#{event.event_type} device=#{event.device_id}"
         )
 
         {:ok, alert}
 
       {:error, reason} ->
-        Logger.error(
-          "[Mobile] Failed to create alert for event #{event.id}: #{inspect(reason)}"
-        )
+        Logger.error("[Mobile] Failed to create alert for event #{event.id}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -456,7 +542,9 @@ defmodule TamanduaServer.Mobile do
     end
   end
 
-  defp alert_source(%MobileEvent{payload: %{"schema" => "tamandua.app_guard.event/v1"}}), do: "app_guard"
+  defp alert_source(%MobileEvent{payload: %{"schema" => "tamandua.app_guard.event/v1"}}),
+    do: "app_guard"
+
   defp alert_source(_event), do: "mobile_agent"
 
   defp alert_source_label(%MobileEvent{} = event) do
@@ -469,13 +557,14 @@ defmodule TamanduaServer.Mobile do
   # Calculates a risk score (0.0 - 100.0) for a mobile event, factoring in
   # the event severity and the device's compliance posture.
   defp calculate_mobile_risk_score(event, device) do
-    base_score = case event.severity do
-      "critical" -> 80.0
-      "high" -> 60.0
-      "medium" -> 40.0
-      "low" -> 20.0
-      _ -> 10.0
-    end
+    base_score =
+      case event.severity do
+        "critical" -> 80.0
+        "high" -> 60.0
+        "medium" -> 40.0
+        "low" -> 20.0
+        _ -> 10.0
+      end
 
     compliance_modifier = device_compliance_modifier(device)
     min(100.0, base_score + compliance_modifier)
@@ -484,6 +573,7 @@ defmodule TamanduaServer.Mobile do
   # Returns a score modifier (0-20) based on device compliance state.
   # Non-compliant or compromised devices push the risk score higher.
   defp device_compliance_modifier(nil), do: 5.0
+
   defp device_compliance_modifier(%Device{} = device) do
     modifier = 0.0
 
@@ -497,31 +587,60 @@ defmodule TamanduaServer.Mobile do
 
   # Builds a human-readable alert description with device context.
   defp build_alert_description(event, device) do
-    device_info = if device do
-      "on #{device.platform || "unknown"} device #{device.device_id} " <>
-      "(#{device.model || "unknown model"}, OS #{device.os_version || "unknown"})"
-    else
-      "on unknown device #{event.device_id}"
-    end
+    device_info =
+      if device do
+        "on #{device.platform || "unknown"} device #{device.device_id} " <>
+          "(#{device.model || "unknown model"}, OS #{device.os_version || "unknown"})"
+      else
+        "on unknown device #{event.device_id}"
+      end
 
     base = "Mobile security event detected #{device_info}."
 
-    extra = case event.event_type do
-      "jailbreak_detected" -> " The device has been jailbroken, bypassing OS security controls."
-      "root_detected" -> " The device has been rooted, bypassing OS security controls."
-      "suspicious_app_installed" -> " A suspicious application (#{event.app_name || event.app_bundle_id || "unknown"}) was installed."
-      "malware_detected" -> " Malware was detected: #{event.app_name || "unknown"}."
-      "malicious_dns_query" -> " A DNS query to a known malicious domain (#{event.domain || "unknown"}) was detected."
-      "overlay_detected" -> " A screen overlay attack was detected, possibly capturing credentials."
-      "location_spoofing" -> " GPS location spoofing was detected on the device."
-      "man_in_the_middle" -> " A man-in-the-middle attack was detected on the network connection."
-      "browser_tamper_detected" -> " A protected browser or WebView runtime was modified."
-      "automation_detected" -> " Browser or app automation indicators were detected."
-      "network_exfiltration_suspected" -> " Suspicious protected-app network egress was detected."
-      "integrity_snapshot_changed" -> " A protected app or WebView integrity snapshot changed."
-      "behavior_anomaly_detected" -> " Protected-app behavior deviated from the expected interaction profile."
-      _ -> ""
-    end
+    extra =
+      case event.event_type do
+        "jailbreak_detected" ->
+          " The device has been jailbroken, bypassing OS security controls."
+
+        "root_detected" ->
+          " The device has been rooted, bypassing OS security controls."
+
+        "suspicious_app_installed" ->
+          " A suspicious application (#{event.app_name || event.app_bundle_id || "unknown"}) was installed."
+
+        "malware_detected" ->
+          " Malware was detected: #{event.app_name || "unknown"}."
+
+        "malicious_dns_query" ->
+          " A DNS query to a known malicious domain (#{event.domain || "unknown"}) was detected."
+
+        "overlay_detected" ->
+          " A screen overlay attack was detected, possibly capturing credentials."
+
+        "location_spoofing" ->
+          " GPS location spoofing was detected on the device."
+
+        "man_in_the_middle" ->
+          " A man-in-the-middle attack was detected on the network connection."
+
+        "browser_tamper_detected" ->
+          " A protected browser or WebView runtime was modified."
+
+        "automation_detected" ->
+          " Browser or app automation indicators were detected."
+
+        "network_exfiltration_suspected" ->
+          " Suspicious protected-app network egress was detected."
+
+        "integrity_snapshot_changed" ->
+          " A protected app or WebView integrity snapshot changed."
+
+        "behavior_anomaly_detected" ->
+          " Protected-app behavior deviated from the expected interaction profile."
+
+        _ ->
+          ""
+      end
 
     base <> extra
   end
@@ -545,35 +664,38 @@ defmodule TamanduaServer.Mobile do
     }
 
     # Add app context if present
-    evidence = if event.app_bundle_id || event.app_name do
-      Map.put(evidence, "app", %{
-        "bundle_id" => event.app_bundle_id,
-        "name" => event.app_name
-      })
-    else
-      evidence
-    end
+    evidence =
+      if event.app_bundle_id || event.app_name do
+        Map.put(evidence, "app", %{
+          "bundle_id" => event.app_bundle_id,
+          "name" => event.app_name
+        })
+      else
+        evidence
+      end
 
     # Add network context if present
-    evidence = if event.domain || event.remote_address do
-      Map.put(evidence, "network", %{
-        "domain" => event.domain,
-        "remote_address" => event.remote_address,
-        "remote_port" => event.remote_port
-      })
-    else
-      evidence
-    end
+    evidence =
+      if event.domain || event.remote_address do
+        Map.put(evidence, "network", %{
+          "domain" => event.domain,
+          "remote_address" => event.remote_address,
+          "remote_port" => event.remote_port
+        })
+      else
+        evidence
+      end
 
     # Add location context if present
-    evidence = if event.latitude || event.longitude do
-      Map.put(evidence, "location", %{
-        "latitude" => event.latitude,
-        "longitude" => event.longitude
-      })
-    else
-      evidence
-    end
+    evidence =
+      if event.latitude || event.longitude do
+        Map.put(evidence, "location", %{
+          "latitude" => event.latitude,
+          "longitude" => event.longitude
+        })
+      else
+        evidence
+      end
 
     evidence
   end
@@ -640,23 +762,25 @@ defmodule TamanduaServer.Mobile do
     score = 100
 
     # Deduct for compromised devices
-    score = score - (device_stats.compromised * 20)
+    score = score - device_stats.compromised * 20
 
     # Deduct for high-risk devices
-    score = score - (device_stats.high_risk * 5)
+    score = score - device_stats.high_risk * 5
 
     # Deduct for critical events
-    score = score - (event_stats.critical * 10)
+    score = score - event_stats.critical * 10
 
     # Deduct for high events
-    score = score - (event_stats.high * 3)
+    score = score - event_stats.high * 3
 
     # Deduct for stale devices
-    stale_percentage = if device_stats.total > 0 do
-      device_stats.stale_24h / device_stats.total * 100
-    else
-      0
-    end
+    stale_percentage =
+      if device_stats.total > 0 do
+        device_stats.stale_24h / device_stats.total * 100
+      else
+        0
+      end
+
     score = score - trunc(stale_percentage / 5)
 
     max(0, min(100, score))
@@ -665,38 +789,50 @@ defmodule TamanduaServer.Mobile do
   defp identify_risks(device_stats, event_stats) do
     risks = []
 
-    risks = if device_stats.compromised > 0 do
-      [%{
-        level: "critical",
-        type: "compromised_devices",
-        count: device_stats.compromised,
-        message: "#{device_stats.compromised} device(s) are jailbroken or rooted"
-      } | risks]
-    else
-      risks
-    end
+    risks =
+      if device_stats.compromised > 0 do
+        [
+          %{
+            level: "critical",
+            type: "compromised_devices",
+            count: device_stats.compromised,
+            message: "#{device_stats.compromised} device(s) are jailbroken or rooted"
+          }
+          | risks
+        ]
+      else
+        risks
+      end
 
-    risks = if device_stats.high_risk > 0 do
-      [%{
-        level: "high",
-        type: "high_risk_devices",
-        count: device_stats.high_risk,
-        message: "#{device_stats.high_risk} device(s) have high risk scores"
-      } | risks]
-    else
-      risks
-    end
+    risks =
+      if device_stats.high_risk > 0 do
+        [
+          %{
+            level: "high",
+            type: "high_risk_devices",
+            count: device_stats.high_risk,
+            message: "#{device_stats.high_risk} device(s) have high risk scores"
+          }
+          | risks
+        ]
+      else
+        risks
+      end
 
-    risks = if event_stats.critical > 0 do
-      [%{
-        level: "critical",
-        type: "critical_events",
-        count: event_stats.critical,
-        message: "#{event_stats.critical} critical security event(s) in last 24h"
-      } | risks]
-    else
-      risks
-    end
+    risks =
+      if event_stats.critical > 0 do
+        [
+          %{
+            level: "critical",
+            type: "critical_events",
+            count: event_stats.critical,
+            message: "#{event_stats.critical} critical security event(s) in last 24h"
+          }
+          | risks
+        ]
+      else
+        risks
+      end
 
     risks
   end
@@ -704,26 +840,35 @@ defmodule TamanduaServer.Mobile do
   defp generate_recommendations(device_stats, _event_stats) do
     recommendations = []
 
-    recommendations = if device_stats.compromised > 0 do
-      [%{
-        priority: "critical",
-        action: "wipe_compromised",
-        message: "Wipe or retire compromised devices immediately"
-      } | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if device_stats.compromised > 0 do
+        [
+          %{
+            priority: "critical",
+            action: "wipe_compromised",
+            message: "Wipe or retire compromised devices immediately"
+          }
+          | recommendations
+        ]
+      else
+        recommendations
+      end
 
-    recommendations = if device_stats.mdm_enrolled < device_stats.total do
-      unenrolled = device_stats.total - device_stats.mdm_enrolled
-      [%{
-        priority: "medium",
-        action: "enroll_mdm",
-        message: "Enroll #{unenrolled} device(s) in MDM for better management"
-      } | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if device_stats.mdm_enrolled < device_stats.total do
+        unenrolled = device_stats.total - device_stats.mdm_enrolled
+
+        [
+          %{
+            priority: "medium",
+            action: "enroll_mdm",
+            message: "Enroll #{unenrolled} device(s) in MDM for better management"
+          }
+          | recommendations
+        ]
+      else
+        recommendations
+      end
 
     recommendations
   end
