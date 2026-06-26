@@ -31,6 +31,9 @@ defmodule TamanduaServer.Mobile do
     "phishing_sms_detected" => {"T1660", "Phishing", "Initial Access"},
     "phishing_url_blocked" => {"T1660", "Phishing", "Initial Access"},
     "debugger_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
+    "hook_framework_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
+    "emulator_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
+    "simulator_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "tampering_detected" => {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"}
   }
 
@@ -390,7 +393,7 @@ defmodule TamanduaServer.Mobile do
 
     alert_attrs = %{
       severity: event.severity,
-      title: "[Mobile] #{event.title || MobileEvent.event_type_description(event.event_type)}",
+      title: "[#{alert_source_label(event)}] #{event.title || MobileEvent.event_type_description(event.event_type)}",
       description: build_alert_description(event, device),
       organization_id: event.organization_id,
       mitre_techniques: if(mitre_technique, do: [mitre_technique], else: []),
@@ -400,7 +403,7 @@ defmodule TamanduaServer.Mobile do
       status: "new",
       evidence: build_mobile_evidence(event, device),
       detection_metadata: %{
-        "source" => "mobile_agent",
+        "source" => alert_source(event),
         "event_type" => event.event_type,
         "mitre_technique_name" => mitre_name,
         "device_id" => event.device_id,
@@ -445,6 +448,16 @@ defmodule TamanduaServer.Mobile do
     case Map.get(@mobile_mitre_mappings, event_type) do
       {technique, name, tactic} -> {technique, name, tactic}
       nil -> {nil, nil, nil}
+    end
+  end
+
+  defp alert_source(%MobileEvent{payload: %{"schema" => "tamandua.app_guard.event/v1"}}), do: "app_guard"
+  defp alert_source(_event), do: "mobile_agent"
+
+  defp alert_source_label(%MobileEvent{} = event) do
+    case alert_source(event) do
+      "app_guard" -> "App Guard"
+      _ -> "Mobile"
     end
   end
 
@@ -506,7 +519,7 @@ defmodule TamanduaServer.Mobile do
   # Builds the structured evidence map for the alert.
   defp build_mobile_evidence(event, device) do
     evidence = %{
-      "source" => "mobile",
+      "source" => alert_source(event),
       "event_type" => event.event_type,
       "device" => %{
         "device_id" => event.device_id,

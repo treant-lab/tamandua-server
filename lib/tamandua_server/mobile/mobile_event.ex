@@ -32,6 +32,9 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "jailbreak_detected" => "Jailbreak detected",
     "root_detected" => "Root detected",
     "debugger_detected" => "Debugger attached",
+    "hook_framework_detected" => "Hook framework detected",
+    "emulator_detected" => "Emulator detected",
+    "simulator_detected" => "Simulator detected",
     "app_integrity_violation" => "App integrity violation",
     "tampering_detected" => "Tampering detected",
     "suspicious_app_installed" => "Suspicious app installed",
@@ -52,6 +55,7 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "sideload_attempt" => "Sideload attempt",
     "dangerous_permission_granted" => "Dangerous permission granted",
     "overlay_detected" => "Screen overlay detected",
+    "policy_decision" => "App Guard policy decision",
 
     # MDM events
     "mdm_profile_installed" => "MDM profile installed",
