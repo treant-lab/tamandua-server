@@ -1907,6 +1907,7 @@ defmodule TamanduaServerWeb.Router do
     get("/mobile/devices/:id/events", MobileController, :device_events)
     get("/mobile/events", MobileController, :events)
     post("/mobile/events", MobileController, :ingest_events)
+    post("/mobile/app_guard/events", MobileController, :ingest_app_guard_event)
 
     # Mobile Stats & Posture
     get("/mobile/stats", MobileController, :stats)

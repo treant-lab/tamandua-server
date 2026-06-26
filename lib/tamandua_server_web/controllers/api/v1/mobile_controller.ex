@@ -376,28 +376,65 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   """
   def ingest_events(conn, %{"device_id" => device_id, "events" => events_data}) do
     organization_id = get_organization_id(conn)
-    device = Mobile.get_device!(device_id)
 
-    # Update last seen
-    Mobile.touch_device(device)
+    case get_legacy_device_for_org(organization_id, device_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Device not found"})
 
-    # Prepare events with device/org context
-    prepared_events = Enum.map(events_data, fn event ->
-      event
-      |> Map.put("device_id", device_id)
-      |> Map.put("organization_id", organization_id)
-    end)
+      device ->
+        # Update last seen
+        Mobile.touch_device(device)
 
-    results = Mobile.ingest_events(prepared_events)
+        # Prepare events with device/org context
+        prepared_events = Enum.map(events_data, fn event ->
+          event
+          |> Map.put("device_id", device_id)
+          |> Map.put("organization_id", organization_id)
+        end)
 
-    success_count = Enum.count(results, &match?({:ok, _}, &1))
-    error_count = length(results) - success_count
+        results = Mobile.ingest_events(prepared_events)
 
-    json(conn, %{
-      success: error_count == 0,
-      ingested: success_count,
-      errors: error_count
-    })
+        success_count = Enum.count(results, &match?({:ok, _}, &1))
+        error_count = length(results) - success_count
+
+        json(conn, %{
+          success: error_count == 0,
+          ingested: success_count,
+          errors: error_count
+        })
+    end
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/events
+
+  Ingests one normalized App Guard SDK event.
+  """
+  def ingest_app_guard_event(conn, %{"schema" => "tamandua.app_guard.event/v1"} = params) do
+    organization_id = get_organization_id(conn)
+
+    with {:ok, device} <- ensure_app_guard_device(organization_id, params),
+         attrs <- app_guard_event_to_mobile_attrs(params, organization_id, device.id),
+         {:ok, event} <- Mobile.ingest_event(attrs) do
+      conn
+      |> put_status(:created)
+      |> json(%{
+        success: true,
+        data: serialize_event(event)
+      })
+    else
+      {:error, :invalid_device} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid App Guard device payload"})
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def ingest_app_guard_event(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "Unsupported App Guard event schema"})
   end
 
   # ============================================================================
@@ -1071,7 +1108,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Shows a single device from mobile_devices_v2.
   """
   def show_v2(conn, %{"id" => id}) do
-    case Repo.get(DeviceV2, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_device_v2_for_org(organization_id, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Device not found"})
 
@@ -1108,7 +1147,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Updates a device in mobile_devices_v2.
   """
   def update_v2(conn, %{"id" => id} = params) do
-    case Repo.get(DeviceV2, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_device_v2_for_org(organization_id, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Device not found"})
 
@@ -1131,7 +1172,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Deletes a device from mobile_devices_v2.
   """
   def delete_v2(conn, %{"id" => id}) do
-    case Repo.get(DeviceV2, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_device_v2_for_org(organization_id, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Device not found"})
 
@@ -1293,23 +1336,29 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   def create_command(conn, params) do
     organization_id = get_organization_id(conn)
     user = conn.assigns[:current_user]
+    device_id = params["device_id"]
 
-    attrs =
-      params
-      |> Map.put("organization_id", organization_id)
-      |> Map.put("requested_by", user && (user.email || user.id) || "system")
-      |> Map.put("status", "pending")
+    with %DeviceV2{} <- get_device_v2_for_org(organization_id, device_id) do
+      attrs =
+        params
+        |> Map.put("organization_id", organization_id)
+        |> Map.put("requested_by", (user && (user.email || user.id)) || "system")
+        |> Map.put("status", "pending")
 
-    changeset = MDMCommand.changeset(struct(MDMCommand), attrs)
+      changeset = MDMCommand.changeset(struct(MDMCommand), attrs)
 
-    case Repo.insert(changeset) do
-      {:ok, command} ->
-        conn
-        |> put_status(:created)
-        |> json(%{data: serialize_command(command)})
+      case Repo.insert(changeset) do
+        {:ok, command} ->
+          conn
+          |> put_status(:created)
+          |> json(%{data: serialize_command(command)})
 
-      {:error, changeset} ->
-        {:error, changeset}
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    else
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Device not found"})
     end
   end
 
@@ -1319,7 +1368,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Shows a single MDM command.
   """
   def show_command(conn, %{"id" => id}) do
-    case Repo.get(MDMCommand, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_command_for_org(organization_id, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Command not found"})
 
@@ -1334,7 +1385,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Updates the status of an MDM command (e.g. pending -> sent -> completed|failed).
   """
   def update_command_status(conn, %{"id" => id} = params) do
-    case Repo.get(MDMCommand, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_command_for_org(organization_id, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Command not found"})
 
@@ -1603,6 +1656,93 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       raise "Organization ID not found"
   end
 
+  defp get_legacy_device_for_org(_organization_id, nil), do: nil
+  defp get_legacy_device_for_org(_organization_id, ""), do: nil
+
+  defp get_legacy_device_for_org(organization_id, id) do
+    import Ecto.Query
+
+    Device
+    |> Device.by_organization(organization_id)
+    |> where([d], d.id == ^id)
+    |> Repo.one()
+  end
+
+  defp get_legacy_device_by_external_id(organization_id, device_id) do
+    Mobile.get_device_by_device_id(organization_id, device_id)
+  end
+
+  defp ensure_app_guard_device(organization_id, %{
+         "device" => %{"device_id" => external_device_id} = device_attrs,
+         "platform" => platform
+       })
+       when is_binary(external_device_id) and external_device_id != "" do
+    case get_legacy_device_by_external_id(organization_id, external_device_id) do
+      nil ->
+        attrs = %{
+          "organization_id" => organization_id,
+          "device_id" => external_device_id,
+          "platform" => platform,
+          "model" => device_attrs["model"],
+          "manufacturer" => device_attrs["manufacturer"],
+          "os_version" => device_attrs["os_version"],
+          "agent_version" => "app_guard",
+          "mdm_enrolled" => Map.get(device_attrs, "managed", false),
+          "mdm_provider" => Map.get(device_attrs, "mdm_provider", "none")
+        }
+
+        Mobile.register_device(attrs)
+
+      device ->
+        Mobile.touch_device(device)
+    end
+  end
+
+  defp ensure_app_guard_device(_organization_id, _params), do: {:error, :invalid_device}
+
+  defp app_guard_event_to_mobile_attrs(params, organization_id, device_id) do
+    app = Map.get(params, "app", %{})
+    risk = Map.get(params, "risk", %{})
+
+    %{
+      "device_id" => device_id,
+      "organization_id" => organization_id,
+      "event_type" => params["event_type"],
+      "severity" => params["severity"],
+      "timestamp" => normalize_app_guard_timestamp(params["timestamp"]),
+      "title" => "App Guard #{params["event_type"]}",
+      "description" => app_guard_description(params),
+      "payload" => params,
+      "app_bundle_id" => app["package_or_bundle_id"],
+      "app_name" => app["display_name"],
+      "rule_name" => "app_guard:#{params["event_type"]}",
+      "rule_id" => params["event_id"],
+      "processed" => true,
+      "alerted" => false,
+      "domain" => get_in(params, ["evidence", "domain"]),
+      "remote_address" => get_in(params, ["evidence", "remote_address"]),
+      "remote_port" => get_in(params, ["evidence", "remote_port"]),
+      "latitude" => get_in(params, ["evidence", "latitude"]),
+      "longitude" => get_in(params, ["evidence", "longitude"])
+    }
+  end
+
+  defp normalize_app_guard_timestamp(nil), do: NaiveDateTime.utc_now()
+
+  defp normalize_app_guard_timestamp(timestamp) when is_binary(timestamp) do
+    timestamp
+    |> String.trim()
+    |> String.replace_suffix("Z", "")
+  end
+
+  defp normalize_app_guard_timestamp(timestamp), do: timestamp
+
+  defp app_guard_description(params) do
+    risk = Map.get(params, "risk", %{})
+    reasons = risk |> Map.get("reasons", []) |> Enum.join(", ")
+    "App Guard event for #{get_in(params, ["app", "package_or_bundle_id"]) || "unknown app"}; decision=#{risk["decision"]}; score=#{risk["score"]}; reasons=#{reasons}"
+  end
+
   defp parse_int(nil, default), do: default
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
@@ -1743,6 +1883,30 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   # ---------------------------------------------------------------------------
   # V2 filter helpers
   # ---------------------------------------------------------------------------
+
+  defp get_device_v2_for_org(_organization_id, nil), do: nil
+  defp get_device_v2_for_org(_organization_id, ""), do: nil
+
+  defp get_device_v2_for_org(organization_id, id) do
+    import Ecto.Query
+
+    DeviceV2
+    |> DeviceV2.by_organization(organization_id)
+    |> where([d], d.id == ^id)
+    |> Repo.one()
+  end
+
+  defp get_command_for_org(_organization_id, nil), do: nil
+  defp get_command_for_org(_organization_id, ""), do: nil
+
+  defp get_command_for_org(organization_id, id) do
+    import Ecto.Query
+
+    MDMCommand
+    |> MDMCommand.by_organization(organization_id)
+    |> where([c], c.id == ^id)
+    |> Repo.one()
+  end
 
   defp maybe_filter_v2_platform(query, nil), do: query
   defp maybe_filter_v2_platform(query, ""), do: query

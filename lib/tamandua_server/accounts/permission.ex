@@ -273,6 +273,33 @@ defmodule TamanduaServer.Accounts.Permission do
       {:ai_query, "Use AI assistant", :ai},
       {:ai_investigate, "Use AI for investigations", :ai},
       {:ai_configure, "Configure AI settings", :ai}
+    ],
+
+    # App Guard
+    app_guard: [
+      {:app_guard_apps_read, "View protected mobile apps", :app_guard},
+      {:app_guard_apps_create, "Register protected mobile apps", :app_guard},
+      {:app_guard_apps_update, "Update protected mobile app settings", :app_guard},
+      {:app_guard_apps_delete, "Delete protected mobile apps", :app_guard},
+      {:app_guard_builds_read, "View App Guard build manifests", :app_guard},
+      {:app_guard_builds_create, "Submit App Guard build manifests", :app_guard},
+      {:app_guard_events_read, "View App Guard runtime events", :app_guard},
+      {:app_guard_events_ingest, "Ingest App Guard runtime events", :app_guard},
+      {:app_guard_policy_read, "View App Guard policies", :app_guard},
+      {:app_guard_policy_update, "Update App Guard policies", :app_guard}
+    ],
+
+    # Research Programs / Community Validation
+    research: [
+      {:research_programs_read, "View research and disclosure programs", :research},
+      {:research_programs_create, "Create research and disclosure programs", :research},
+      {:research_programs_update, "Update research and disclosure programs", :research},
+      {:research_programs_delete, "Delete research and disclosure programs", :research},
+      {:research_submissions_read, "View research submissions", :research},
+      {:research_submissions_create, "Create research submissions", :research},
+      {:research_submissions_update, "Update research submissions", :research},
+      {:research_submissions_validate, "Validate research submissions", :research},
+      {:research_rewards_manage, "Manage research rewards", :research}
     ]
   }
 

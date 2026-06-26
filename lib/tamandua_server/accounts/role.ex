@@ -225,7 +225,10 @@ defmodule TamanduaServer.Accounts.Role do
       # Reports
       :reports_read, :reports_create,
       # Dashboard
-      :dashboard_read
+      :dashboard_read,
+      # App Guard / research review
+      :app_guard_apps_read, :app_guard_builds_read, :app_guard_events_read,
+      :research_programs_read, :research_submissions_read, :research_submissions_validate
     ]
   end
 
@@ -237,6 +240,9 @@ defmodule TamanduaServer.Accounts.Role do
       :detection_read,
       :compliance_read,
       :reports_read,
+      :app_guard_apps_read,
+      :app_guard_events_read,
+      :research_programs_read,
       :dashboard_read
     ]
   end
@@ -289,7 +295,14 @@ defmodule TamanduaServer.Accounts.Role do
       # Dashboard management
       :dashboard_create, :dashboard_share,
       # Playbooks
-      :playbooks_read, :playbooks_execute, :playbooks_approve
+      :playbooks_read, :playbooks_execute, :playbooks_approve,
+      # App Guard / research program ownership
+      :app_guard_apps_read, :app_guard_apps_create, :app_guard_apps_update,
+      :app_guard_builds_read, :app_guard_events_read,
+      :app_guard_policy_read, :app_guard_policy_update,
+      :research_programs_read, :research_programs_create, :research_programs_update,
+      :research_submissions_read, :research_submissions_validate,
+      :research_rewards_manage
     ]
   end
 
@@ -302,6 +315,8 @@ defmodule TamanduaServer.Accounts.Role do
       :detection_read,
       :threat_intel_read,
       :reports_read,
+      :app_guard_events_ingest,
+      :research_submissions_create,
       # System API access
       :system_api_keys
     ]
