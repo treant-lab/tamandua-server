@@ -83,8 +83,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets a specific mobile device.
   """
   def show(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
-    json(conn, %{data: serialize_device_detail(device)})
+    with_legacy_device_for_org(conn, id, fn device ->
+      json(conn, %{data: serialize_device_detail(device)})
+    end)
   end
 
   @doc """
@@ -126,15 +127,15 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Updates a mobile device.
   """
   def update(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn device ->
+      case Mobile.update_device(device, params) do
+        {:ok, updated_device} ->
+          json(conn, %{data: serialize_device(updated_device)})
 
-    case Mobile.update_device(device, params) do
-      {:ok, updated_device} ->
-        json(conn, %{data: serialize_device(updated_device)})
-
-      {:error, changeset} ->
-        {:error, changeset}
-    end
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end)
   end
 
   @doc """
@@ -143,15 +144,15 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Removes a mobile device from management.
   """
   def delete(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn device ->
+      case Mobile.delete_device(device) do
+        {:ok, _} ->
+          send_resp(conn, :no_content, "")
 
-    case Mobile.delete_device(device) do
-      {:ok, _} ->
-        send_resp(conn, :no_content, "")
-
-      {:error, changeset} ->
-        {:error, changeset}
-    end
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end)
   end
 
   @doc """
@@ -160,27 +161,27 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets the security posture for a specific device.
   """
   def device_posture(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn device ->
+      posture = %{
+        device_id: device.id,
+        platform: device.platform,
+        risk_score: device.risk_score,
+        risk_factors: device.risk_factors,
+        security_checks: %{
+          jailbroken_or_rooted: device.is_jailbroken or device.is_rooted,
+          passcode_enabled: device.passcode_enabled,
+          encryption_enabled: device.encryption_enabled,
+          biometric_enabled: device.biometric_enabled,
+          developer_mode: device.developer_mode_enabled,
+          usb_debugging: device.usb_debugging_enabled,
+          mdm_enrolled: device.mdm_enrolled,
+          mdm_compliant: device.mdm_compliance_status == "compliant"
+        },
+        last_assessment: device.updated_at
+      }
 
-    posture = %{
-      device_id: device.id,
-      platform: device.platform,
-      risk_score: device.risk_score,
-      risk_factors: device.risk_factors,
-      security_checks: %{
-        jailbroken_or_rooted: device.is_jailbroken or device.is_rooted,
-        passcode_enabled: device.passcode_enabled,
-        encryption_enabled: device.encryption_enabled,
-        biometric_enabled: device.biometric_enabled,
-        developer_mode: device.developer_mode_enabled,
-        usb_debugging: device.usb_debugging_enabled,
-        mdm_enrolled: device.mdm_enrolled,
-        mdm_compliant: device.mdm_compliance_status == "compliant"
-      },
-      last_assessment: device.updated_at
-    }
-
-    json(conn, %{data: posture})
+      json(conn, %{data: posture})
+    end)
   end
 
   @doc """
@@ -189,20 +190,20 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Updates security posture from agent telemetry.
   """
   def update_posture(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn device ->
+      case Mobile.update_device_posture(device, params) do
+        {:ok, updated_device} ->
+          json(conn, %{
+            data: %{
+              risk_score: updated_device.risk_score,
+              risk_factors: updated_device.risk_factors
+            }
+          })
 
-    case Mobile.update_device_posture(device, params) do
-      {:ok, updated_device} ->
-        json(conn, %{
-          data: %{
-            risk_score: updated_device.risk_score,
-            risk_factors: updated_device.risk_factors
-          }
-        })
-
-      {:error, changeset} ->
-        {:error, changeset}
-    end
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end)
   end
 
   # ============================================================================
@@ -215,19 +216,19 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Lists installed apps on a device.
   """
   def device_apps(conn, %{"id" => id} = params) do
-    _device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn _device ->
+      opts = [
+        limit: parse_int(params["limit"], 500),
+        order_by: :app_name
+      ]
 
-    opts = [
-      limit: parse_int(params["limit"], 500),
-      order_by: :app_name
-    ]
+      apps = Mobile.list_device_apps(id, opts)
 
-    apps = Mobile.list_device_apps(id, opts)
-
-    json(conn, %{
-      data: Enum.map(apps, &serialize_app/1),
-      meta: %{total: length(apps)}
-    })
+      json(conn, %{
+        data: Enum.map(apps, &serialize_app/1),
+        meta: %{total: length(apps)}
+      })
+    end)
   end
 
   @doc """
@@ -248,25 +249,25 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   """
   def sync_apps(conn, %{"id" => id, "apps" => apps_data}) do
-    _device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn _device ->
+      case Mobile.sync_device_apps(id, apps_data) do
+        {:ok, {inserted, updated, deleted}} ->
+          json(conn, %{
+            success: true,
+            message: "App inventory synced",
+            stats: %{
+              inserted: inserted,
+              updated: updated,
+              deleted: deleted
+            }
+          })
 
-    case Mobile.sync_device_apps(id, apps_data) do
-      {:ok, {inserted, updated, deleted}} ->
-        json(conn, %{
-          success: true,
-          message: "App inventory synced",
-          stats: %{
-            inserted: inserted,
-            updated: updated,
-            deleted: deleted
-          }
-        })
-
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{success: false, error: inspect(reason)})
-    end
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{success: false, error: inspect(reason)})
+      end
+    end)
   end
 
   @doc """
@@ -317,19 +318,19 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Lists security events for a device.
   """
   def device_events(conn, %{"id" => id} = params) do
-    _device = Mobile.get_device!(id)
+    with_legacy_device_for_org(conn, id, fn _device ->
+      opts = [
+        limit: parse_int(params["limit"], 100),
+        offset: parse_int(params["offset"], 0),
+        severity: params["severity"]
+      ]
 
-    opts = [
-      limit: parse_int(params["limit"], 100),
-      offset: parse_int(params["offset"], 0),
-      severity: params["severity"]
-    ]
+      events = Mobile.list_device_events(id, opts)
 
-    events = Mobile.list_device_events(id, opts)
-
-    json(conn, %{
-      data: Enum.map(events, &serialize_event/1)
-    })
+      json(conn, %{
+        data: Enum.map(events, &serialize_event/1)
+      })
+    end)
   end
 
   @doc """
@@ -485,7 +486,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Sends remote lock command to device via the configured MDM provider.
   """
   def lock_device(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -521,7 +522,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Supports wipe_type: "full" or "enterprise_only" (default).
   """
   def wipe_device(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -560,7 +561,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Requests device location. Returns last known location from our records.
   """
   def locate_device(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
 
     location = device.last_location || %{
       note: "Location not available. Device must have location services enabled."
@@ -579,7 +580,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Sends a message to the device via MDM lock screen message.
   """
   def send_message(conn, %{"id" => id, "message" => message} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -611,7 +612,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Rings the device to help locate it.
   """
   def ring_device(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -641,7 +642,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Pushes a compliance/configuration policy to the device.
   """
   def push_policy(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -669,7 +670,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Removes an application from the device.
   """
   def remove_app(conn, %{"id" => id, "app_id" => app_id} = _params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -697,7 +698,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Enables or pushes VPN configuration to the device.
   """
   def enable_vpn(conn, %{"id" => id} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -725,7 +726,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Validates and returns device compliance status from the MDM provider.
   """
   def device_compliance(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -1428,6 +1429,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Runs compliance checks on a device via DeviceRegistry.
   """
   def compliance_check(conn, %{"id" => id}) do
+    _device = get_legacy_device_for_org!(conn, id)
+
     case DeviceRegistry.check_compliance(id) do
       {:ok, report} ->
         json(conn, %{data: report})
@@ -1443,6 +1446,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets cached compliance report for a device.
   """
   def compliance_report(conn, %{"id" => id}) do
+    _device = get_legacy_device_for_org!(conn, id)
+
     case DeviceRegistry.get_compliance_report(id) do
       {:ok, report} ->
         json(conn, %{data: report})
@@ -1458,7 +1463,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Runs a full threat detection scan on a device.
   """
   def threat_scan(conn, %{"id" => id}) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     report = ThreatDetection.full_scan(device)
 
     json(conn, %{data: report})
@@ -1470,7 +1475,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets the full enriched app inventory for a device.
   """
   def app_inventory(conn, %{"id" => id}) do
-    _device = Mobile.get_device!(id)
+    _device = get_legacy_device_for_org!(conn, id)
 
     case AppInventory.get_inventory(id) do
       {:ok, inventory} ->
@@ -1484,7 +1489,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets the app risk score for a device.
   """
   def app_risk(conn, %{"id" => id}) do
-    _device = Mobile.get_device!(id)
+    _device = get_legacy_device_for_org!(conn, id)
 
     case AppInventory.get_risk_score(id) do
       {:ok, risk} ->
@@ -1499,7 +1504,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Supported commands: lock, wipe, locate.
   """
   def send_command(conn, %{"id" => id, "command" => command} = params) do
-    device = Mobile.get_device!(id)
+    device = get_legacy_device_for_org!(conn, id)
     provider = MDMProvider.provider_for_device(device)
     mdm_device_id = device.mdm_device_id || device.device_id
 
@@ -1581,7 +1586,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets device statistics from the ETS-backed registry.
   """
   def registry_stats(conn, _params) do
-    stats = DeviceRegistry.get_stats()
+    organization_id = get_organization_id(conn)
+    devices = DeviceRegistry.list_devices(%{"organization_id" => organization_id})
+    stats = registry_stats_for_devices(devices)
+
     json(conn, %{data: stats})
   end
 
@@ -1591,14 +1599,26 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Runs compliance checks on all active devices.
   """
   def bulk_compliance_check(conn, _params) do
-    case DeviceRegistry.bulk_compliance_check() do
-      {:ok, results} ->
-        json(conn, %{
-          success: true,
-          data: results,
-          message: "Bulk compliance check completed: #{results.checked} checked, #{results.non_compliant} non-compliant"
-        })
-    end
+    organization_id = get_organization_id(conn)
+
+    results =
+      %{"organization_id" => organization_id, "status" => "active"}
+      |> DeviceRegistry.list_devices()
+      |> Enum.map(fn device -> {device.id, DeviceRegistry.check_compliance(device.id)} end)
+
+    checked = length(results)
+
+    non_compliant =
+      Enum.count(results, fn
+        {_id, {:ok, %{overall_compliant: false}}} -> true
+        _ -> false
+      end)
+
+    json(conn, %{
+      success: true,
+      data: %{checked: checked, non_compliant: non_compliant},
+      message: "Bulk compliance check completed: #{checked} checked, #{non_compliant} non-compliant"
+    })
   end
 
   @doc """
@@ -1607,6 +1627,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Enrolls a device with an MDM provider.
   """
   def enroll_device(conn, %{"id" => id} = params) do
+    _device = get_legacy_device_for_org!(conn, id)
+
     case DeviceRegistry.enroll_device(id, params) do
       {:ok, device} ->
         json(conn, %{
@@ -1629,6 +1651,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Deactivates (retires) a device.
   """
   def deactivate(conn, %{"id" => id}) do
+    _device = get_legacy_device_for_org!(conn, id)
+
     case DeviceRegistry.deactivate_device(id) do
       {:ok, device} ->
         json(conn, %{
@@ -1668,6 +1692,27 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     |> Repo.one()
   end
 
+  defp get_legacy_device_for_org!(conn, id) do
+    organization_id = get_organization_id(conn)
+
+    case get_legacy_device_for_org(organization_id, id) do
+      nil -> raise Ecto.NoResultsError, queryable: Device
+      device -> device
+    end
+  end
+
+  defp with_legacy_device_for_org(conn, id, callback) when is_function(callback, 1) do
+    organization_id = get_organization_id(conn)
+
+    case get_legacy_device_for_org(organization_id, id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "Device not found"})
+
+      device ->
+        callback.(device)
+    end
+  end
+
   defp get_legacy_device_by_external_id(organization_id, device_id) do
     Mobile.get_device_by_device_id(organization_id, device_id)
   end
@@ -1682,7 +1727,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         attrs = %{
           "organization_id" => organization_id,
           "device_id" => external_device_id,
-          "platform" => platform,
+          "platform" => normalize_app_guard_platform(platform),
           "model" => device_attrs["model"],
           "manufacturer" => device_attrs["manufacturer"],
           "os_version" => device_attrs["os_version"],
@@ -1702,7 +1747,6 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
   defp app_guard_event_to_mobile_attrs(params, organization_id, device_id) do
     app = Map.get(params, "app", %{})
-    risk = Map.get(params, "risk", %{})
 
     %{
       "device_id" => device_id,
@@ -1730,17 +1774,46 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   defp normalize_app_guard_timestamp(nil), do: NaiveDateTime.utc_now()
 
   defp normalize_app_guard_timestamp(timestamp) when is_binary(timestamp) do
-    timestamp
-    |> String.trim()
-    |> String.replace_suffix("Z", "")
+    trimmed = String.trim(timestamp)
+
+    case DateTime.from_iso8601(trimmed) do
+      {:ok, datetime, _offset} ->
+        DateTime.to_naive(datetime)
+
+      {:error, _reason} ->
+        case NaiveDateTime.from_iso8601(String.replace_suffix(trimmed, "Z", "")) do
+          {:ok, naive} -> naive
+          {:error, _reason} -> NaiveDateTime.utc_now()
+        end
+    end
   end
 
   defp normalize_app_guard_timestamp(timestamp), do: timestamp
 
+  defp normalize_app_guard_platform(platform) when is_binary(platform) do
+    case platform |> String.trim() |> String.downcase() do
+      "ios" -> "ios"
+      "iphoneos" -> "ios"
+      "ipados" -> "ios"
+      "android" -> "android"
+      _ -> platform
+    end
+  end
+
+  defp normalize_app_guard_platform(platform), do: platform
+
   defp app_guard_description(params) do
     risk = Map.get(params, "risk", %{})
-    reasons = risk |> Map.get("reasons", []) |> Enum.join(", ")
-    "App Guard event for #{get_in(params, ["app", "package_or_bundle_id"]) || "unknown app"}; decision=#{risk["decision"]}; score=#{risk["score"]}; reasons=#{reasons}"
+
+    reasons =
+      case Map.get(risk, "reasons", []) do
+        values when is_list(values) -> Enum.join(values, ", ")
+        value when is_binary(value) -> value
+        _ -> ""
+      end
+
+    app_id = get_in(params, ["app", "package_or_bundle_id"]) || "unknown app"
+    "App Guard event for #{app_id}; decision=#{risk["decision"]}; score=#{risk["score"]}; reasons=#{reasons}"
   end
 
   defp parse_int(nil, default), do: default
@@ -1879,6 +1952,30 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   defp format_mdm_error({:token_error, status}), do: "Failed to authenticate with MDM provider (HTTP #{status}). Check credentials."
   defp format_mdm_error({:request_failed, reason}), do: "Could not reach MDM provider: #{inspect(reason)}"
   defp format_mdm_error(other), do: "MDM operation failed: #{inspect(other)}"
+
+  defp registry_stats_for_devices(devices) do
+    now = NaiveDateTime.utc_now()
+    stale_threshold = 24 * 3600
+
+    %{
+      total: length(devices),
+      active: Enum.count(devices, &(&1.status == "active")),
+      ios: Enum.count(devices, &(&1.platform == "ios")),
+      android: Enum.count(devices, &(&1.platform == "android")),
+      compliant: Enum.count(devices, &(&1.compliance_status == "compliant")),
+      non_compliant: Enum.count(devices, &(&1.compliance_status == "non_compliant")),
+      mdm_enrolled: Enum.count(devices, &(&1.mdm_enrolled == true)),
+      high_risk: Enum.count(devices, &((&1.risk_score || 0) >= 50)),
+      stale: Enum.count(devices, &stale_registry_device?(&1, now, stale_threshold)),
+      updated_at: DateTime.utc_now()
+    }
+  end
+
+  defp stale_registry_device?(%{last_seen_at: nil}, _now, _threshold), do: true
+
+  defp stale_registry_device?(%{last_seen_at: last_seen}, now, threshold) do
+    NaiveDateTime.diff(now, last_seen) >= threshold
+  end
 
   # ---------------------------------------------------------------------------
   # V2 filter helpers

@@ -15,6 +15,7 @@ defmodule TamanduaServer.Integrations.MCPServer do
   """
 
   use GenServer
+  import Ecto.Query
   require Logger
 
   @read_timeout 15_000
@@ -23,6 +24,8 @@ defmodule TamanduaServer.Integrations.MCPServer do
   alias TamanduaServer.Agents.Registry
   alias TamanduaServer.AISecurity.MCPGovernance
   alias TamanduaServer.Authorization.RBAC
+  alias TamanduaServer.Repo
+  alias TamanduaServer.Telemetry.Event
 
   # Configuration
   @rate_limit_window_ms 60_000
@@ -471,7 +474,8 @@ defmodule TamanduaServer.Integrations.MCPServer do
       "search_events" => %{
         description: "Search telemetry events across agents",
         input_schema: %{properties: %{event_type: %{type: :string}, query: %{type: :string},
-                       agent_id: %{type: :string}, limit: %{type: :integer}}, required: []},
+                       agent_id: %{type: :string}, severity: %{type: :string},
+                       time_range: %{type: :string}, limit: %{type: :integer}}, required: []},
         required_permissions: [:read],
         handler: &tool_search_events/2
       },
@@ -846,7 +850,42 @@ defmodule TamanduaServer.Integrations.MCPServer do
     end
   end
 
-  defp tool_search_events(_params, _client), do: {:ok, %{events: [], total: 0}}
+  defp tool_search_events(params, client) do
+    with {:ok, organization_id} <- require_organization_scope(client) do
+      do_search_events(params, organization_id)
+    end
+  end
+
+  defp do_search_events(params, organization_id) do
+    limit = params |> Map.get("limit", 50) |> parse_int() |> clamp(1, 200)
+    query_text = params["query"] || params[:query]
+    event_type = params["event_type"] || params[:event_type]
+    agent_id = params["agent_id"] || params[:agent_id]
+    severity = params["severity"] || params[:severity]
+    since = mcp_time_range_start(params["time_range"] || params[:time_range] || "24h")
+
+    events =
+      Event
+      |> where([e], e.timestamp >= ^since)
+      |> maybe_filter_org(organization_id)
+      |> maybe_filter_event_type(event_type)
+      |> maybe_filter_agent_id(agent_id)
+      |> maybe_filter_severity(severity)
+      |> maybe_filter_event_query(query_text)
+      |> order_by([e], desc: e.timestamp)
+      |> limit(^limit)
+      |> Repo.all()
+      |> Enum.map(&mcp_event_to_map/1)
+
+    {:ok,
+     %{
+       events: events,
+       total: length(events),
+       limit: limit,
+       time_range: params["time_range"] || params[:time_range] || "24h",
+       organization_scoped: not is_nil(organization_id)
+     }}
+  end
 
   defp tool_get_timeline(params, _client) do
     {:ok, %{entity_type: params["entity_type"], entity_id: params["entity_id"],
@@ -1357,6 +1396,86 @@ defmodule TamanduaServer.Integrations.MCPServer do
       _ -> nil
     end
   end
+
+  defp clamp(nil, min, _max), do: min
+  defp clamp(value, min, _max) when value < min, do: min
+  defp clamp(value, _min, max) when value > max, do: max
+  defp clamp(value, _min, _max), do: value
+
+  defp mcp_time_range_start(nil), do: mcp_time_range_start("24h")
+  defp mcp_time_range_start("all"), do: ~U[1970-01-01 00:00:00Z]
+
+  defp mcp_time_range_start(range) when is_binary(range) do
+    case Regex.run(~r/^(\d+)([mhd])$/, String.trim(range)) do
+      [_, amount, unit] ->
+        amount = String.to_integer(amount)
+
+        seconds =
+          case unit do
+            "m" -> amount * 60
+            "h" -> amount * 3_600
+            "d" -> amount * 86_400
+          end
+
+        DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+      _ ->
+        DateTime.add(DateTime.utc_now(), -86_400, :second)
+    end
+  end
+
+  defp mcp_time_range_start(_range), do: mcp_time_range_start("24h")
+
+  defp maybe_filter_org(query, nil), do: query
+  defp maybe_filter_org(query, ""), do: query
+  defp maybe_filter_org(query, organization_id), do: where(query, [e], e.organization_id == ^organization_id)
+
+  defp maybe_filter_event_type(query, nil), do: query
+  defp maybe_filter_event_type(query, ""), do: query
+  defp maybe_filter_event_type(query, event_type), do: where(query, [e], e.event_type == ^event_type)
+
+  defp maybe_filter_agent_id(query, nil), do: query
+  defp maybe_filter_agent_id(query, ""), do: query
+  defp maybe_filter_agent_id(query, agent_id), do: where(query, [e], e.agent_id == ^agent_id)
+
+  defp maybe_filter_severity(query, nil), do: query
+  defp maybe_filter_severity(query, ""), do: query
+  defp maybe_filter_severity(query, severity), do: where(query, [e], e.severity == ^severity)
+
+  defp maybe_filter_event_query(query, nil), do: query
+  defp maybe_filter_event_query(query, ""), do: query
+
+  defp maybe_filter_event_query(query, text) when is_binary(text) do
+    pattern = "%#{String.replace(text, "%", "\\%")}%"
+
+    where(query, [e],
+      ilike(e.event_type, ^pattern) or
+        ilike(e.severity, ^pattern) or
+        fragment("?::text ILIKE ?", e.payload, ^pattern) or
+        fragment("?::text ILIKE ?", e.enrichment, ^pattern)
+    )
+  end
+
+  defp maybe_filter_event_query(query, _text), do: query
+
+  defp mcp_event_to_map(%Event{} = event) do
+    %{
+      id: event.id,
+      event_type: event.event_type,
+      timestamp: format_ts(event.timestamp),
+      severity: event.severity,
+      agent_id: event.agent_id,
+      organization_id: event.organization_id,
+      sha256: event_sha256(event.sha256),
+      payload: event.payload || %{},
+      enrichment: event.enrichment || %{},
+      detections: event.detections || []
+    }
+  end
+
+  defp event_sha256(nil), do: nil
+  defp event_sha256(value) when is_binary(value), do: Base.encode16(value, case: :lower)
+  defp event_sha256(value), do: value
 
   defp generate_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   defp extract_bearer(nil), do: nil

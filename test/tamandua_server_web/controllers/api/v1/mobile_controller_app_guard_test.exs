@@ -88,9 +88,9 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
         "display_name" => "Example Wallet"
       },
       "risk" => %{
-        "decision" => "monitor",
+        "decision" => "observe",
         "score" => 72,
-        "reasons" => ["emulator"]
+        "reasons" => ["emulator_detected"]
       },
       "evidence" => %{
         "domain" => "risk.example",
