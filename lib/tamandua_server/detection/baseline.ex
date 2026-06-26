@@ -84,8 +84,7 @@ defmodule TamanduaServer.Detection.Baseline do
 
   # Maturity gate: minimum total events processed during learning before
   # the baseline is allowed to vote at full confidence. Without this gate
-  # a baseline trained on 1-2 events can suppress real alerts. See
-  # KNOWN_PRODUCTION_GAPS.md item 23.
+  # a baseline trained on 1-2 events can suppress real alerts.
   @min_events_for_maturity 100
 
   # Score cap applied when the baseline is "immature" (events_processed

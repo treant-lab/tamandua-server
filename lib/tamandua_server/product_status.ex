@@ -97,10 +97,10 @@ defmodule TamanduaServer.ProductStatus do
   end
 
   @doc """
-  Public link to the gaps document (rendered in the banner).
+  Public link to the validation scope document rendered in the banner.
   """
   @spec gaps_url() :: String.t()
   def gaps_url do
-    "https://github.com/treant-lab/tamandua-community/blob/main/docs/KNOWN_PRODUCTION_GAPS.md"
+    "https://github.com/treant-lab/tamandua-community/blob/main/docs/community/PUBLIC_ALPHA_PRODUCT_VALIDATION_CHECKLIST.md"
   end
 end
