@@ -42,13 +42,9 @@ COPY lib ./lib/
 
 RUN mix compile
 
-# Build the Phoenix/Tailwind assets used by non-Inertia pages such as login and
-# registration, then build the React/Inertia frontend with Vite. Running both
-# pipelines keeps /assets/app.css and /assets/app.js valid while still publishing
-# the hashed React shell assets consumed by the app console.
+# Build Phoenix/Tailwind assets and the React/Inertia frontend. The
+# assets.deploy alias already runs the Vite build and phx.digest.
 RUN mix assets.deploy
-RUN sh -lc "cd assets && npx vite build"
-RUN mix phx.digest
 
 EXPOSE 4000
 
