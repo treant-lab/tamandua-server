@@ -127,6 +127,7 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
   def notifications(conn, params) do
     # Parse email notification preferences
     email_notifications = params["emailNotifications"] || %{}
+    current_settings = Settings.get(:notifications)
 
     updates = %{
       critical_alerts: Map.get(email_notifications, "Critical alerts", true),
@@ -153,6 +154,25 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
       updates
     end
 
+    updates =
+      case push_token_update(params, current_settings[:push_tokens] || []) do
+        :noop -> updates
+        {:ok, push_tokens} -> Map.put(updates, :push_tokens, push_tokens)
+        {:error, reason} -> {:error, reason}
+      end
+
+    case updates do
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{success: false, error: reason})
+
+      updates ->
+        persist_notification_settings(conn, updates)
+    end
+  end
+
+  defp persist_notification_settings(conn, updates) do
     case Settings.update(:notifications, updates) do
       {:ok, updated} ->
         Logger.info("Notification settings updated")
@@ -168,6 +188,45 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
         |> json(%{success: false, error: "Failed to save settings: #{inspect(reason)}"})
     end
   end
+
+  defp push_token_update(%{"push_token" => token} = params, existing_tokens)
+       when is_binary(token) do
+    trimmed = String.trim(token)
+
+    cond do
+      trimmed == "" ->
+        {:error, "push_token cannot be empty"}
+
+      params["enabled"] == false ->
+        {:ok, Enum.reject(existing_tokens, &(push_token_value(&1) == trimmed))}
+
+      true ->
+        device_info = params["device_info"] || %{}
+
+        entry = %{
+          token: trimmed,
+          device_info: device_info,
+          platform: device_info["platform"] || device_info[:platform],
+          registered_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+
+        tokens =
+          existing_tokens
+          |> Enum.reject(&(push_token_value(&1) == trimmed))
+          |> List.insert_at(0, entry)
+
+        {:ok, tokens}
+    end
+  end
+
+  defp push_token_update(%{"push_token" => token}, _existing_tokens)
+       when not is_binary(token),
+       do: {:error, "push_token must be a string"}
+
+  defp push_token_update(_params, _existing_tokens), do: :noop
+
+  defp push_token_value(%{} = entry), do: Map.get(entry, :token) || Map.get(entry, "token")
+  defp push_token_value(_entry), do: nil
 
   @doc """
   Updates integration settings.
@@ -379,6 +438,8 @@ defmodule TamanduaServerWeb.API.V1.SettingsController do
       slackWebhook: if(settings[:slack_webhook], do: "***configured***", else: nil),
       webhookEnabled: settings[:webhook_enabled],
       webhookUrl: if(settings[:webhook_url], do: "***configured***", else: nil),
+      pushEnabled: length(settings[:push_tokens] || []) > 0,
+      pushTokenCount: length(settings[:push_tokens] || []),
       criticalAlerts: settings[:critical_alerts],
       highAlerts: settings[:high_alerts],
       mediumAlerts: settings[:medium_alerts]

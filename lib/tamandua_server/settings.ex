@@ -39,6 +39,7 @@ defmodule TamanduaServer.Settings do
       slack_webhook: nil,
       webhook_enabled: false,
       webhook_url: nil,
+      push_tokens: [],
       critical_alerts: true,
       high_alerts: false,
       medium_alerts: false,
@@ -253,6 +254,7 @@ defmodule TamanduaServer.Settings do
       slack_webhook: Keyword.get(notifications_config, :slack_webhook),
       webhook_enabled: Keyword.get(notifications_config, :webhook_enabled, false),
       webhook_url: Keyword.get(notifications_config, :webhook_url),
+      push_tokens: Keyword.get(notifications_config, :push_tokens, []),
       critical_alerts: Keyword.get(notifications_config, :critical_alerts, true),
       high_alerts: Keyword.get(notifications_config, :high_alerts, false),
       medium_alerts: Keyword.get(notifications_config, :medium_alerts, false)
@@ -288,6 +290,7 @@ defmodule TamanduaServer.Settings do
           slack_webhook: settings[:slack_webhook],
           webhook_enabled: settings[:webhook_enabled],
           webhook_url: settings[:webhook_url],
+          push_tokens: settings[:push_tokens],
           critical_alerts: settings[:critical_alerts],
           high_alerts: settings[:high_alerts],
           medium_alerts: settings[:medium_alerts]
