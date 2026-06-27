@@ -385,17 +385,109 @@ defmodule TamanduaServer.Alerts.Assignment do
   end
 
   defp rule_matches_alert?(rule, %Alert{} = alert) when is_map(rule) do
-    severity_match = length(rule.severity_filter) == 0 or alert.severity in rule.severity_filter
-    source_match = length(rule.source_filter) == 0 or alert.source in rule.source_filter
+    severity_filter = rule.severity_filter || []
+    source_filter = rule.source_filter || []
+    alert_source = alert_source(alert)
 
-    technique_match = length(rule.mitre_techniques) == 0 or
-      Enum.any?(rule.mitre_techniques, fn tech -> tech in (alert.mitre_techniques || []) end)
+    severity_match = length(severity_filter) == 0 or alert.severity in severity_filter
+    source_match = length(source_filter) == 0 or source_matches_filter?(alert_source, source_filter)
 
-    tactic_match = length(rule.mitre_tactics) == 0 or
-      Enum.any?(rule.mitre_tactics, fn tactic -> tactic in (alert.mitre_tactics || []) end)
+    mitre_techniques = rule.mitre_techniques || []
+    mitre_tactics = rule.mitre_tactics || []
+
+    technique_match = length(mitre_techniques) == 0 or
+      Enum.any?(mitre_techniques, fn tech -> tech in (alert.mitre_techniques || []) end)
+
+    tactic_match = length(mitre_tactics) == 0 or
+      Enum.any?(mitre_tactics, fn tactic -> tactic in (alert.mitre_tactics || []) end)
 
     severity_match and source_match and technique_match and tactic_match
   end
+
+  defp alert_source(%Alert{} = alert) do
+    explicit_source =
+      [
+        map_value(alert.detection_metadata, "source"),
+        map_value(alert.detection_metadata, "detection_source"),
+        map_value(alert.raw_event, "source"),
+        map_value(alert.raw_event, "alert_source"),
+        map_value(nested_map(alert.raw_event, "payload"), "detection_source"),
+        map_value(nested_map(alert.raw_event, "payload"), "source"),
+        map_value(nested_map(alert.raw_event, "metadata"), "detection_source"),
+        map_value(nested_map(alert.raw_event, "metadata"), "source"),
+        map_value(alert.evidence, "source"),
+        map_value(alert.evidence, "detection_source"),
+        map_value(alert.evidence, "alert_source")
+      ]
+      |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
+
+    explicit_source || inferred_alert_source(alert) || "behavioral"
+  end
+
+  defp inferred_alert_source(%Alert{} = alert) do
+    [
+      alert.detection_metadata,
+      alert.raw_event,
+      nested_map(alert.raw_event, "payload"),
+      alert.evidence
+    ]
+    |> Enum.find_value(&inferred_map_source/1)
+  end
+
+  defp inferred_map_source(metadata) when is_map(metadata) do
+    detection_type = map_value(metadata, "detection_type")
+    rule_type = map_value(metadata, "rule_type")
+    rule_name = map_value(metadata, "rule_name")
+    onnx_model_version = map_value(metadata, "onnx_model_version")
+    ml_model = map_value(metadata, "ml_model")
+
+    cond do
+      ml_source_value?(detection_type) -> "ml"
+      ml_source_value?(rule_type) -> "ml"
+      present_string?(onnx_model_version) -> "ml"
+      present_string?(ml_model) -> "ml"
+      is_binary(rule_name) and String.starts_with?(String.upcase(rule_name), "ML_") -> "ml"
+      is_binary(rule_name) and String.starts_with?(String.upcase(rule_name), "OFFLINE_ML") -> "ml"
+      true -> nil
+    end
+  end
+
+  defp inferred_map_source(_metadata), do: nil
+
+  defp nested_map(map, key) do
+    case map_value(map, key) do
+      nested when is_map(nested) -> nested
+      _ -> nil
+    end
+  end
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) ||
+      Enum.find_value(map, fn
+        {map_key, value} when is_atom(map_key) ->
+          if Atom.to_string(map_key) == key, do: value, else: nil
+
+        _ ->
+          nil
+      end)
+  end
+
+  defp map_value(_map, _key), do: nil
+
+  defp source_matches_filter?(source, filters) when is_binary(source) do
+    normalized_source = source |> String.trim() |> String.downcase()
+
+    Enum.any?(filters, fn filter ->
+      is_binary(filter) and String.downcase(String.trim(filter)) == normalized_source
+    end)
+  end
+
+  defp source_matches_filter?(_source, _filters), do: false
+
+  defp ml_source_value?(value) when is_binary(value), do: String.downcase(String.trim(value)) == "ml"
+  defp ml_source_value?(_value), do: false
+
+  defp present_string?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp apply_auto_assignment_rule(%Alert{} = alert, rule) when is_map(rule) do
     analyst_id = case rule.strategy do

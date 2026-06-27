@@ -13,6 +13,7 @@ defmodule TamanduaServerWeb.Plugs.InertiaSharedData do
 
     shared_data = %{
       auth: build_auth(user),
+      is_super_admin: super_admin?(user),
       flash: build_flash(conn),
       csrf_token: Plug.CSRFProtection.get_csrf_token(),
       app: %{
@@ -36,7 +37,8 @@ defmodule TamanduaServerWeb.Plugs.InertiaSharedData do
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        is_super_admin: super_admin?(user)
       },
       socket_token: socket_token,
       socketToken: socket_token
@@ -52,6 +54,12 @@ defmodule TamanduaServerWeb.Plugs.InertiaSharedData do
       {:ok, token, _claims} -> token
       _ -> nil
     end
+  end
+
+  defp super_admin?(nil), do: false
+
+  defp super_admin?(user) do
+    user.role == "super_admin" or Map.get(user, :is_super_admin) == true
   end
 
   defp build_flash(conn) do

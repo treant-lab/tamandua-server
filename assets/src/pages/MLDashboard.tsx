@@ -47,6 +47,8 @@ interface RecentPrediction {
   prediction?: string
   malware_family?: string
   model_version?: string
+  model_runtime?: string
+  source?: string
   confidence?: number | string | null
   threat_score?: number | string | null
   timestamp?: string
@@ -161,6 +163,11 @@ export default function MLDashboard({
     if (value === undefined || value === null || !Number.isFinite(Number(value))) return '--'
     return `${Number(value).toFixed(value < 1 ? 2 : 1)}${suffix}`
   }
+
+  const runtimeLabel = (prediction: RecentPrediction) =>
+    String(prediction.model_runtime || prediction.source || 'ml').toLowerCase() === 'onnx'
+      ? 'ONNX'
+      : 'ML'
 
   const lifecycleStatusStyle = (status: string) => {
     switch (status) {
@@ -661,8 +668,13 @@ export default function MLDashboard({
                       <td className="p-4 text-sm" style={{ color: 'var(--fg)' }}>
                         {prediction.malware_family || 'unknown'}
                       </td>
-                      <td className="p-4 text-sm font-mono" style={{ color: 'var(--muted)' }}>
-                        {prediction.model_version || model?.version || 'not reported'}
+                      <td className="p-4 text-sm" style={{ color: 'var(--muted)' }}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono">{prediction.model_version || model?.version || 'not reported'}</span>
+                          <span className="badge-sentinel badge-sentinel-pill font-semibold">
+                            {runtimeLabel(prediction)}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-4 text-sm font-mono" style={{ color: 'var(--muted)' }}>
                         {prediction.agent_id || 'n/a'}

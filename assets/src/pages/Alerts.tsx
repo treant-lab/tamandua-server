@@ -1604,6 +1604,19 @@ function isMlAlert(alert: Alert): boolean {
   )
 }
 
+function isOnnxMlAlert(alert: Alert): boolean {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  const modelVersion = String(metadata.onnx_model_version || metadata.onnxModelVersion || '')
+  const modelName = String(metadata.ml_model || metadata.mlModel || metadata.model_name || metadata.modelName || '')
+  const ruleName = String(metadata.rule_name || '').toUpperCase()
+
+  return (
+    modelVersion.trim() !== '' ||
+    modelName.toLowerCase().includes('onnx') ||
+    ruleName.startsWith('OFFLINE_ML')
+  )
+}
+
 function AlertRow({
   alert, isNew, isSelected, onSelect, onCreateExclusion, onAcknowledge
 }: {
@@ -1621,6 +1634,7 @@ function AlertRow({
   const title = String(alert.title || 'Untitled alert')
   const description = String(alert.description || '')
   const mlAlert = isMlAlert(alert)
+  const onnxMlAlert = isOnnxMlAlert(alert)
 
   return (
     <div
@@ -1671,6 +1685,11 @@ function AlertRow({
             {mlAlert && (
               <span className="badge-sentinel badge-sentinel-pill font-semibold" style={{ color: 'var(--info)', borderColor: 'var(--info)' }}>
                 ML
+              </span>
+            )}
+            {onnxMlAlert && (
+              <span className="badge-sentinel badge-sentinel-pill font-semibold" style={{ color: 'var(--emerald-400)', borderColor: 'var(--emerald-400)' }}>
+                ONNX
               </span>
             )}
           </div>

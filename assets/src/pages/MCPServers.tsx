@@ -231,13 +231,17 @@ export default function MCPServers({
   const visibleStats = {
     totalServers: stats.totalServers ?? normalizedServers.length,
     connectedServers: stats.connectedServers ?? normalizedServers.filter(s => s.status === 'active' || s.status === 'connected').length,
-    totalTools: stats.totalTools ?? _tools.length,
+    totalTools: Math.max(
+      stats.totalTools ?? 0,
+      _tools.length,
+      ...normalizedServers.map(server => (server.tools || []).length || server.toolCount || 0)
+    ),
     requestsToday: stats.requestsToday ?? stats.totalRequests ?? 0,
   }
   const mcpUnavailable =
     stats.mcpAlive === false ||
     normalizedServers.some((server) => server.status === 'error' || server.status === 'disconnected')
-  const inventoryUnavailable = mcpUnavailable && visibleStats.totalTools === 0
+  const inventoryUnavailable = visibleStats.totalTools === 0 && mcpUnavailable
   const healthMessage =
     stats.healthMessage ||
     normalizedServers.find((server) => server.healthMessage)?.healthMessage ||

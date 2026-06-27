@@ -514,10 +514,10 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     return positions;
   }
 
-  const xSpacing = Math.max(320, Math.min(420, 260 + nodes.length * 3));
-  const ySpacing = 130;
-  const laneHeight = 172;
-  const componentGap = 170;
+  const xSpacing = Math.max(360, Math.min(500, 300 + nodes.length * 4));
+  const ySpacing = Math.max(150, Math.min(230, 138 + Math.ceil(nodes.length / 8) * 8));
+  const laneHeight = Math.max(196, Math.min(270, 184 + Math.ceil(nodes.length / 10) * 10));
+  const componentGap = Math.max(210, Math.min(340, 190 + nodes.length * 3));
   const componentOffsets = new Map<number, number>();
   let runningOffset = 0;
 
@@ -542,8 +542,8 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         laneCounts.set(lane, index + 1);
         if (mode === 'hierarchical') {
           positions.set(node.id, {
-            x: 160 + lane * 280 + index * 92,
-            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 190,
+            x: 170 + lane * 330 + index * 132,
+            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 230,
           });
         } else {
           positions.set(node.id, {
@@ -571,6 +571,39 @@ function firstNodeData(node: StorylineNode, keys: string[], fallback = 'Not capt
     if (formatted !== 'Not captured') return formatted;
   }
   return fallback;
+}
+
+function huntQueryForNode(node: StorylineNode | null, alertId?: string | null): string {
+  if (!node) return alertId ? `alert:${alertId}` : '';
+  if (node.type === 'process' && node.pid) return `pid:${node.pid}`;
+
+  if (node.type === 'network') {
+    const destination = firstNodeData(node, ['remote_ip', 'destination_ip', 'ip', 'host'], '');
+    const port = firstNodeData(node, ['remote_port', 'destination_port', 'port'], '');
+    if (destination) return port ? `network:${destination}:${port}` : `network:${destination}`;
+  }
+
+  if (node.type === 'dns') {
+    const domain = firstNodeData(node, ['query', 'query_name', 'domain', 'dns_query'], node.full_label || node.label);
+    if (domain) return `domain:${domain}`;
+  }
+
+  if (node.type === 'file') {
+    const path = firstNodeData(node, ['path', 'file_path'], node.full_label || node.label);
+    if (path) return `file:${path}`;
+  }
+
+  if (node.type === 'registry') {
+    const key = firstNodeData(node, ['key', 'registry_key', 'path'], node.full_label || node.label);
+    if (key) return `registry:${key}`;
+  }
+
+  if (node.type === 'user') {
+    const user = firstNodeData(node, ['user', 'username', 'account'], node.label);
+    if (user) return `user:${user}`;
+  }
+
+  return alertId ? `alert:${alertId}` : node.label;
 }
 
 function summarizeStorylineNode(node: StorylineNode, edges: StorylineEdge[], allNodes: StorylineNode[]): string {
@@ -2755,11 +2788,7 @@ export default function Storyline({
                         icon={Search}
                         label="Hunt Related Events"
                         onClick={() => {
-                          const query = selectedNode?.pid
-                            ? `pid:${selectedNode.pid}`
-                            : storyline.alert_id
-                              ? `alert:${storyline.alert_id}`
-                              : '';
+                          const query = huntQueryForNode(selectedNode, storyline.alert_id);
                           router.visit(`/app/hunt?q=${encodeURIComponent(query)}`);
                         }}
                         variant="secondary"

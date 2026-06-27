@@ -190,7 +190,7 @@ function isDnsEventType(type?: string): boolean {
 
 function classifyDnsTransportEvent(eventType: unknown, payload: Record<string, unknown> = {}): 'query' | 'transport' | 'dot' | 'doh' | null {
   if (isDnsEventType(String(eventType || ''))) return 'query'
-  if (String(eventType || '').toLowerCase() !== 'network_connect') return null
+  if (!['network_connect', 'network_connection'].includes(String(eventType || '').toLowerCase())) return null
 
   const port = String(
     payload.remote_port ??

@@ -440,6 +440,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
         %{
           id: alert.id,
           agent_id: alert.agent_id,
+          source: "ml",
           prediction:
             metadata_field(metadata, "prediction") ||
               prediction_from_rule_name(metadata_field(metadata, "rule_name")) ||
@@ -452,6 +453,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
             metadata_field(metadata, "model_version") ||
               metadata_field(metadata, "onnx_model_version") ||
               metadata_field(metadata, "ml_model"),
+          model_runtime: ml_model_runtime(metadata),
           confidence:
             metadata_field(metadata, "confidence") ||
               metadata_field(metadata, "ml_confidence"),
@@ -837,6 +839,24 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp metadata_atom_key("confidence"), do: :confidence
   defp metadata_atom_key("ml_confidence"), do: :ml_confidence
   defp metadata_atom_key(_), do: nil
+
+  defp ml_model_runtime(metadata) when is_map(metadata) do
+    cond do
+      present_metadata?(metadata, "onnx_model_version") -> "onnx"
+      metadata_field(metadata, "ml_model") |> to_string() |> String.downcase() |> String.contains?("onnx") -> "onnx"
+      true -> "ml"
+    end
+  end
+
+  defp ml_model_runtime(_metadata), do: "ml"
+
+  defp present_metadata?(metadata, key) do
+    case metadata_field(metadata, key) do
+      value when is_binary(value) -> String.trim(value) != ""
+      nil -> false
+      _ -> true
+    end
+  end
 
   defp prediction_from_rule_name(rule_name) when is_binary(rule_name) do
     rule_name

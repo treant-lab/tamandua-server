@@ -1,5 +1,5 @@
 defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
-  use TamanduaServerWeb.ConnCase, async: true
+  use TamanduaServerWeb.ConnCase, async: false
 
   import TamanduaServer.Factory
 
@@ -87,6 +87,65 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert alert.detection_metadata["app_bundle_id"] == "com.example.wallet"
       assert alert.raw_event["mobile_event_id"] == event.id
       assert alert.raw_event["payload"]["risk"]["decision"] == "step_up"
+    end
+
+    test "accepts App Guard events signed with the SDK HMAC envelope", %{conn_a: conn, org_a: org} do
+      secret = put_app_guard_signing_secret("test-app-guard-secret")
+      raw_body = Jason.encode!(app_guard_payload())
+
+      conn =
+        conn
+        |> put_signed_app_guard_headers(raw_body, secret)
+        |> post("/api/v1/mobile/app_guard/events", raw_body)
+
+      body = json_response(conn, 201)
+      event = Repo.get!(MobileEvent, body["data"]["id"])
+
+      assert event.organization_id == org.id
+      assert event.payload["schema"] == "tamandua.app_guard.event/v1"
+      assert event.payload["event_id"] == "evt-app-guard-1"
+    end
+
+    test "rejects App Guard events with invalid SDK HMAC envelope", %{conn_a: conn} do
+      secret = put_app_guard_signing_secret("test-app-guard-secret")
+      raw_body = Jason.encode!(app_guard_payload())
+
+      conn =
+        conn
+        |> put_signed_app_guard_headers(raw_body, secret, signature: "sha256=" <> String.duplicate("0", 64))
+        |> post("/api/v1/mobile/app_guard/events", raw_body)
+
+      body = json_response(conn, 401)
+      assert body["error"] == "Invalid App Guard event signature"
+      assert "X-Tamandua-Signature does not match request body" in body["details"]
+    end
+
+    test "rejects signed App Guard events when server signing secret is missing", %{conn_a: conn} do
+      clear_app_guard_signing_secret()
+      raw_body = Jason.encode!(app_guard_payload())
+
+      conn =
+        conn
+        |> put_signed_app_guard_headers(raw_body, "test-app-guard-secret")
+        |> post("/api/v1/mobile/app_guard/events", raw_body)
+
+      body = json_response(conn, 401)
+      assert body["error"] == "Invalid App Guard event signature"
+      assert "App Guard signing secret is not configured" in body["details"]
+    end
+
+    test "rejects signed App Guard events without signing key id", %{conn_a: conn} do
+      secret = put_app_guard_signing_secret("test-app-guard-secret")
+      raw_body = Jason.encode!(app_guard_payload())
+
+      conn =
+        conn
+        |> put_signed_app_guard_headers(raw_body, secret, signing_key_id: nil)
+        |> post("/api/v1/mobile/app_guard/events", raw_body)
+
+      body = json_response(conn, 401)
+      assert body["error"] == "Invalid App Guard event signature"
+      assert "X-Tamandua-Signing-Key-ID is required" in body["details"]
     end
 
     test "ingests RASP-derived App Guard events and creates alerts", %{conn_a: conn, org_a: org} do
@@ -196,5 +255,67 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
         "remote_port" => 443
       }
     }
+  end
+
+  defp put_app_guard_signing_secret(secret) do
+    previous = Application.get_env(:tamandua_server, :app_guard_signing_secret)
+    Application.put_env(:tamandua_server, :app_guard_signing_secret, secret)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:tamandua_server, :app_guard_signing_secret)
+      else
+        Application.put_env(:tamandua_server, :app_guard_signing_secret, previous)
+      end
+    end)
+
+    secret
+  end
+
+  defp clear_app_guard_signing_secret do
+    previous = Application.get_env(:tamandua_server, :app_guard_signing_secret)
+    previous_app_guard_env = System.get_env("TAMANDUA_APP_GUARD_SIGNING_SECRET")
+    previous_mobile_sdk_env = System.get_env("TAMANDUA_MOBILE_SDK_SIGNING_SECRET")
+    Application.delete_env(:tamandua_server, :app_guard_signing_secret)
+    System.delete_env("TAMANDUA_APP_GUARD_SIGNING_SECRET")
+    System.delete_env("TAMANDUA_MOBILE_SDK_SIGNING_SECRET")
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:tamandua_server, :app_guard_signing_secret)
+      else
+        Application.put_env(:tamandua_server, :app_guard_signing_secret, previous)
+      end
+
+      restore_env("TAMANDUA_APP_GUARD_SIGNING_SECRET", previous_app_guard_env)
+      restore_env("TAMANDUA_MOBILE_SDK_SIGNING_SECRET", previous_mobile_sdk_env)
+    end)
+  end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
+
+  defp put_signed_app_guard_headers(conn, raw_body, secret, opts \\ []) do
+    signature = Keyword.get(opts, :signature, "sha256=" <> hmac_sha256(secret, raw_body))
+    signing_key_id = Keyword.get(opts, :signing_key_id, "test-key-1")
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-tamandua-payload-sha256", sha256(raw_body))
+      |> put_req_header("x-tamandua-signature-algorithm", "HMAC-SHA256")
+      |> put_req_header("x-tamandua-signature", signature)
+
+    if is_nil(signing_key_id) do
+      conn
+    else
+      put_req_header(conn, "x-tamandua-signing-key-id", signing_key_id)
+    end
+  end
+
+  defp sha256(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+  defp hmac_sha256(secret, value) do
+    :crypto.mac(:hmac, :sha256, secret, value) |> Base.encode16(case: :lower)
   end
 end

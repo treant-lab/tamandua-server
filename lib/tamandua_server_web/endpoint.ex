@@ -100,7 +100,17 @@ defmodule TamanduaServerWeb.Endpoint do
   plug(CORSPlug,
     origin: &TamanduaServerWeb.Endpoint.cors_origins/0,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    headers: ["Authorization", "Content-Type", "Accept", "X-API-Key", "X-Request-ID"]
+    headers: [
+      "Authorization",
+      "Content-Type",
+      "Accept",
+      "X-API-Key",
+      "X-Request-ID",
+      "X-Tamandua-Payload-SHA256",
+      "X-Tamandua-Signature-Algorithm",
+      "X-Tamandua-Signature",
+      "X-Tamandua-Signing-Key-ID"
+    ]
   )
 
   plug(TamanduaServerWeb.Router)

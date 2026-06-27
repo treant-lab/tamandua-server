@@ -437,7 +437,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   def ingest_app_guard_event(conn, %{"schema" => "tamandua.app_guard.event/v1"} = params) do
     organization_id = get_organization_id(conn)
 
-    with :ok <- validate_app_guard_contract(params),
+    with :ok <- validate_app_guard_signature(conn),
+         :ok <- validate_app_guard_contract(params),
          {:ok, device} <- ensure_app_guard_device(organization_id, params),
          attrs <- app_guard_event_to_mobile_attrs(params, organization_id, device.id),
          {:ok, event} <- Mobile.ingest_event(attrs) do
@@ -452,6 +453,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "Invalid App Guard event payload", details: errors})
+
+      {:error, {:invalid_app_guard_signature, errors}} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "Invalid App Guard event signature", details: errors})
 
       {:error, :invalid_device} ->
         conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid App Guard device payload"})
@@ -1799,6 +1805,146 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       errors -> {:error, {:invalid_app_guard_contract, errors}}
     end
   end
+
+  defp validate_app_guard_signature(conn) do
+    signature = header(conn, "x-tamandua-signature")
+    payload_sha256 = header(conn, "x-tamandua-payload-sha256")
+    algorithm = header(conn, "x-tamandua-signature-algorithm")
+    signing_key_id = header(conn, "x-tamandua-signing-key-id")
+
+    if Enum.all?([signature, payload_sha256, algorithm, signing_key_id], &blank?/1) do
+      :ok
+    else
+      errors =
+        []
+        |> require_signature_header(signature, "X-Tamandua-Signature")
+        |> require_signature_header(payload_sha256, "X-Tamandua-Payload-SHA256")
+        |> require_signature_header(algorithm, "X-Tamandua-Signature-Algorithm")
+        |> require_signature_header(signing_key_id, "X-Tamandua-Signing-Key-ID")
+        |> validate_app_guard_signature_algorithm(algorithm)
+        |> validate_app_guard_payload_digest(conn, payload_sha256)
+        |> validate_app_guard_hmac(conn, signature)
+
+      case Enum.reverse(errors) do
+        [] -> :ok
+        errors -> {:error, {:invalid_app_guard_signature, errors}}
+      end
+    end
+  end
+
+  defp require_signature_header(errors, value, name) do
+    if blank?(value), do: ["#{name} is required" | errors], else: errors
+  end
+
+  defp validate_app_guard_signature_algorithm(errors, algorithm) do
+    if blank?(algorithm) or String.upcase(String.trim(algorithm)) == "HMAC-SHA256" do
+      errors
+    else
+      ["X-Tamandua-Signature-Algorithm must be HMAC-SHA256" | errors]
+    end
+  end
+
+  defp validate_app_guard_payload_digest(errors, conn, payload_sha256) do
+    raw_body = app_guard_raw_body(conn)
+
+    cond do
+      blank?(payload_sha256) ->
+        errors
+
+      blank?(raw_body) ->
+        ["raw request body is required for signature verification" | errors]
+
+      not app_guard_sha256?(payload_sha256) ->
+        ["X-Tamandua-Payload-SHA256 must be a 64-character hex SHA256" | errors]
+
+      not secure_compare(normalize_hex(payload_sha256), sha256_hex(raw_body)) ->
+        ["X-Tamandua-Payload-SHA256 does not match request body" | errors]
+
+      true ->
+        errors
+    end
+  end
+
+  defp validate_app_guard_hmac(errors, conn, signature) do
+    raw_body = app_guard_raw_body(conn)
+
+    cond do
+      blank?(signature) ->
+        errors
+
+      blank?(raw_body) ->
+        ["raw request body is required for signature verification" | errors]
+
+      not String.starts_with?(signature, "sha256=") ->
+        ["X-Tamandua-Signature must use sha256=<64 hex> format" | errors]
+
+      not app_guard_sha256?(String.replace_prefix(signature, "sha256=", "")) ->
+        ["X-Tamandua-Signature must use sha256=<64 hex> format" | errors]
+
+      true ->
+        case app_guard_signing_secret() do
+          nil ->
+            ["App Guard signing secret is not configured" | errors]
+
+          secret ->
+            expected = "sha256=" <> hmac_sha256_hex(secret, raw_body)
+
+            if secure_compare(normalize_signature(signature), expected) do
+              errors
+            else
+              ["X-Tamandua-Signature does not match request body" | errors]
+            end
+        end
+    end
+  end
+
+  defp header(conn, name) do
+    conn
+    |> get_req_header(name)
+    |> List.first()
+  end
+
+  defp app_guard_raw_body(conn) do
+    case conn.assigns[:raw_body] || conn.private[:raw_body] do
+      body when is_binary(body) -> body
+      chunks when is_list(chunks) -> chunks |> Enum.reverse() |> Enum.join()
+      _ -> nil
+    end
+  end
+
+  defp app_guard_signing_secret do
+    [
+      Application.get_env(:tamandua_server, :app_guard_signing_secret),
+      System.get_env("TAMANDUA_APP_GUARD_SIGNING_SECRET"),
+      System.get_env("TAMANDUA_MOBILE_SDK_SIGNING_SECRET")
+    ]
+    |> Enum.find(&(is_binary(&1) and not blank?(&1)))
+  end
+
+  defp sha256_hex(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+  defp hmac_sha256_hex(secret, value) do
+    :crypto.mac(:hmac, :sha256, secret, value) |> Base.encode16(case: :lower)
+  end
+
+  defp app_guard_sha256?(value) when is_binary(value) do
+    String.match?(value, ~r/\A[0-9a-fA-F]{64}\z/)
+  end
+
+  defp app_guard_sha256?(_value), do: false
+
+  defp normalize_hex(value), do: value |> String.trim() |> String.downcase()
+
+  defp normalize_signature("sha256=" <> digest), do: "sha256=" <> normalize_hex(digest)
+  defp normalize_signature(value), do: value
+
+  defp secure_compare(left, right) when is_binary(left) and is_binary(right) do
+    byte_size(left) == byte_size(right) and Plug.Crypto.secure_compare(left, right)
+  end
+
+  defp secure_compare(_left, _right), do: false
+
+  defp blank?(value), do: is_nil(value) or (is_binary(value) and String.trim(value) == "")
 
   defp require_string(errors, params, path) do
     case app_guard_contract_value(params, path) do

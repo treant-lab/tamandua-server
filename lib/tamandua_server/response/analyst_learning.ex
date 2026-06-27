@@ -361,7 +361,7 @@ defmodule TamanduaServer.Response.AnalystLearning do
       is_business_hours: is_business_hours?(),
       day_of_week: Date.day_of_week(Date.utc_today()),
       hour_of_day: DateTime.utc_now().hour,
-      alert_type: alert.source || "unknown"
+      alert_type: get_detection_source(alert)
     }
   end
 
@@ -640,7 +640,7 @@ defmodule TamanduaServer.Response.AnalystLearning do
     score = if abs(alert_conf - decision_conf) < 15, do: score + 0.2, else: score
 
     # Same detection source = +20 points
-    score = if alert.source == decision[:alert_type], do: score + 0.2, else: score
+    score = if get_detection_source(alert) == decision[:alert_type], do: score + 0.2, else: score
 
     # Overlapping MITRE techniques = +30 points
     alert_techniques = alert.mitre_techniques || []
@@ -916,15 +916,33 @@ defmodule TamanduaServer.Response.AnalystLearning do
   end
 
   defp get_detection_source(alert) do
-    cond do
-      alert.detection_metadata && alert.detection_metadata[:detection_type] ->
-        alert.detection_metadata[:detection_type]
-      alert.source ->
-        alert.source
-      true ->
-        "unknown"
+    [
+      metadata_value(alert.detection_metadata, "detection_source"),
+      metadata_value(alert.detection_metadata, "source"),
+      metadata_value(alert.detection_metadata, "detection_type"),
+      metadata_value(alert.raw_event, "source"),
+      metadata_value(alert.raw_event, "alert_source"),
+      metadata_value(alert.evidence, "source")
+    ]
+    |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
+    |> case do
+      nil -> "unknown"
+      source -> source
     end
   end
+
+  defp metadata_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) ||
+      Enum.find_value(map, fn
+        {map_key, value} when is_atom(map_key) ->
+          if Atom.to_string(map_key) == key, do: value, else: nil
+
+        _ ->
+          nil
+      end)
+  end
+
+  defp metadata_value(_map, _key), do: nil
 
   defp is_business_hours? do
     now = DateTime.utc_now()

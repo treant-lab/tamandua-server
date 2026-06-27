@@ -17,6 +17,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   alias TamanduaServer.Repo
   alias TamanduaServer.Telemetry.Event
   alias TamanduaServer.Detection.DNSAnalyzer
+  alias TamanduaServer.Detection.DNSBlocklist
   alias TamanduaServer.AuditLog
 
   action_fallback TamanduaServerWeb.FallbackController
@@ -515,6 +516,73 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       {default, "#{label}: exit #{inspect(reason)}"}
   end
 
+  defp safe_dns_analyzer_call(label, fun) when is_function(fun, 0) do
+    {:ok, fun.()}
+  rescue
+    error ->
+      message = "#{label}: #{Exception.message(error)}"
+      Logger.warning("#{label} failed: #{Exception.message(error)}")
+      {:error, message}
+  catch
+    :exit, {:noproc, _} ->
+      message = "#{label}: DNS analyzer is not running"
+      Logger.warning(message)
+      {:error, message}
+
+    :exit, {:timeout, _} ->
+      message = "#{label}: DNS analyzer timed out"
+      Logger.warning(message)
+      {:error, message}
+
+    :exit, reason ->
+      message = "#{label}: exit #{inspect(reason)}"
+      Logger.warning(message)
+      {:error, message}
+  end
+
+  defp dns_analyzer_unavailable_response(conn, reason) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      error: "dns_service_unavailable",
+      message: "DNS analyzer is unavailable",
+      detail: reason
+    })
+  end
+
+  defp list_dns_blocklist_entries(organization_id) do
+    case safe_dns_analyzer_call("DNS blocklist overrides", fn ->
+           DNSAnalyzer.get_blocklist(organization_id)
+         end) do
+      {:ok, entries} when is_list(entries) ->
+        {entries, nil}
+
+      {:ok, _unexpected} ->
+        {[], "DNS blocklist overrides returned an unexpected payload"}
+
+      {:error, reason} ->
+        entries =
+          organization_id
+          |> DNSBlocklist.list_entries()
+          |> Enum.map(fn entry ->
+            %{
+              domain: entry.normalized_domain || entry.domain,
+              blocked_at: entry.updated_at || entry.inserted_at,
+              blocked_by: entry.blocked_by,
+              reason: entry.reason,
+              source: entry.source
+            }
+          end)
+
+        {entries, reason}
+    end
+  rescue
+    error ->
+      message = "DNS blocklist overrides fallback: #{Exception.message(error)}"
+      Logger.warning(message)
+      {[], message}
+  end
+
   defp dns_partial_meta(errors) do
     unavailable =
       errors
@@ -629,10 +697,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   """
   def blocklist_index(conn, _params) do
     with {:ok, organization_id} <- current_organization_id(conn) do
+      {entries, blocklist_error} = list_dns_blocklist_entries(organization_id)
+
       entries =
-        organization_id
-        |> DNSAnalyzer.get_blocklist()
-        |> Enum.map(fn entry ->
+        Enum.map(entries, fn entry ->
           %{
             domain: entry[:domain],
             blocked_at: format_datetime(entry[:blocked_at]),
@@ -644,13 +712,13 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
       json(conn, %{
         data: entries,
-        meta: %{
+        meta: Map.merge(%{
           explicit_overrides: length(entries),
           default_feed_count: length(@default_dns_feed_names),
           default_feeds: default_dns_feed_summaries(),
           feed_status_endpoint: "/api/v1/threat-intel/feed-status",
           scope: "tenant_dns_blocklist_overrides"
-        }
+        }, dns_partial_meta([blocklist_error]))
       })
     else
       {:error, :missing_organization} -> missing_organization_response(conn)
@@ -677,7 +745,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     blocked_by = get_current_user(conn)
 
     with {:ok, organization_id} <- current_organization_id(conn),
-         {:ok, count} <- DNSAnalyzer.add_to_blocklist(domains, reason, blocked_by, organization_id) do
+         {:ok, {:ok, count}} <-
+           safe_dns_analyzer_call("DNS blocklist add", fn ->
+             DNSAnalyzer.add_to_blocklist(domains, reason, blocked_by, organization_id)
+           end) do
       # Broadcast block command to all agents
       broadcast_dns_command(:block, domains, reason, organization_id)
       log_dns_blocklist_change(conn, "add", domains, %{added: count, reason: reason})
@@ -695,7 +766,15 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       {:error, :missing_organization} ->
         missing_organization_response(conn)
 
+      {:error, reason} when is_binary(reason) ->
+        dns_analyzer_unavailable_response(conn, reason)
+
       {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Failed to update DNS blocklist", reason: inspect(reason)})
+
+      {:ok, {:error, reason}} ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "Failed to update DNS blocklist", reason: inspect(reason)})
@@ -719,16 +798,26 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   """
   def blocklist_delete(conn, %{"domain" => domain}) do
     with {:ok, organization_id} <- current_organization_id(conn) do
-      case DNSAnalyzer.remove_from_blocklist(domain, organization_id) do
-      :ok ->
-        broadcast_dns_command(:unblock, [domain], "Removed from blocklist", organization_id)
-        log_dns_blocklist_change(conn, "remove", [domain], %{reason: "Removed from blocklist"})
-        send_resp(conn, :no_content, "")
+      case safe_dns_analyzer_call("DNS blocklist remove", fn ->
+             DNSAnalyzer.remove_from_blocklist(domain, organization_id)
+           end) do
+        {:ok, :ok} ->
+          broadcast_dns_command(:unblock, [domain], "Removed from blocklist", organization_id)
+          log_dns_blocklist_change(conn, "remove", [domain], %{reason: "Removed from blocklist"})
+          send_resp(conn, :no_content, "")
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Domain '#{domain}' not found in blocklist"})
+        {:ok, {:error, :not_found}} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Domain '#{domain}' not found in blocklist"})
+
+        {:ok, {:error, reason}} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: "Failed to update DNS blocklist", reason: inspect(reason)})
+
+        {:error, reason} ->
+          dns_analyzer_unavailable_response(conn, reason)
       end
     else
       {:error, :missing_organization} -> missing_organization_response(conn)
@@ -872,7 +961,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
 
     with {:ok, organization_id} <- current_organization_id(conn),
-         {:ok, count} <- DNSAnalyzer.import_blocklist(domains, reason, organization_id) do
+         {:ok, {:ok, count}} <-
+           safe_dns_analyzer_call("DNS blocklist import", fn ->
+             DNSAnalyzer.import_blocklist(domains, reason, organization_id)
+           end) do
       # Broadcast block commands for imported domains
       if count > 0 do
         broadcast_dns_command(:block, domains, reason, organization_id)
@@ -897,7 +989,15 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       {:error, :missing_organization} ->
         missing_organization_response(conn)
 
+      {:error, reason} when is_binary(reason) ->
+        dns_analyzer_unavailable_response(conn, reason)
+
       {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Failed to import DNS blocklist", reason: inspect(reason)})
+
+      {:ok, {:error, reason}} ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: "Failed to import DNS blocklist", reason: inspect(reason)})

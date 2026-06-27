@@ -10526,9 +10526,11 @@ defmodule TamanduaServerWeb.InertiaController do
         id: alert[:id] || alert["id"],
         alert_id: alert[:id] || alert["id"],
         agent_id: alert[:agent_id] || alert["agent_id"],
+        source: "ml",
         prediction: metadata_field(metadata, "prediction") || prediction_from_ml_title(title),
         malware_family: metadata_field(metadata, "malware_family"),
         model_version: metadata_field(metadata, "model_version") || metadata_field(metadata, "onnx_model_version"),
+        model_runtime: ml_model_runtime(metadata),
         confidence: metadata_field(metadata, "confidence"),
         threat_score: alert[:threat_score] || alert["threat_score"],
         timestamp: alert[:created_at] || alert["created_at"] || alert[:inserted_at] || alert["inserted_at"]
@@ -10541,6 +10543,24 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp metadata_field(_metadata, _key), do: nil
+
+  defp ml_model_runtime(metadata) when is_map(metadata) do
+    cond do
+      present_metadata?(metadata, "onnx_model_version") -> "onnx"
+      metadata_field(metadata, "ml_model") |> to_string() |> String.downcase() |> String.contains?("onnx") -> "onnx"
+      true -> "ml"
+    end
+  end
+
+  defp ml_model_runtime(_metadata), do: "ml"
+
+  defp present_metadata?(metadata, key) do
+    case metadata_field(metadata, key) do
+      value when is_binary(value) -> String.trim(value) != ""
+      nil -> false
+      _ -> true
+    end
+  end
 
   defp safe_string_or_atom_field(map, key, default) when is_map(map) and is_binary(key) do
     cond do

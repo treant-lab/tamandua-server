@@ -498,7 +498,7 @@ defmodule TamanduaServer.Response.AutonomousRules do
 
   defp get_alert_field(alert, :severity), do: alert.severity
   defp get_alert_field(alert, :confidence_score), do: alert.threat_score || 50
-  defp get_alert_field(alert, :alert_type), do: alert.source || "unknown"
+  defp get_alert_field(alert, :alert_type), do: get_alert_source(alert)
   defp get_alert_field(alert, :agent_id), do: alert.agent_id
   defp get_alert_field(alert, :mitre_tactic), do: alert.mitre_tactics || []
   defp get_alert_field(alert, :mitre_technique), do: alert.mitre_techniques || []
@@ -527,6 +527,35 @@ defmodule TamanduaServer.Response.AutonomousRules do
         nil
     end
   end
+
+  defp get_alert_source(alert) do
+    [
+      metadata_value(alert.detection_metadata, "detection_source"),
+      metadata_value(alert.detection_metadata, "source"),
+      metadata_value(alert.detection_metadata, "detection_type"),
+      metadata_value(alert.raw_event, "source"),
+      metadata_value(alert.raw_event, "alert_source"),
+      metadata_value(alert.evidence, "source")
+    ]
+    |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
+    |> case do
+      nil -> "unknown"
+      source -> source
+    end
+  end
+
+  defp metadata_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) ||
+      Enum.find_value(map, fn
+        {map_key, value} when is_atom(map_key) ->
+          if Atom.to_string(map_key) == key, do: value, else: nil
+
+        _ ->
+          nil
+      end)
+  end
+
+  defp metadata_value(_map, _key), do: nil
 
   defp apply_operator(:eq, actual, expected), do: actual == expected
   defp apply_operator(:neq, actual, expected), do: actual != expected
