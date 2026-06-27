@@ -2229,6 +2229,14 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def tenant_settings(conn, _params) do
+    authorize_or_render_inertia_page(
+      conn,
+      [:organization_read, :organization_update, :system_settings],
+      fn -> tenant_settings_authorized(conn) end
+    )
+  end
+
+  defp tenant_settings_authorized(conn) do
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -10154,7 +10162,14 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # RBAC Management Pages
   def rbac_roles(conn, _params) do
-    alias TamanduaServer.Authorization.RBAC
+    authorize_or_render_inertia_page(
+      conn,
+      [:roles_read, :roles_create, :roles_update, :roles_permissions],
+      fn -> rbac_roles_authorized(conn) end
+    )
+  end
+
+  defp rbac_roles_authorized(conn) do
     alias TamanduaServer.Accounts.{Role, Permission}
     alias TamanduaServer.Repo
 
@@ -10215,6 +10230,12 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def rbac_role_detail(conn, %{"id" => role_id}) do
+    authorize_or_render_inertia_page(conn, [:roles_read], fn ->
+      rbac_role_detail_authorized(conn, role_id)
+    end)
+  end
+
+  defp rbac_role_detail_authorized(conn, role_id) do
     alias TamanduaServer.Accounts.{Role, Permission, UserRole}
     alias TamanduaServer.Repo
 
@@ -10273,6 +10294,14 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def user_management(conn, _params) do
+    authorize_or_render_inertia_page(
+      conn,
+      [:users_read, :users_create, :users_update, :users_role_assign],
+      fn -> user_management_authorized(conn) end
+    )
+  end
+
+  defp user_management_authorized(conn) do
     alias TamanduaServer.Accounts
     alias TamanduaServer.Accounts.Role
     alias TamanduaServer.Repo
@@ -10346,6 +10375,12 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenants(conn, _params) do
+    authorize_or_render_inertia_page(conn, [:system_settings], fn ->
+      admin_tenants_authorized(conn)
+    end)
+  end
+
+  defp admin_tenants_authorized(conn) do
     render_inertia(conn, "admin/Tenants", %{
       page_title: "Tenant Management"
     })
@@ -10357,6 +10392,12 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenant_create(conn, _params) do
+    authorize_or_render_inertia_page(conn, [:system_settings], fn ->
+      admin_tenant_create_authorized(conn)
+    end)
+  end
+
+  defp admin_tenant_create_authorized(conn) do
     render_inertia(conn, "admin/TenantCreate", %{
       page_title: "Create Tenant"
     })
@@ -10368,6 +10409,12 @@ defmodule TamanduaServerWeb.InertiaController do
   Requires system_settings permission.
   """
   def admin_tenant_detail(conn, %{"id" => _tenant_id}) do
+    authorize_or_render_inertia_page(conn, [:system_settings], fn ->
+      admin_tenant_detail_authorized(conn)
+    end)
+  end
+
+  defp admin_tenant_detail_authorized(conn) do
     render_inertia(conn, "admin/TenantDetail", %{
       page_title: "Tenant Details"
     })
@@ -10597,6 +10644,12 @@ defmodule TamanduaServerWeb.InertiaController do
   # ===========================================================================
 
   def reports(conn, _params) do
+    authorize_or_render_inertia_page(conn, [:reports_read], fn ->
+      reports_authorized(conn)
+    end)
+  end
+
+  defp reports_authorized(conn) do
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -10752,6 +10805,12 @@ defmodule TamanduaServerWeb.InertiaController do
   # ===========================================================================
 
   def audit_log(conn, params) do
+    authorize_or_render_inertia_page(conn, [:system_audit], fn ->
+      audit_log_authorized(conn, params)
+    end)
+  end
+
+  defp audit_log_authorized(conn, params) do
     page = params["page"] |> safe_parse_int(1) |> max(1)
     per_page = params["per_page"] |> safe_parse_int(50) |> max(1) |> min(100)
 
@@ -12052,6 +12111,57 @@ defmodule TamanduaServerWeb.InertiaController do
       path: path,
       message: "That Tamandua workspace page does not exist or is no longer available."
     })
+  end
+
+  defp authorize_or_render_inertia_page(conn, permissions, render_fun) when is_list(permissions) do
+    if inertia_page_authorized?(conn.assigns[:current_user], permissions) do
+      render_fun.()
+    else
+      forbidden_inertia_page(conn)
+    end
+  end
+
+  defp forbidden_inertia_page(conn) do
+    conn
+    |> put_status(:forbidden)
+    |> assign(:page_title, "Access denied")
+    |> render_inertia("NotFound", %{
+      status: 403,
+      path: conn.request_path,
+      message: "You do not have permission to access this Tamandua workspace page."
+    })
+  end
+
+  defp inertia_page_authorized?(nil, _permissions), do: false
+
+  defp inertia_page_authorized?(user, permissions) do
+    legacy_role = Map.get(user, :role)
+
+    legacy_role in ["admin", "super_admin"] or
+      rbac_can_any?(user, [:system_all | permissions]) or
+      has_admin_role_slug?(user)
+  end
+
+  defp rbac_can_any?(user, permissions) do
+    try do
+      TamanduaServer.Authorization.RBAC.can_any?(user, permissions)
+    rescue
+      _ -> false
+    catch
+      _, _ -> false
+    end
+  end
+
+  defp has_admin_role_slug?(user) do
+    try do
+      user
+      |> TamanduaServer.Authorization.RBAC.roles_for()
+      |> Enum.any?(fn role -> role.slug in ["admin", "super_admin"] end)
+    rescue
+      _ -> false
+    catch
+      _, _ -> false
+    end
   end
 
   # Helper function to calculate executive risk score

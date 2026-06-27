@@ -10,7 +10,13 @@ defmodule TamanduaServer.Mobile do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Mobile.{Device, MobileApp, MobileEvent}
+  alias TamanduaServer.Mobile.{
+    AppGuardBuildManifest,
+    AppGuardProtectedApp,
+    Device,
+    MobileApp,
+    MobileEvent
+  }
 
   # MITRE ATT&CK Mobile technique mappings for alert creation.
   # Maps mobile event types to {technique_id, technique_name, tactic}.
@@ -326,6 +332,104 @@ defmodule TamanduaServer.Mobile do
     |> limit(^limit)
     |> preload(:device)
     |> Repo.all()
+  end
+
+  # ============================================================================
+  # App Guard Protected Apps
+  # ============================================================================
+
+  @doc """
+  Lists protected App Guard apps for an organization.
+  """
+  def list_app_guard_protected_apps(organization_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+    platform = Keyword.get(opts, :platform)
+
+    AppGuardProtectedApp
+    |> AppGuardProtectedApp.by_organization(organization_id)
+    |> maybe_filter_app_guard_platform(platform)
+    |> order_by([app], asc: app.display_name)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets a protected App Guard app by app_id within an organization.
+  """
+  def get_app_guard_protected_app_by_app_id(organization_id, app_id) do
+    AppGuardProtectedApp
+    |> AppGuardProtectedApp.by_organization(organization_id)
+    |> AppGuardProtectedApp.by_app_id(app_id)
+    |> Repo.one()
+  end
+
+  @doc """
+  Registers a protected App Guard app.
+  """
+  def create_app_guard_protected_app(attrs) do
+    %AppGuardProtectedApp{}
+    |> AppGuardProtectedApp.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists App Guard build manifests for an organization or one protected app.
+  """
+  def list_app_guard_build_manifests(organization_id, opts \\ []) do
+    app_id = Keyword.get(opts, :app_id)
+    limit = Keyword.get(opts, :limit, 100)
+
+    AppGuardBuildManifest
+    |> AppGuardBuildManifest.by_organization(organization_id)
+    |> maybe_filter_app_guard_app_id(app_id)
+    |> AppGuardBuildManifest.latest_first()
+    |> limit(^limit)
+    |> preload(:protected_app)
+    |> Repo.all()
+  end
+
+  @doc """
+  Stores a build manifest for a registered protected App Guard app.
+  """
+  def create_app_guard_build_manifest(attrs) do
+    organization_id = attrs["organization_id"] || attrs[:organization_id]
+    app_id = attrs["app_id"] || attrs[:app_id]
+
+    case get_app_guard_protected_app_by_app_id(organization_id, app_id) do
+      nil ->
+        {:error, :protected_app_not_found}
+
+      %AppGuardProtectedApp{} = app ->
+        attrs =
+          attrs
+          |> put_app_guard_attr(:protected_app_id, app.id)
+          |> put_app_guard_attr(:organization_id, app.organization_id)
+
+        %AppGuardBuildManifest{}
+        |> AppGuardBuildManifest.changeset(attrs)
+        |> Repo.insert()
+    end
+  end
+
+  defp maybe_filter_app_guard_platform(query, nil), do: query
+  defp maybe_filter_app_guard_platform(query, ""), do: query
+
+  defp maybe_filter_app_guard_platform(query, platform) when is_binary(platform) do
+    AppGuardProtectedApp.by_platform(query, platform |> String.trim() |> String.downcase())
+  end
+
+  defp maybe_filter_app_guard_app_id(query, nil), do: query
+  defp maybe_filter_app_guard_app_id(query, ""), do: query
+  defp maybe_filter_app_guard_app_id(query, app_id), do: AppGuardBuildManifest.by_app_id(query, app_id)
+
+  defp put_app_guard_attr(attrs, key, value) do
+    string_key = Atom.to_string(key)
+
+    if Enum.any?(Map.keys(attrs), &is_binary/1) do
+      Map.put(attrs, string_key, value)
+    else
+      Map.put(attrs, key, value)
+    end
   end
 
   # ============================================================================

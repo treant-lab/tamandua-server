@@ -461,7 +461,7 @@ defmodule TamanduaServer.Alerts.Notifier do
       description: alert.description,
       severity: alert.severity,
       status: alert.status,
-      hostname: alert.hostname,
+      hostname: alert_hostname(alert),
       agent_id: alert.agent_id,
       organization_id: alert.organization_id,
       mitre_tactics: alert.mitre_tactics || [],
@@ -471,4 +471,48 @@ defmodule TamanduaServer.Alerts.Notifier do
       inserted_at: alert.inserted_at
     }
   end
+
+  defp alert_hostname(%Alert{} = alert) do
+    [
+      loaded_agent_hostname(alert),
+      nested_value(alert.raw_event, ["hostname", :hostname]),
+      nested_value(alert.raw_event, ["agent_hostname", :agent_hostname]),
+      nested_value(alert.raw_event, ["payload", :payload, "hostname", :hostname]),
+      nested_value(alert.raw_event, ["payload", :payload, "agent_hostname", :agent_hostname]),
+      nested_value(alert.evidence, ["hostname", :hostname]),
+      nested_value(alert.evidence, ["agent_hostname", :agent_hostname]),
+      nested_value(alert.detection_metadata, ["hostname", :hostname]),
+      nested_value(alert.detection_metadata, ["agent_hostname", :agent_hostname])
+    ]
+    |> Enum.find(&present_string?/1)
+  end
+
+  defp loaded_agent_hostname(%Alert{agent: %Ecto.Association.NotLoaded{}}), do: nil
+  defp loaded_agent_hostname(%Alert{agent: nil}), do: nil
+  defp loaded_agent_hostname(%Alert{agent: agent}), do: Map.get(agent, :hostname)
+
+  defp nested_value(map, path) when is_map(map) and is_list(path) do
+    path
+    |> Enum.chunk_every(2)
+    |> Enum.reduce_while(map, fn keys, current ->
+      case first_present(current, keys) do
+        nil -> {:halt, nil}
+        value -> {:cont, value}
+      end
+    end)
+  end
+
+  defp nested_value(_, _), do: nil
+
+  defp first_present(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      value = Map.get(map, key)
+      if present_value?(value), do: value, else: nil
+    end)
+  end
+
+  defp first_present(_, _), do: nil
+
+  defp present_string?(value), do: is_binary(value) and String.trim(value) != ""
+  defp present_value?(value), do: value not in [nil, ""]
 end

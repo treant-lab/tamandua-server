@@ -20,6 +20,8 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
     %{
       conn_a: put_req_header(conn, "authorization", "Bearer #{token_a}"),
       conn_b: put_req_header(conn, "authorization", "Bearer #{token_b}"),
+      token_a: token_a,
+      token_b: token_b,
       org_a: org_a
     }
   end
@@ -205,6 +207,81 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
     end
   end
 
+  describe "App Guard protected apps and build manifests" do
+    test "registers and lists protected apps for the current organization", %{
+      conn_a: conn,
+      token_a: token,
+      org_a: org
+    } do
+      conn = post(conn, "/api/v1/mobile/app_guard/apps", protected_app_payload())
+
+      body = json_response(conn, 201)
+      assert body["success"] == true
+      assert body["data"]["schema"] == "tamandua.app_guard.protected_app/v1"
+      assert body["data"]["app_id"] == "agapp_wallet_prod"
+      assert body["data"]["organization_id"] == org.id
+      assert body["data"]["ingestion"]["public_key_id"] == "agpk_wallet_prod_202606"
+      assert body["data"]["ingestion"]["secret_ref"] =~ "vault://"
+      refute Map.has_key?(body["data"]["ingestion"], "secret")
+
+      conn = get(auth_conn(token), "/api/v1/mobile/app_guard/apps")
+      list_body = json_response(conn, 200)
+
+      assert [%{"app_id" => "agapp_wallet_prod", "policy" => %{"default_decision" => "step_up"}}] =
+               list_body["data"]
+
+      conn = get(auth_conn(token), "/api/v1/mobile/app_guard/apps/agapp_wallet_prod")
+      show_body = json_response(conn, 200)
+      assert show_body["data"]["package_or_bundle_id"] == "io.tamandua.appguard.samplewallet"
+    end
+
+    test "does not expose protected apps across organizations", %{
+      conn_a: conn_a,
+      token_b: token_b
+    } do
+      conn_a = post(conn_a, "/api/v1/mobile/app_guard/apps", protected_app_payload())
+      assert json_response(conn_a, 201)["success"] == true
+
+      conn_b = get(auth_conn(token_b), "/api/v1/mobile/app_guard/apps/agapp_wallet_prod")
+      assert json_response(conn_b, 404)["error"] == "App Guard protected app not found"
+
+      conn_b = get(auth_conn(token_b), "/api/v1/mobile/app_guard/apps")
+      assert json_response(conn_b, 200)["data"] == []
+    end
+
+    test "stores build manifests only for registered protected apps", %{conn_a: conn, token_a: token} do
+      missing_app_conn = post(conn, "/api/v1/mobile/app_guard/builds", build_manifest_payload())
+
+      assert json_response(missing_app_conn, 422)["error"] ==
+               "App Guard protected app must be registered before build manifests"
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/apps", protected_app_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/builds", build_manifest_payload())
+      body = json_response(conn, 201)
+
+      assert body["success"] == true
+      assert body["data"]["schema"] == "tamandua.app_guard.build_manifest/v1"
+      assert body["data"]["build_id"] == "agbld_wallet_android_20260627_001"
+      assert body["data"]["app_id"] == "agapp_wallet_prod"
+      assert body["data"]["artifact"]["sha256"] == String.duplicate("3", 64)
+      assert body["data"]["signing"]["certificate_sha256"] == String.duplicate("1", 64)
+
+      conn = get(auth_conn(token), "/api/v1/mobile/app_guard/builds?app_id=agapp_wallet_prod")
+      list_body = json_response(conn, 200)
+      assert [%{"build_id" => "agbld_wallet_android_20260627_001"}] = list_body["data"]
+    end
+
+    test "rejects unsupported protected app and build schemas", %{conn_a: conn, token_a: token} do
+      conn = post(conn, "/api/v1/mobile/app_guard/apps", %{"schema" => "unknown"})
+      assert json_response(conn, 422)["error"] == "Unsupported App Guard protected app schema"
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/builds", %{"schema" => "unknown"})
+      assert json_response(conn, 422)["error"] == "Unsupported App Guard build manifest schema"
+    end
+  end
+
   describe "legacy mobile device tenant isolation" do
     test "does not expose another organization's legacy mobile device", %{
       conn_b: conn,
@@ -254,6 +331,71 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
         "remote_address" => "203.0.113.10",
         "remote_port" => 443
       }
+    }
+  end
+
+  defp auth_conn(token) do
+    build_conn()
+    |> put_req_header("authorization", "Bearer #{token}")
+  end
+
+  defp protected_app_payload do
+    %{
+      "schema" => "tamandua.app_guard.protected_app/v1",
+      "app_id" => "agapp_wallet_prod",
+      "organization_id" => "client-supplied-org-is-ignored",
+      "display_name" => "Tamandua Sample Wallet",
+      "platform" => "android",
+      "package_or_bundle_id" => "io.tamandua.appguard.samplewallet",
+      "status" => "active",
+      "ingestion" => %{
+        "public_key_id" => "agpk_wallet_prod_202606",
+        "secret_ref" => "vault://tamandua/app_guard/agapp_wallet_prod/ingestion_hmac",
+        "hmac_algorithm" => "HMAC-SHA256",
+        "rate_limit_per_minute" => 1200,
+        "allowed_origins" => ["app://io.tamandua.appguard.samplewallet"],
+        "allowed_ip_cidrs" => [],
+        "rotation" => %{
+          "status" => "current",
+          "last_rotated_at" => "2026-06-27T00:00:00Z",
+          "next_rotation_due_at" => "2026-09-27T00:00:00Z"
+        }
+      },
+      "policy" => %{
+        "policy_id" => "policy_app_guard_default",
+        "protected_workflows" => ["login", "withdrawal", "transaction_signing"],
+        "default_decision" => "step_up"
+      },
+      "created_at" => "2026-06-27T00:00:00Z",
+      "updated_at" => "2026-06-27T00:00:00Z"
+    }
+  end
+
+  defp build_manifest_payload do
+    %{
+      "schema" => "tamandua.app_guard.build_manifest/v1",
+      "build_id" => "agbld_wallet_android_20260627_001",
+      "app_id" => "agapp_wallet_prod",
+      "platform" => "android",
+      "version" => %{"name" => "1.0.0", "code" => "100"},
+      "artifact" => %{
+        "type" => "apk",
+        "filename" => "sample-wallet-debug.apk",
+        "sha256" => String.duplicate("3", 64),
+        "size_bytes" => 846_357
+      },
+      "signing" => %{
+        "scheme" => "android_apk_signature_v2_v3",
+        "certificate_sha256" => String.duplicate("1", 64),
+        "key_alias" => "tamandua-app-guard-sample"
+      },
+      "sdk" => %{
+        "version" => "0.1.0",
+        "config_sha256" => String.duplicate("2", 64),
+        "enabled_signals" => ["root_detected", "debugger_detected", "hook_framework_detected"]
+      },
+      "policy_id" => "policy_app_guard_default",
+      "created_at" => "2026-06-27T00:00:00Z"
     }
   end
 

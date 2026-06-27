@@ -263,17 +263,17 @@ defmodule TamanduaServer.Integrations.SIEM do
     # Convert alert to event format and forward
     event = %{
       type: :alert,
-      timestamp: alert.created_at,
-      severity: alert.severity,
+      timestamp: alert_field(alert, :inserted_at) || alert_field(alert, :created_at),
+      severity: alert_field(alert, :severity),
       data: %{
-        alert_id: alert.id,
-        title: alert.title,
-        description: alert.description,
-        agent_id: alert.agent_id,
-        hostname: alert.hostname,
-        detection_type: alert.detection_type,
-        mitre_tactics: alert.mitre_tactics,
-        mitre_techniques: alert.mitre_techniques
+        alert_id: alert_field(alert, :id),
+        title: alert_field(alert, :title),
+        description: alert_field(alert, :description),
+        agent_id: alert_field(alert, :agent_id),
+        hostname: alert_hostname(alert),
+        detection_type: alert_field(alert, :detection_type) || detection_type(alert),
+        mitre_tactics: alert_field(alert, :mitre_tactics),
+        mitre_techniques: alert_field(alert, :mitre_techniques)
       }
     }
 
@@ -699,6 +699,91 @@ defmodule TamanduaServer.Integrations.SIEM do
       last_failure: DateTime.utc_now()
     }}
   end
+
+  defp alert_field(data, key) when is_atom(key) do
+    cond do
+      is_map(data) and Map.has_key?(data, key) ->
+        Map.get(data, key)
+
+      is_map(data) and Map.has_key?(data, to_string(key)) ->
+        Map.get(data, to_string(key))
+
+      true ->
+        nil
+    end
+  end
+
+  defp alert_hostname(alert) do
+    [
+      loaded_agent_hostname(alert),
+      alert_field(alert, :hostname),
+      alert_field(alert, :agent_hostname),
+      nested_value(alert_field(alert, :raw_event), ["hostname", :hostname]),
+      nested_value(alert_field(alert, :raw_event), ["agent_hostname", :agent_hostname]),
+      nested_value(alert_field(alert, :raw_event), ["payload", :payload, "hostname", :hostname]),
+      nested_value(alert_field(alert, :raw_event), [
+        "payload",
+        :payload,
+        "agent_hostname",
+        :agent_hostname
+      ]),
+      nested_value(alert_field(alert, :evidence), ["hostname", :hostname]),
+      nested_value(alert_field(alert, :evidence), ["agent_hostname", :agent_hostname]),
+      nested_value(alert_field(alert, :detection_metadata), ["hostname", :hostname]),
+      nested_value(alert_field(alert, :detection_metadata), ["agent_hostname", :agent_hostname])
+    ]
+    |> Enum.find(&present_string?/1)
+  end
+
+  defp loaded_agent_hostname(%{agent: %Ecto.Association.NotLoaded{}}), do: nil
+  defp loaded_agent_hostname(%{agent: nil}), do: nil
+  defp loaded_agent_hostname(%{agent: agent}) when is_map(agent), do: Map.get(agent, :hostname)
+  defp loaded_agent_hostname(_), do: nil
+
+  defp detection_type(alert) do
+    [
+      nested_value(alert_field(alert, :detection_metadata), [
+        "detection_type",
+        :detection_type,
+        "rule_type",
+        :rule_type
+      ]),
+      nested_value(alert_field(alert, :raw_event), ["detection_type", :detection_type]),
+      nested_value(alert_field(alert, :raw_event), [
+        "payload",
+        :payload,
+        "detection_type",
+        :detection_type
+      ]),
+      nested_value(alert_field(alert, :evidence), ["detection_type", :detection_type])
+    ]
+    |> Enum.find(&present_string?/1)
+  end
+
+  defp nested_value(map, path) when is_map(map) and is_list(path) do
+    path
+    |> Enum.chunk_every(2)
+    |> Enum.reduce_while(map, fn keys, current ->
+      case first_present(current, keys) do
+        nil -> {:halt, nil}
+        value -> {:cont, value}
+      end
+    end)
+  end
+
+  defp nested_value(_, _), do: nil
+
+  defp first_present(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      value = Map.get(map, key)
+      if present_value?(value), do: value, else: nil
+    end)
+  end
+
+  defp first_present(_, _), do: nil
+
+  defp present_string?(value), do: is_binary(value) and String.trim(value) != ""
+  defp present_value?(value), do: value not in [nil, ""]
 
   defp schedule_batch_flush do
     Process.send_after(self(), :flush_all_batches, @batch_interval_ms)

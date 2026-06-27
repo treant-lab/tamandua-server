@@ -473,6 +473,114 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     |> json(%{error: "Unsupported App Guard event schema"})
   end
 
+  @doc """
+  GET /api/v1/mobile/app_guard/apps
+
+  Lists protected customer apps registered for App Guard.
+  """
+  def app_guard_apps(conn, params) do
+    organization_id = get_organization_id(conn)
+
+    apps =
+      Mobile.list_app_guard_protected_apps(organization_id,
+        platform: params["platform"],
+        limit: parse_int(params["limit"], 100)
+      )
+
+    json(conn, %{data: Enum.map(apps, &serialize_app_guard_protected_app/1)})
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/apps
+
+  Registers a protected customer app for App Guard ingestion.
+  """
+  def create_app_guard_app(conn, %{"schema" => "tamandua.app_guard.protected_app/v1"} = params) do
+    organization_id = get_organization_id(conn)
+    attrs = Map.put(params, "organization_id", organization_id)
+
+    case Mobile.create_app_guard_protected_app(attrs) do
+      {:ok, app} ->
+        conn
+        |> put_status(:created)
+        |> json(%{success: true, data: serialize_app_guard_protected_app(app)})
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def create_app_guard_app(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "Unsupported App Guard protected app schema"})
+  end
+
+  @doc """
+  GET /api/v1/mobile/app_guard/apps/:app_id
+
+  Shows one protected customer app registration.
+  """
+  def show_app_guard_app(conn, %{"app_id" => app_id}) do
+    organization_id = get_organization_id(conn)
+
+    case Mobile.get_app_guard_protected_app_by_app_id(organization_id, app_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "App Guard protected app not found"})
+
+      app ->
+        json(conn, %{data: serialize_app_guard_protected_app(app)})
+    end
+  end
+
+  @doc """
+  GET /api/v1/mobile/app_guard/builds
+
+  Lists App Guard build manifests.
+  """
+  def app_guard_builds(conn, params) do
+    organization_id = get_organization_id(conn)
+
+    builds =
+      Mobile.list_app_guard_build_manifests(organization_id,
+        app_id: params["app_id"],
+        limit: parse_int(params["limit"], 100)
+      )
+
+    json(conn, %{data: Enum.map(builds, &serialize_app_guard_build_manifest/1)})
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/builds
+
+  Stores a protected App Guard build manifest.
+  """
+  def create_app_guard_build(conn, %{"schema" => "tamandua.app_guard.build_manifest/v1"} = params) do
+    organization_id = get_organization_id(conn)
+    attrs = Map.put(params, "organization_id", organization_id)
+
+    case Mobile.create_app_guard_build_manifest(attrs) do
+      {:ok, manifest} ->
+        conn
+        |> put_status(:created)
+        |> json(%{success: true, data: serialize_app_guard_build_manifest(manifest)})
+
+      {:error, :protected_app_not_found} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "App Guard protected app must be registered before build manifests"})
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def create_app_guard_build(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "Unsupported App Guard build manifest schema"})
+  end
+
   # ============================================================================
   # Statistics and Posture
   # ============================================================================
@@ -2198,6 +2306,43 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       app_bundle_id: event.app_bundle_id,
       app_name: event.app_name,
       domain: event.domain
+    }
+  end
+
+  defp serialize_app_guard_protected_app(app) do
+    %{
+      schema: "tamandua.app_guard.protected_app/v1",
+      id: app.id,
+      app_id: app.app_id,
+      organization_id: app.organization_id,
+      display_name: app.display_name,
+      platform: app.platform,
+      package_or_bundle_id: app.package_or_bundle_id,
+      status: app.status,
+      ingestion: app.ingestion,
+      policy: app.policy,
+      created_at: format_datetime(app.manifest_created_at),
+      inserted_at: format_datetime(app.inserted_at),
+      updated_at: format_datetime(app.updated_at)
+    }
+  end
+
+  defp serialize_app_guard_build_manifest(manifest) do
+    %{
+      schema: "tamandua.app_guard.build_manifest/v1",
+      id: manifest.id,
+      build_id: manifest.build_id,
+      app_id: manifest.app_id,
+      organization_id: manifest.organization_id,
+      platform: manifest.platform,
+      version: manifest.version,
+      artifact: manifest.artifact,
+      signing: manifest.signing,
+      sdk: manifest.sdk,
+      policy_id: manifest.policy_id,
+      created_at: format_datetime(manifest.manifest_created_at),
+      inserted_at: format_datetime(manifest.inserted_at),
+      updated_at: format_datetime(manifest.updated_at)
     }
   end
 
