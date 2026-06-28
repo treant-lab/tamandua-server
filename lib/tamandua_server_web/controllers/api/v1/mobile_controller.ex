@@ -30,7 +30,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
   require Logger
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   @app_guard_event_types ~w(
     root_detected
@@ -305,10 +305,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     apps = Mobile.list_high_risk_apps(organization_id, opts)
 
     json(conn, %{
-      data: Enum.map(apps, fn app ->
-        serialize_app(app)
-        |> Map.put(:device, serialize_device_summary(app.device))
-      end)
+      data:
+        Enum.map(apps, fn app ->
+          serialize_app(app)
+          |> Map.put(:device, serialize_device_summary(app.device))
+        end)
     })
   end
 
@@ -324,10 +325,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     apps = Mobile.list_sideloaded_apps(organization_id, opts)
 
     json(conn, %{
-      data: Enum.map(apps, fn app ->
-        serialize_app(app)
-        |> Map.put(:device, serialize_device_summary(app.device))
-      end)
+      data:
+        Enum.map(apps, fn app ->
+          serialize_app(app)
+          |> Map.put(:device, serialize_device_summary(app.device))
+        end)
     })
   end
 
@@ -373,10 +375,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     events = Mobile.list_organization_events(organization_id, opts)
 
     json(conn, %{
-      data: Enum.map(events, fn event ->
-        serialize_event(event)
-        |> Map.put(:device, serialize_device_summary(event.device))
-      end)
+      data:
+        Enum.map(events, fn event ->
+          serialize_event(event)
+          |> Map.put(:device, serialize_device_summary(event.device))
+        end)
     })
   end
 
@@ -410,11 +413,12 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         Mobile.touch_device(device)
 
         # Prepare events with device/org context
-        prepared_events = Enum.map(events_data, fn event ->
-          event
-          |> Map.put("device_id", device_id)
-          |> Map.put("organization_id", organization_id)
-        end)
+        prepared_events =
+          Enum.map(events_data, fn event ->
+            event
+            |> Map.put("device_id", device_id)
+            |> Map.put("organization_id", organization_id)
+          end)
 
         results = Mobile.ingest_events(prepared_events)
 
@@ -460,7 +464,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         |> json(%{error: "Invalid App Guard event signature", details: errors})
 
       {:error, :invalid_device} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid App Guard device payload"})
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Invalid App Guard device payload"})
 
       {:error, changeset} ->
         {:error, changeset}
@@ -581,6 +587,138 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     |> json(%{error: "Unsupported App Guard build manifest schema"})
   end
 
+  @doc """
+  GET /api/v1/mobile/app_guard/research/programs
+
+  Lists App Guard research/private bounty programs for reviewer queues.
+  """
+  def app_guard_research_programs(conn, params) do
+    organization_id = get_organization_id(conn)
+
+    programs =
+      Mobile.list_app_guard_research_programs(organization_id,
+        status: params["status"],
+        limit: parse_int(params["limit"], 100)
+      )
+
+    json(conn, %{data: Enum.map(programs, &serialize_app_guard_research_program/1)})
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/research/programs
+
+  Creates an App Guard research/private bounty program.
+  """
+  def create_app_guard_research_program(
+        conn,
+        %{"schema" => "tamandua.app_guard.research_program/v1"} = params
+      ) do
+    organization_id = get_organization_id(conn)
+    attrs = Map.put(params, "organization_id", organization_id)
+
+    case Mobile.create_app_guard_research_program(attrs) do
+      {:ok, program} ->
+        conn
+        |> put_status(:created)
+        |> json(%{success: true, data: serialize_app_guard_research_program(program)})
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def create_app_guard_research_program(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "Unsupported App Guard research program schema"})
+  end
+
+  @doc """
+  GET /api/v1/mobile/app_guard/research/submissions
+
+  Lists App Guard research submissions for triage/reviewer queues.
+  """
+  def app_guard_research_submissions(conn, params) do
+    organization_id = get_organization_id(conn)
+
+    submissions =
+      Mobile.list_app_guard_research_submissions(organization_id,
+        program_id: params["program_id"],
+        status: params["status"],
+        limit: parse_int(params["limit"], 100)
+      )
+
+    json(conn, %{data: Enum.map(submissions, &serialize_app_guard_research_submission/1)})
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/research/submissions
+
+  Creates an App Guard research submission.
+  """
+  def create_app_guard_research_submission(
+        conn,
+        %{"schema" => "tamandua.app_guard.research_submission/v1"} = params
+      ) do
+    organization_id = get_organization_id(conn)
+    attrs = Map.put(params, "organization_id", organization_id)
+
+    case Mobile.create_app_guard_research_submission(attrs) do
+      {:ok, submission} ->
+        conn
+        |> put_status(:created)
+        |> json(%{success: true, data: serialize_app_guard_research_submission(submission)})
+
+      {:error, :research_program_not_found} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "App Guard research program must exist before submissions"})
+
+      {:error, :research_submission_out_of_scope} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "App Guard research submission evidence is outside program scope"})
+
+      {:error, :research_submission_researcher_not_invited} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{
+          error: "App Guard research submission researcher is not invited to this private program"
+        })
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def create_app_guard_research_submission(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "Unsupported App Guard research submission schema"})
+  end
+
+  @doc """
+  POST /api/v1/mobile/app_guard/research/submissions/:submission_id/validate
+
+  Stores reviewer validation state for an App Guard research submission.
+  """
+  def validate_app_guard_research_submission(conn, %{"submission_id" => submission_id} = params) do
+    organization_id = get_organization_id(conn)
+
+    case Mobile.validate_app_guard_research_submission(organization_id, submission_id, params) do
+      {:ok, submission} ->
+        json(conn, %{success: true, data: serialize_app_guard_research_submission(submission)})
+
+      {:error, :research_submission_not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "App Guard research submission not found"})
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
   # ============================================================================
   # Statistics and Posture
   # ============================================================================
@@ -637,7 +775,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
     case provider.lock_device(mdm_device_id, params) do
       {:ok, result} ->
-        Logger.info("[MDM] Lock command sent: device=#{device.device_id} provider=#{inspect(provider)}")
+        Logger.info(
+          "[MDM] Lock command sent: device=#{device.device_id} provider=#{inspect(provider)}"
+        )
+
         json(conn, %{
           success: true,
           message: "Lock command sent to device #{device.device_id}",
@@ -648,6 +789,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
       {:error, reason} ->
         Logger.error("[MDM] Lock failed: device=#{device.device_id} reason=#{inspect(reason)}")
+
         conn
         |> put_status(:bad_gateway)
         |> json(%{
@@ -676,7 +818,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         # Mark device as wiped in our records
         Mobile.mark_device_wiped(device)
 
-        Logger.info("[MDM] Wipe command sent: device=#{device.device_id} type=#{params["wipe_type"] || "enterprise_only"}")
+        Logger.info(
+          "[MDM] Wipe command sent: device=#{device.device_id} type=#{params["wipe_type"] || "enterprise_only"}"
+        )
+
         json(conn, %{
           success: true,
           message: "Wipe command sent to device #{device.device_id}",
@@ -688,6 +833,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
       {:error, reason} ->
         Logger.error("[MDM] Wipe failed: device=#{device.device_id} reason=#{inspect(reason)}")
+
         conn
         |> put_status(:bad_gateway)
         |> json(%{
@@ -706,9 +852,11 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   def locate_device(conn, %{"id" => id}) do
     device = get_legacy_device_for_org!(conn, id)
 
-    location = device.last_location || %{
-      note: "Location not available. Device must have location services enabled."
-    }
+    location =
+      device.last_location ||
+        %{
+          note: "Location not available. Device must have location services enabled."
+        }
 
     json(conn, %{
       success: true,
@@ -881,20 +1029,22 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       mdm_enrolled: device.mdm_enrolled,
       risk_score: device.risk_score,
       risk_factors: device.risk_factors,
-      local_compliant: not (device.is_jailbroken or device.is_rooted) and
-                        device.passcode_enabled != false and
-                        device.encryption_enabled != false
+      local_compliant:
+        not (device.is_jailbroken or device.is_rooted) and
+          device.passcode_enabled != false and
+          device.encryption_enabled != false
     }
 
     # Remote compliance check (if provider supports it)
-    remote_compliance = if function_exported?(provider, :get_compliance_status, 1) do
-      case provider.get_compliance_status(mdm_device_id) do
-        {:ok, status} -> status
-        {:error, _} -> %{note: "Could not reach MDM provider for remote compliance check"}
+    remote_compliance =
+      if function_exported?(provider, :get_compliance_status, 1) do
+        case provider.get_compliance_status(mdm_device_id) do
+          {:ok, status} -> status
+          {:error, _} -> %{note: "Could not reach MDM provider for remote compliance check"}
+        end
+      else
+        %{note: "MDM provider does not support remote compliance queries"}
       end
-    else
-      %{note: "MDM provider does not support remote compliance queries"}
-    end
 
     json(conn, %{
       data: %{
@@ -902,8 +1052,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         platform: device.platform,
         local: local_compliance,
         remote: remote_compliance,
-        overall_compliant: local_compliance.local_compliant and
-                           (remote_compliance[:compliant] != false),
+        overall_compliant:
+          local_compliance.local_compliant and
+            remote_compliance[:compliant] != false,
         checked_at: DateTime.utc_now() |> DateTime.to_iso8601()
       }
     })
@@ -973,11 +1124,12 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         # Persist under a per-org mobile config key in Settings (ETS-backed)
         mobile_category = :"mobile_#{organization_id}"
 
-        current = try do
-          TamanduaServer.Settings.get(mobile_category)
-        rescue
-          _ -> %{}
-        end
+        current =
+          try do
+            TamanduaServer.Settings.get(mobile_category)
+          rescue
+            _ -> %{}
+          end
 
         merged = deep_merge_config(current, validated_config)
 
@@ -985,7 +1137,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         # manages :tamandua_settings, which is public)
         :ets.insert(:tamandua_settings, {mobile_category, merged})
 
-        Logger.info("[Mobile] Config updated for org=#{organization_id}: #{inspect(Map.keys(validated_config))}")
+        Logger.info(
+          "[Mobile] Config updated for org=#{organization_id}: #{inspect(Map.keys(validated_config))}"
+        )
 
         # Broadcast to all connected mobile agents in this organization
         Phoenix.PubSub.broadcast(
@@ -1016,27 +1170,29 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     errors = []
     validated = %{}
 
-    {validated, errors} = Enum.reduce(params, {validated, errors}, fn {section, values}, {acc_v, acc_e} ->
-      cond do
-        section not in @allowed_config_sections ->
-          {acc_v, ["Unknown configuration section: #{section}" | acc_e]}
+    {validated, errors} =
+      Enum.reduce(params, {validated, errors}, fn {section, values}, {acc_v, acc_e} ->
+        cond do
+          section not in @allowed_config_sections ->
+            {acc_v, ["Unknown configuration section: #{section}" | acc_e]}
 
-        not is_map(values) ->
-          {acc_v, ["Section '#{section}' must be a map of key-value pairs" | acc_e]}
+          not is_map(values) ->
+            {acc_v, ["Section '#{section}' must be a map of key-value pairs" | acc_e]}
 
-        true ->
-          allowed_keys = allowed_keys_for_section(section)
-          {section_config, section_errors} = validate_section(section, values, allowed_keys)
+          true ->
+            allowed_keys = allowed_keys_for_section(section)
+            {section_config, section_errors} = validate_section(section, values, allowed_keys)
 
-          acc_v = if map_size(section_config) > 0 do
-            Map.put(acc_v, section, section_config)
-          else
-            acc_v
-          end
+            acc_v =
+              if map_size(section_config) > 0 do
+                Map.put(acc_v, section, section_config)
+              else
+                acc_v
+              end
 
-          {acc_v, acc_e ++ section_errors}
-      end
-    end)
+            {acc_v, acc_e ++ section_errors}
+        end
+      end)
 
     if errors == [] do
       if map_size(validated) == 0 do
@@ -1071,19 +1227,25 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     end)
   end
 
-  defp validate_config_value(_section, key, value) when key in ~w(heartbeat_interval_seconds event_batch_size event_flush_interval_seconds app_inventory_interval_hours device_info_interval_hours) do
+  defp validate_config_value(_section, key, value)
+       when key in ~w(heartbeat_interval_seconds event_batch_size event_flush_interval_seconds app_inventory_interval_hours device_info_interval_hours) do
     cond do
-      is_integer(value) and value > 0 -> {:ok, value}
+      is_integer(value) and value > 0 ->
+        {:ok, value}
+
       is_binary(value) ->
         case Integer.parse(value) do
           {int, _} when int > 0 -> {:ok, int}
           _ -> {:error, "must be a positive integer"}
         end
-      true -> {:error, "must be a positive integer"}
+
+      true ->
+        {:error, "must be a positive integer"}
     end
   end
 
-  defp validate_config_value(_section, key, value) when key in ~w(detect_jailbreak detect_root detect_debugger block_malicious_domains scan_installed_apps enable_dns_monitoring enable_traffic_analysis collect_app_inventory collect_device_info) do
+  defp validate_config_value(_section, key, value)
+       when key in ~w(detect_jailbreak detect_root detect_debugger block_malicious_domains scan_installed_apps enable_dns_monitoring enable_traffic_analysis collect_app_inventory collect_device_info) do
     cond do
       is_boolean(value) -> {:ok, value}
       value in ["true", "false"] -> {:ok, value == "true"}
@@ -1106,10 +1268,12 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     Map.merge(base, override, fn
       _key, base_val, override_val when is_map(base_val) and is_map(override_val) ->
         deep_merge_config(base_val, override_val)
+
       _key, _base_val, override_val ->
         override_val
     end)
   end
+
   defp deep_merge_config(_base, override), do: override
 
   # ============================================================================
@@ -1129,26 +1293,33 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       {"jamf", "Jamf Pro"}
     ]
 
-    integrations = Enum.map(providers, fn {name, display_name} ->
-      configured = MDMProvider.configured?(name)
-      %{
-        provider: name,
-        display_name: display_name,
-        status: if(configured, do: "configured", else: "not_configured"),
-        message: if(configured,
-          do: "#{display_name} is configured and ready",
-          else: "Configure #{display_name} in Settings > Integrations"
-        )
-      }
-    end)
+    integrations =
+      Enum.map(providers, fn {name, display_name} ->
+        configured = MDMProvider.configured?(name)
+
+        %{
+          provider: name,
+          display_name: display_name,
+          status: if(configured, do: "configured", else: "not_configured"),
+          message:
+            if(configured,
+              do: "#{display_name} is configured and ready",
+              else: "Configure #{display_name} in Settings > Integrations"
+            )
+        }
+      end)
 
     # Generic provider is always available
-    integrations = integrations ++ [%{
-      provider: "generic",
-      display_name: "Manual Queue",
-      status: "available",
-      message: "Commands are queued for manual execution when no MDM is configured"
-    }]
+    integrations =
+      integrations ++
+        [
+          %{
+            provider: "generic",
+            display_name: "Manual Queue",
+            status: "available",
+            message: "Commands are queued for manual execution when no MDM is configured"
+          }
+        ]
 
     json(conn, %{data: %{integrations: integrations}})
   end
@@ -1163,17 +1334,20 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
     providers = [{"intune", "Microsoft Intune"}, {"jamf", "Jamf Pro"}]
 
-    synced = Enum.filter(providers, fn {name, _} -> MDMProvider.configured?(name) end)
-             |> Enum.map(fn {name, _} -> name end)
+    synced =
+      Enum.filter(providers, fn {name, _} -> MDMProvider.configured?(name) end)
+      |> Enum.map(fn {name, _} -> name end)
 
     if synced == [] do
       json(conn, %{
         success: false,
-        message: "No MDM providers are configured. Configure a provider in Settings > Integrations.",
+        message:
+          "No MDM providers are configured. Configure a provider in Settings > Integrations.",
         synced_providers: []
       })
     else
       Logger.info("[MDM] Sync triggered for providers: #{inspect(synced)}")
+
       json(conn, %{
         success: true,
         message: "MDM sync initiated for #{length(synced)} provider(s)",
@@ -1195,9 +1369,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     event_types = TamanduaServer.Mobile.MobileEvent.event_types()
 
     json(conn, %{
-      data: Enum.map(event_types, fn {type, description} ->
-        %{type: type, description: description}
-      end)
+      data:
+        Enum.map(event_types, fn {type, description} ->
+          %{type: type, description: description}
+        end)
     })
   end
 
@@ -1596,7 +1771,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         json(conn, %{data: report})
 
       {:error, :not_found} ->
-        conn |> put_status(:not_found) |> json(%{error: "No compliance report found. Run a compliance check first."})
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "No compliance report found. Run a compliance check first."})
     end
   end
 
@@ -1653,23 +1830,31 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
     audit_mdm_action(conn, command, device)
 
-    result = case command do
-      "lock" ->
-        provider.lock_device(mdm_device_id, params)
+    result =
+      case command do
+        "lock" ->
+          provider.lock_device(mdm_device_id, params)
 
-      "wipe" ->
-        with {:ok, res} <- provider.wipe_device(mdm_device_id, params) do
-          Mobile.mark_device_wiped(device)
-          {:ok, res}
-        end
+        "wipe" ->
+          with {:ok, res} <- provider.wipe_device(mdm_device_id, params) do
+            Mobile.mark_device_wiped(device)
+            {:ok, res}
+          end
 
-      "locate" ->
-        location = device.last_location || %{note: "Location not available"}
-        {:ok, %{action: "locate", device_id: device.device_id, location: location, status: "completed"}}
+        "locate" ->
+          location = device.last_location || %{note: "Location not available"}
 
-      other ->
-        {:error, {:unknown_command, other}}
-    end
+          {:ok,
+           %{
+             action: "locate",
+             device_id: device.device_id,
+             location: location,
+             status: "completed"
+           }}
+
+        other ->
+          {:error, {:unknown_command, other}}
+      end
 
     case result do
       {:ok, res} ->
@@ -1715,6 +1900,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       })
     else
       Logger.info("[MDM] Sync triggered for providers: #{inspect(synced)}")
+
       json(conn, %{
         success: true,
         message: "MDM sync initiated for #{length(synced)} provider(s)",
@@ -1760,7 +1946,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     json(conn, %{
       success: true,
       data: %{checked: checked, non_compliant: non_compliant},
-      message: "Bulk compliance check completed: #{checked} checked, #{non_compliant} non-compliant"
+      message:
+        "Bulk compliance check completed: #{checked} checked, #{non_compliant} non-compliant"
     })
   end
 
@@ -2057,7 +2244,9 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   defp require_string(errors, params, path) do
     case app_guard_contract_value(params, path) do
       value when is_binary(value) ->
-        if String.trim(value) == "", do: [field_path(path) <> " is required" | errors], else: errors
+        if String.trim(value) == "",
+          do: [field_path(path) <> " is required" | errors],
+          else: errors
 
       _ ->
         [field_path(path) <> " is required" | errors]
@@ -2206,16 +2395,19 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       end
 
     app_id = get_in(params, ["app", "package_or_bundle_id"]) || "unknown app"
+
     "App Guard event for #{app_id}; decision=#{risk["decision"]}; score=#{risk["score"]}; reasons=#{reasons}"
   end
 
   defp parse_int(nil, default), do: default
+
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp parse_int(value, _) when is_integer(value), do: value
 
   defp serialize_device(device) when is_map(device) do
@@ -2275,6 +2467,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       model: device.model
     }
   end
+
   defp serialize_device_summary(nil), do: nil
 
   defp serialize_app(app) do
@@ -2346,6 +2539,52 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   end
 
+  defp serialize_app_guard_research_program(program) do
+    %{
+      schema: "tamandua.app_guard.research_program/v1",
+      id: program.id,
+      program_id: program.program_id,
+      organization_id: program.organization_id,
+      app: program.app,
+      name: program.name,
+      description: program.description,
+      status: program.status,
+      visibility: program.visibility,
+      program_type: program.program_type,
+      scope: program.scope,
+      rules: program.rules,
+      reward: program.reward,
+      invited_researchers: program.invited_researchers,
+      created_at: format_datetime(program.manifest_created_at),
+      inserted_at: format_datetime(program.inserted_at),
+      updated_at: format_datetime(program.updated_at)
+    }
+  end
+
+  defp serialize_app_guard_research_submission(submission) do
+    %{
+      schema: "tamandua.app_guard.research_submission/v1",
+      id: submission.id,
+      submission_id: submission.submission_id,
+      program_id: submission.program_id,
+      organization_id: submission.organization_id,
+      researcher_id: submission.researcher_id,
+      title: submission.title,
+      description: submission.description,
+      severity: submission.severity,
+      status: submission.status,
+      cvss: submission.cvss,
+      technical_details: submission.technical_details,
+      evidence_links: submission.evidence_links,
+      attachments: submission.attachments,
+      validation: submission.validation,
+      reward: submission.reward,
+      submitted_at: format_datetime(submission.submitted_at),
+      inserted_at: format_datetime(submission.inserted_at),
+      updated_at: format_datetime(submission.updated_at)
+    }
+  end
+
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
@@ -2376,11 +2615,21 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   end
 
   # Formats MDM provider errors into user-friendly messages.
-  defp format_mdm_error(:intune_not_configured), do: "Microsoft Intune is not configured. Set up credentials in Settings > Integrations."
-  defp format_mdm_error(:jamf_not_configured), do: "Jamf Pro is not configured. Set up credentials in Settings > Integrations."
-  defp format_mdm_error({:api_error, status, _body}), do: "MDM provider returned error (HTTP #{status}). Check provider configuration."
-  defp format_mdm_error({:token_error, status}), do: "Failed to authenticate with MDM provider (HTTP #{status}). Check credentials."
-  defp format_mdm_error({:request_failed, reason}), do: "Could not reach MDM provider: #{inspect(reason)}"
+  defp format_mdm_error(:intune_not_configured),
+    do: "Microsoft Intune is not configured. Set up credentials in Settings > Integrations."
+
+  defp format_mdm_error(:jamf_not_configured),
+    do: "Jamf Pro is not configured. Set up credentials in Settings > Integrations."
+
+  defp format_mdm_error({:api_error, status, _body}),
+    do: "MDM provider returned error (HTTP #{status}). Check provider configuration."
+
+  defp format_mdm_error({:token_error, status}),
+    do: "Failed to authenticate with MDM provider (HTTP #{status}). Check credentials."
+
+  defp format_mdm_error({:request_failed, reason}),
+    do: "Could not reach MDM provider: #{inspect(reason)}"
+
   defp format_mdm_error(other), do: "MDM operation failed: #{inspect(other)}"
 
   defp registry_stats_for_devices(devices) do

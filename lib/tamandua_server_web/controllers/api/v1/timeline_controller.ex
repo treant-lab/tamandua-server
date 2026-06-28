@@ -74,6 +74,8 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   @default_timeline_limit 150
   @max_timeline_limit 250
+  @timeline_query_timeout 4_000
+  @timeline_correlation_timeout 2_500
   @default_readiness_limit 1_000
   @max_readiness_limit 2_500
 
@@ -170,7 +172,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
           end
       end
 
-    events = safe_repo_all(query, "Timeline events")
+    {events, query_partial_reason} = safe_repo_all_with_meta(query, "Timeline events")
 
     {evidence, correlation_partial_reason} =
       safe_correlate_events(events,
@@ -187,8 +189,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         scoringPolicy: evidence.scoring_policy,
         analyzedEventCount: evidence.analyzed_event_count,
         correlationCount: length(evidence.correlations),
-        partial: evidence.partial,
-        partialReason: correlation_partial_reason,
+        partial: not is_nil(query_partial_reason) or evidence.partial,
+        partialReason: query_partial_reason || correlation_partial_reason,
+        queryPartialReason: query_partial_reason,
+        correlationPartialReason: correlation_partial_reason,
         incidentCandidates: evidence.incident_candidates || [],
         campaignCandidates: evidence.campaign_candidates || [],
         entityGraph: evidence.entity_graph,
@@ -1135,15 +1139,20 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   defp safe_repo_all(query, label) do
-    Repo.all(query, timeout: 8_000)
+    {rows, _reason} = safe_repo_all_with_meta(query, label)
+    rows
+  end
+
+  defp safe_repo_all_with_meta(query, label) do
+    {Repo.all(query, timeout: @timeline_query_timeout), nil}
   rescue
     error in [DBConnection.ConnectionError, Postgrex.Error] ->
       Logger.warning("#{label} failed: #{Exception.message(error)}")
-      []
+      {[], "#{label}: #{Exception.message(error)}"}
   catch
     :exit, reason ->
       Logger.warning("#{label} failed: exit #{inspect(reason)}")
-      []
+      {[], "#{label}: exit #{inspect(reason)}"}
   end
 
   defp safe_correlate_events(events, opts) do
@@ -1154,7 +1163,23 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   defp do_safe_correlate_events(events, correlate_opts, label) do
-    {CorrelationEvidence.correlate_events(events, correlate_opts), nil}
+    task =
+      Task.async(fn ->
+        CorrelationEvidence.correlate_events(events, correlate_opts)
+      end)
+
+    case Task.yield(task, @timeline_correlation_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, evidence} ->
+        {evidence, nil}
+
+      nil ->
+        Logger.warning("#{label} timed out after #{@timeline_correlation_timeout}ms")
+        {empty_correlation_evidence(length(events)), "correlation_timeout"}
+
+      {:exit, reason} ->
+        Logger.warning("#{label} failed: exit #{inspect(reason)}")
+        {empty_correlation_evidence(length(events)), "correlation_unavailable"}
+    end
   rescue
     error ->
       Logger.warning("#{label} failed: #{Exception.message(error)}")

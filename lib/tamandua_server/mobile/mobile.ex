@@ -10,9 +10,12 @@ defmodule TamanduaServer.Mobile do
   require Logger
 
   alias TamanduaServer.Repo
+
   alias TamanduaServer.Mobile.{
     AppGuardBuildManifest,
     AppGuardProtectedApp,
+    AppGuardResearchProgram,
+    AppGuardResearchSubmission,
     Device,
     MobileApp,
     MobileEvent
@@ -420,7 +423,177 @@ defmodule TamanduaServer.Mobile do
 
   defp maybe_filter_app_guard_app_id(query, nil), do: query
   defp maybe_filter_app_guard_app_id(query, ""), do: query
-  defp maybe_filter_app_guard_app_id(query, app_id), do: AppGuardBuildManifest.by_app_id(query, app_id)
+
+  defp maybe_filter_app_guard_app_id(query, app_id),
+    do: AppGuardBuildManifest.by_app_id(query, app_id)
+
+  @doc """
+  Lists App Guard research programs for an organization.
+  """
+  def list_app_guard_research_programs(organization_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+    status = Keyword.get(opts, :status)
+
+    AppGuardResearchProgram
+    |> AppGuardResearchProgram.by_organization(organization_id)
+    |> maybe_filter_app_guard_research_status(status)
+    |> AppGuardResearchProgram.latest_first()
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets one App Guard research program by program_id within an organization.
+  """
+  def get_app_guard_research_program_by_program_id(organization_id, program_id) do
+    AppGuardResearchProgram
+    |> AppGuardResearchProgram.by_organization(organization_id)
+    |> AppGuardResearchProgram.by_program_id(program_id)
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates an App Guard research program.
+  """
+  def create_app_guard_research_program(attrs) do
+    %AppGuardResearchProgram{}
+    |> AppGuardResearchProgram.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists App Guard research submissions for an organization.
+  """
+  def list_app_guard_research_submissions(organization_id, opts \\ []) do
+    program_id = Keyword.get(opts, :program_id)
+    status = Keyword.get(opts, :status)
+    limit = Keyword.get(opts, :limit, 100)
+
+    AppGuardResearchSubmission
+    |> AppGuardResearchSubmission.by_organization(organization_id)
+    |> maybe_filter_app_guard_submission_program(program_id)
+    |> maybe_filter_app_guard_submission_status(status)
+    |> AppGuardResearchSubmission.latest_first()
+    |> limit(^limit)
+    |> preload(:research_program)
+    |> Repo.all()
+  end
+
+  @doc """
+  Gets one App Guard research submission by submission_id within an organization.
+  """
+  def get_app_guard_research_submission_by_submission_id(organization_id, submission_id) do
+    AppGuardResearchSubmission
+    |> AppGuardResearchSubmission.by_organization(organization_id)
+    |> AppGuardResearchSubmission.by_submission_id(submission_id)
+    |> preload(:research_program)
+    |> Repo.one()
+  end
+
+  @doc """
+  Creates an App Guard research submission for a registered program.
+  """
+  def create_app_guard_research_submission(attrs) do
+    organization_id = attrs["organization_id"] || attrs[:organization_id]
+    program_id = attrs["program_id"] || attrs[:program_id]
+
+    case get_app_guard_research_program_by_program_id(organization_id, program_id) do
+      nil ->
+        {:error, :research_program_not_found}
+
+      %AppGuardResearchProgram{} = program ->
+        attrs =
+          attrs
+          |> put_app_guard_attr(:research_program_id, program.id)
+          |> put_app_guard_attr(:organization_id, program.organization_id)
+
+        with :ok <- ensure_submission_researcher_scope(attrs, program),
+             :ok <- ensure_submission_build_scope(attrs, program) do
+          %AppGuardResearchSubmission{}
+          |> AppGuardResearchSubmission.changeset(attrs)
+          |> Repo.insert()
+        end
+    end
+  end
+
+  @doc """
+  Updates reviewer validation for an App Guard research submission.
+  """
+  def validate_app_guard_research_submission(organization_id, submission_id, attrs) do
+    case get_app_guard_research_submission_by_submission_id(organization_id, submission_id) do
+      nil ->
+        {:error, :research_submission_not_found}
+
+      %AppGuardResearchSubmission{} = submission ->
+        submission
+        |> AppGuardResearchSubmission.validation_changeset(attrs)
+        |> Repo.update()
+    end
+  end
+
+  defp maybe_filter_app_guard_research_status(query, nil), do: query
+  defp maybe_filter_app_guard_research_status(query, ""), do: query
+
+  defp maybe_filter_app_guard_research_status(query, status) when is_binary(status) do
+    from(program in query, where: program.status == ^status)
+  end
+
+  defp maybe_filter_app_guard_submission_program(query, nil), do: query
+  defp maybe_filter_app_guard_submission_program(query, ""), do: query
+
+  defp maybe_filter_app_guard_submission_program(query, program_id),
+    do: AppGuardResearchSubmission.by_program_id(query, program_id)
+
+  defp maybe_filter_app_guard_submission_status(query, nil), do: query
+  defp maybe_filter_app_guard_submission_status(query, ""), do: query
+
+  defp maybe_filter_app_guard_submission_status(query, status),
+    do: AppGuardResearchSubmission.by_status(query, status)
+
+  defp ensure_submission_researcher_scope(attrs, %AppGuardResearchProgram{
+         visibility: "private",
+         invited_researchers: invited_researchers
+       }) do
+    researcher_id = attrs["researcher_id"] || attrs[:researcher_id]
+
+    if researcher_id in invited_researchers do
+      :ok
+    else
+      {:error, :research_submission_researcher_not_invited}
+    end
+  end
+
+  defp ensure_submission_researcher_scope(_attrs, _program), do: :ok
+
+  defp ensure_submission_build_scope(attrs, program) do
+    evidence_links = attrs["evidence_links"] || attrs[:evidence_links] || %{}
+
+    build_ids =
+      Map.get(evidence_links, "fixed_build_manifest_ids") ||
+        Map.get(evidence_links, :fixed_build_manifest_ids) ||
+        []
+
+    scoped_build_ids = scoped_build_manifest_ids(program.scope)
+
+    if MapSet.subset?(MapSet.new(build_ids), MapSet.new(scoped_build_ids)) do
+      :ok
+    else
+      {:error, :research_submission_out_of_scope}
+    end
+  end
+
+  defp scoped_build_manifest_ids(scope) when is_map(scope) do
+    targets = Map.get(scope, "targets") || Map.get(scope, :targets) || []
+
+    targets
+    |> Enum.filter(fn target ->
+      (Map.get(target, "target_type") || Map.get(target, :target_type)) == "build_manifest"
+    end)
+    |> Enum.map(fn target -> Map.get(target, "value") || Map.get(target, :value) end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp scoped_build_manifest_ids(_), do: []
 
   defp put_app_guard_attr(attrs, key, value) do
     string_key = Atom.to_string(key)

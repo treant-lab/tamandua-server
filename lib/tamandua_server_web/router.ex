@@ -1305,9 +1305,24 @@ defmodule TamanduaServerWeb.Router do
     get("/detection-analytics/blind-spots", DetectionAnalyticsController, :blind_spots)
     get("/detection-analytics/recommendations", DetectionAnalyticsController, :recommendations)
     get("/detection-analytics/trends", DetectionAnalyticsController, :trends)
-    get("/detection-analytics/precision-metrics", DetectionAnalyticsController, :precision_metrics)
-    get("/detection-analytics/collector-coverage", DetectionAnalyticsController, :collector_coverage)
-    get("/detection-analytics/effective-coverage", DetectionAnalyticsController, :effective_coverage)
+
+    get(
+      "/detection-analytics/precision-metrics",
+      DetectionAnalyticsController,
+      :precision_metrics
+    )
+
+    get(
+      "/detection-analytics/collector-coverage",
+      DetectionAnalyticsController,
+      :collector_coverage
+    )
+
+    get(
+      "/detection-analytics/effective-coverage",
+      DetectionAnalyticsController,
+      :effective_coverage
+    )
 
     # Dynamic Threat Detection
     get("/dynamic-detection/status", DynamicDetectionController, :status)
@@ -1916,6 +1931,32 @@ defmodule TamanduaServerWeb.Router do
     get("/mobile/app_guard/apps/:app_id", MobileController, :show_app_guard_app)
     get("/mobile/app_guard/builds", MobileController, :app_guard_builds)
     post("/mobile/app_guard/builds", MobileController, :create_app_guard_build)
+    get("/mobile/app_guard/research/programs", MobileController, :app_guard_research_programs)
+
+    post(
+      "/mobile/app_guard/research/programs",
+      MobileController,
+      :create_app_guard_research_program
+    )
+
+    get(
+      "/mobile/app_guard/research/submissions",
+      MobileController,
+      :app_guard_research_submissions
+    )
+
+    post(
+      "/mobile/app_guard/research/submissions",
+      MobileController,
+      :create_app_guard_research_submission
+    )
+
+    post(
+      "/mobile/app_guard/research/submissions/:submission_id/validate",
+      MobileController,
+      :validate_app_guard_research_submission
+    )
+
     post("/mobile/app_guard/events", MobileController, :ingest_app_guard_event)
 
     # Mobile Stats & Posture

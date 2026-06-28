@@ -114,7 +114,9 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
 
       conn =
         conn
-        |> put_signed_app_guard_headers(raw_body, secret, signature: "sha256=" <> String.duplicate("0", 64))
+        |> put_signed_app_guard_headers(raw_body, secret,
+          signature: "sha256=" <> String.duplicate("0", 64)
+        )
         |> post("/api/v1/mobile/app_guard/events", raw_body)
 
       body = json_response(conn, 401)
@@ -249,7 +251,10 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert json_response(conn_b, 200)["data"] == []
     end
 
-    test "stores build manifests only for registered protected apps", %{conn_a: conn, token_a: token} do
+    test "stores build manifests only for registered protected apps", %{
+      conn_a: conn,
+      token_a: token
+    } do
       missing_app_conn = post(conn, "/api/v1/mobile/app_guard/builds", build_manifest_payload())
 
       assert json_response(missing_app_conn, 422)["error"] ==
@@ -279,6 +284,156 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
 
       conn = post(auth_conn(token), "/api/v1/mobile/app_guard/builds", %{"schema" => "unknown"})
       assert json_response(conn, 422)["error"] == "Unsupported App Guard build manifest schema"
+    end
+  end
+
+  describe "App Guard research programs and reviewer submissions" do
+    test "creates research programs, queues submissions, and stores reviewer validation", %{
+      conn_a: conn,
+      token_a: token,
+      org_a: org
+    } do
+      conn = post(conn, "/api/v1/mobile/app_guard/research/programs", research_program_payload())
+      program_body = json_response(conn, 201)
+
+      assert program_body["success"] == true
+      assert program_body["data"]["schema"] == "tamandua.app_guard.research_program/v1"
+      assert program_body["data"]["program_id"] == "agres_wallet_private_202606"
+      assert program_body["data"]["organization_id"] == org.id
+
+      assert [%{"target_type" => "build_manifest"}] =
+               Enum.filter(
+                 program_body["data"]["scope"]["targets"],
+                 &(&1["target_type"] == "build_manifest")
+               )
+
+      conn =
+        post(
+          auth_conn(token),
+          "/api/v1/mobile/app_guard/research/submissions",
+          research_submission_payload()
+        )
+
+      submission_body = json_response(conn, 201)
+
+      assert submission_body["success"] == true
+      assert submission_body["data"]["schema"] == "tamandua.app_guard.research_submission/v1"
+      assert submission_body["data"]["submission_id"] == "agsub_wallet_withdrawal_hook_001"
+      assert submission_body["data"]["status"] == "submitted"
+
+      assert submission_body["data"]["evidence_links"]["app_guard_event_ids"] == [
+               "evt_app_guard_20260626_0001"
+             ]
+
+      conn =
+        post(
+          auth_conn(token),
+          "/api/v1/mobile/app_guard/research/submissions/agsub_wallet_withdrawal_hook_001/validate",
+          %{
+            "status" => "needs_more_info",
+            "decision" => "needs_more_info",
+            "reviewer_id" => "reviewer_appguard_triage_001",
+            "notes" => "Need physical-device proof before acceptance.",
+            "reviewed_at" => "2026-06-28T01:00:00Z"
+          }
+        )
+
+      validation_body = json_response(conn, 200)
+      assert validation_body["success"] == true
+      assert validation_body["data"]["status"] == "needs_more_info"
+      assert validation_body["data"]["validation"]["decision"] == "needs_more_info"
+
+      conn =
+        get(
+          auth_conn(token),
+          "/api/v1/mobile/app_guard/research/submissions?program_id=agres_wallet_private_202606"
+        )
+
+      list_body = json_response(conn, 200)
+      assert [%{"submission_id" => "agsub_wallet_withdrawal_hook_001"}] = list_body["data"]
+    end
+
+    test "does not expose research programs or submissions across organizations", %{
+      conn_a: conn_a,
+      token_a: token_a,
+      token_b: token_b
+    } do
+      conn_a =
+        post(conn_a, "/api/v1/mobile/app_guard/research/programs", research_program_payload())
+
+      assert json_response(conn_a, 201)["success"] == true
+
+      conn_a =
+        post(
+          auth_conn(token_a),
+          "/api/v1/mobile/app_guard/research/submissions",
+          research_submission_payload()
+        )
+
+      assert json_response(conn_a, 201)["success"] == true
+
+      conn_b = get(auth_conn(token_b), "/api/v1/mobile/app_guard/research/programs")
+      assert json_response(conn_b, 200)["data"] == []
+
+      conn_b = get(auth_conn(token_b), "/api/v1/mobile/app_guard/research/submissions")
+      assert json_response(conn_b, 200)["data"] == []
+
+      conn_b =
+        post(
+          auth_conn(token_b),
+          "/api/v1/mobile/app_guard/research/submissions/agsub_wallet_withdrawal_hook_001/validate",
+          %{
+            "status" => "accepted",
+            "decision" => "accepted",
+            "reviewer_id" => "cross-tenant-reviewer"
+          }
+        )
+
+      assert json_response(conn_b, 404)["error"] == "App Guard research submission not found"
+    end
+
+    test "rejects submissions outside program build-manifest scope", %{
+      conn_a: conn,
+      token_a: token
+    } do
+      conn = post(conn, "/api/v1/mobile/app_guard/research/programs", research_program_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      payload =
+        research_submission_payload()
+        |> put_in(["evidence_links", "fixed_build_manifest_ids"], ["agbld_out_of_scope"])
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/research/submissions", payload)
+
+      assert json_response(conn, 422)["error"] ==
+               "App Guard research submission evidence is outside program scope"
+    end
+
+    test "rejects uninvited researchers for private programs", %{conn_a: conn, token_a: token} do
+      conn = post(conn, "/api/v1/mobile/app_guard/research/programs", research_program_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      payload =
+        research_submission_payload()
+        |> put_in(["researcher_id"], "researcher_not_invited")
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/research/submissions", payload)
+
+      assert json_response(conn, 403)["error"] ==
+               "App Guard research submission researcher is not invited to this private program"
+    end
+
+    test "rejects unsupported research schemas", %{conn_a: conn, token_a: token} do
+      conn = post(conn, "/api/v1/mobile/app_guard/research/programs", %{"schema" => "unknown"})
+      assert json_response(conn, 422)["error"] == "Unsupported App Guard research program schema"
+
+      conn =
+        post(auth_conn(token), "/api/v1/mobile/app_guard/research/submissions", %{
+          "schema" => "unknown"
+        })
+
+      assert json_response(conn, 422)["error"] ==
+               "Unsupported App Guard research submission schema"
     end
   end
 
@@ -396,6 +551,102 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       },
       "policy_id" => "policy_app_guard_default",
       "created_at" => "2026-06-27T00:00:00Z"
+    }
+  end
+
+  defp research_program_payload do
+    %{
+      "schema" => "tamandua.app_guard.research_program/v1",
+      "program_id" => "agres_wallet_private_202606",
+      "organization_id" => "client-supplied-org-is-ignored",
+      "app" => %{
+        "platform" => "android",
+        "package_or_bundle_id" => "io.tamandua.appguard.samplewallet",
+        "display_name" => "Tamandua Sample Wallet",
+        "allowed_versions" => ["1.0.0"],
+        "protected_workflows" => ["login", "withdrawal", "transaction_signing"]
+      },
+      "name" => "Sample Wallet Private App Guard Program",
+      "description" => "Private validation program for App Guard mobile runtime protections.",
+      "status" => "beta",
+      "visibility" => "private",
+      "program_type" => "app_guard_assessment",
+      "scope" => %{
+        "targets" => [
+          %{
+            "target_type" => "mobile_app",
+            "value" => "io.tamandua.appguard.samplewallet",
+            "description" => "Protected Android sample wallet application"
+          },
+          %{
+            "target_type" => "workflow",
+            "value" => "withdrawal",
+            "description" => "High-risk protected transaction workflow"
+          },
+          %{
+            "target_type" => "build_manifest",
+            "value" => "agbld_wallet_android_20260627_001",
+            "description" => "Known App Guard SDK build manifest under assessment"
+          }
+        ],
+        "out_of_scope" => [
+          "production customer data",
+          "destructive testing",
+          "social engineering"
+        ]
+      },
+      "rules" =>
+        "Submit metadata-only proof of concept details, App Guard event IDs, and reproduction steps.",
+      "reward" => %{"currency" => "USD", "budget" => 5000},
+      "invited_researchers" => ["researcher_mobile_redteam_001"],
+      "created_at" => "2026-06-28T00:00:00Z",
+      "updated_at" => "2026-06-28T00:00:00Z"
+    }
+  end
+
+  defp research_submission_payload do
+    %{
+      "schema" => "tamandua.app_guard.research_submission/v1",
+      "submission_id" => "agsub_wallet_withdrawal_hook_001",
+      "program_id" => "agres_wallet_private_202606",
+      "researcher_id" => "researcher_mobile_redteam_001",
+      "title" => "Withdrawal workflow can be forced into hook-framework block path",
+      "description" => "A controlled test build produced a high-risk App Guard event.",
+      "severity" => "high",
+      "status" => "submitted",
+      "cvss" => %{
+        "score" => 8.1,
+        "vector" => "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:L"
+      },
+      "technical_details" => %{
+        "vulnerability_type" => "runtime_hooking",
+        "proof_of_concept" => "Metadata-only proof linked to App Guard event evidence.",
+        "reproduction_steps" => [
+          "Install the protected sample wallet build.",
+          "Launch the withdrawal workflow.",
+          "Attach the approved lab hook framework profile.",
+          "Attempt to alter the withdrawal amount.",
+          "Confirm App Guard emits the linked event and blocks the workflow."
+        ],
+        "impact" => "The reviewer can validate policy and telemetry coverage.",
+        "recommendation" => "Require physical-device evidence before acceptance."
+      },
+      "evidence_links" => %{
+        "app_guard_event_ids" => ["evt_app_guard_20260626_0001"],
+        "mobile_session_ids" => ["mobile-session-appguard-001"],
+        "detection_validation_run_ids" => ["dv-appguard-native-compromise-20260628"],
+        "fixed_build_manifest_ids" => ["agbld_wallet_android_20260627_001"]
+      },
+      "attachments" => [
+        %{
+          "attachment_id" => "att_wallet_hook_repro_log_001",
+          "filename" => "wallet-hook-reproduction-redacted.json",
+          "content_type" => "application/json",
+          "sha256" => String.duplicate("a", 64),
+          "size_bytes" => 2048
+        }
+      ],
+      "submitted_at" => "2026-06-28T00:30:00Z"
     }
   end
 
