@@ -99,8 +99,8 @@ Check translation completeness at:
 
 ## Resources
 
-- [Full i18n Guide](../../../../../I18N_GUIDE.md)
-- [Translation Workflow](../../../../../TRANSLATION_WORKFLOW.md)
+- Full i18n guide: maintained in the monorepo documentation set
+- Translation workflow: maintained in the monorepo documentation set
 - [Gettext Documentation](https://hexdocs.pm/gettext)
 
 ## Contact

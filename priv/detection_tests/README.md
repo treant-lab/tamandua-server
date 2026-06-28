@@ -165,4 +165,4 @@ See `.github/workflows/detection_tests.yml` for configuration.
 
 ## Documentation
 
-See [DETECTION_RULE_TESTING.md](../../../DETECTION_RULE_TESTING.md) for complete documentation.
+Complete detection rule testing guidance lives in the monorepo detection documentation.

@@ -427,9 +427,9 @@ end
 
 ## Related Documentation
 
-- [Alert Management Guide](./ALERT_MANAGEMENT_GUIDE.md)
-- [Response Actions Documentation](./RESPONSE_ACTIONS.md)
-- [Comment System Guide](./COMMENT_SYSTEM_GUIDE.md)
+- [Alert Timeline Quickstart](./ALERT_TIMELINE_QUICKSTART.md)
+- [Alert Timeline Implementation Summary](./ALERT_TIMELINE_IMPLEMENTATION_SUMMARY.md)
+- [Alert Exports](./ALERT_EXPORTS.md)
 - [vis.js Timeline Documentation](https://visjs.github.io/vis-timeline/docs/timeline/)
 
 ## Support

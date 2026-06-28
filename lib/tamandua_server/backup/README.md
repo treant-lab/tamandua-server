@@ -412,7 +412,7 @@ Total full backup: ~1 hour
 
 ## Disaster Recovery
 
-See [BACKUP_RESTORE.md](../../../../../docs/BACKUP_RESTORE.md) for complete disaster recovery procedures.
+Complete disaster recovery procedures live in the monorepo operations documentation.
 
 ## References
 
