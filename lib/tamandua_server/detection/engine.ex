@@ -450,30 +450,24 @@ defmodule TamanduaServer.Detection.Engine do
   defp load_iocs_from_db do
     import Ecto.Query, only: [from: 2]
 
-    query = from(i in TamanduaServer.Detection.IOC, where: i.enabled == true)
+    query =
+      from(i in TamanduaServer.Detection.IOC,
+        where: i.enabled == true,
+        select: %{
+          type: i.type,
+          value: i.value,
+          severity: i.severity,
+          description: i.description,
+          source: i.source
+        }
+      )
 
-    case TamanduaServer.Repo.all(query) do
+    case TamanduaServer.Repo.all(query, timeout: 60_000) do
       iocs when is_list(iocs) ->
         iocs
         |> Enum.with_index(fn ioc, idx ->
-          type_atom = case ioc.type do
-            "hash_sha256" -> :sha256
-            "hash_sha1" -> :sha1
-            "hash_md5" -> :md5
-            "sha256" -> :sha256
-            "sha1" -> :sha1
-            "md5" -> :md5
-            "ip" -> :ip
-            "ipv4" -> :ip
-            "ipv6" -> :ip
-            "domain" -> :domain
-            "url" -> :url
-            "email" -> :email
-            _ -> String.to_atom(ioc.type)
-          end
-
           {idx, %{
-            type: type_atom,
+            type: normalize_ioc_type(ioc.type),
             value: String.downcase(ioc.value),
             confidence: severity_to_confidence(ioc.severity),
             description: ioc.description || ioc.source || "IOC from threat feed"
@@ -486,6 +480,25 @@ defmodule TamanduaServer.Detection.Engine do
     e ->
       Logger.warning("[Engine] Failed to load IOCs from database: #{Exception.message(e)}")
       []
+  end
+
+  defp normalize_ioc_type(type) do
+    case type do
+      "hash_sha256" -> :sha256
+      "hash_sha1" -> :sha1
+      "hash_md5" -> :md5
+      "sha256" -> :sha256
+      "sha1" -> :sha1
+      "md5" -> :md5
+      "ip" -> :ip
+      "ipv4" -> :ip
+      "ipv6" -> :ip
+      "domain" -> :domain
+      "url" -> :url
+      "email" -> :email
+      "filename" -> :filename
+      _ -> :indicator
+    end
   end
 
   defp severity_to_confidence(severity) do
