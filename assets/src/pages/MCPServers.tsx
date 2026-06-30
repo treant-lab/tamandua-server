@@ -238,14 +238,21 @@ export default function MCPServers({
     ),
     requestsToday: stats.requestsToday ?? stats.totalRequests ?? 0,
   }
+  const catalogAvailable = visibleStats.totalTools > 0 || contextProviders.length > 0
+  const degradedCatalogMode = stats.mcpAlive === false && catalogAvailable
   const mcpUnavailable =
     stats.mcpAlive === false ||
     normalizedServers.some((server) => server.status === 'error' || server.status === 'disconnected')
-  const inventoryUnavailable = visibleStats.totalTools === 0 && mcpUnavailable
+  const inventoryUnavailable = visibleStats.totalTools === 0 && mcpUnavailable && !catalogAvailable
   const healthMessage =
     stats.healthMessage ||
     normalizedServers.find((server) => server.healthMessage)?.healthMessage ||
     'MCP server inventory is unavailable'
+  const operationMode = degradedCatalogMode
+    ? 'Degraded catalog'
+    : mcpUnavailable
+      ? 'Unavailable'
+      : 'Live runtime'
 
   const filteredServers = normalizedServers.filter((server) =>
     server.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -306,11 +313,25 @@ export default function MCPServers({
           <div className="card-sentinel bg-[var(--surface)] rounded-xl border border-[var(--border)] p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-[var(--muted)]">Connected</p>
-                <p className="text-2xl font-bold text-[var(--fg)] mt-1">{visibleStats.connectedServers}</p>
+                <p className="text-sm text-[var(--muted)]">Runtime</p>
+                <p className={cn(
+                  'text-2xl font-bold mt-1',
+                  degradedCatalogMode ? 'text-yellow-400' : mcpUnavailable ? 'text-red-400' : 'text-[var(--fg)]'
+                )}>
+                  {operationMode}
+                </p>
               </div>
-              <div className="h-12 w-12 rounded-lg bg-green-500/20 flex items-center justify-center">
-                <CheckCircle className="h-6 w-6 text-green-400" />
+              <div className={cn(
+                'h-12 w-12 rounded-lg flex items-center justify-center',
+                degradedCatalogMode ? 'bg-yellow-500/20' : mcpUnavailable ? 'bg-red-500/20' : 'bg-green-500/20'
+              )}>
+                {degradedCatalogMode ? (
+                  <AlertTriangle className="h-6 w-6 text-yellow-400" />
+                ) : mcpUnavailable ? (
+                  <XCircle className="h-6 w-6 text-red-400" />
+                ) : (
+                  <CheckCircle className="h-6 w-6 text-green-400" />
+                )}
               </div>
             </div>
           </div>
@@ -353,12 +374,30 @@ export default function MCPServers({
         </div>
 
         {mcpUnavailable && (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+          <div className={cn(
+            'rounded-xl border p-4',
+            degradedCatalogMode
+              ? 'border-yellow-500/30 bg-yellow-500/10'
+              : 'border-red-500/30 bg-red-500/10'
+          )}>
             <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-5 w-5 text-red-400" />
+              <AlertTriangle className={cn(
+                'mt-0.5 h-5 w-5',
+                degradedCatalogMode ? 'text-yellow-400' : 'text-red-400'
+              )} />
               <div>
-                <h3 className="text-sm font-medium text-red-300">MCP inventory unavailable</h3>
+                <h3 className={cn(
+                  'text-sm font-medium',
+                  degradedCatalogMode ? 'text-yellow-300' : 'text-red-300'
+                )}>
+                  {degradedCatalogMode ? 'MCP runtime degraded; catalog is available' : 'MCP inventory unavailable'}
+                </h3>
                 <p className="mt-1 text-sm text-[var(--muted)]">{healthMessage}</p>
+                {degradedCatalogMode && (
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    Showing {visibleStats.totalTools} catalog tools and {contextProviders.length} context providers until the runtime responds.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -446,6 +485,11 @@ export default function MCPServers({
                         <span className="flex items-center gap-1">
                           <Wrench className="h-3 w-3" />
                           {(server.tools || []).length || server.toolCount || 0} tools
+                          {degradedCatalogMode && ((server.tools || []).length || server.toolCount || 0) > 0 ? ' (catalog)' : ''}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Server className="h-3 w-3" />
+                          {server.contextProviderCount ?? contextProviders.length} context
                         </span>
                         <span className="flex items-center gap-1">
                           <Activity className="h-3 w-3" />
@@ -470,13 +514,25 @@ export default function MCPServers({
                     <div className="mt-4 ml-9 pl-4 border-l border-[var(--border)]">
                       <h4 className="text-sm font-medium text-[var(--muted)] mb-3">Available Tools</h4>
                       {(server.tools || []).length === 0 ? (
-                        <div className="p-4 text-center text-[var(--muted)]">
+                        <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)]/30 p-4 text-center text-[var(--muted)]">
                           {server.status === 'active' || server.status === 'connected' ? (
-                            <p className="text-sm">No MCP tools reported by the server</p>
+                            <>
+                              <Terminal className="h-6 w-6 mx-auto mb-2 opacity-60" />
+                              <p className="text-sm">Runtime is reachable, but no tools were reported</p>
+                              <p className="text-xs mt-1">Use Test Connection to issue a fresh JSON-RPC tools/list probe.</p>
+                            </>
                           ) : (
                             <>
-                              <AlertTriangle className="h-6 w-6 mx-auto mb-2 text-red-400" />
-                              <p className="text-sm text-red-300">Tool inventory could not be loaded</p>
+                              <AlertTriangle className={cn(
+                                'h-6 w-6 mx-auto mb-2',
+                                degradedCatalogMode ? 'text-yellow-400' : 'text-red-400'
+                              )} />
+                              <p className={cn(
+                                'text-sm',
+                                degradedCatalogMode ? 'text-yellow-300' : 'text-red-300'
+                              )}>
+                                {degradedCatalogMode ? 'No catalog tools matched this server' : 'Tool inventory could not be loaded'}
+                              </p>
                               <p className="text-xs mt-1">{server.healthMessage || healthMessage}</p>
                             </>
                           )}
@@ -496,6 +552,9 @@ export default function MCPServers({
                                 {tool.usageCount !== undefined && <span className="text-xs text-[var(--muted)]">{tool.usageCount} uses</span>}
                               </div>
                               <p className="text-xs text-[var(--muted)]">{tool.description}</p>
+                              {degradedCatalogMode && (
+                                <p className="text-xs text-yellow-300 mt-2">Catalog entry; runtime execution may be unavailable.</p>
+                              )}
                               {tool.lastUsed && (
                                 <p className="text-xs text-[var(--muted)] mt-1">
                                   Last used: {new Date(tool.lastUsed).toLocaleString()}
@@ -572,7 +631,14 @@ export default function MCPServers({
             {contextProviders.length === 0 ? (
               <div className="p-8 text-center text-[var(--muted)]">
                 <Server className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p className="text-sm">No context providers configured</p>
+                <p className="text-sm">
+                  {mcpUnavailable ? 'Context provider inventory unavailable' : 'No context providers configured'}
+                </p>
+                <p className="text-xs mt-1">
+                  {mcpUnavailable
+                    ? 'The MCP runtime and static catalog did not return context resources for this view.'
+                    : 'Configured MCP resources will appear here with their status and resource counts.'}
+                </p>
               </div>
             ) : (
               contextProviders.map((provider) => (
@@ -590,6 +656,9 @@ export default function MCPServers({
                     )}
                   </div>
                   <p className="text-sm text-[var(--muted)]">{provider.description || provider.type || 'MCP context provider'}</p>
+                  {degradedCatalogMode && (
+                    <p className="text-xs text-yellow-300 mt-1">Catalog provider; live resource reads may require MCP runtime recovery.</p>
+                  )}
                   {provider.resourceCount !== undefined && (
                     <p className="text-xs text-[var(--muted)] mt-1">{provider.resourceCount} resources</p>
                   )}

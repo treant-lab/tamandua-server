@@ -1566,6 +1566,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     |> canonicalize_common_payload_fields()
     |> maybe_canonicalize_process_payload(category)
     |> maybe_canonicalize_network_payload(category)
+    |> maybe_canonicalize_dns_payload(category)
     |> maybe_canonicalize_file_payload(category)
   end
 
@@ -1607,6 +1608,51 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   defp maybe_canonicalize_network_payload(payload, _category), do: payload
+
+  defp maybe_canonicalize_dns_payload(payload, category)
+       when category in ["dns", "network"] do
+    payload
+    |> put_alias_if_present("query_name", [
+      "query",
+      "dns_query",
+      "domain",
+      "fqdn",
+      "rrname",
+      "host",
+      "sni",
+      "tls_sni"
+    ])
+    |> put_alias_if_present("dns_query", ["query_name", "query", "domain", "fqdn", "rrname"])
+    |> put_alias_if_present("query_type", ["record_type", "rrtype", "dns_query_type"])
+    |> put_alias_if_present("response_data", [
+      "responses",
+      "answers",
+      "answer",
+      "response",
+      "resolved_ip",
+      "resolved_ips"
+    ])
+    |> put_alias_if_present("response_code", ["rcode", "dns_rcode", "status_code"])
+    |> put_alias_if_present("resolver_ip", [
+      "dns_server",
+      "dns_server_ip",
+      "server_ip",
+      "nameserver",
+      "resolver",
+      "remote_ip",
+      "destination_ip"
+    ])
+    |> put_alias_if_present("resolver_port", [
+      "dns_server_port",
+      "server_port",
+      "remote_port",
+      "destination_port"
+    ])
+    |> put_alias_if_present("transport", ["dns_transport", "protocol", "proto"])
+    |> put_alias_if_present("capture_method", ["capture_source", "collector", "provider"])
+  end
+
+  defp maybe_canonicalize_dns_payload(payload, _category), do: payload
 
   defp maybe_canonicalize_file_payload(payload, category)
        when category in ["file", "module", "driver"] do

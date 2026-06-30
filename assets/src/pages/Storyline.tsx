@@ -368,6 +368,52 @@ function componentHeight(nodes: StorylineNode[], laneHeight: number, ySpacing: n
   return laneCount * laneHeight + Math.max(0, maxStack - 1) * ySpacing + 90;
 }
 
+function relaxLayoutCollisions(
+  positions: Map<string, { x: number; y: number }>,
+  nodes: StorylineNode[],
+  minGapX = 190,
+  minGapY = 124,
+  iterations = 5
+): Map<string, { x: number; y: number }> {
+  const next = new Map(positions);
+  const ordered = [...nodes].sort((a, b) => nodeTime(a) - nodeTime(b) || a.id.localeCompare(b.id));
+
+  for (let pass = 0; pass < iterations; pass += 1) {
+    for (let i = 0; i < ordered.length; i += 1) {
+      const current = ordered[i];
+      let currentPosition = next.get(current.id);
+      if (!currentPosition) continue;
+
+      for (let j = i + 1; j < ordered.length; j += 1) {
+        const other = ordered[j];
+        const otherPosition = next.get(other.id);
+        if (!otherPosition) continue;
+
+        const dx = otherPosition.x - currentPosition.x;
+        const dy = otherPosition.y - currentPosition.y;
+        if (Math.abs(dx) >= minGapX || Math.abs(dy) >= minGapY) continue;
+
+        const directionX = dx === 0 ? (j % 2 === 0 ? 1 : -1) : Math.sign(dx);
+        const directionY = dy === 0 ? (j % 3 === 0 ? 1 : -1) : Math.sign(dy);
+        const pushX = (minGapX - Math.abs(dx)) / 2 + 12;
+        const pushY = (minGapY - Math.abs(dy)) / 2 + 10;
+
+        currentPosition = {
+          x: currentPosition.x - directionX * pushX * 0.35,
+          y: currentPosition.y - directionY * pushY * 0.45,
+        };
+        next.set(current.id, currentPosition);
+        next.set(other.id, {
+          x: otherPosition.x + directionX * pushX,
+          y: otherPosition.y + directionY * pushY,
+        });
+      }
+    }
+  }
+
+  return next;
+}
+
 function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], mode = 'timeline'): Map<string, { x: number; y: number }> {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, StorylineEdge[]>();
@@ -511,13 +557,14 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
       });
     });
 
-    return positions;
+    return relaxLayoutCollisions(positions, nodes, 205, 138, 7);
   }
 
-  const xSpacing = Math.max(360, Math.min(500, 300 + nodes.length * 4));
-  const ySpacing = Math.max(150, Math.min(230, 138 + Math.ceil(nodes.length / 8) * 8));
-  const laneHeight = Math.max(196, Math.min(270, 184 + Math.ceil(nodes.length / 10) * 10));
-  const componentGap = Math.max(210, Math.min(340, 190 + nodes.length * 3));
+  const densestLevel = Math.max(1, ...Array.from(grouped.values()).map((group) => group.length));
+  const xSpacing = Math.max(390, Math.min(620, 330 + nodes.length * 5 + densestLevel * 12));
+  const ySpacing = Math.max(170, Math.min(280, 148 + Math.ceil(nodes.length / 7) * 9 + densestLevel * 4));
+  const laneHeight = Math.max(230, Math.min(330, 198 + Math.ceil(nodes.length / 8) * 12 + densestLevel * 5));
+  const componentGap = Math.max(260, Math.min(420, 220 + nodes.length * 4));
   const componentOffsets = new Map<number, number>();
   let runningOffset = 0;
 
@@ -542,8 +589,8 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         laneCounts.set(lane, index + 1);
         if (mode === 'hierarchical') {
           positions.set(node.id, {
-            x: 170 + lane * 330 + index * 132,
-            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 230,
+            x: 170 + lane * 370 + index * 172,
+            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 270,
           });
         } else {
           positions.set(node.id, {
@@ -554,7 +601,7 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
       });
     });
 
-  return positions;
+  return relaxLayoutCollisions(positions, nodes, mode === 'hierarchical' ? 205 : 190, 132, 6);
 }
 
 function formatNodeValue(value: unknown): string {
@@ -643,6 +690,32 @@ function countConnected(edges: StorylineEdge[], nodeId: string, direction: 'in' 
   return edges.filter((edge) =>
     direction === 'in' ? edge.target === nodeId : direction === 'out' ? edge.source === nodeId : edge.source === nodeId || edge.target === nodeId
   ).length;
+}
+
+function uniqueCompact(values: unknown[], limit = 5): string[] {
+  const seen = new Set<string>();
+  const compacted: string[] = [];
+
+  values.forEach((value) => {
+    const formatted = formatNodeValue(value).trim();
+    if (!formatted || formatted === 'Not captured' || formatted === 'None' || seen.has(formatted)) return;
+    seen.add(formatted);
+    compacted.push(formatted);
+  });
+
+  return compacted.slice(0, limit);
+}
+
+function valuesFromNodes(nodes: StorylineNode[], keys: string[], fallback?: (node: StorylineNode) => unknown): string[] {
+  return uniqueCompact(
+    nodes.map((node) => {
+      for (const key of keys) {
+        const value = node.data[key] ?? (node as unknown as Record<string, unknown>)[key];
+        if (formatNodeValue(value) !== 'Not captured') return value;
+      }
+      return fallback ? fallback(node) : undefined;
+    })
+  );
 }
 
 // ============================================================================
@@ -819,11 +892,32 @@ function NodeIntelligenceCards({
   const childNodes = outgoingEdges
     .map((edge) => allNodes.find((candidate) => candidate.id === edge.target))
     .filter((candidate): candidate is StorylineNode => Boolean(candidate));
+  const connectedNodes = edges
+    .filter((edge) => edge.source === node.id || edge.target === node.id)
+    .map((edge) => allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source)))
+    .filter((candidate): candidate is StorylineNode => Boolean(candidate));
+  const childNodesByType = childNodes.reduce<Record<string, StorylineNode[]>>((acc, child) => {
+    acc[child.type] = [...(acc[child.type] || []), child];
+    return acc;
+  }, {});
   const connectedTypes = edges
     .filter((edge) => edge.source === node.id || edge.target === node.id)
     .map((edge) => allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source))?.type)
     .filter(Boolean);
   const uniqueConnectedTypes = Array.from(new Set(connectedTypes)).join(', ') || 'None';
+  const edgeTypes = uniqueCompact(edges
+    .filter((edge) => edge.source === node.id || edge.target === node.id)
+    .map((edge) => edge.label || edge.type), 6);
+  const processChildren = childNodesByType.process || [];
+  const networkChildren = childNodesByType.network || [];
+  const dnsChildren = childNodesByType.dns || [];
+  const fileChildren = childNodesByType.file || [];
+  const registryChildren = childNodesByType.registry || [];
+  const relatedProcesses = connectedNodes.filter((candidate) => candidate.type === 'process');
+  const relatedFiles = connectedNodes.filter((candidate) => candidate.type === 'file');
+  const relatedNetwork = connectedNodes.filter((candidate) => candidate.type === 'network');
+  const relatedDns = connectedNodes.filter((candidate) => candidate.type === 'dns');
+  const relatedRegistry = connectedNodes.filter((candidate) => candidate.type === 'registry');
   const mitreTechniques = Array.from(
     new Set(node.detections.flatMap((detection) => detection.mitreTechniques || []))
   );
@@ -845,8 +939,47 @@ function NodeIntelligenceCards({
   const context = [
     { label: 'Reached from', value: firstParent?.label || 'No parent in graph' },
     { label: 'Next hops', value: childNodes.length ? childNodes.slice(0, 3).map((child) => child.label).join(', ') : 'No outgoing child nodes' },
+    { label: 'Relationship types', value: edgeTypes.length ? edgeTypes.join(', ') : 'No relationship labels' },
     { label: 'Risk signals', value: riskSignals.length ? riskSignals.join(', ') : 'No explicit risk signal' },
   ];
+
+  const aggregateCards =
+    node.type === 'process'
+      ? [
+          { label: 'Spawned processes', value: processChildren.length, detail: valuesFromNodes(processChildren, ['cmdline', 'command_line'], (child) => child.label).join(', ') || 'None' },
+          { label: 'Network contacts', value: networkChildren.length, detail: valuesFromNodes(networkChildren, ['remote_ip', 'destination_ip', 'host', 'ip'], (child) => child.label).join(', ') || 'None' },
+          { label: 'DNS queries', value: dnsChildren.length, detail: valuesFromNodes(dnsChildren, ['query', 'query_name', 'domain', 'dns_query'], (child) => child.label).join(', ') || 'None' },
+          { label: 'File writes/access', value: fileChildren.length, detail: valuesFromNodes(fileChildren, ['path', 'file_path'], (child) => child.full_label || child.label).join(', ') || 'None' },
+          { label: 'Registry changes', value: registryChildren.length, detail: valuesFromNodes(registryChildren, ['key', 'registry_key', 'path'], (child) => child.full_label || child.label).join(', ') || 'None' },
+        ]
+      : node.type === 'network'
+        ? [
+            { label: 'Source processes', value: relatedProcesses.length, detail: valuesFromNodes(relatedProcesses, ['cmdline', 'command_line'], (related) => related.label).join(', ') || 'None' },
+            { label: 'Sibling DNS', value: relatedDns.length, detail: valuesFromNodes(relatedDns, ['query', 'query_name', 'domain', 'dns_query'], (related) => related.label).join(', ') || 'None' },
+            { label: 'Ports/protocols', value: uniqueCompact([firstNodeData(node, ['remote_port', 'destination_port', 'port'], ''), firstNodeData(node, ['protocol'], '')]).join(' / ') || 'Not captured', detail: firstNodeData(node, ['direction'], 'outbound') },
+          ]
+        : node.type === 'dns'
+          ? [
+              { label: 'Resolving processes', value: relatedProcesses.length, detail: valuesFromNodes(relatedProcesses, ['cmdline', 'command_line'], (related) => related.label).join(', ') || 'None' },
+              { label: 'Resolved targets', value: uniqueCompact([node.data.response, node.data.answer, node.data.resolved_ip, node.data.resolved_ips]).length, detail: uniqueCompact([node.data.response, node.data.answer, node.data.resolved_ip, node.data.resolved_ips]).join(', ') || 'Not captured' },
+              { label: 'Related network', value: relatedNetwork.length, detail: valuesFromNodes(relatedNetwork, ['remote_ip', 'destination_ip', 'host', 'ip'], (related) => related.label).join(', ') || 'None' },
+            ]
+          : node.type === 'file'
+            ? [
+                { label: 'Touching processes', value: relatedProcesses.length, detail: valuesFromNodes(relatedProcesses, ['cmdline', 'command_line'], (related) => related.label).join(', ') || 'None' },
+                { label: 'Operations', value: uniqueCompact([node.data.operation, node.data.action, node.data.event_type]).join(', ') || 'Not captured', detail: firstNodeData(node, ['path', 'file_path'], node.full_label || node.label) },
+                { label: 'Related registry', value: relatedRegistry.length, detail: valuesFromNodes(relatedRegistry, ['key', 'registry_key', 'path'], (related) => related.full_label || related.label).join(', ') || 'None' },
+              ]
+            : node.type === 'registry'
+              ? [
+                  { label: 'Modifying processes', value: relatedProcesses.length, detail: valuesFromNodes(relatedProcesses, ['cmdline', 'command_line'], (related) => related.label).join(', ') || 'None' },
+                  { label: 'Values touched', value: uniqueCompact([node.data.value_name, node.data.value]).join(', ') || 'Not captured', detail: firstNodeData(node, ['key', 'registry_key', 'path'], node.full_label || node.label) },
+                  { label: 'Nearby files', value: relatedFiles.length, detail: valuesFromNodes(relatedFiles, ['path', 'file_path'], (related) => related.full_label || related.label).join(', ') || 'None' },
+                ]
+              : [
+                  { label: 'Related processes', value: relatedProcesses.length, detail: valuesFromNodes(relatedProcesses, ['cmdline', 'command_line'], (related) => related.label).join(', ') || 'None' },
+                  { label: 'Related files', value: relatedFiles.length, detail: valuesFromNodes(relatedFiles, ['path', 'file_path'], (related) => related.full_label || related.label).join(', ') || 'None' },
+                ];
 
   const typed =
     node.type === 'process'
@@ -909,6 +1042,17 @@ function NodeIntelligenceCards({
 
       <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)' }}>
         <div className="space-y-2">
+          <div className="grid grid-cols-1 gap-2">
+            {aggregateCards.map((item) => (
+              <div key={item.label} className="rounded p-2" style={{ backgroundColor: 'var(--bg-2)' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{item.label}</div>
+                  <div className="text-xs font-semibold" style={{ color: 'var(--fg)' }}>{item.value}</div>
+                </div>
+                <div className="mt-1 text-xs break-words" style={{ color: 'var(--fg-2)' }}>{formatNodeValue(item.detail)}</div>
+              </div>
+            ))}
+          </div>
           {context.map((item) => (
             <div key={item.label} className="min-w-0">
               <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--subtle)' }}>{item.label}</div>
@@ -1102,7 +1246,7 @@ export default function Storyline({
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
 
   // View state
-  const [activePanel, setActivePanel] = useState<'details' | 'timeline' | 'analysis' | 'actions' | null>('analysis');
+  const [activePanel, setActivePanel] = useState<'details' | 'timeline' | 'analysis' | 'actions'>('analysis');
   const [showFilters, setShowFilters] = useState(false);
   const [layoutType, setLayoutType] = useState(initialLayout || 'timeline');
   const [typeFilters, setTypeFilters] = useState<Set<string>>(
@@ -1544,6 +1688,8 @@ export default function Storyline({
     navigator.clipboard.writeText(shareLink);
   };
 
+  const effectiveAgentId = storyline?.agent_id || agent_id;
+
   // Render error state
   if (error) {
     return (
@@ -1588,6 +1734,15 @@ export default function Storyline({
               {alert_id && (
                 <Link
                   href={`/app/alerts/${alert_id}?tab=events`}
+                  className="btn-sentinel btn-sentinel-secondary"
+                >
+                  <ExternalLink className="inline-block mr-2" size={16} />
+                  Open Events
+                </Link>
+              )}
+              {!alert_id && effectiveAgentId && (
+                <Link
+                  href={`/app/events?agent_id=${encodeURIComponent(effectiveAgentId)}`}
                   className="btn-sentinel btn-sentinel-secondary"
                 >
                   <ExternalLink className="inline-block mr-2" size={16} />
@@ -2341,7 +2496,7 @@ export default function Storyline({
               {(['analysis', 'details', 'timeline', 'actions'] as const).map((panel) => (
                 <button
                   key={panel}
-                  onClick={() => setActivePanel(activePanel === panel ? null : panel)}
+                  onClick={() => setActivePanel(panel)}
                   className="flex-1 px-3 py-3 text-sm font-medium transition-colors"
                   style={{
                     backgroundColor: activePanel === panel ? 'var(--surface-2)' : 'transparent',
@@ -2360,16 +2515,17 @@ export default function Storyline({
             {/* Panel content */}
             <div className="flex-1 overflow-y-auto p-4">
               {/* Analysis Panel */}
-              {activePanel === 'analysis' && analysis && (
-                <div className="space-y-4">
-                  {/* Kill Chain Progress */}
-                  <KillChainProgress
-                    currentPhase={storyline.attack_phase}
-                    detectedPhases={detectedPhases}
-                  />
+              {activePanel === 'analysis' && (
+                analysis ? (
+                  <div className="space-y-4">
+                    {/* Kill Chain Progress */}
+                    <KillChainProgress
+                      currentPhase={storyline.attack_phase}
+                      detectedPhases={detectedPhases}
+                    />
 
-                  {/* Root Cause */}
-                  {storyline.root_cause && (
+                    {/* Root Cause */}
+                    {storyline.root_cause && (
                     <CollapsibleSection title="Root Cause" icon={Crosshair} badge={`${Math.round(storyline.root_cause.confidence_score * 100)}%`} badgeColor="var(--crit)">
                       <div className="space-y-2">
                         <div className="flex items-center gap-2">
@@ -2508,8 +2664,19 @@ export default function Storyline({
                         ))}
                       </div>
                     </CollapsibleSection>
-                  )}
-                </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <BarChart3 size={16} style={{ color: 'var(--emerald-400)' }} />
+                      <h3 className="text-sm font-semibold" style={{ color: 'var(--fg)' }}>Analysis pending</h3>
+                    </div>
+                    <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                      Storyline data loaded, but no analysis payload is available for this investigation yet.
+                    </p>
+                  </div>
+                )
               )}
 
               {/* Node Details Panel */}
@@ -2777,6 +2944,7 @@ export default function Storyline({
                         label="Open Live Response"
                         onClick={() => router.visit(`/app/live-response/${storyline?.agent_id}`)}
                         variant="primary"
+                        disabled={!storyline?.agent_id}
                       />
                     </div>
                   </CollapsibleSection>
@@ -2799,6 +2967,7 @@ export default function Storyline({
                         label="View Network Activity"
                         onClick={() => router.visit(`/app/network?agent_id=${storyline?.agent_id}`)}
                         variant="secondary"
+                        disabled={!storyline?.agent_id}
                       />
 
                       <ActionButton

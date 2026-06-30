@@ -223,6 +223,11 @@ const ITEMS_PER_PAGE = 50
 // Main Component
 // ---------------------------------------------------------------------------
 
+function readNetworkUrlParam(key: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get(key) || ''
+}
+
 export default function Network({ connections: initialConnections, stats: initialStats, agents }: NetworkPageProps) {
   const transformedInitial = useMemo(() =>
     (initialConnections || []).map(transformConnection).filter(c => c.src !== 'N/A' || c.dst !== 'N/A'),
@@ -231,12 +236,12 @@ export default function Network({ connections: initialConnections, stats: initia
 
   const [connections, setConnections] = useState<Connection[]>(transformedInitial)
   const [loading, setLoading] = useState(false)
-  const [protocolFilter, setProtocolFilter] = useState<string>('all')
-  const [directionFilter, setDirectionFilter] = useState<string>('all')
-  const [statusFilter, setStatusFilter] = useState<string>('all')
-  const [agentFilter, setAgentFilter] = useState<string>('all')
-  const [ipFilter, setIpFilter] = useState<string>('')
-  const [processFilter, setProcessFilter] = useState<string>('')
+  const [protocolFilter, setProtocolFilter] = useState<string>(readNetworkUrlParam('protocol') || 'all')
+  const [directionFilter, setDirectionFilter] = useState<string>(readNetworkUrlParam('direction') || 'all')
+  const [statusFilter, setStatusFilter] = useState<string>(readNetworkUrlParam('status') || 'all')
+  const [agentFilter, setAgentFilter] = useState<string>(readNetworkUrlParam('agent_id') || 'all')
+  const [ipFilter, setIpFilter] = useState<string>(readNetworkUrlParam('ip') || readNetworkUrlParam('q') || readNetworkUrlParam('search'))
+  const [processFilter, setProcessFilter] = useState<string>(readNetworkUrlParam('process') || readNetworkUrlParam('process_name') || readNetworkUrlParam('pid'))
   const [showFilters, setShowFilters] = useState(false)
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())

@@ -33,6 +33,7 @@ defmodule TamanduaServer.NDR.EventNormalizer do
   Accepted payload keys include:
   remote_ip, remote_port, protocol, pid, process_name, domain,
   domain_candidates, is_encrypted, sni, tls_sni, tls_version, ja3, ja3s,
+  alpn, alpn_protocols, quic_version, http_version, encrypted_dns_transport,
   certificate and certificate_risk.
   """
   def normalize_event(%{} = event) do
@@ -63,14 +64,43 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     tls_sni = get_field(payload, :tls_sni)
     domain = get_field(payload, :domain)
     sni = get_field(payload, :sni) || tls_sni || domain
-    protocol = normalize_protocol(get_field(payload, :protocol), sni, get_field(payload, :tls_version), remote_port)
+    alpn_protocols =
+      normalize_list(first_present(payload, [:alpn_protocols, :alpn_list, :application_protocols]))
+
+    alpn = first_present(payload, [:alpn, :application_protocol]) || List.first(alpn_protocols)
+    quic_version = first_present(payload, [:quic_version, :quic])
+    http_version = first_present(payload, [:http_version, :http_protocol])
+    encrypted_dns_transport = normalize_encrypted_dns_transport(payload, remote_port, alpn, alpn_protocols, sni)
+
+    protocol =
+      normalize_protocol(
+        get_field(payload, :protocol),
+        sni,
+        get_field(payload, :tls_version),
+        remote_port,
+        quic_version,
+        alpn,
+        alpn_protocols
+      )
+
     explicit_encryption = normalize_bool(get_field(payload, :is_encrypted))
+
     is_encrypted =
       cond do
         is_boolean(explicit_encryption) -> explicit_encryption
-        encrypted_by_metadata?(payload, sni, remote_port) -> true
+        encrypted_by_metadata?(
+          payload,
+          sni,
+          remote_port,
+          quic_version,
+          alpn,
+          alpn_protocols,
+          encrypted_dns_transport
+        ) -> true
+
         true -> nil
       end
+
     process_pid = get_field(payload, :pid) || get_field(payload, :process_pid)
     domain_candidates = normalize_domain_candidates(get_field(payload, :domain_candidates), domain, sni, tls_sni)
     bytes_sent = first_present(payload, [:bytes_sent, :bytes_out, :sent_bytes, :tx_bytes])
@@ -104,6 +134,16 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     |> put_if_present(:tls_version, get_field(payload, :tls_version))
     |> put_if_present(:ja3, get_field(payload, :ja3))
     |> put_if_present(:ja3s, get_field(payload, :ja3s))
+    |> put_if_present(:alpn, alpn)
+    |> put_if_present(:alpn_protocols, alpn_protocols)
+    |> put_if_present(:cipher_suite, first_present(payload, [:cipher_suite, :tls_cipher_suite, :cipher]))
+    |> put_if_present(:tls_extensions, normalize_list(get_field(payload, :tls_extensions)))
+    |> put_if_present(:ech_present, normalize_bool(first_present(payload, [:ech_present, :encrypted_client_hello])))
+    |> put_if_present(:quic_version, quic_version)
+    |> put_if_present(:is_quic, normalize_bool(get_field(payload, :is_quic)) || protocol == "QUIC")
+    |> put_if_present(:http_version, http_version)
+    |> put_if_present(:encrypted_dns_transport, encrypted_dns_transport)
+    |> put_if_present(:dns_resolver, first_present(payload, [:dns_resolver, :resolver_ip, :resolver]))
     |> put_if_present(:certificate, get_field(payload, :certificate))
     |> put_if_present(:certificate_risk, normalize_float(get_field(payload, :certificate_risk)))
   end
@@ -129,6 +169,16 @@ defmodule TamanduaServer.NDR.EventNormalizer do
       tls_version: get_field(payload, :tls_version),
       ja3: get_field(payload, :ja3),
       ja3s: get_field(payload, :ja3s),
+      alpn: get_field(payload, :alpn),
+      alpn_protocols: get_field(payload, :alpn_protocols),
+      cipher_suite: get_field(payload, :cipher_suite),
+      tls_extensions: get_field(payload, :tls_extensions),
+      ech_present: get_field(payload, :ech_present),
+      quic_version: get_field(payload, :quic_version),
+      is_quic: get_field(payload, :is_quic),
+      http_version: get_field(payload, :http_version),
+      encrypted_dns_transport: get_field(payload, :encrypted_dns_transport),
+      dns_resolver: get_field(payload, :dns_resolver),
       is_encrypted: get_field(payload, :is_encrypted),
       certificate_risk: get_field(payload, :certificate_risk),
       certificate_fingerprint: certificate_fingerprint(get_field(payload, :certificate)),
@@ -283,18 +333,52 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     end)
   end
 
-  defp normalize_protocol(nil, _sni, tls_version, port) when not is_nil(tls_version) or port in [443, 8443, 9443], do: "TLS"
-  defp normalize_protocol(nil, sni, _tls_version, _port) when not is_nil(sni), do: "TLS"
-  defp normalize_protocol(nil, _sni, _tls_version, _port), do: "TCP"
-  defp normalize_protocol(protocol, _sni, _tls_version, _port), do: protocol |> to_string() |> String.upcase()
+  defp normalize_protocol(nil, _sni, _tls_version, _port, quic_version, _alpn, _alpn_protocols)
+       when not is_nil(quic_version),
+       do: "QUIC"
 
-  defp encrypted_by_metadata?(payload, sni, remote_port) do
+  defp normalize_protocol(nil, _sni, tls_version, port, _quic_version, _alpn, _alpn_protocols)
+       when not is_nil(tls_version) or port in [443, 853, 8443, 9443],
+       do: "TLS"
+
+  defp normalize_protocol(nil, sni, _tls_version, _port, _quic_version, _alpn, _alpn_protocols)
+       when not is_nil(sni),
+       do: "TLS"
+
+  defp normalize_protocol(nil, _sni, _tls_version, _port, _quic_version, alpn, alpn_protocols) do
+    cond do
+      alpn_match?(alpn, alpn_protocols, ["h3", "h3-29", "h3-32"]) -> "QUIC"
+      alpn_match?(alpn, alpn_protocols, ["h2", "http/1.1", "dot", "doh", "doq", "doq-i02", "doq-i03"]) ->
+        "TLS"
+
+      true -> "TCP"
+    end
+  end
+
+  defp normalize_protocol(nil, _sni, _tls_version, _port, _quic_version, _alpn, _alpn_protocols), do: "TCP"
+
+  defp normalize_protocol(protocol, _sni, _tls_version, _port, _quic_version, _alpn, _alpn_protocols),
+    do: protocol |> to_string() |> String.upcase()
+
+  defp encrypted_by_metadata?(
+         payload,
+         sni,
+         remote_port,
+         quic_version,
+         alpn,
+         alpn_protocols,
+         encrypted_dns_transport
+       ) do
     not is_nil(sni) or
       not is_nil(get_field(payload, :tls_version)) or
       not is_nil(get_field(payload, :ja3)) or
       not is_nil(get_field(payload, :ja3s)) or
       not is_nil(get_field(payload, :certificate)) or
-      remote_port in [443, 8443, 9443]
+      not is_nil(quic_version) or
+      not is_nil(alpn) or
+      alpn_protocols != [] or
+      not is_nil(encrypted_dns_transport) or
+      remote_port in [443, 853, 784, 8853, 8443, 9443]
   end
 
   defp normalize_bool(value) when value in [true, false], do: value
@@ -311,6 +395,53 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     end
   end
   defp normalize_float(_), do: nil
+
+  defp normalize_list(nil), do: []
+
+  defp normalize_list(value) when is_list(value),
+    do: value |> Enum.reject(&is_nil/1) |> Enum.map(&to_string/1) |> Enum.reject(&(&1 == ""))
+
+  defp normalize_list(value) when is_binary(value) do
+    value
+    |> String.split([",", " "], trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+  defp normalize_list(value), do: [to_string(value)]
+
+  defp normalize_encrypted_dns_transport(payload, remote_port, alpn, alpn_protocols, sni) do
+    explicit = first_present(payload, [:encrypted_dns_transport, :dns_transport])
+
+    cond do
+      explicit in [:doh, "doh", "DoH", "DOH"] -> "doh"
+      explicit in [:dot, "dot", "DoT", "DOT"] -> "dot"
+      explicit in [:doq, "doq", "DoQ", "DOQ"] -> "doq"
+      remote_port == 853 -> "dot"
+      remote_port in [784, 8853] -> "doq"
+      alpn_match?(alpn, alpn_protocols, ["doq", "doq-i02", "doq-i03"]) -> "doq"
+      alpn_match?(alpn, alpn_protocols, ["dot"]) -> "dot"
+      resolver_sni?(sni) and remote_port in [443, 8443] -> "doh"
+      true -> nil
+    end
+  end
+
+  defp alpn_match?(alpn, alpn_protocols, expected) do
+    values =
+      [alpn | alpn_protocols]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&(String.downcase(to_string(&1))))
+
+    Enum.any?(values, &(&1 in expected))
+  end
+
+  defp resolver_sni?(nil), do: false
+  defp resolver_sni?(sni) do
+    normalized = sni |> to_string() |> String.downcase()
+    String.contains?(normalized, "dns.google") or
+      String.contains?(normalized, "cloudflare-dns.com") or
+      String.contains?(normalized, "dns.quad9.net") or
+      String.contains?(normalized, "dns.nextdns.io")
+  end
 
   defp normalize_domain_candidates(candidates, domain, sni, tls_sni) do
     candidates

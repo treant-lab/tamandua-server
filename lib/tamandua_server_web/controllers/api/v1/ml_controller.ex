@@ -73,13 +73,23 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     end
 
     status_code = if healthy, do: 200, else: 503
+    models = normalize_model_inventory(model_info)
+    ready = healthy and Enum.any?(models, & &1.trained)
 
     conn
     |> put_status(status_code)
     |> json(%{
       data: %{
+        enabled: healthy,
         healthy: healthy,
+        ready: ready,
+        reason: ml_status_reason(healthy, ready, models),
+        model_trained: Enum.any?(models, & &1.trained),
+        training_samples: total_training_samples(models),
         model: model_info,
+        models: models,
+        model_count: length(models),
+        offline_agent_onnx: offline_agent_onnx_summary(),
         service_url: ml_service_url()
       }
     })
@@ -107,10 +117,10 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     ml_client_result =
       try do
         MLClient.get_metrics()
-      catch
-        :exit, reason -> {:error, {:ml_client_unavailable, reason}}
       rescue
         error -> {:error, error}
+      catch
+        :exit, reason -> {:error, {:ml_client_unavailable, reason}}
       end
 
     case ml_client_result do
@@ -771,6 +781,105 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       {:error, _} ->
         %{version: "unknown", trained: false, accuracy: 0.0}
     end
+  end
+
+  defp normalize_model_inventory(nil), do: []
+
+  defp normalize_model_inventory(%{"models" => models}) when is_list(models) do
+    Enum.map(models, &normalize_model_entry/1)
+  end
+
+  defp normalize_model_inventory(%{models: models}) when is_list(models) do
+    Enum.map(models, &normalize_model_entry/1)
+  end
+
+  defp normalize_model_inventory(info) when is_map(info) do
+    [
+      normalize_model_entry(%{
+        "name" => info["model_name"] || info[:model_name] || "malware-detector",
+        "version" => info["model_version"] || info[:model_version] || info["version"] || info[:version],
+        "runtime" => info["runtime"] || info[:runtime] || "ml-service",
+        "trained" => trained_model?(info),
+        "accuracy" => info["accuracy"] || info[:accuracy],
+        "training_samples" => info["training_samples"] || info[:training_samples],
+        "device" => info["device"] || info[:device]
+      })
+    ]
+  end
+
+  defp normalize_model_inventory(_), do: []
+
+  defp normalize_model_entry(entry) when is_map(entry) do
+    %{
+      name: entry["name"] || entry[:name] || entry["model_name"] || entry[:model_name] || "model",
+      version: entry["version"] || entry[:version] || entry["model_version"] || entry[:model_version] || "unknown",
+      runtime: entry["runtime"] || entry[:runtime] || entry["backend"] || entry[:backend] || "ml-service",
+      trained: trained_model?(entry),
+      accuracy: entry["accuracy"] || entry[:accuracy],
+      training_samples: entry["training_samples"] || entry[:training_samples],
+      device: entry["device"] || entry[:device]
+    }
+  end
+
+  defp normalize_model_entry(entry), do: %{name: to_string(entry), version: "unknown", runtime: "ml-service", trained: false}
+
+  defp trained_model?(info) when is_map(info) do
+    cond do
+      is_boolean(info["trained"]) -> info["trained"]
+      is_boolean(info[:trained]) -> info[:trained]
+      is_number(info["training_samples"]) -> info["training_samples"] > 0
+      is_number(info[:training_samples]) -> info[:training_samples] > 0
+      true -> false
+    end
+  end
+
+  defp trained_model?(_), do: false
+
+  defp total_training_samples(models) do
+    Enum.reduce(models, 0, fn model, acc ->
+      case model.training_samples do
+        value when is_integer(value) -> acc + value
+        value when is_float(value) -> acc + trunc(value)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp ml_status_reason(false, _ready, _models), do: "ML service is not reachable"
+  defp ml_status_reason(true, true, _models), do: "ML service is healthy and has at least one trained model"
+  defp ml_status_reason(true, false, []), do: "ML service is healthy but did not report model inventory"
+  defp ml_status_reason(true, false, _models), do: "ML service is healthy but no trained model is reported"
+
+  defp offline_agent_onnx_summary do
+    import Ecto.Query
+
+    query =
+      from(a in TamanduaServer.Alerts.Alert,
+        where:
+          ilike(a.title, "Agent detection: OFFLINE_ML%") or
+            fragment("lower(coalesce(?->>'rule_name', '')) LIKE 'offline_ml%'", a.detection_metadata) or
+            fragment("coalesce(?->>'onnx_model_version', '') != ''", a.detection_metadata),
+        select: %{
+          total: count(a.id),
+          last_seen_at: max(a.inserted_at)
+        }
+      )
+
+    case TamanduaServer.Repo.one(query, timeout: 5_000) do
+      %{total: total, last_seen_at: last_seen_at} ->
+        %{enabled: total > 0, total_alerts: total, last_seen_at: last_seen_at}
+
+      _ ->
+        %{enabled: false, total_alerts: 0, last_seen_at: nil}
+    end
+  rescue
+    exception ->
+      Logger.warning("[MLController] ONNX summary failed: #{Exception.message(exception)}")
+      %{enabled: false, total_alerts: 0, last_seen_at: nil, unavailable: true}
+  catch
+    :exit, reason ->
+      Logger.warning("[MLController] ONNX summary failed: exit #{inspect(reason)}")
+      %{enabled: false, total_alerts: 0, last_seen_at: nil, unavailable: true}
   end
 
   defp count_telemetry_samples do

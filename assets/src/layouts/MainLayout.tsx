@@ -40,6 +40,8 @@ import {
   Clock,
   Download,
   GitBranch,
+  Key,
+  Lock,
 } from 'lucide-react'
 import { cn, safeInitial } from '@/lib/utils'
 import type { SharedProps, Tenant } from '@/types'
@@ -243,6 +245,10 @@ const navigationGroups: ExtendedNavGroup[] = [
       { name: 'Network', href: '/app/network', icon: Network },
       { name: 'DNS', href: '/app/dns', icon: Globe },
       { name: 'NDR', href: '/app/ndr', icon: Radar },
+      { name: 'TLS Sessions', href: '/app/ndr?tab=encrypted&section=tls', icon: Lock },
+      { name: 'JA3 Fingerprints', href: '/app/ndr?tab=encrypted&section=ja3', icon: Key },
+      { name: 'Certificates', href: '/app/ndr?tab=encrypted&section=certificates', icon: ShieldCheck },
+      { name: 'NDR Anomalies', href: '/app/ndr?tab=anomalies', icon: AlertTriangle },
       { name: 'Attack Surface', href: '/app/attack-surface', icon: Target },
       { name: 'Exposure Management', href: '/app/exposure', icon: Eye },
       { name: 'Attack Paths', href: '/app/exposure/attack-paths', icon: GitBranch },

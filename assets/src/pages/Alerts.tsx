@@ -1769,7 +1769,7 @@ function AlertRow({
             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
             <History className="h-4 w-4" />
-            View Timeline
+            View Storyline
           </a>
           {status === 'new' || status === 'open' ? (
             <button

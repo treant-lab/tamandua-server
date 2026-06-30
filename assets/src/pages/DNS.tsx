@@ -126,6 +126,16 @@ interface DNSPageProps {
   }
 }
 
+interface DNSQueryMeta {
+  partial: boolean
+  defaultWindowHours?: number
+  scope?: string
+  hasMore?: boolean
+  totalIsEstimate?: boolean
+  limit?: number
+  offset?: number
+}
+
 const DNS_EVENT_TYPES = new Set(['dns_query', 'dns', 'dns_response', 'name_resolution', 'domain_lookup'])
 const DNS_TRANSPORT_PORTS = new Set(['53', '5353'])
 const DOT_PORTS = new Set(['853'])
@@ -978,6 +988,11 @@ function dnsApiWarning(response: Record<string, any>, label: string): string | n
     : `${label} returned partial data`
 }
 
+function readDnsUrlParam(key: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get(key) || ''
+}
+
 export default function DNS({
   stats: initialStats,
   queries: initialQueries,
@@ -987,7 +1002,12 @@ export default function DNS({
   agents,
   pagination: initialPagination,
 }: DNSPageProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('live-feed')
+  const initialTab = readDnsUrlParam('tab')
+  const [activeTab, setActiveTab] = useState<TabId>(
+    ['live-feed', 'top-domains', 'blocklist', 'detections'].includes(initialTab)
+      ? initialTab as TabId
+      : 'live-feed'
+  )
   const [stats, setStats] = useState<DNSStats>(initialStats || {
     totalQueries: 0,
     uniqueDomains: 0,
@@ -1001,14 +1021,15 @@ export default function DNS({
   )
   const [alerts, setAlerts] = useState<DNSAlert[]>(initialAlerts || [])
   const [pagination, setPagination] = useState(initialPagination || { page: 1, perPage: 50, total: 0 })
+  const [queryMeta, setQueryMeta] = useState<DNSQueryMeta | null>(null)
   const [loading, setLoading] = useState(false)
   const [apiError, setApiError] = useState<string | null>(null)
 
   // Filters
-  const [searchQuery, setSearchQuery] = useState('')
-  const [queryTypeFilter, setQueryTypeFilter] = useState('all')
-  const [agentFilter, setAgentFilter] = useState('all')
-  const [processFilter, setProcessFilter] = useState('')
+  const [searchQuery, setSearchQuery] = useState(readDnsUrlParam('q') || readDnsUrlParam('domain') || readDnsUrlParam('search'))
+  const [queryTypeFilter, setQueryTypeFilter] = useState(readDnsUrlParam('query_type') || 'all')
+  const [agentFilter, setAgentFilter] = useState(readDnsUrlParam('agent_id') || 'all')
+  const [processFilter, setProcessFilter] = useState(readDnsUrlParam('process') || readDnsUrlParam('process_name'))
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
 
   // Blocklist state
@@ -1122,7 +1143,17 @@ export default function DNS({
       if (res.ok) {
         const data = await res.json()
         const rawQueries = data.queries || data.data || []
+        const meta = data.meta || {}
         setApiError(dnsApiWarning(data, 'DNS query feed'))
+        setQueryMeta({
+          partial: Boolean(meta.partial),
+          defaultWindowHours: Number(meta.default_window_hours ?? meta.defaultWindowHours) || undefined,
+          scope: typeof meta.scope === 'string' ? meta.scope : undefined,
+          hasMore: typeof meta.has_more === 'boolean' ? meta.has_more : undefined,
+          totalIsEstimate: Boolean(meta.total_is_estimate ?? meta.totalIsEstimate),
+          limit: Number(meta.limit ?? meta.per_page ?? meta.perPage) || undefined,
+          offset: Number(meta.offset) || 0,
+        })
         setQueries(Array.isArray(rawQueries) ? rawQueries.map((query: Record<string, unknown>) => normalizeDnsQuery(query)) : [])
         if (data.pagination) {
           setPagination(data.pagination)
@@ -1138,9 +1169,11 @@ export default function DNS({
         }
       } else {
         setApiError(`DNS query feed failed with HTTP ${res.status}`)
+        setQueryMeta(current => current ? { ...current, partial: true } : { partial: true })
       }
     } catch (error) {
       setApiError(`DNS query feed failed: ${error instanceof Error ? error.message : 'network error'}`)
+      setQueryMeta(current => current ? { ...current, partial: true } : { partial: true })
     } finally {
       setLoading(false)
     }
@@ -1516,6 +1549,7 @@ export default function DNS({
           agents={agents || []}
           loading={loading}
           apiError={apiError}
+          queryMeta={queryMeta}
           connectionState={connectionState}
           isPaused={isPaused}
           pauseStream={pauseStream}
@@ -1624,6 +1658,7 @@ interface LiveDNSFeedProps {
   agents: Array<{ id: string; hostname: string }>
   loading: boolean
   apiError: string | null
+  queryMeta: DNSQueryMeta | null
   connectionState: WebSocketConnectionState
   isPaused: boolean
   pauseStream: () => void
@@ -1651,6 +1686,7 @@ function LiveDNSFeed({
   agents,
   loading,
   apiError,
+  queryMeta,
   connectionState,
   isPaused,
   pauseStream,
@@ -1673,6 +1709,12 @@ function LiveDNSFeed({
   getExportData,
 }: LiveDNSFeedProps) {
   const queryTypes = ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'SOA', 'SRV', 'PTR', 'TRANSPORT', 'DOH', 'DOT']
+  const defaultWindowLabel = queryMeta?.defaultWindowHours
+    ? `${queryMeta.defaultWindowHours}h default window`
+    : 'Live and recent telemetry'
+  const totalLabel = queryMeta?.totalIsEstimate
+    ? `${pagination.total.toLocaleString()} estimated records`
+    : `${pagination.total.toLocaleString()} records`
 
   return (
     <div className="card-sentinel">
@@ -1778,6 +1820,41 @@ function LiveDNSFeed({
           <span className="text-sm text-[var(--muted)]">
             {loading ? 'Loading DNS records...' : `${queries.length} DNS records`}
           </span>
+        </div>
+      </div>
+
+      <div className="border-b border-[var(--border)] bg-[var(--surface-alt)]/45 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
+          <span className={cn(
+            'inline-flex items-center gap-1 rounded-md border px-2 py-1',
+            queryMeta?.partial || apiError
+              ? 'border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)]'
+              : 'border-[var(--border)] bg-[var(--surface)] text-[var(--muted)]'
+          )}>
+            {queryMeta?.partial || apiError ? (
+              <AlertTriangle className="h-3.5 w-3.5" />
+            ) : (
+              <CheckCircle className="h-3.5 w-3.5" />
+            )}
+            {queryMeta?.partial || apiError ? 'Partial or degraded feed' : 'Feed loaded'}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1">
+            <Clock className="h-3.5 w-3.5" />
+            {defaultWindowLabel}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1">
+            <Activity className="h-3.5 w-3.5" />
+            {queryMeta?.scope || 'organization DNS telemetry'}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1">
+            {totalLabel}
+            {queryMeta?.hasMore ? ' available' : ''}
+          </span>
+          {queryMeta?.defaultWindowHours && (
+            <span>
+              Use filters or API time parameters for historical investigation beyond the default window.
+            </span>
+          )}
         </div>
       </div>
 

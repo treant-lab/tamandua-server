@@ -86,6 +86,25 @@ interface MLCanaryStatus {
   message?: string
 }
 
+interface MLOfflineAgentOnnxStatus {
+  enabled?: boolean
+  total_alerts?: number
+  last_seen_at?: string | null
+  unavailable?: boolean
+}
+
+interface MLServiceStatus {
+  enabled?: boolean
+  healthy?: boolean
+  ready?: boolean
+  reason?: string
+  model_trained?: boolean
+  training_samples?: number
+  model_count?: number
+  offline_agent_onnx?: MLOfflineAgentOnnxStatus
+  service_url?: string
+}
+
 interface MLDashboardProps {
   service: {
     healthy: boolean
@@ -132,11 +151,35 @@ export default function MLDashboard({
   const [lifecycleModels, setLifecycleModels] = useState<MLLifecycleModel[]>([])
   const [lifecycleModelsError, setLifecycleModelsError] = useState<string | null>(null)
   const [canaryStatuses, setCanaryStatuses] = useState<MLCanaryStatus[]>([])
+  const [mlStatus, setMlStatus] = useState<MLServiceStatus | null>(null)
+  const [mlStatusError, setMlStatusError] = useState<string | null>(null)
 
   const stats = statistics || { total_predictions: 0, total_detections: 0, alerts_created: 0 }
   const alerts = recentAlerts || []
   const predictions = predictionHistory.length > 0 ? predictionHistory : recentPredictions || []
-  const isModelTrained = model != null && model.trained
+  const statusModelTrained = mlStatus?.model_trained
+  const isModelTrained = statusModelTrained ?? (model != null && model.trained)
+  const serviceHealthy = mlStatus?.healthy ?? service?.healthy
+  const serviceReady = mlStatus?.ready ?? isModelTrained
+  const serviceUrl = mlStatus?.service_url || service?.url || 'not configured'
+  const modelCount = mlStatus?.model_count ?? (model ? 1 : 0)
+  const offlineOnnx = mlStatus?.offline_agent_onnx
+  const readinessLabel = serviceReady ? 'Ready' : serviceHealthy ? 'Degraded' : 'Unavailable'
+  const readinessTone = serviceReady ? 'ready' : serviceHealthy ? 'degraded' : 'unavailable'
+  const readinessColors = {
+    ready: {
+      bg: 'rgba(var(--emerald-400-rgb, 52, 211, 153), 0.2)',
+      fg: 'var(--emerald-400)',
+    },
+    degraded: {
+      bg: 'rgba(var(--warn-rgb, 245, 158, 11), 0.16)',
+      fg: 'var(--warn)',
+    },
+    unavailable: {
+      bg: 'rgba(var(--crit-rgb, 239, 68, 68), 0.2)',
+      fg: 'var(--crit)',
+    },
+  }[readinessTone]
 
   const formatScore = (value: number | string | null | undefined) => {
     const numeric = Number(value)
@@ -221,6 +264,32 @@ export default function MLDashboard({
 
   useEffect(() => {
     let cancelled = false
+
+    async function loadMlStatus() {
+      try {
+        const response = await fetch('/api/v1/ml/status', {
+          headers: { Accept: 'application/json' },
+          credentials: 'include',
+        })
+
+        if (!response.ok) {
+          throw new Error(`ML status failed (status ${response.status})`)
+        }
+
+        const payload = await response.json()
+
+        if (!cancelled) {
+          setMlStatus(payload?.data || null)
+          setMlStatusError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load ML status'
+          setMlStatusError(message)
+          logger.warn('ML status load failed:', err)
+        }
+      }
+    }
 
     async function loadLifecycleStats() {
       try {
@@ -313,6 +382,7 @@ export default function MLDashboard({
       }
     }
 
+    loadMlStatus()
     loadLifecycleStats()
     loadLifecycleModels()
     loadPredictionHistory()
@@ -339,43 +409,98 @@ export default function MLDashboard({
 
         {/* Service Health */}
         <div className="card-sentinel rounded-xl p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-3">
               <Server className="h-5 w-5" style={{ color: 'var(--muted)' }} />
-              <span className="font-medium" style={{ color: 'var(--fg)' }}>
-                ML Service
-              </span>
+              <div>
+                <span className="font-medium" style={{ color: 'var(--fg)' }}>
+                  ML Service
+                </span>
+                <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
+                  {mlStatusError || mlStatus?.reason || 'Readiness comes from /api/v1/ml/status'}
+                </p>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <span
                 className="text-sm font-mono"
                 style={{ color: 'var(--muted)' }}
               >
-                {service?.url}
+                {serviceUrl}
               </span>
               <span
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium'
                 )}
                 style={{
-                  backgroundColor: service?.healthy
-                    ? 'rgba(var(--emerald-400-rgb, 52, 211, 153), 0.2)'
-                    : 'rgba(var(--crit-rgb, 239, 68, 68), 0.2)',
-                  color: service?.healthy ? 'var(--emerald-400)' : 'var(--crit)',
+                  backgroundColor: readinessColors.bg,
+                  color: readinessColors.fg,
                 }}
               >
                 <span
                   className="h-2 w-2 rounded-full"
                   style={{
-                    backgroundColor: service?.healthy
-                      ? 'var(--emerald-400)'
-                      : 'var(--crit)',
+                    backgroundColor: readinessColors.fg,
                   }}
                 />
-                {service?.healthy ? 'Healthy' : 'Unhealthy'}
+                {readinessLabel}
               </span>
             </div>
           </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>Model inventory</p>
+              <p className="mt-1 text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                {formatCount(modelCount)}
+              </p>
+            </div>
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>Readiness</p>
+              <p className="mt-1 text-lg font-semibold" style={{ color: readinessColors.fg }}>
+                {readinessLabel}
+              </p>
+            </div>
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--surface-elevated)' }}>
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>Offline agent ONNX</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p
+                  className="text-lg font-semibold"
+                  style={{
+                    color: offlineOnnx?.unavailable
+                      ? 'var(--warn)'
+                      : offlineOnnx?.enabled
+                        ? 'var(--emerald-400)'
+                        : 'var(--muted)',
+                  }}
+                >
+                  {offlineOnnx?.unavailable ? 'Unavailable' : offlineOnnx?.enabled ? 'Observed' : 'No alerts'}
+                </p>
+                <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                  {formatCount(offlineOnnx?.total_alerts)} alerts
+                </span>
+              </div>
+              {offlineOnnx?.last_seen_at && (
+                <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
+                  Last seen {formatDate(offlineOnnx.last_seen_at)}
+                </p>
+              )}
+            </div>
+          </div>
+          {mlStatusError && (
+            <div
+              className="mt-4 rounded-lg px-4 py-3 text-sm"
+              style={{
+                backgroundColor: 'rgba(var(--warn-rgb, 245, 158, 11), 0.1)',
+                border: '1px solid rgba(var(--warn-rgb, 245, 158, 11), 0.3)',
+                color: 'var(--warn)',
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                <span>Live ML status unavailable; showing server-rendered fallback data.</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Model Info + Statistics */}

@@ -29,6 +29,8 @@ import {
   Workflow,
   FileSearch,
   GitBranch,
+  Key,
+  Lock,
   Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -118,7 +120,12 @@ const searchablePages: QuickAction[] = [
   { id: 'mcp-servers', name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
   { id: 'network', name: 'Network', href: '/app/network', icon: Network },
   { id: 'dns', name: 'DNS Monitoring', href: '/app/dns', icon: Globe },
+  { id: 'dns-doh-dot', name: 'DoH / DoT DNS', href: '/app/dns?query_type=DOH', icon: Globe },
   { id: 'ndr', name: 'NDR', href: '/app/ndr', icon: Radar },
+  { id: 'ndr-tls-sessions', name: 'TLS Sessions', href: '/app/ndr?tab=encrypted&section=tls', icon: Lock },
+  { id: 'ndr-ja3', name: 'JA3 Fingerprints', href: '/app/ndr?tab=encrypted&section=ja3', icon: Key },
+  { id: 'ndr-certificates', name: 'Certificate Analysis', href: '/app/ndr?tab=encrypted&section=certificates', icon: ShieldCheck },
+  { id: 'ndr-anomalies', name: 'NDR Anomalies', href: '/app/ndr?tab=anomalies', icon: AlertTriangle },
   { id: 'attack-surface', name: 'Attack Surface', href: '/app/attack-surface', icon: Shield },
   { id: 'exposure', name: 'Exposure Management', href: '/app/exposure', icon: Eye },
   { id: 'attack-paths', name: 'Attack Paths', href: '/app/exposure/attack-paths', icon: GitBranch },

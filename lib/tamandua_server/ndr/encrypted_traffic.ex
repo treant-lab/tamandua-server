@@ -252,6 +252,12 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
     tls_version = payload[:tls_version] || payload["tls_version"]
     certificate = payload[:certificate] || payload["certificate"]
     certificate_risk = payload[:certificate_risk] || payload["certificate_risk"]
+    encrypted_dns_transport = payload[:encrypted_dns_transport] || payload["encrypted_dns_transport"]
+    alpn = payload[:alpn] || payload["alpn"]
+    alpn_protocols = payload[:alpn_protocols] || payload["alpn_protocols"] || []
+    quic_version = payload[:quic_version] || payload["quic_version"]
+    http_version = payload[:http_version] || payload["http_version"]
+    ech_present = payload[:ech_present] || payload["ech_present"]
 
     detections = []
     new_state = update_stats(state, :events_analyzed)
@@ -270,11 +276,17 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
         ja3s: ja3s_hash,
         sni: sni,
         tls_version: tls_version,
+        alpn: alpn,
+        alpn_protocols: alpn_protocols,
+        quic_version: quic_version,
+        http_version: http_version,
+        ech_present: ech_present,
+        encrypted_dns_transport: encrypted_dns_transport,
         certificate_fingerprint: EventNormalizer.certificate_fingerprint(certificate),
         certificate: certificate,
         certificate_risk: certificate_risk,
         process: EventNormalizer.process_context(event),
-        enrichment: event[:enrichment] || event["enrichment"] || %{},
+        enrichment: session_enrichment(event, payload),
         timestamp: DateTime.utc_now()
       }, event)
     end
@@ -307,7 +319,11 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
     certificate_risk_detections = analyze_certificate_risk(event, certificate_risk)
     detections = detections ++ certificate_risk_detections
 
-    # 7. Delegate to C2Detector for behavioral analysis
+    # 7. Encrypted DNS transport analysis
+    encrypted_dns_detections = analyze_encrypted_dns(event, encrypted_dns_transport)
+    detections = detections ++ encrypted_dns_detections
+
+    # 8. Delegate to C2Detector for behavioral analysis
     c2_detections = try do
       C2Detector.analyze_connection(event)
     rescue
@@ -740,6 +756,64 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
     end
   end
 
+  defp analyze_encrypted_dns(_event, nil), do: []
+  defp analyze_encrypted_dns(event, transport) do
+    payload = event[:payload] || event["payload"] || %{}
+    normalized = transport |> to_string() |> String.downcase()
+    remote_ip = payload[:remote_ip] || payload["remote_ip"]
+    remote_port = payload[:remote_port] || payload["remote_port"]
+    process = EventNormalizer.process_context(event)
+
+    confidence =
+      case normalized do
+        "dot" -> 0.7
+        "doq" -> 0.75
+        "doh" -> 0.65
+        _ -> 0.6
+      end
+
+    [%{
+      type: :encrypted_dns_transport,
+      confidence: confidence,
+      description: "Encrypted DNS transport observed: #{String.upcase(normalized)}",
+      mitre_techniques: ["T1071.004", "T1573"],
+      metadata: %{
+        encrypted_dns_transport: normalized,
+        remote_ip: remote_ip,
+        remote_port: remote_port,
+        sni: payload[:sni] || payload["sni"],
+        alpn: payload[:alpn] || payload["alpn"],
+        process_name: process[:process_name] || process[:name]
+      }
+      |> reject_empty_values()
+    }]
+  end
+
+  defp session_enrichment(event, payload) do
+    base = event[:enrichment] || event["enrichment"] || %{}
+
+    encrypted_metadata =
+      %{
+        alpn: payload[:alpn] || payload["alpn"],
+        alpn_protocols: payload[:alpn_protocols] || payload["alpn_protocols"],
+        cipher_suite: payload[:cipher_suite] || payload["cipher_suite"],
+        tls_extensions: payload[:tls_extensions] || payload["tls_extensions"],
+        ech_present: payload[:ech_present] || payload["ech_present"],
+        quic_version: payload[:quic_version] || payload["quic_version"],
+        is_quic: payload[:is_quic] || payload["is_quic"],
+        http_version: payload[:http_version] || payload["http_version"],
+        encrypted_dns_transport: payload[:encrypted_dns_transport] || payload["encrypted_dns_transport"],
+        dns_resolver: payload[:dns_resolver] || payload["dns_resolver"]
+      }
+      |> reject_empty_values()
+
+    if encrypted_metadata == %{} do
+      base
+    else
+      Map.put(base, :encrypted_metadata, encrypted_metadata)
+    end
+  end
+
   # ============================================================================
   # Query Functions
   # ============================================================================
@@ -844,6 +918,7 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
       :high_entropy_sni -> "NDR: High Entropy Domain (Potential DGA)"
       :outdated_tls_version -> "NDR: Outdated TLS Version"
       :high_certificate_risk -> "NDR: High-Risk TLS Certificate"
+      :encrypted_dns_transport -> "NDR: Encrypted DNS Transport Observed"
       _ -> "NDR: Encrypted Traffic Anomaly"
     end
 

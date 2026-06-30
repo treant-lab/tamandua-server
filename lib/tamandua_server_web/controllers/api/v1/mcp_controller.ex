@@ -95,6 +95,44 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
   end
 
   @doc """
+  Return MCP health and tool schema status for UI health checks.
+
+  Some clients probe this REST shape before issuing JSON-RPC `tools/list`.
+  Keep it backed by the same catalog fallback so the UI can distinguish a
+  degraded MCP process from an empty tool registry.
+  """
+  def schema_status(conn, _params) do
+    {tools, degraded, health_message} =
+      case safe_mcp_call(nil, fn -> MCPServer.list_tools() end) do
+        {:ok, tools} ->
+          {tools, false, nil}
+
+        {:error, %{error: %{message: message}}} ->
+          {MCPServer.tool_catalog(), true, message}
+
+        {:error, reason} ->
+          {MCPServer.tool_catalog(), true, to_string(reason)}
+      end
+
+    json(conn, %{
+      data: %{
+        mcpAlive: Process.whereis(MCPServer) != nil,
+        protocolVersion: "2024-11-05",
+        tools: tools,
+        toolSchemas: tools,
+        toolCount: length(tools),
+        degraded: degraded,
+        healthMessage: health_message
+      },
+      meta: %{
+        count: length(tools),
+        degraded: degraded,
+        generatedAt: DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+    })
+  end
+
+  @doc """
   Get current security context for MCP sessions.
 
   Returns contextual information about the current security state,

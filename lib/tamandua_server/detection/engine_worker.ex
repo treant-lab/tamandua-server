@@ -56,6 +56,33 @@ defmodule TamanduaServer.Detection.EngineWorker do
     "slack.com", "teams.microsoft.com"
   ]
 
+  @dns_ports MapSet.new(["53", "5353"])
+  @dot_ports MapSet.new(["853"])
+  @doh_ports MapSet.new(["443", "8443"])
+  @known_doh_ips MapSet.new([
+    "1.1.1.1",
+    "1.0.0.1",
+    "8.8.8.8",
+    "8.8.4.4",
+    "9.9.9.9",
+    "149.112.112.112",
+    "94.140.14.14",
+    "94.140.15.15",
+    "76.76.2.0",
+    "76.76.10.0",
+    "185.228.168.9",
+    "185.228.169.9"
+  ])
+  @known_doh_domains MapSet.new([
+    "cloudflare-dns.com",
+    "dns.google",
+    "dns.quad9.net",
+    "dns.adguard.com",
+    "doh.opendns.com",
+    "dns.nextdns.io",
+    "dns.cleanbrowsing.org"
+  ])
+
   # ── Client API ─────────────────────────────────────────────────────
 
   def start_link(opts) do
@@ -207,11 +234,15 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
       # 4. DNS-specific analysis
       event_type = detection_context.event_type
-      dns_detections = if event_type == "dns_query" do
-        safe_call(fn -> DNSAnalyzer.analyze_dns_event(event) end, [])
-      else
-        []
-      end
+      dns_detections =
+        if event_type == "dns_query" or dns_transport_event?(event) do
+          dns_event = canonical_dns_analysis_event(event)
+
+          safe_call(fn -> DNSAnalyzer.analyze_dns_event(dns_event) end, []) ++
+            dns_transport_detections(dns_event)
+        else
+          []
+        end
       detections = detections ++ dns_detections
 
       # 4b. DNS tunneling detection via C2 Detector
@@ -1431,6 +1462,144 @@ defmodule TamanduaServer.Detection.EngineWorker do
     catch
       :exit, _ -> default
     end
+  end
+
+  defp dns_transport_event?(event) when is_map(event) do
+    event_type =
+      (event[:event_type] || event["event_type"] || "")
+      |> to_string()
+      |> String.downcase()
+
+    payload = event[:payload] || event["payload"] || %{}
+    port = dns_payload_value(payload, [:remote_port, :destination_port, :dst_port, :port, :resolver_port])
+    remote_ip = dns_payload_value(payload, [:remote_ip, :destination_ip, :dst_ip, :resolver_ip])
+    host = dns_payload_value(payload, [:domain, :host, :hostname, :sni, :tls_sni, :query_name, :dns_query])
+
+    network_like? =
+      event_type in ["network", "network_connect", "network_connection", "connection", "socket_connect"]
+
+    network_like? and
+      (dns_port?(port) or dot_port?(port) or doh_port?(port) or
+         known_doh_ip?(remote_ip) or known_doh_domain?(host))
+  end
+
+  defp dns_transport_event?(_), do: false
+
+  defp canonical_dns_analysis_event(event) do
+    payload = event[:payload] || event["payload"] || %{}
+    host = dns_payload_value(payload, [:query_name, :dns_query, :query, :domain, :host, :hostname, :sni, :tls_sni])
+    resolver_ip = dns_payload_value(payload, [:resolver_ip, :remote_ip, :destination_ip, :dst_ip])
+    resolver_port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+    transport = dns_transport(payload)
+
+    dns_payload =
+      payload
+      |> Map.put_new("query_name", host)
+      |> Map.put_new("dns_query", host)
+      |> Map.put_new("domain", host)
+      |> Map.put_new("resolver_ip", resolver_ip)
+      |> Map.put_new("resolver_port", resolver_port)
+      |> Map.put_new("transport", transport)
+      |> Map.put_new("capture_method", "network_transport_heuristic")
+
+    event
+    |> Map.put(:event_type, "dns_query")
+    |> Map.put("event_type", "dns_query")
+    |> Map.put(:payload, dns_payload)
+    |> Map.put("payload", dns_payload)
+  end
+
+  defp dns_transport_detections(event) do
+    payload = event[:payload] || event["payload"] || %{}
+    port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+    remote_ip = dns_payload_value(payload, [:resolver_ip, :remote_ip, :destination_ip, :dst_ip])
+    host = dns_payload_value(payload, [:query_name, :dns_query, :domain, :host, :hostname, :sni, :tls_sni])
+
+    cond do
+      dot_port?(port) ->
+        [dns_transport_detection(:dns_over_tls, "DNS-over-TLS transport observed", 0.72, host, remote_ip, port)]
+
+      doh_port?(port) and (known_doh_ip?(remote_ip) or known_doh_domain?(host)) ->
+        [dns_transport_detection(:dns_over_https, "DNS-over-HTTPS resolver transport observed", 0.78, host, remote_ip, port)]
+
+      dns_port?(port) and known_doh_ip?(remote_ip) ->
+        [dns_transport_detection(:alternate_dns_resolver, "Direct DNS to public resolver observed", 0.58, host, remote_ip, port)]
+
+      true ->
+        []
+    end
+  end
+
+  defp dns_transport_detection(type, description, confidence, host, remote_ip, port) do
+    %{
+      type: type,
+      category: :command_and_control,
+      confidence: confidence,
+      severity: :medium,
+      rule_name: "DNS transport bypass signal",
+      description: dns_transport_description(description, host, remote_ip, port),
+      mitre_techniques: ["T1071.004", "T1090"],
+      metadata: %{
+        host: host,
+        remote_ip: remote_ip,
+        port: port,
+        signal_type: "dns_transport_heuristic"
+      }
+    }
+  end
+
+  defp dns_transport(payload) do
+    port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+
+    cond do
+      dot_port?(port) -> "dot"
+      doh_port?(port) -> "doh"
+      true -> dns_payload_value(payload, [:transport, :protocol, :proto]) || "dns"
+    end
+  end
+
+  defp dns_target_label(host, remote_ip, port) do
+    [host, remote_ip, port && "port #{port}"]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(to_string(&1) == ""))
+    |> Enum.join(" ")
+  end
+
+  defp dns_transport_description(description, host, remote_ip, port) do
+    case dns_target_label(host, remote_ip, port) do
+      "" -> description
+      target -> "#{description}: #{target}"
+    end
+  end
+
+  defp dns_payload_value(payload, keys) when is_map(payload) do
+    Enum.find_value(keys, fn key ->
+      Map.get(payload, key) || Map.get(payload, to_string(key))
+    end)
+  end
+
+  defp dns_payload_value(_, _), do: nil
+
+  defp dns_port?(port), do: MapSet.member?(@dns_ports, normalize_port(port))
+  defp dot_port?(port), do: MapSet.member?(@dot_ports, normalize_port(port))
+  defp doh_port?(port), do: MapSet.member?(@doh_ports, normalize_port(port))
+
+  defp normalize_port(port) when is_integer(port), do: Integer.to_string(port)
+  defp normalize_port(port) when is_binary(port), do: String.trim(port)
+  defp normalize_port(_), do: ""
+
+  defp known_doh_ip?(ip), do: MapSet.member?(@known_doh_ips, to_string(ip || ""))
+
+  defp known_doh_domain?(domain) do
+    normalized =
+      domain
+      |> to_string()
+      |> String.downcase()
+      |> String.trim_trailing(".")
+
+    Enum.any?(@known_doh_domains, fn known ->
+      normalized == known or String.ends_with?(normalized, "." <> known)
+    end)
   end
 
   defp safe_health_tuning(provisional_alert, agent_id) do

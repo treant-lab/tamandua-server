@@ -74,13 +74,69 @@ interface LateralMovement {
 
 interface JA3Stats {
   ja3_hash: string
+  ja3s_hash?: string
   occurrence_count: number
   unique_agents: number
   unique_destinations: number
   is_malicious: boolean
   malware_info?: { name: string; type: string }
+  destinations?: string[]
   first_seen: string
   last_seen: string
+}
+
+interface TLSSession {
+  event_id?: string
+  agent_id?: string
+  local_ip?: string
+  local_port?: number
+  remote_ip?: string
+  remote_port?: number
+  protocol?: string
+  domain?: string
+  ja3?: string
+  ja3s?: string
+  sni?: string
+  tls_version?: string
+  alpn?: string
+  alpn_protocols?: string[]
+  cipher_suite?: string
+  tls_extensions?: string[]
+  ech_present?: boolean
+  quic_version?: string
+  is_quic?: boolean
+  http_version?: string
+  encrypted_dns_transport?: string
+  dns_resolver?: string
+  certificate_fingerprint?: string
+  certificate_risk?: string
+  process?: string | Record<string, unknown>
+  enrichment?: Record<string, unknown>
+  timestamp?: string
+}
+
+interface CertificateAnalysis {
+  agent_id?: string
+  remote_ip?: string
+  remote_port?: number
+  domain?: string
+  fingerprint?: string
+  subject?: string
+  issuer?: string
+  not_after?: string
+  is_self_signed?: boolean
+  risk_score?: number
+  analysis?: string[]
+  cached_at?: string
+}
+
+interface NDRAnomaly {
+  type?: string
+  confidence?: number
+  description?: string
+  mitre_techniques?: string[]
+  flow_key?: string
+  metadata?: Record<string, unknown>
 }
 
 interface TopologyNode {
@@ -149,6 +205,8 @@ interface SourceHealth {
 }
 
 type DataMode = 'combined' | 'live' | 'historical'
+type NDRTab = 'overview' | 'lateral' | 'encrypted' | 'protocols' | 'anomalies'
+type EncryptedSection = 'ja3' | 'tls' | 'certificates'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -217,6 +275,25 @@ function numericFilter(value: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 }
 
+function readUrlParam(key: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get(key) || ''
+}
+
+function initialNdrTab(): NDRTab {
+  const tab = readUrlParam('tab')
+  return ['overview', 'lateral', 'encrypted', 'protocols', 'anomalies'].includes(tab)
+    ? tab as NDRTab
+    : 'overview'
+}
+
+function initialEncryptedSection(): EncryptedSection {
+  const section = readUrlParam('section')
+  return ['ja3', 'tls', 'certificates'].includes(section)
+    ? section as EncryptedSection
+    : 'ja3'
+}
+
 function coerceArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value
   if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>)
@@ -225,6 +302,38 @@ function coerceArray(value: unknown): unknown[] {
 
 function coerceRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    if (typeof value === 'boolean') return String(value)
+  }
+  return undefined
+}
+
+function tlsMetadata(session: TLSSession): Record<string, unknown> {
+  const enrichment = coerceRecord(session.enrichment)
+  return coerceRecord(enrichment.encrypted_metadata)
+}
+
+function sessionString(session: TLSSession, key: keyof TLSSession, metadataKey?: string): string | undefined {
+  const metadata = tlsMetadata(session)
+  return firstString(session[key], metadataKey ? metadata[metadataKey] : metadata[key as string])
+}
+
+function sessionStringList(session: TLSSession, key: keyof TLSSession, metadataKey?: string): string[] {
+  const value = session[key] ?? tlsMetadata(session)[metadataKey || (key as string)]
+  if (Array.isArray(value)) return value.map(item => String(item)).filter(Boolean)
+  if (typeof value === 'string') return value.split(/[,\s]+/).map(item => item.trim()).filter(Boolean)
+  return []
+}
+
+function formatProcess(value: TLSSession['process']): string {
+  if (!value) return 'unknown'
+  if (typeof value === 'string') return value
+  return firstString(value.process_name, value.name, value.image_path, value.path, value.pid, value.process_pid) || 'unknown'
 }
 
 function normalizeHealthStatus(value: unknown): SourceHealthStatus {
@@ -824,6 +933,163 @@ function JA3Table({ stats }: { stats: JA3Stats[] }) {
   )
 }
 
+function TLSSessionsTable({ sessions }: { sessions: TLSSession[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-[var(--surface)]/40">
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Remote</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">SNI / Domain</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">TLS / ALPN</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Encrypted DNS</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">JA3</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Process</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Last Seen</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--surface)]/30">
+          {sessions.map((session, idx) => {
+            const alpn = sessionString(session, 'alpn')
+            const alpnProtocols = sessionStringList(session, 'alpn_protocols')
+            const cipherSuite = sessionString(session, 'cipher_suite')
+            const quicVersion = sessionString(session, 'quic_version')
+            const httpVersion = sessionString(session, 'http_version')
+            const encryptedDnsTransport = sessionString(session, 'encrypted_dns_transport')
+            const dnsResolver = sessionString(session, 'dns_resolver')
+            const process = formatProcess(session.process)
+
+            return (
+              <tr key={`${session.event_id || session.remote_ip || 'tls'}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
+                <td className="px-3 py-2.5">
+                  <div className="font-mono text-xs text-[var(--fg)]">{session.remote_ip || 'unknown'}</div>
+                  <div className="text-[11px] text-[var(--subtle)]">{session.remote_port || '--'} / {quicVersion ? 'QUIC' : session.protocol || 'tls'}</div>
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="text-xs text-[var(--fg)] truncate max-w-[220px]" title={session.sni || session.domain}>
+                    {session.sni || session.domain || 'Not reported'}
+                  </div>
+                  {session.agent_id && <div className="text-[11px] text-[var(--subtle)] truncate max-w-[220px]">{session.agent_id}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="text-xs text-[var(--fg)]">{session.tls_version || (quicVersion ? `QUIC ${quicVersion}` : 'unknown')}</div>
+                  <div className="text-[11px] text-[var(--subtle)] truncate max-w-[200px]" title={alpnProtocols.join(', ') || alpn || undefined}>
+                    {[alpn || alpnProtocols[0], httpVersion ? `HTTP/${httpVersion}` : null].filter(Boolean).join(' / ') || 'ALPN not reported'}
+                  </div>
+                  {cipherSuite && <div className="text-[11px] text-[var(--subtle)] truncate max-w-[200px]" title={cipherSuite}>{cipherSuite}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  {encryptedDnsTransport ? (
+                    <span className="inline-flex items-center rounded-full bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-200">
+                      {encryptedDnsTransport.toUpperCase()}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-[var(--muted)]">Not classified</span>
+                  )}
+                  {dnsResolver && <div className="mt-1 font-mono text-[11px] text-[var(--subtle)] truncate max-w-[140px]" title={dnsResolver}>{dnsResolver}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="font-mono text-xs text-[var(--fg)] truncate max-w-[160px]" title={session.ja3}>{session.ja3 || 'not captured'}</div>
+                  {session.ja3s && <div className="font-mono text-[11px] text-[var(--subtle)] truncate max-w-[160px]" title={session.ja3s}>S {session.ja3s}</div>}
+                </td>
+                <td className="px-3 py-2.5 text-xs text-[var(--muted)] truncate max-w-[160px]" title={process}>{process}</td>
+                <td className="px-3 py-2.5 text-xs text-[var(--muted)]">{relativeTime(session.timestamp)}</td>
+              </tr>
+            )
+          })}
+          {sessions.length === 0 && (
+            <tr>
+              <td colSpan={7} className="py-8 text-center text-sm text-[var(--muted)]">
+                No TLS sessions recorded. Agent telemetry must include TLS/SNI/JA3 metadata.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function CertificatesTable({ certificates }: { certificates: CertificateAnalysis[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-[var(--surface)]/40">
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Domain</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Subject / Issuer</th>
+            <th className="text-center px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Risk</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Fingerprint</th>
+            <th className="text-left px-3 py-2 text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Expires</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--surface)]/30">
+          {certificates.map((cert, idx) => {
+            const risk = Number(cert.risk_score || 0)
+            return (
+              <tr key={`${cert.fingerprint || cert.domain || 'cert'}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
+                <td className="px-3 py-2.5">
+                  <div className="text-xs text-[var(--fg)] truncate max-w-[180px]" title={cert.domain}>{cert.domain || cert.remote_ip || 'unknown'}</div>
+                  {cert.remote_port && <div className="text-[11px] text-[var(--subtle)]">{cert.remote_ip}:{cert.remote_port}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="text-xs text-[var(--fg)] truncate max-w-[260px]" title={cert.subject}>{cert.subject || 'No subject'}</div>
+                  <div className="text-[11px] text-[var(--subtle)] truncate max-w-[260px]" title={cert.issuer}>{cert.issuer || 'No issuer'}</div>
+                </td>
+                <td className="px-3 py-2.5 text-center">
+                  <span className={cn(
+                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium',
+                    risk >= 70 || cert.is_self_signed
+                      ? 'bg-[var(--crit)]/10 text-[var(--crit)]'
+                      : risk >= 30
+                        ? 'bg-[var(--med)]/10 text-[var(--med)]'
+                        : 'bg-[var(--emerald-400)]/10 text-[var(--emerald-400)]'
+                  )}>
+                    {cert.is_self_signed ? 'Self-signed' : `${risk}%`}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 font-mono text-xs text-[var(--muted)] truncate max-w-[180px]" title={cert.fingerprint}>
+                  {cert.fingerprint || 'not captured'}
+                </td>
+                <td className="px-3 py-2.5 text-xs text-[var(--muted)]">{relativeTime(cert.not_after)}</td>
+              </tr>
+            )
+          })}
+          {certificates.length === 0 && (
+            <tr>
+              <td colSpan={5} className="py-8 text-center text-sm text-[var(--muted)]">
+                No certificate analysis recorded. Passive TLS 1.3 collection may not expose certificates without endpoint-side metadata.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function AnomaliesList({ anomalies }: { anomalies: NDRAnomaly[] }) {
+  return (
+    <div className="space-y-3">
+      {anomalies.map((anomaly, idx) => (
+        <div key={`${anomaly.type || 'anomaly'}-${idx}`} className="rounded-lg border border-[var(--surface)]/50 bg-[var(--surface)]/30 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--fg)] capitalize">{String(anomaly.type || 'network anomaly').replace(/_/g, ' ')}</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">{anomaly.description || 'Detected by flow analysis'}</p>
+            </div>
+            <span className="rounded-full bg-[var(--med)]/10 px-2 py-0.5 text-xs font-medium text-[var(--med)]">
+              {Math.round(Number(anomaly.confidence || 0) * 100)}%
+            </span>
+          </div>
+          {anomaly.flow_key && <p className="mt-3 font-mono text-xs text-[var(--subtle)] truncate">{anomaly.flow_key}</p>}
+        </div>
+      ))}
+      {anomalies.length === 0 && <EmptyTelemetryState message="No NDR anomalies match the current filters" />}
+    </div>
+  )
+}
+
 function NetworkTopologyMini({ nodes, edges }: { nodes: TopologyNode[]; edges: TopologyEdge[] }) {
   const internalNodes = nodes.filter(n => n.is_internal).length
   const externalNodes = nodes.length - internalNodes
@@ -901,10 +1167,11 @@ function NetworkTopologyMini({ nodes, edges }: { nodes: TopologyNode[]; edges: T
 export default function NDR() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'lateral' | 'encrypted' | 'protocols'>('overview')
-  const [agentFilter, setAgentFilter] = useState('')
-  const [ipFilter, setIpFilter] = useState('')
-  const [protocolFilter, setProtocolFilter] = useState('all')
+  const [activeTab, setActiveTab] = useState<NDRTab>(initialNdrTab)
+  const [encryptedSection, setEncryptedSection] = useState<EncryptedSection>(initialEncryptedSection)
+  const [agentFilter, setAgentFilter] = useState(readUrlParam('agent_id'))
+  const [ipFilter, setIpFilter] = useState(readUrlParam('ip') || readUrlParam('q') || readUrlParam('search'))
+  const [protocolFilter, setProtocolFilter] = useState(readUrlParam('protocol') || 'all')
   const [scopeFilter, setScopeFilter] = useState<'all' | 'internal' | 'external'>('all')
   const [lateralTypeFilter, setLateralTypeFilter] = useState('all')
   const [ja3StatusFilter, setJa3StatusFilter] = useState<'all' | 'malicious' | 'clean'>('all')
@@ -920,6 +1187,9 @@ export default function NDR() {
   const [protocols, setProtocols] = useState<ProtocolDistribution[]>([])
   const [lateralMovements, setLateralMovements] = useState<LateralMovement[]>([])
   const [ja3Stats, setJa3Stats] = useState<JA3Stats[]>([])
+  const [tlsSessions, setTlsSessions] = useState<TLSSession[]>([])
+  const [certificates, setCertificates] = useState<CertificateAnalysis[]>([])
+  const [anomalies, setAnomalies] = useState<NDRAnomaly[]>([])
   const [topology, setTopology] = useState<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>({ nodes: [], edges: [] })
   const [sourceHealth, setSourceHealth] = useState<SourceHealth[]>([])
   const [sourceHealthAvailable, setSourceHealthAvailable] = useState(false)
@@ -941,7 +1211,7 @@ export default function NDR() {
       const ja3Query = buildQuery({ agent_id: normalizedAgent || undefined, limit: normalizedLimit })
       const flowQuery = buildQuery({ agent_id: normalizedAgent || undefined, protocol: selectedProtocol, limit: normalizedLimit, mode: dataMode })
 
-      const [statsRes, flowStatsRes, flowRowsRes, talkersRes, protocolsRes, lateralRes, ja3Res, topoRes, healthRes] = await Promise.all([
+      const [statsRes, flowStatsRes, flowRowsRes, talkersRes, protocolsRes, lateralRes, ja3Res, tlsRes, certRes, anomaliesRes, topoRes, healthRes] = await Promise.all([
         fetch('/api/v1/ndr/stats', { credentials: 'include' }),
         fetch(`/api/v1/ndr/flows/stats${flowQuery}`, { credentials: 'include' }),
         fetch(`/api/v1/ndr/flows${flowQuery}`, { credentials: 'include' }),
@@ -949,6 +1219,9 @@ export default function NDR() {
         fetch(`/api/v1/ndr/protocols${protocolQuery}`, { credentials: 'include' }),
         fetch(`/api/v1/ndr/lateral-movement${lateralQuery}`, { credentials: 'include' }),
         fetch(`/api/v1/ndr/ja3${ja3Query}`, { credentials: 'include' }),
+        fetch(`/api/v1/ndr/tls-sessions${ja3Query}`, { credentials: 'include' }),
+        fetch(`/api/v1/ndr/certificates${ja3Query}`, { credentials: 'include' }),
+        fetch(`/api/v1/ndr/anomalies${ja3Query}`, { credentials: 'include' }),
         fetch(`/api/v1/ndr/topology${agentQuery}`, { credentials: 'include' }),
         fetch('/api/v1/ndr/data-sources', { credentials: 'include' }),
       ])
@@ -988,6 +1261,21 @@ export default function NDR() {
         setJa3Stats(data.data || [])
       }
 
+      if (tlsRes.ok) {
+        const data = await tlsRes.json()
+        setTlsSessions(data.data || [])
+      }
+
+      if (certRes.ok) {
+        const data = await certRes.json()
+        setCertificates(data.data || [])
+      }
+
+      if (anomaliesRes.ok) {
+        const data = await anomaliesRes.json()
+        setAnomalies(data.data || [])
+      }
+
       if (topoRes.ok) {
         const data = await topoRes.json()
         setTopology(data.data || { nodes: [], edges: [] })
@@ -1016,6 +1304,16 @@ export default function NDR() {
     const interval = setInterval(fetchData, 30000) // Refresh every 30s
     return () => clearInterval(interval)
   }, [fetchData])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const query = new URLSearchParams(window.location.search)
+    query.set('tab', activeTab)
+    if (activeTab === 'encrypted') query.set('section', encryptedSection)
+    else query.delete('section')
+    const next = `${window.location.pathname}?${query.toString()}`
+    window.history.replaceState(null, '', next)
+  }, [activeTab, encryptedSection])
 
   const handleRefresh = () => {
     setRefreshing(true)
@@ -1082,6 +1380,9 @@ export default function NDR() {
     protocols.length > 0 ||
     lateralMovements.length > 0 ||
     ja3Stats.length > 0 ||
+    tlsSessions.length > 0 ||
+    certificates.length > 0 ||
+    anomalies.length > 0 ||
     topology.nodes.length > 0
 
   const sourceCoverage = useMemo<SourceHealth[]>(() => {
@@ -1090,7 +1391,7 @@ export default function NDR() {
     const flowEvents = ndrStats?.flow_analyzer?.flows_processed || flowStats?.total_flows || 0
     const protocolEvents = ndrStats?.protocol_analyzer?.events_analyzed || 0
     const lateralEvents = ndrStats?.lateral_detector?.events_analyzed || lateralMovements.length
-    const encryptedEvents = ndrStats?.encrypted_traffic?.events_analyzed || ja3Stats.length
+    const encryptedEvents = ndrStats?.encrypted_traffic?.events_analyzed || ja3Stats.length + tlsSessions.length + certificates.length
 
     return [
       {
@@ -1118,7 +1419,7 @@ export default function NDR() {
         coverage: `${formatNumber(encryptedEvents)} TLS/JA3 inputs`,
       },
     ]
-  }, [sourceHealth, ndrStats, flowStats, protocols.length, lateralMovements.length, ja3Stats.length])
+  }, [sourceHealth, ndrStats, flowStats, protocols.length, lateralMovements.length, ja3Stats.length, tlsSessions.length, certificates.length])
 
   const historicalSource = sourceCoverage.find(source => source.key === 'historical')
   const historicalStatus = historicalSource?.status === 'healthy'
@@ -1194,10 +1495,51 @@ export default function NDR() {
     return ja3Stats.filter(item => {
       if (ja3StatusFilter === 'malicious' && !item.is_malicious) return false
       if (ja3StatusFilter === 'clean' && item.is_malicious) return false
-      if (ipFilter && !matchesText(item.ja3_hash, ipFilter) && !matchesText(item.malware_info?.name, ipFilter)) return false
+      if (ipFilter && !matchesText(item.ja3_hash, ipFilter) && !matchesText(item.ja3s_hash, ipFilter) && !matchesText(item.malware_info?.name, ipFilter)) return false
       return true
     })
   }, [ja3Stats, ja3StatusFilter, ipFilter])
+
+  const filteredTlsSessions = useMemo(() => {
+    return tlsSessions.filter(item => {
+      const process = formatProcess(item.process)
+      const metadata = tlsMetadata(item)
+      if (
+        ipFilter &&
+        !matchesText(item.remote_ip, ipFilter) &&
+        !matchesText(item.local_ip, ipFilter) &&
+        !matchesText(item.sni, ipFilter) &&
+        !matchesText(item.domain, ipFilter) &&
+        !matchesText(item.ja3, ipFilter) &&
+        !matchesText(item.ja3s, ipFilter) &&
+        !matchesText(process, ipFilter) &&
+        !matchesText(item.alpn, ipFilter) &&
+        !matchesText(metadata.alpn, ipFilter) &&
+        !matchesText(item.quic_version, ipFilter) &&
+        !matchesText(metadata.quic_version, ipFilter) &&
+        !matchesText(item.encrypted_dns_transport, ipFilter) &&
+        !matchesText(metadata.encrypted_dns_transport, ipFilter) &&
+        !matchesText(item.dns_resolver, ipFilter) &&
+        !matchesText(metadata.dns_resolver, ipFilter)
+      ) return false
+      if (protocolFilter !== 'all' && item.protocol && item.protocol.toUpperCase() !== protocolFilter.toUpperCase()) return false
+      return true
+    })
+  }, [tlsSessions, ipFilter, protocolFilter])
+
+  const filteredCertificates = useMemo(() => {
+    return certificates.filter(item => {
+      if (ipFilter && !matchesText(item.remote_ip, ipFilter) && !matchesText(item.domain, ipFilter) && !matchesText(item.subject, ipFilter) && !matchesText(item.issuer, ipFilter) && !matchesText(item.fingerprint, ipFilter)) return false
+      return true
+    })
+  }, [certificates, ipFilter])
+
+  const filteredAnomalies = useMemo(() => {
+    return anomalies.filter(item => {
+      if (ipFilter && !matchesText(item.type, ipFilter) && !matchesText(item.description, ipFilter) && !matchesText(item.flow_key, ipFilter)) return false
+      return true
+    })
+  }, [anomalies, ipFilter])
 
   const filteredTopology = useMemo(() => {
     const nodes = topology.nodes.filter(node => {
@@ -1223,6 +1565,9 @@ export default function NDR() {
     filteredProtocols.length > 0 ||
     filteredLateralMovements.length > 0 ||
     filteredJa3Stats.length > 0 ||
+    filteredTlsSessions.length > 0 ||
+    filteredCertificates.length > 0 ||
+    filteredAnomalies.length > 0 ||
     filteredTopology.nodes.length > 0
 
   const activeFilterSummary = [
@@ -1499,6 +1844,7 @@ export default function NDR() {
             { id: 'lateral', label: 'Lateral Movement', icon: Share2 },
             { id: 'encrypted', label: 'Encrypted Traffic', icon: Lock },
             { id: 'protocols', label: 'Protocols', icon: Wifi },
+            { id: 'anomalies', label: 'Anomalies', icon: AlertTriangle },
           ] as const).map(tab => (
             <button
               key={tab.id}
@@ -1648,7 +1994,8 @@ export default function NDR() {
         )}
 
         {activeTab === 'encrypted' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Encrypted Traffic Stats */}
             <div className="lg:col-span-1 space-y-4">
               <div className="card-sentinel p-5">
@@ -1678,20 +2025,71 @@ export default function NDR() {
                       {ndrStats?.encrypted_traffic?.self_signed_certs || 0}
                     </span>
                   </div>
+                  <div className="flex items-center justify-between p-3 bg-[var(--surface)]/40 rounded-lg">
+                    <span className="text-sm text-[var(--muted)]">TLS Sessions</span>
+                    <span className="text-lg font-bold text-cyan-400">{tlsSessions.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-[var(--surface)]/40 rounded-lg">
+                    <span className="text-sm text-[var(--muted)]">Certificates</span>
+                    <span className="text-lg font-bold text-purple-400">{certificates.length}</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* JA3 Fingerprints */}
             <div className="lg:col-span-2">
               <div className="card-sentinel p-5">
-                <h3 className="text-lg font-semibold text-[var(--fg)] mb-4 flex items-center gap-2">
-                  <Key className="h-5 w-5 text-[var(--med)]" />
-                  JA3 Fingerprints
-                </h3>
-                <JA3Table stats={filteredJa3Stats} />
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
+                    <Key className="h-5 w-5 text-[var(--med)]" />
+                    Encrypted Metadata
+                  </h3>
+                  <div className="flex items-center gap-1 rounded-lg bg-[var(--surface)]/50 p-1">
+                    {([
+                      { id: 'ja3', label: 'JA3' },
+                      { id: 'tls', label: 'TLS Sessions' },
+                      { id: 'certificates', label: 'Certificates' },
+                    ] as const).map(section => (
+                      <button
+                        key={section.id}
+                        onClick={() => setEncryptedSection(section.id)}
+                        className={cn(
+                          'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                          encryptedSection === section.id
+                            ? 'bg-purple-500/20 text-purple-300'
+                            : 'text-[var(--muted)] hover:bg-[var(--surface)]/50 hover:text-[var(--fg)]'
+                        )}
+                      >
+                        {section.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {encryptedSection === 'ja3' && <JA3Table stats={filteredJa3Stats} />}
+                {encryptedSection === 'tls' && <TLSSessionsTable sessions={filteredTlsSessions} />}
+                {encryptedSection === 'certificates' && <CertificatesTable certificates={filteredCertificates} />}
               </div>
             </div>
+            </div>
+
+            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-xs text-cyan-100">
+              Encrypted traffic analysis is metadata-based. Tamandua uses SNI, JA3/JA3S, TLS version, certificate fields, flow context, and DNS resolver signals when the agent reports them; it does not decrypt payloads or perform implicit MITM.
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'anomalies' && (
+          <div className="card-sentinel p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-[var(--med)]" />
+                NDR Anomalies
+              </h3>
+              <span className="text-xs text-[var(--muted)]">
+                {filteredAnomalies.length} of {anomalies.length} loaded anomalies
+              </span>
+            </div>
+            <AnomaliesList anomalies={filteredAnomalies} />
           </div>
         )}
 

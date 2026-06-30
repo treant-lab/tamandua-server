@@ -1466,6 +1466,8 @@ defmodule TamanduaServerWeb.Router do
 
     # MCP Server
     post("/mcp/rpc", MCPController, :json_rpc)
+    get("/mcp/rpc/tools/schema/status", MCPController, :schema_status)
+    get("/mcp/status", MCPController, :schema_status)
     get("/mcp/tools", MCPController, :available_tools)
     get("/mcp/context", MCPController, :security_context)
 

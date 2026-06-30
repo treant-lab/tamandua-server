@@ -59,6 +59,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   @default_query_limit 50
   @max_query_limit 100
+  @default_query_window_hours 24
   @dns_event_types ["dns_query", "dns", "dns_response", "name_resolution", "domain_lookup"]
   @dns_transport_ports ["53", "5353"]
   @dot_ports ["853"]
@@ -262,6 +263,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> dns_events_query()
       |> scope_event_org(organization_id)
       |> where([e], e.timestamp <= ^now)
+      |> apply_default_query_window(params, now)
       |> order_by([e], desc: e.timestamp)
 
     # Domain search (ILIKE on known DNS domain fields)
@@ -390,6 +392,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         offset: offset,
         has_more: has_more,
         total_is_estimate: true,
+        default_window_hours: default_query_window_hours(params),
         scope: "organization_dns_telemetry"
       }, dns_partial_meta([query_error]))
     })
@@ -491,6 +494,27 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   defp scope_event_org(queryable, organization_id) do
     where(queryable, [e], e.organization_id == ^organization_id)
   end
+
+  defp apply_default_query_window(queryable, params, now) do
+    if blank_param?(params["from"]) and blank_param?(params["to"]) do
+      from = DateTime.add(now, -@default_query_window_hours, :hour)
+      where(queryable, [e], e.timestamp >= ^from)
+    else
+      queryable
+    end
+  end
+
+  defp default_query_window_hours(params) do
+    if blank_param?(params["from"]) and blank_param?(params["to"]) do
+      @default_query_window_hours
+    else
+      nil
+    end
+  end
+
+  defp blank_param?(nil), do: true
+  defp blank_param?(""), do: true
+  defp blank_param?(_), do: false
 
   defp safe_repo_all_with_meta(query, label) do
     {Repo.all(query, timeout: 8_000), nil}
