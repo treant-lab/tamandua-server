@@ -674,10 +674,15 @@ defmodule TamanduaServer.Integrations.MCPServer do
     end
   end
 
-  defp dispatch_method("context/get", request, _client, state) do
+  defp dispatch_method("context/get", request, client, state) do
     params = request["params"] || %{}
     provider_name = params["name"] || params[:name] || params["provider"] || params[:provider]
     provider_params = params["params"] || params[:params] || %{}
+
+    # Tenant scoping: the client's organization always wins; request params
+    # can never select another tenant's context. Providers that return
+    # per-alert data fail closed when this is nil.
+    provider_params = Map.put(provider_params, "organization_id", client_organization_id(client))
 
     case Map.get(state.context_providers, provider_name) do
       nil ->
@@ -773,21 +778,49 @@ defmodule TamanduaServer.Integrations.MCPServer do
 
   defp prepare_tool_execution(_tool_name, _tool, _params, _client, state), do: {:execute, state}
 
-  defp tool_query_alerts(params, _client) do
-    filters = params |> Map.take(["severity", "status", "agent_id"])
-      |> Enum.map(fn {k, v} -> {String.to_atom(k), v} end) |> Map.new()
-    alerts = Alerts.list_alerts(filters) |> Enum.take(min(params["limit"] || 50, 200)) |> Enum.map(&alert_to_map/1)
-    {:ok, %{alerts: alerts, total: length(alerts)}}
+  defp tool_query_alerts(params, client) do
+    # Tenant scoping: alerts are always limited to the client's organization.
+    # Clients without an organization scope get an error, never global data.
+    with {:ok, organization_id} <- require_organization_scope(client) do
+      limit = params |> Map.get("limit", 50) |> parse_int() |> clamp(1, 200)
+
+      opts =
+        [
+          severity: params["severity"],
+          status: params["status"],
+          agent_id: params["agent_id"],
+          limit: limit
+        ]
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+      alerts =
+        organization_id
+        |> Alerts.list_alerts_for_org(opts)
+        |> Enum.map(&alert_to_map/1)
+
+      {:ok, %{alerts: alerts, total: length(alerts), organization_scoped: true}}
+    end
   end
 
-  defp tool_investigate_host(params, _client) do
+  defp tool_investigate_host(params, client) do
     agent_id = params["agent_id"]
-    case Registry.get(agent_id) do
-      {:ok, info} ->
-        alerts = Alerts.list_alerts(%{agent_id: agent_id}) |> Enum.take(10) |> Enum.map(&alert_to_map/1)
-        {:ok, %{agent_id: info.agent_id, hostname: info.hostname, os_type: info.os_type,
-               status: info.status, related_alerts: alerts, investigation_time: DateTime.utc_now()}}
-      {:error, :not_found} -> {:error, "Host not found"}
+
+    # Tenant scoping: the agent must belong to the client's organization and
+    # related alerts are limited to that organization.
+    with {:ok, organization_id} <- require_organization_scope(client),
+         :ok <- require_agent_scope(organization_id, agent_id) do
+      case Registry.get(agent_id) do
+        {:ok, info} ->
+          alerts =
+            organization_id
+            |> Alerts.list_alerts_for_org(agent_id: agent_id, limit: 10)
+            |> Enum.map(&alert_to_map/1)
+
+          {:ok, %{agent_id: info.agent_id, hostname: info.hostname, os_type: info.os_type,
+                 status: info.status, related_alerts: alerts, investigation_time: DateTime.utc_now()}}
+
+        {:error, :not_found} -> {:error, "Host not found"}
+      end
     end
   end
 
@@ -919,9 +952,22 @@ defmodule TamanduaServer.Integrations.MCPServer do
   end
 
   defp ctx_recent_alerts(params) do
-    alerts = Alerts.list_recent(limit: params["limit"] || 10) |> Enum.map(&alert_to_map/1)
-    {:ok, %{alerts: alerts, total_open: Alerts.count_open(), critical: Alerts.count_by_severity(:critical),
-           high: Alerts.count_by_severity(:high), timestamp: DateTime.utc_now()}}
+    # Tenant scoping: fail closed when no organization is available instead
+    # of returning alerts across all tenants.
+    case params["organization_id"] || params[:organization_id] do
+      nil ->
+        {:error, {:invalid_params, "Missing organization scope"}}
+
+      org_id ->
+        alerts =
+          org_id
+          |> Alerts.list_recent_for_org(limit: params["limit"] || 10)
+          |> Enum.map(&alert_to_map/1)
+
+        {:ok, %{alerts: alerts, total_open: Alerts.count_active_for_org(org_id),
+               critical: Alerts.count_by_severity_for_org(org_id, :critical),
+               high: Alerts.count_by_severity_for_org(org_id, :high), timestamp: DateTime.utc_now()}}
+    end
   end
 
   defp ctx_threat_landscape(_) do
@@ -929,9 +975,21 @@ defmodule TamanduaServer.Integrations.MCPServer do
            ioc_count: Detection.IOCs.count(), timestamp: DateTime.utc_now()}}
   end
 
-  defp ctx_active_investigations(_) do
-    investigating = Alerts.list_alerts(%{status: "investigating"}) |> Enum.map(&alert_to_map/1)
-    {:ok, %{investigations: investigating, count: length(investigating), timestamp: DateTime.utc_now()}}
+  defp ctx_active_investigations(params) do
+    # Tenant scoping: fail closed when no organization is available instead
+    # of returning investigations across all tenants.
+    case params["organization_id"] || params[:organization_id] do
+      nil ->
+        {:error, {:invalid_params, "Missing organization scope"}}
+
+      org_id ->
+        investigating =
+          org_id
+          |> Alerts.list_alerts_for_org(status: "investigating")
+          |> Enum.map(&alert_to_map/1)
+
+        {:ok, %{investigations: investigating, count: length(investigating), timestamp: DateTime.utc_now()}}
+    end
   end
 
   defp ctx_system_health(_) do
@@ -991,6 +1049,9 @@ defmodule TamanduaServer.Integrations.MCPServer do
     do: {:ok, org_id}
 
   defp require_organization_scope(_), do: {:error, {:invalid_params, "Missing organization scope"}}
+
+  defp client_organization_id(%ClientState{organization_id: org_id}), do: org_id
+  defp client_organization_id(_), do: nil
 
   defp require_agent_scope(_organization_id, nil), do: {:error, {:invalid_params, "Missing agent_id"}}
 

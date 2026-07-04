@@ -386,32 +386,59 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
   # Forensics
   # ===========================================================================
 
-  def collect_forensics(_parent, %{input: input}, %{context: _context}) do
+  def collect_forensics(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
     collection_type = input[:collection_type] || "full"
 
-    case TamanduaServer.Response.Executor.collect_forensics(agent_id, %{type: collection_type}) do
-      {:ok, collection_id} ->
-        {:ok, %{
-          success: true,
-          collection_id: collection_id,
-          agent_id: agent_id,
-          status: "in_progress",
-          artifacts_count: 0,
-          size_bytes: 0,
-          message: "Forensics collection started"
-        }}
+    # Org-scope authorization: forensics collection was previously executable
+    # against ANY agent_id with no tenancy check. The actor is enforced by the
+    # Response Executor (cross-org targets rejected as :unauthorized).
+    case context[:organization_id] do
+      nil ->
+        {:error, message: "Not authorized: missing organization context", code: "UNAUTHORIZED"}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          collection_id: nil,
-          agent_id: agent_id,
-          status: "failed",
-          artifacts_count: 0,
-          size_bytes: 0,
-          message: "Failed to start collection: #{inspect(reason)}"
-        }}
+      org_id ->
+        actor = %{organization_id: org_id, user_id: context[:current_user_id]}
+
+        case TamanduaServer.Response.Executor.collect_forensics(agent_id, %{
+               type: collection_type,
+               requested_by: context[:current_user_id],
+               actor: actor
+             }) do
+          {:ok, collection_id} ->
+            {:ok, %{
+              success: true,
+              collection_id: collection_id,
+              agent_id: agent_id,
+              status: "in_progress",
+              artifacts_count: 0,
+              size_bytes: 0,
+              message: "Forensics collection started"
+            }}
+
+          {:error, :unauthorized} ->
+            # Do not leak whether the agent exists in another organization.
+            {:ok, %{
+              success: false,
+              collection_id: nil,
+              agent_id: agent_id,
+              status: "failed",
+              artifacts_count: 0,
+              size_bytes: 0,
+              message: "Agent not found"
+            }}
+
+          {:error, reason} ->
+            {:ok, %{
+              success: false,
+              collection_id: nil,
+              agent_id: agent_id,
+              status: "failed",
+              artifacts_count: 0,
+              size_bytes: 0,
+              message: "Failed to start collection: #{inspect(reason)}"
+            }}
+        end
     end
   end
 

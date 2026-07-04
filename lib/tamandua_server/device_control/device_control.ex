@@ -244,7 +244,27 @@ defmodule TamanduaServer.DeviceControl do
   Get device control statistics.
   """
   def get_stats(time_range \\ "24h") do
-    GenServer.call(__MODULE__, {:get_stats, time_range})
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:get_stats, time_range})
+    else
+      unavailable_stats(time_range)
+    end
+  end
+
+  defp unavailable_stats(time_range) do
+    %{
+      time_range: time_range,
+      total_events: 0,
+      blocked_events: 0,
+      storage_events: 0,
+      connected_devices: 0,
+      policies_count: 0,
+      whitelist_count: 0,
+      blocklist_count: 0,
+      categories: %{},
+      status: "unavailable",
+      reason: "device_control_process_not_started"
+    }
   end
 
   # ===========================================================================
@@ -641,15 +661,50 @@ defmodule TamanduaServer.DeviceControl do
     Enum.filter(history, fn h -> h[:blocked] end)
   end
 
-  defp count_agents_with_encryption(_state) do
-    # This would query actual agent data
-    0
+  @doc """
+  Count mobile devices reporting disk encryption enabled.
+
+  Returns the count, or `nil` when the value is unknown (e.g. the database
+  is unreachable). `nil` is deliberately distinct from `0` so callers and
+  UIs do not present an unknown state as "zero encrypted devices".
+  Devices with `encryption_enabled: nil` (never reported) are excluded.
+  """
+  def count_agents_with_encryption do
+    import Ecto.Query, only: [from: 2]
+
+    Repo.aggregate(
+      from(d in TamanduaServer.Mobile.Device, where: d.encryption_enabled == true),
+      :count
+    )
+  rescue
+    error ->
+      Logger.warning("DeviceControl: failed to count encrypted devices: #{inspect(error)}")
+      nil
   end
 
-  defp count_unencrypted_devices(_state) do
-    # This would count devices without encryption
-    0
+  @doc """
+  Count mobile devices explicitly reporting disk encryption disabled.
+
+  Returns the count, or `nil` when the value is unknown (e.g. the database
+  is unreachable). Devices that have never reported encryption state
+  (`encryption_enabled: nil`) are excluded rather than assumed unencrypted.
+  """
+  def count_unencrypted_devices do
+    import Ecto.Query, only: [from: 2]
+
+    Repo.aggregate(
+      from(d in TamanduaServer.Mobile.Device, where: d.encryption_enabled == false),
+      :count
+    )
+  rescue
+    error ->
+      Logger.warning("DeviceControl: failed to count unencrypted devices: #{inspect(error)}")
+      nil
   end
+
+  defp count_agents_with_encryption(_state), do: count_agents_with_encryption()
+
+  defp count_unencrypted_devices(_state), do: count_unencrypted_devices()
 
   @doc """
   Build category-based statistics for frontend display.

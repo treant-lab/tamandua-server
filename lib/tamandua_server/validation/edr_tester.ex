@@ -752,12 +752,18 @@ defmodule TamanduaServer.Validation.EDRTester do
   end
 
   defp calculate_coverage(results) when is_list(results) do
-    results_list = if is_map(hd(results || [%{}])) do
-      results
-    else
-      results
-      |> Enum.flat_map(fn {_k, v} -> if is_list(v), do: v, else: [v] end)
-    end
+    results_list =
+      cond do
+        results == [] ->
+          []
+
+        is_map(hd(results)) ->
+          results
+
+        true ->
+          results
+          |> Enum.flat_map(fn {_k, v} -> if is_list(v), do: v, else: [v] end)
+      end
 
     total = length(results_list)
     detected = Enum.count(results_list, fn r -> r[:detected] == true end)

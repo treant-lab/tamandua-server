@@ -414,6 +414,14 @@ function relaxLayoutCollisions(
   return next;
 }
 
+function nodeConnectivityScore(node: StorylineNode, edges: StorylineEdge[]): number {
+  return edges.reduce((score, edge) => {
+    if (edge.source === node.id) return score + 2;
+    if (edge.target === node.id) return score + 1;
+    return score;
+  }, 0);
+}
+
 function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], mode = 'timeline'): Map<string, { x: number; y: number }> {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, StorylineEdge[]>();
@@ -520,8 +528,13 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     const centerX = 560;
     const centerY = 430;
     const rootsSet = new Set(roots.map((node) => node.id));
-    const ordered = [...nodes].sort((a, b) => Number(rootsSet.has(b.id)) - Number(rootsSet.has(a.id)) || nodeTime(a) - nodeTime(b));
-    const radiusBase = Math.max(210, Math.min(520, nodes.length * 18));
+    const ordered = [...nodes].sort((a, b) =>
+      Number(rootsSet.has(b.id)) - Number(rootsSet.has(a.id)) ||
+      Number(b.highlighted || b.suspicious) - Number(a.highlighted || a.suspicious) ||
+      nodeConnectivityScore(b, edges) - nodeConnectivityScore(a, edges) ||
+      nodeTime(a) - nodeTime(b)
+    );
+    const radiusBase = Math.max(280, Math.min(760, 240 + nodes.length * 22));
     const highlighted = ordered.filter((node) => node.highlighted);
     const highlightSet = new Set(highlighted.map((node) => node.id));
 
@@ -547,24 +560,24 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         return;
       }
       const placedIndex = positions.size;
-      const ringCapacity = 10 + Math.floor(Math.sqrt(nodes.length));
+      const ringCapacity = Math.max(8, 7 + Math.floor(Math.sqrt(nodes.length)));
       const ring = 1 + Math.floor(placedIndex / ringCapacity);
       const angle = ((placedIndex % ringCapacity) / ringCapacity) * Math.PI * 2 - Math.PI / 2 + ring * 0.23;
-      const radius = radiusBase + (ring - 1) * 185;
+      const radius = radiusBase + (ring - 1) * 240;
       positions.set(node.id, {
         x: centerX + Math.cos(angle) * radius,
         y: centerY + Math.sin(angle) * radius,
       });
     });
 
-    return relaxLayoutCollisions(positions, nodes, 205, 138, 7);
+    return relaxLayoutCollisions(positions, nodes, 245, 158, 10);
   }
 
   const densestLevel = Math.max(1, ...Array.from(grouped.values()).map((group) => group.length));
-  const xSpacing = Math.max(390, Math.min(620, 330 + nodes.length * 5 + densestLevel * 12));
-  const ySpacing = Math.max(170, Math.min(280, 148 + Math.ceil(nodes.length / 7) * 9 + densestLevel * 4));
-  const laneHeight = Math.max(230, Math.min(330, 198 + Math.ceil(nodes.length / 8) * 12 + densestLevel * 5));
-  const componentGap = Math.max(260, Math.min(420, 220 + nodes.length * 4));
+  const xSpacing = Math.max(440, Math.min(760, 360 + nodes.length * 7 + densestLevel * 16));
+  const ySpacing = Math.max(210, Math.min(360, 170 + Math.ceil(nodes.length / 6) * 12 + densestLevel * 8));
+  const laneHeight = Math.max(280, Math.min(430, 230 + Math.ceil(nodes.length / 7) * 16 + densestLevel * 7));
+  const componentGap = Math.max(340, Math.min(560, 280 + nodes.length * 6));
   const componentOffsets = new Map<number, number>();
   let runningOffset = 0;
 
@@ -578,7 +591,10 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
     .forEach(([lvl, group]) => {
       const ordered = [...group].sort((a, b) => {
         const typeDelta = (lanes[a.type] ?? 9) - (lanes[b.type] ?? 9);
-        return typeDelta || Number(b.highlighted || b.suspicious) - Number(a.highlighted || a.suspicious) || nodeTime(a) - nodeTime(b);
+        return typeDelta ||
+          Number(b.highlighted || b.suspicious) - Number(a.highlighted || a.suspicious) ||
+          nodeConnectivityScore(b, edges) - nodeConnectivityScore(a, edges) ||
+          nodeTime(a) - nodeTime(b);
       });
       const laneCounts = new Map<number, number>();
 
@@ -589,8 +605,8 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
         laneCounts.set(lane, index + 1);
         if (mode === 'hierarchical') {
           positions.set(node.id, {
-            x: 170 + lane * 370 + index * 172,
-            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 270,
+            x: 170 + lane * 430 + index * 220,
+            y: 120 + (componentOffsets.get(componentIndex) || 0) + lvl * 330,
           });
         } else {
           positions.set(node.id, {
@@ -601,7 +617,7 @@ function computeStorylineLayout(nodes: StorylineNode[], edges: StorylineEdge[], 
       });
     });
 
-  return relaxLayoutCollisions(positions, nodes, mode === 'hierarchical' ? 205 : 190, 132, 6);
+  return relaxLayoutCollisions(positions, nodes, mode === 'hierarchical' ? 245 : 225, 150, 9);
 }
 
 function formatNodeValue(value: unknown): string {

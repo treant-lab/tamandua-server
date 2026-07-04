@@ -101,7 +101,7 @@ defmodule TamanduaServer.Registries.RegistryManager do
       fn {name, module} ->
         fetch_models(name, module, %{limit: limit})
       end,
-      timeout: 30_000,
+      timeout: 3_000,
       on_timeout: :kill_task
     )
     |> Enum.flat_map(fn

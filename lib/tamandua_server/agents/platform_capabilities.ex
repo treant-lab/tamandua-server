@@ -17,6 +17,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "supported",
       linux: "partial",
       macos: "lab",
+      android: "partial",
+      ios: "partial",
       unknown: "unavailable"
     },
     %{
@@ -25,6 +27,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "lab",
       linux: "lab",
       macos: "lab",
+      android: "unavailable",
+      ios: "unavailable",
       unknown: "unavailable"
     },
     %{
@@ -33,6 +37,48 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "supported",
       linux: "unavailable",
       macos: "unavailable",
+      android: "unavailable",
+      ios: "unavailable",
+      unknown: "unavailable"
+    },
+    %{
+      id: "mobile_posture",
+      name: "Mobile posture",
+      windows: "unavailable",
+      linux: "unavailable",
+      macos: "unavailable",
+      android: "supported",
+      ios: "supported",
+      unknown: "unavailable"
+    },
+    %{
+      id: "app_inventory",
+      name: "App inventory",
+      windows: "unavailable",
+      linux: "unavailable",
+      macos: "unavailable",
+      android: "partial",
+      ios: "partial",
+      unknown: "unavailable"
+    },
+    %{
+      id: "app_guard",
+      name: "App Guard / RASP",
+      windows: "unavailable",
+      linux: "unavailable",
+      macos: "unavailable",
+      android: "partial",
+      ios: "partial",
+      unknown: "unavailable"
+    },
+    %{
+      id: "commercial_spyware",
+      name: "Commercial spyware indicators",
+      windows: "unavailable",
+      linux: "unavailable",
+      macos: "unavailable",
+      android: "lab",
+      ios: "lab",
       unknown: "unavailable"
     },
     %{
@@ -41,6 +87,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "partial",
       linux: "partial",
       macos: "lab",
+      android: "unavailable",
+      ios: "unavailable",
       unknown: "unavailable"
     },
     %{
@@ -49,6 +97,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "partial",
       linux: "partial",
       macos: "lab",
+      android: "unavailable",
+      ios: "unavailable",
       unknown: "unavailable"
     },
     %{
@@ -57,6 +107,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       windows: "partial",
       linux: "partial",
       macos: "lab",
+      android: "partial",
+      ios: "partial",
       unknown: "unavailable"
     }
   ]
@@ -96,6 +148,8 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       String.contains?(value, "windows") -> :windows
       String.contains?(value, "linux") -> :linux
       String.contains?(value, "mac") or String.contains?(value, "darwin") -> :macos
+      String.contains?(value, "android") -> :android
+      String.contains?(value, "ios") or String.contains?(value, "iphone") or String.contains?(value, "ipad") -> :ios
       true -> :unknown
     end
   end
@@ -133,6 +187,77 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
       true -> "not_observed"
     end
   end
+
+  defp observed_state("mobile_posture", os, health, config, _collectors, _data_sources, agent_status)
+       when os in [:android, :ios] do
+    cond do
+      online_runtime?(agent_status, health) -> "reported"
+      mobile_source?(config) -> "reported"
+      true -> "not_observed"
+    end
+  end
+
+  defp observed_state("mobile_posture", _os, _health, _config, _collectors, _data_sources, _agent_status),
+    do: "not_observed"
+
+  defp observed_state("app_inventory", os, _health, config, collectors, data_sources, _agent_status)
+       when os in [:android, :ios] do
+    app_sources =
+      ["mobile_app_inventory", :mobile_app_inventory, "app_inventory", :app_inventory]
+      |> Enum.map(&Map.get(data_sources, &1, 0))
+      |> Enum.any?(&(numeric?(&1) and &1 > 0))
+
+    cond do
+      app_sources -> "observed"
+      Enum.any?(collectors, &(collector_name(&1) in ["app_inventory", "mobile_app_inventory"] and collector_active?(&1))) -> "reported"
+      mobile_source?(config) -> "reported"
+      true -> "not_observed"
+    end
+  end
+
+  defp observed_state("app_inventory", _os, _health, _config, _collectors, _data_sources, _agent_status),
+    do: "not_observed"
+
+  defp observed_state("app_guard", os, _health, config, collectors, data_sources, _agent_status)
+       when os in [:android, :ios] do
+    app_guard_sources =
+      ["mobile_events", :mobile_events, "app_guard", :app_guard]
+      |> Enum.map(&Map.get(data_sources, &1, 0))
+      |> Enum.any?(&(numeric?(&1) and &1 > 0))
+
+    reported = reported_capabilities(config)
+
+    cond do
+      app_guard_sources -> "observed"
+      Enum.any?(collectors, &(collector_name(&1) in ["app_guard", "rasp"] and collector_active?(&1))) -> "reported"
+      Enum.any?(reported, &(&1 in ["app_guard", "rasp", "mobile_rasp"])) -> "reported"
+      mobile_source?(config) -> "reported"
+      true -> "not_observed"
+    end
+  end
+
+  defp observed_state("app_guard", _os, _health, _config, _collectors, _data_sources, _agent_status),
+    do: "not_observed"
+
+  defp observed_state("commercial_spyware", os, _health, config, collectors, data_sources, _agent_status)
+       when os in [:android, :ios] do
+    spyware_sources =
+      ["spyware", :spyware, "commercial_spyware", :commercial_spyware, "mobile_events", :mobile_events]
+      |> Enum.map(&Map.get(data_sources, &1, 0))
+      |> Enum.any?(&(numeric?(&1) and &1 > 0))
+
+    reported = reported_capabilities(config)
+
+    cond do
+      spyware_sources -> "observed"
+      Enum.any?(collectors, &(collector_name(&1) in ["commercial_spyware", "spyware"] and collector_active?(&1))) -> "reported"
+      Enum.any?(reported, &(&1 in ["commercial_spyware", "spyware", "pegasus", "predator"])) -> "reported"
+      true -> "not_observed"
+    end
+  end
+
+  defp observed_state("commercial_spyware", _os, _health, _config, _collectors, _data_sources, _agent_status),
+    do: "not_observed"
 
   defp observed_state("live_response", _os, health, config, _collectors, _data_sources, agent_status) do
     reported = reported_capabilities(config)
@@ -203,6 +328,10 @@ defmodule TamanduaServer.Agents.PlatformCapabilities do
   end
 
   defp critical_health?(_), do: false
+
+  defp mobile_source?(config) do
+    Map.get(config, "source") == "tamandua_mobile" or Map.get(config, :source) == "tamandua_mobile"
+  end
 
   defp collector_active?(collector) when is_map(collector) do
     status =

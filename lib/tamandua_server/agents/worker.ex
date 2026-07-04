@@ -29,6 +29,9 @@ defmodule TamanduaServer.Agents.Worker do
   @presence_tick_interval :timer.seconds(30)
   @command_stale_timeout :timer.seconds(45)
 
+  # Default batch size for (re)delivering queued commands on connect/notify.
+  @pending_command_batch_limit 50
+
   defstruct [
     :agent_id,
     :socket_pid,
@@ -38,7 +41,13 @@ defmodule TamanduaServer.Agents.Worker do
     :config,
     :connected_at,
     :last_heartbeat,
-    :last_db_heartbeat
+    :last_db_heartbeat,
+    # command_id => GenServer.from() of the caller awaiting the agent's reply.
+    # Kept in state (not the process dictionary) so it is visible, testable,
+    # and cleaned up deterministically on reply/timeout/disconnect.
+    command_callbacks: %{},
+    # realtime command_id => {event, payload} for in-flight "rt_*" commands.
+    realtime_commands: %{}
   ]
 
   # Client API
@@ -290,15 +299,19 @@ defmodule TamanduaServer.Agents.Worker do
     priority = Map.get(command, :priority) || Map.get(command, "priority", 0)
     timeout_seconds = Map.get(command, :timeout) || Map.get(command, "timeout", 3600)
 
-    # Insert command into database
-    case Repo.insert(%AgentCommand{
-      agent_id: state.agent_id,
-      command_type: to_string(command_type),
-      command_params: command_params,
-      priority: priority,
-      status: "pending",
-      expires_at: AgentCommand.utc_now_second() |> DateTime.add(timeout_seconds, :second)
-    }) do
+    idempotency_key =
+      Map.get(command, :idempotency_key) || Map.get(command, "idempotency_key")
+
+    # Insert command into database (idempotent when a key is provided)
+    case AgentCommand.insert_new(%{
+           agent_id: state.agent_id,
+           command_type: to_string(command_type),
+           command_params: command_params,
+           priority: priority,
+           status: "pending",
+           idempotency_key: idempotency_key,
+           expires_at: AgentCommand.utc_now_second() |> DateTime.add(timeout_seconds, :second)
+         }) do
       {:ok, cmd} ->
         # Send the command immediately
         full_command = %{
@@ -310,17 +323,27 @@ defmodule TamanduaServer.Agents.Worker do
 
         send(state.socket_pid, {:send_command, full_command})
 
-        # Mark as sent in database
-        Repo.update!(AgentCommand.mark_sent(cmd))
+        # Mark as sent in database (increments dispatch bookkeeping)
+        Repo.update!(AgentCommand.mark_dispatched(cmd))
 
-        # Store the GenServer caller in process dictionary for reply later
-        # This allows us to reply when we get the response from the agent
-        Process.put({:command_callback, cmd.id}, from)
+        # Store the GenServer caller in state for reply later.
+        # This allows us to reply when we get the response from the agent.
+        state = put_command_callback(state, cmd.id, from)
 
         # Schedule a timeout for this specific command
         Process.send_after(self(), {:command_timeout, cmd.id}, timeout_seconds * 1000)
 
         {:noreply, state}
+
+      {:existing, cmd} ->
+        # Idempotency-key hit: a UI/API retry of an already-created command.
+        # Do not insert or re-dispatch; return the existing command.
+        Logger.info(
+          "Idempotent send_command replay for agent #{state.agent_id}: " <>
+            "key=#{inspect(idempotency_key)} existing command #{cmd.id} (#{cmd.status})"
+        )
+
+        {:reply, {:ok, cmd}, state}
 
       {:error, changeset} ->
         Logger.error("Failed to insert command: #{inspect(changeset.errors)}")
@@ -394,7 +417,9 @@ defmodule TamanduaServer.Agents.Worker do
 
     cond do
       realtime_command_id?(command_id) ->
-        handle_realtime_command_response(command_id, status, result, error, response, state)
+        {context, realtime_commands} = Map.pop(state.realtime_commands, command_id)
+        state = %{state | realtime_commands: realtime_commands}
+        handle_realtime_command_response(command_id, status, error, response, context, state)
         {:noreply, state}
 
       true ->
@@ -404,8 +429,7 @@ defmodule TamanduaServer.Agents.Worker do
 
   @impl true
   def handle_cast({:realtime_output, payload}, state) do
-    acknowledge_realtime_output(payload)
-    {:noreply, state}
+    {:noreply, acknowledge_realtime_output(payload, state)}
   end
 
   defp handle_persisted_command_response(command_id, status, result, error, response, state) do
@@ -436,13 +460,14 @@ defmodule TamanduaServer.Agents.Worker do
         end
 
         # Reply to the caller if they're still waiting
-        case Process.get({:command_callback, command_id}) do
+        {from, state} = pop_command_callback(state, command_id)
+
+        case from do
           nil ->
             Logger.debug("No callback waiting for command #{command_id}")
 
           from ->
             GenServer.reply(from, {:ok, result || response})
-            Process.delete({:command_callback, command_id})
         end
 
         {:noreply, state}
@@ -456,18 +481,11 @@ defmodule TamanduaServer.Agents.Worker do
     unregister_and_mark_offline_if_current(state)
 
     # Reply error to any pending command callbacks
-    Process.get()
-    |> Enum.filter(fn {key, _value} ->
-      case key do
-        {:command_callback, _cmd_id} -> true
-        _ -> false
-      end
-    end)
-    |> Enum.each(fn {{:command_callback, _cmd_id}, from} ->
+    Enum.each(state.command_callbacks, fn {_cmd_id, from} ->
       GenServer.reply(from, {:error, :disconnected})
     end)
 
-    {:stop, :normal, state}
+    {:stop, :normal, %{state | command_callbacks: %{}}}
   end
 
   @impl true
@@ -487,8 +505,7 @@ defmodule TamanduaServer.Agents.Worker do
 
   @impl true
   def handle_info(:send_pending_commands, state) do
-    maybe_send_pending_commands(state)
-    {:noreply, state}
+    {:noreply, maybe_send_pending_commands(state)}
   end
 
   @impl true
@@ -519,7 +536,11 @@ defmodule TamanduaServer.Agents.Worker do
       timestamp: System.system_time(:millisecond)
     }
 
-    Process.put({:realtime_command, command_id}, {event, payload || %{}})
+    state = %{
+      state
+      | realtime_commands: Map.put(state.realtime_commands, command_id, {event, payload || %{}})
+    }
+
     if command_type == "shell_input" do
       Logger.debug("Realtime command #{command_id} #{command_type} sent to #{state.agent_id}")
     else
@@ -533,13 +554,14 @@ defmodule TamanduaServer.Agents.Worker do
 
   @impl true
   def handle_info({:realtime_command_timeout, command_id}, state) do
-    case Process.get({:realtime_command, command_id}) do
+    {context, realtime_commands} = Map.pop(state.realtime_commands, command_id)
+    state = %{state | realtime_commands: realtime_commands}
+
+    case context do
       nil ->
         :ok
 
       {event, payload} ->
-        Process.delete({:realtime_command, command_id})
-
         Logger.warning(
           "Realtime command #{command_id} #{event} timed out for #{state.agent_id}"
         )
@@ -555,7 +577,8 @@ defmodule TamanduaServer.Agents.Worker do
     # Check if command is still pending
     case Repo.get(AgentCommand, command_id) do
       nil ->
-        # Command doesn't exist, ignore
+        # Command doesn't exist; drop any stale callback for it
+        {_from, state} = pop_command_callback(state, command_id)
         {:noreply, state}
 
       cmd ->
@@ -574,15 +597,20 @@ defmodule TamanduaServer.Agents.Worker do
           end
 
           # Reply to caller if still waiting
-          case Process.get({:command_callback, command_id}) do
-            nil -> :ok
-            from ->
-              GenServer.reply(from, {:error, :timeout})
-              Process.delete({:command_callback, command_id})
-          end
-        end
+          {from, state} = pop_command_callback(state, command_id)
 
-        {:noreply, state}
+          case from do
+            nil -> :ok
+            from -> GenServer.reply(from, {:error, :timeout})
+          end
+
+          {:noreply, state}
+        else
+          # Terminal already (caller was answered on command_response);
+          # just make sure no callback entry leaks.
+          {_from, state} = pop_command_callback(state, command_id)
+          {:noreply, state}
+        end
     end
   end
 
@@ -651,55 +679,123 @@ defmodule TamanduaServer.Agents.Worker do
 
   defp maybe_send_pending_commands(state) do
     if skip_pending_commands_on_init?() do
-      :ok
+      state
     else
       send_pending_commands(state)
     end
   rescue
     e ->
       Logger.warning("Failed to send pending commands for #{state.agent_id}: #{inspect(e)}")
-      :ok
+      state
   catch
     :exit, reason ->
       Logger.warning("Pending command lookup exited for #{state.agent_id}: #{inspect(reason)}")
-      :ok
+      state
   end
 
+  # (Re)deliver queued commands: "pending" (never pushed) and "sent" (pushed
+  # but never acknowledged — the worker/channel may have died between
+  # mark_sent and actual delivery). Agent-side execution is idempotent by
+  # command id, so re-delivering "sent" is safe. AgentCommand.dispatch_decision/2
+  # guards against tight redelivery loops (attempt cap + cooldown).
   defp send_pending_commands(state) do
-    # Get pending commands from database, ordered by priority and age
+    # Get deliverable commands from database, ordered by priority and age
     commands =
-      AgentCommand.pending_for_agent(state.agent_id, 10)
+      AgentCommand.pending_for_agent(state.agent_id, pending_command_batch_limit())
       |> Repo.all()
 
-    Enum.each(commands, fn cmd ->
-      full_command = %{
-        command_id: cmd.id,
-        command_type: cmd.command_type,
-        payload: cmd.command_params,
-        timestamp: DateTime.to_unix(cmd.inserted_at, :millisecond)
-      }
+    {dispatched, state} =
+      Enum.reduce(commands, {0, state}, fn cmd, {dispatched, state} ->
+        case AgentCommand.dispatch_decision(cmd) do
+          :dispatch ->
+            dispatch_persisted_command(cmd, state)
+            {dispatched + 1, state}
 
-      send(state.socket_pid, {:send_command, full_command})
+          :skip_recently_dispatched ->
+            # An attempt is already in flight (< cooldown); don't double-push.
+            {dispatched, state}
 
-      # Mark as sent
-      Repo.update!(AgentCommand.mark_sent(cmd))
-
-      # Calculate timeout based on expires_at
-      timeout_ms =
-        if cmd.expires_at do
-          diff = DateTime.diff(cmd.expires_at, DateTime.utc_now(), :millisecond)
-          max(diff, 1000)  # At least 1 second
-        else
-          3600 * 1000  # Default 1 hour
+          {:fail, reason} ->
+            {dispatched, fail_exhausted_command(cmd, reason, state)}
         end
+      end)
 
-      # Schedule timeout
-      Process.send_after(self(), {:command_timeout, cmd.id}, timeout_ms)
-    end)
-
-    if length(commands) > 0 do
-      Logger.info("Sent #{length(commands)} pending commands to agent #{state.agent_id}")
+    if dispatched > 0 do
+      Logger.info("Sent #{dispatched} pending commands to agent #{state.agent_id}")
     end
+
+    state
+  end
+
+  defp dispatch_persisted_command(cmd, state) do
+    full_command = %{
+      command_id: cmd.id,
+      command_type: cmd.command_type,
+      payload: cmd.command_params,
+      timestamp: DateTime.to_unix(cmd.inserted_at, :millisecond)
+    }
+
+    send(state.socket_pid, {:send_command, full_command})
+
+    # Mark as sent and record the dispatch attempt
+    Repo.update!(AgentCommand.mark_dispatched(cmd))
+
+    # Calculate timeout based on expires_at
+    timeout_ms =
+      if cmd.expires_at do
+        diff = DateTime.diff(cmd.expires_at, DateTime.utc_now(), :millisecond)
+        max(diff, 1000)  # At least 1 second
+      else
+        3600 * 1000  # Default 1 hour
+      end
+
+    # Schedule timeout
+    Process.send_after(self(), {:command_timeout, cmd.id}, timeout_ms)
+    :ok
+  end
+
+  defp fail_exhausted_command(cmd, reason, state) do
+    Logger.warning(
+      "Command #{cmd.id} (#{cmd.command_type}) for agent #{state.agent_id} " <>
+        "exhausted dispatch attempts: #{reason}"
+    )
+
+    case Repo.update(AgentCommand.mark_failed(cmd, reason)) do
+      {:ok, _} ->
+        :ok
+
+      {:error, update_error} ->
+        Logger.warning(
+          "Failed to persist dispatch exhaustion for command #{cmd.id}: #{inspect(update_error)}"
+        )
+    end
+
+    # If a caller from this worker is still waiting on it, unblock them.
+    {from, state} = pop_command_callback(state, cmd.id)
+
+    case from do
+      nil -> :ok
+      from -> GenServer.reply(from, {:error, :dispatch_limit_exceeded})
+    end
+
+    state
+  end
+
+  defp pending_command_batch_limit do
+    Application.get_env(
+      :tamandua_server,
+      :pending_command_batch_limit,
+      @pending_command_batch_limit
+    )
+  end
+
+  defp put_command_callback(state, command_id, from) do
+    %{state | command_callbacks: Map.put(state.command_callbacks, command_id, from)}
+  end
+
+  defp pop_command_callback(state, command_id) do
+    {from, callbacks} = Map.pop(state.command_callbacks, command_id)
+    {from, %{state | command_callbacks: callbacks}}
   end
 
   defp skip_pending_commands_on_init? do
@@ -714,10 +810,7 @@ defmodule TamanduaServer.Agents.Worker do
   defp realtime_command_type("shell:terminate", _payload), do: "shell_terminate"
   defp realtime_command_type(event, _payload), do: event |> to_string() |> String.replace(":", "_")
 
-  defp handle_realtime_command_response(command_id, status, result, error, response, state) do
-    context = Process.get({:realtime_command, command_id})
-    Process.delete({:realtime_command, command_id})
-
+  defp handle_realtime_command_response(command_id, status, error, response, context, state) do
     Logger.info(
       "Realtime command response #{command_id} for #{state.agent_id}: " <>
         "status=#{inspect(status)} success=#{inspect(response["success"] || response[:success])} " <>
@@ -753,34 +846,34 @@ defmodule TamanduaServer.Agents.Worker do
       not is_nil(error)
   end
 
-  defp acknowledge_realtime_output(payload) when is_map(payload) do
+  defp acknowledge_realtime_output(payload, state) when is_map(payload) do
     session_id = payload["session_id"] || payload[:session_id]
 
     case payload["type"] || payload[:type] do
-      "session_started" -> acknowledge_realtime_command("shell:start", session_id)
-      "data" -> acknowledge_realtime_command("shell:input", session_id)
-      "builtin_result" -> acknowledge_realtime_command("shell:input", session_id)
-      _ -> :ok
+      "session_started" -> acknowledge_realtime_command("shell:start", session_id, state)
+      "data" -> acknowledge_realtime_command("shell:input", session_id, state)
+      "builtin_result" -> acknowledge_realtime_command("shell:input", session_id, state)
+      _ -> state
     end
   end
 
-  defp acknowledge_realtime_output(_), do: :ok
+  defp acknowledge_realtime_output(_, state), do: state
 
-  defp acknowledge_realtime_command(_event, nil), do: :ok
+  defp acknowledge_realtime_command(_event, nil, state), do: state
 
-  defp acknowledge_realtime_command(event, session_id) do
-    Process.get()
+  defp acknowledge_realtime_command(event, session_id, state) do
+    state.realtime_commands
     |> Enum.find(fn
-      {{:realtime_command, _command_id}, {^event, %{"session_id" => ^session_id}}} -> true
-      {{:realtime_command, _command_id}, {^event, %{session_id: ^session_id}}} -> true
+      {_command_id, {^event, %{"session_id" => ^session_id}}} -> true
+      {_command_id, {^event, %{session_id: ^session_id}}} -> true
       _ -> false
     end)
     |> case do
-      {{:realtime_command, command_id}, _context} ->
-        Process.delete({:realtime_command, command_id})
+      {command_id, _context} ->
+        %{state | realtime_commands: Map.delete(state.realtime_commands, command_id)}
 
-      _ ->
-        :ok
+      nil ->
+        state
     end
   end
 

@@ -158,15 +158,30 @@ defmodule TamanduaServerWeb.API.V1.MCPController do
         })
 
       {:error, %{error: %{message: message}}} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: message, data: %{}})
+        json(conn, degraded_security_context(scope, message))
 
       {:error, reason} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: to_string(reason), data: %{}})
+        json(conn, degraded_security_context(scope, to_string(reason)))
     end
+  end
+
+  defp degraded_security_context(scope, message) do
+    %{
+      data: %{
+        scope: scope,
+        active_alerts: [],
+        monitored_assets: [],
+        threat_level: "unknown",
+        degraded: true,
+        healthMessage: message
+      },
+      meta: %{
+        scope: scope,
+        degraded: true,
+        health_message: message,
+        timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+    }
   end
 
   defp safe_mcp_call(request, fun) when is_function(fun, 0) do

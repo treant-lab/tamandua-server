@@ -33,7 +33,7 @@ export interface Agent {
   id: string
   hostname: string
   ip_address: string
-  os_type: 'windows' | 'linux' | 'macos'
+  os_type: 'windows' | 'linux' | 'macos' | 'android' | 'ios'
   os_version: string
   agent_version: string
   status: 'online' | 'offline' | 'degraded'

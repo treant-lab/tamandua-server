@@ -10,6 +10,12 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
+      fontFamily: {
+        // Resolve Tailwind font utilities to the Sentinel design tokens
+        // (css/tokens.css) so there is exactly one source of truth per stack.
+        sans: ['var(--sans)'],
+        mono: ['var(--mono)'],
+      },
       colors: {
         primary: {
           50: 'var(--color-primary-50)',

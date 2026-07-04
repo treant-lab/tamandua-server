@@ -1456,8 +1456,6 @@ defmodule TamanduaServerWeb.InertiaController do
   defp infer_hunt_category(_), do: "general"
 
   def network(conn, _params) do
-    alias TamanduaServer.Telemetry
-
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -1467,8 +1465,10 @@ defmodule TamanduaServerWeb.InertiaController do
         %{id: Map.get(a, :id) || Map.get(a, :agent_id), hostname: a.hostname}
       end)
 
-    # Get recent network connection events from telemetry
-    network_events = Telemetry.list_events(%{event_type: "network_connect", limit: 500})
+    # Keep the Inertia render cheap. The network table hydrates through the
+    # bounded /api/v1/events endpoint after mount; loading hundreds of JSONB
+    # telemetry payloads during SSR makes the navigation path slow on busy labs.
+    network_events = []
 
     # Serialize network connections for frontend
     # Handle both atom and string keys in payload (database uses string keys from JSON)
@@ -1728,31 +1728,10 @@ defmodule TamanduaServerWeb.InertiaController do
         |> Enum.map(fn {domain, items} -> %{domain: domain, count: length(items)} end)
         |> Enum.sort_by(& &1.count, :desc)
         |> Enum.take(20),
-      blocklist:
-        try do
-          case TamanduaServer.Detection.DNSAnalyzer.get_blocklist(org_id) do
-            list when is_list(list) -> list
-            _ -> []
-          end
-        catch
-          kind, reason ->
-            Logger.warning("DnsAnalyzer.get_blocklist failed: #{kind} #{inspect(reason)}")
-            []
-        end,
-      alerts:
-        try do
-          Alerts.list_alerts(%{})
-          |> Enum.filter(fn alert ->
-            title = String.downcase(alert.title || "")
-            String.contains?(title, ["dns", "domain"])
-          end)
-          |> Enum.take(20)
-          |> Enum.map(&serialize_alert/1)
-        rescue
-          e ->
-            Logger.warning("Failed to fetch DNS-related alerts: #{Exception.message(e)}")
-            []
-        end,
+      # Hydrated by dedicated DNS APIs after mount. Keeping these empty here
+      # avoids blocking page navigation on optional analyzers or broad alert scans.
+      blocklist: [],
+      alerts: [],
       agents: agents,
       pagination: %{page: 1, perPage: 50, total: length(queries)}
     })
@@ -2243,22 +2222,25 @@ defmodule TamanduaServerWeb.InertiaController do
     # Get tenant info from organization
     tenant =
       if org_id do
-        case TamanduaServer.Repo.get(TamanduaServer.Organizations.Organization, org_id) do
+        case TamanduaServer.Repo.get(TamanduaServer.Accounts.Organization, org_id) do
           nil ->
             default_tenant()
 
           org ->
+            org_settings = Map.get(org, :settings) || %{}
+
             %{
               id: org.id,
               name: org.name,
-              slug: org.slug || String.downcase(String.replace(org.name, ~r/\s+/, "-")),
-              domain: org.domain,
-              status: org.status || "active",
-              plan: org.plan || "free",
-              logo_url: org.logo_url,
-              primary_color: org.primary_color,
-              created_at: org.inserted_at,
-              updated_at: org.updated_at,
+              slug: Map.get(org, :slug) || String.downcase(String.replace(org.name, ~r/\s+/, "-")),
+              domain: Map.get(org, :domain) || Map.get(org_settings, "domain"),
+              status: if(Map.get(org, :is_active, true), do: "active", else: "inactive"),
+              plan: Map.get(org, :plan) || Map.get(org, :license_tier, "free") |> to_string(),
+              logo_url: Map.get(org, :logo_url) || Map.get(org_settings, "logo_url"),
+              primary_color:
+                Map.get(org, :primary_color) || Map.get(org_settings, "primary_color"),
+              created_at: format_datetime(org.inserted_at),
+              updated_at: format_datetime(org.updated_at),
               agent_count: 0,
               user_count: 0,
               event_count_30d: 0,
@@ -2297,8 +2279,8 @@ defmodule TamanduaServerWeb.InertiaController do
       tenant_id: tenant[:id],
       plan: tenant[:plan] || "free",
       status: "active",
-      started_at: tenant[:created_at] || DateTime.utc_now(),
-      expires_at: DateTime.add(DateTime.utc_now(), 365, :day),
+      started_at: tenant[:created_at] || format_datetime(DateTime.utc_now()),
+      expires_at: format_datetime(DateTime.add(DateTime.utc_now(), 365, :day)),
       auto_renew: true,
       limits: %{
         max_agents: 100,
@@ -2336,8 +2318,8 @@ defmodule TamanduaServerWeb.InertiaController do
       plan: "free",
       logo_url: nil,
       primary_color: "#6366f1",
-      created_at: DateTime.utc_now(),
-      updated_at: DateTime.utc_now(),
+      created_at: format_datetime(DateTime.utc_now()),
+      updated_at: format_datetime(DateTime.utc_now()),
       agent_count: 0,
       user_count: 0,
       event_count_30d: 0,
@@ -2680,6 +2662,10 @@ defmodule TamanduaServerWeb.InertiaController do
   defp serialize_timeline_file_event(_), do: nil
 
   # Storyline - SentinelOne-style attack visualization
+  def storyline_index(conn, _params) do
+    redirect(conn, to: "/app/timeline")
+  end
+
   def storyline(conn, %{"alert_id" => alert_id} = params) do
     layout = Map.get(params, "layout", "timeline")
 
@@ -7354,24 +7340,20 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get stats
     breadcrumb_stats =
-      try do
+      safe_feature_call("Breadcrumbs.get_stats", %{}, fn ->
         case Breadcrumbs.get_stats() do
           {:ok, stats} -> stats
           _ -> %{}
         end
-      rescue
-        _ -> %{}
-      end
+      end)
 
     analytics_stats =
-      try do
+      safe_feature_call("Analytics.get_stats", %{}, fn ->
         case Analytics.get_stats() do
           {:ok, stats} -> stats
           _ -> %{}
         end
-      rescue
-        _ -> %{}
-      end
+      end)
 
     stats = %{
       totalDecoys: Map.get(breadcrumb_stats, :total_breadcrumbs, 0),
@@ -7388,62 +7370,52 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Get breadcrumbs
     breadcrumbs =
-      try do
+      safe_feature_call("Breadcrumbs.list_breadcrumbs", [], fn ->
         case Breadcrumbs.list_breadcrumbs(limit: 50) do
           {:ok, bcs} -> Enum.map(bcs, &serialize_breadcrumb/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Get attacker profiles
     attackers =
-      try do
+      safe_feature_call("Analytics.list_attacker_profiles", [], fn ->
         case Analytics.list_attacker_profiles(limit: 20) do
           {:ok, atks} -> Enum.map(atks, &serialize_attacker_profile/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Get indicators
     indicators =
-      try do
+      safe_feature_call("Analytics.get_indicators", [], fn ->
         case Analytics.get_indicators(limit: 50) do
           {:ok, inds} -> Enum.map(inds, &serialize_deception_indicator/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Get deployment profiles
     profiles =
-      try do
+      safe_feature_call("Breadcrumbs.list_profiles", [], fn ->
         case Breadcrumbs.list_profiles() do
           {:ok, profs} -> Enum.map(profs, &serialize_deployment_profile/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Get timeline
     timeline =
-      try do
+      safe_feature_call("Analytics.get_timeline", [], fn ->
         case Analytics.get_timeline(limit: 20) do
           {:ok, events} -> Enum.map(events, &serialize_deception_timeline_event/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Get decoy services from deployed breadcrumbs
     decoy_services =
-      try do
+      safe_feature_call("Breadcrumbs.list_active_breadcrumbs", [], fn ->
         case Breadcrumbs.list_breadcrumbs(status: :active) do
           {:ok, bcs} ->
             bcs
@@ -7463,12 +7435,13 @@ defmodule TamanduaServerWeb.InertiaController do
           _ ->
             []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     # Generate recommendations
-    recommendations = generate_deception_recommendations(org_id, breadcrumbs, attackers, stats)
+    recommendations =
+      safe_feature_call("generate_deception_recommendations", [], fn ->
+        generate_deception_recommendations(org_id, breadcrumbs, attackers, stats)
+      end)
 
     render_inertia(conn, "Deception", %{
       page_title: "Deception Technology",
@@ -7606,7 +7579,17 @@ defmodule TamanduaServerWeb.InertiaController do
       |> MapSet.new()
 
     all_agents = list_agents_for_dashboard(org_id)
-    agents_without = Enum.reject(all_agents, &MapSet.member?(agents_with_decoys, &1.id))
+
+    agents_without =
+      Enum.reject(all_agents, fn agent ->
+        agent_id =
+          Map.get(agent, :id) ||
+            Map.get(agent, :agent_id) ||
+            Map.get(agent, "id") ||
+            Map.get(agent, "agent_id")
+
+        is_nil(agent_id) || MapSet.member?(agents_with_decoys, agent_id)
+      end)
 
     recommendations =
       if length(agents_without) > 0 do
@@ -8238,6 +8221,22 @@ defmodule TamanduaServerWeb.InertiaController do
       {fallback, "#{operation} failed: #{inspect(kind)} #{inspect(reason)}"}
   end
 
+  defp safe_feature_call(label, fallback, fun) when is_function(fun, 0) do
+    fun.()
+  rescue
+    exception ->
+      Logger.warning("#{label} failed: #{Exception.message(exception)}")
+      fallback
+  catch
+    :exit, reason ->
+      Logger.warning("#{label} failed: exit #{inspect(reason)}")
+      fallback
+
+    kind, reason ->
+      Logger.warning("#{label} failed: #{kind} #{inspect(reason)}")
+      fallback
+  end
+
   # Phishing Triage
   def phishing_triage(conn, _params) do
     # Get stats from PhishingTriage module
@@ -8253,54 +8252,32 @@ defmodule TamanduaServerWeb.InertiaController do
           %{}
       end
 
-    # Build verdict history from stats - as array of VerdictHistory objects
-    verdict_history = [
-      %{
-        id: "malicious",
-        verdict: "malicious",
-        count: stats[:malicious_detected] || 0,
-        percentage: calculate_percentage(stats[:malicious_detected], stats[:total_analyzed])
-      },
-      %{
-        id: "suspicious",
-        verdict: "suspicious",
-        count: stats[:suspicious_detected] || 0,
-        percentage: calculate_percentage(stats[:suspicious_detected], stats[:total_analyzed])
-      },
-      %{
-        id: "benign",
-        verdict: "benign",
-        count: stats[:benign_resolved] || 0,
-        percentage: calculate_percentage(stats[:benign_resolved], stats[:total_analyzed])
-      }
-    ]
+    total_analyzed = stats[:total_analyzed] || 0
+    false_positives = stats[:false_positives] || 0
 
-    # Frontend expects reporterStats as an array of ReporterStats objects
-    reporter_stats = [
-      %{
-        id: "overall",
-        reporterId: "all_reporters",
-        totalReported: stats[:total_analyzed] || 0,
-        falsePositives: stats[:false_positives] || 0,
-        falseNegatives: stats[:false_negatives] || 0,
-        avgConfidence: stats[:avg_confidence] || 0.0,
-        accuracyRate: calculate_accuracy_rate(stats)
-      }
-    ]
-
-    # Frontend expects reportedEmails as an array of ReportedEmail objects
+    # Frontend expects reportedEmails as an array of ReportedEmail objects.
     reported_emails =
       try do
         case PhishingTriage.list_reported_emails(limit: 50) do
           {:ok, list} when is_list(list) ->
             Enum.map(list, fn email ->
+              sender = email[:sender] || "unknown@example.com"
+              reported_at = email[:reported_at] || DateTime.utc_now()
+
               %{
                 id: email[:id] || UUID.uuid4(),
                 subject: email[:subject] || "No Subject",
-                sender: email[:sender] || "unknown@example.com",
+                sender: sender,
+                senderDomain: sender_domain(sender),
                 recipient: email[:recipient] || "",
                 reportedBy: email[:reported_by] || "",
-                reportedAt: format_datetime(email[:reported_at]),
+                reportedAt: format_datetime(reported_at),
+                receivedAt: format_datetime(email[:received_at] || reported_at),
+                hasAttachments: positive_count?(email[:attachment_count]),
+                hasLinks: positive_count?(email[:link_count]),
+                linkCount: email[:link_count] || 0,
+                attachmentCount: email[:attachment_count] || 0,
+                headers: email[:headers] || %{},
                 status: email[:status] || "pending",
                 verdict: email[:verdict]
               }
@@ -8322,13 +8299,13 @@ defmodule TamanduaServerWeb.InertiaController do
           {:ok, list} when is_list(list) ->
             Enum.map(list, fn cls ->
               %{
-                id: cls[:id] || UUID.uuid4(),
                 emailId: cls[:email_id],
-                verdict: cls[:verdict] || "unknown",
+                verdict: normalize_phishing_verdict(cls[:verdict]),
                 confidence: cls[:confidence] || 0.0,
+                reasons: cls[:reasons] || get_in(cls, [:analysis_details, :reasons]) || [],
                 indicators: cls[:indicators] || [],
-                analysisDetails: cls[:analysis_details] || %{},
-                classifiedAt: format_datetime(cls[:classified_at])
+                analyzedAt: format_datetime(cls[:classified_at] || cls[:analyzed_at]),
+                model: cls[:model] || cls[:model_name] || "phishing-triage"
               }
             end)
 
@@ -8341,6 +8318,41 @@ defmodule TamanduaServerWeb.InertiaController do
           []
       end
 
+    verdict_history =
+      classifications
+      |> Enum.filter(& &1.emailId)
+      |> Enum.map(fn classification ->
+        email = Enum.find(reported_emails, &(&1.id == classification.emailId)) || %{}
+
+        %{
+          id: "#{classification.emailId}-#{classification.analyzedAt}",
+          emailId: classification.emailId,
+          subject: email[:subject] || "Unknown subject",
+          sender: email[:sender] || "unknown@example.com",
+          verdict: classification.verdict,
+          reviewedBy: "phishing-triage",
+          reviewedAt: classification.analyzedAt,
+          actionsTaken: phishing_actions_for_verdict(classification.verdict),
+          notes: "Automated classification confidence #{round((classification.confidence || 0) * 100)}%"
+        }
+      end)
+
+    reporter_stats =
+      reported_emails
+      |> Enum.group_by(&(&1.reportedBy || "unknown@example.com"))
+      |> Enum.map(fn {email, reports} ->
+        %{
+          email: email,
+          name: reporter_name(email),
+          department: "Security",
+          totalReports: length(reports),
+          accurateReports: max(length(reports) - false_positives, 0),
+          falsePositives: false_positives,
+          lastReport: reports |> Enum.map(& &1.reportedAt) |> Enum.max(fn -> nil end),
+          accuracyRate: calculate_accuracy_rate(stats)
+        }
+      end)
+
     render_inertia(conn, "PhishingTriage", %{
       page_title: "Phishing Triage",
       reportedEmails: reported_emails,
@@ -8348,75 +8360,95 @@ defmodule TamanduaServerWeb.InertiaController do
       verdictHistory: verdict_history,
       reporterStats: reporter_stats,
       stats: %{
-        totalAnalyzed: stats[:total_analyzed] || 0,
-        maliciousDetected: stats[:malicious_detected] || 0,
-        suspiciousDetected: stats[:suspicious_detected] || 0,
-        benignResolved: stats[:benign_resolved] || 0,
+        totalReportsToday: total_analyzed,
+        pendingCount: Enum.count(reported_emails, &(&1.status in ["pending", "analyzing"])),
+        phishingDetected: stats[:malicious_detected] || 0,
         avgConfidence: Float.round((stats[:avg_confidence] || 0.0) * 100, 1)
       }
     })
   end
 
-  defp calculate_percentage(_count, 0), do: 0.0
-  defp calculate_percentage(nil, _total), do: 0.0
-
-  defp calculate_percentage(count, total) when is_number(count) and is_number(total) do
-    Float.round(count / total * 100, 1)
+  defp sender_domain(sender) when is_binary(sender) do
+    sender
+    |> String.split("@")
+    |> List.last()
+    |> case do
+      nil -> ""
+      domain -> domain
+    end
   end
+
+  defp sender_domain(_), do: ""
+
+  defp positive_count?(value) when is_integer(value), do: value > 0
+  defp positive_count?(_), do: false
+
+  defp normalize_phishing_verdict(verdict) when verdict in [:phishing, "phishing", :malicious, "malicious"], do: "phishing"
+  defp normalize_phishing_verdict(verdict) when verdict in [:spam, "spam"], do: "spam"
+  defp normalize_phishing_verdict(verdict) when verdict in [:suspicious, "suspicious"], do: "suspicious"
+  defp normalize_phishing_verdict(verdict) when verdict in [:legitimate, "legitimate", :benign, "benign"], do: "legitimate"
+  defp normalize_phishing_verdict(_), do: "suspicious"
+
+  defp phishing_actions_for_verdict("phishing"), do: ["quarantined", "ioc_extracted", "user_notified"]
+  defp phishing_actions_for_verdict("spam"), do: ["marked_spam"]
+  defp phishing_actions_for_verdict("suspicious"), do: ["queued_for_review"]
+  defp phishing_actions_for_verdict(_), do: ["closed"]
+
+  defp reporter_name(email) when is_binary(email) do
+    email
+    |> String.split("@")
+    |> List.first()
+    |> case do
+      nil -> "Unknown"
+      name -> String.replace(name, ~r/[._-]+/, " ") |> String.trim() |> String.capitalize()
+    end
+  end
+
+  defp reporter_name(_), do: "Unknown"
 
   def email_security(conn, _params) do
     alias TamanduaServer.EmailSecurity.{Microsoft365, GoogleWorkspace, EmailCorrelator}
 
     # Get integration statuses
     m365_status =
-      try do
+      safe_feature_call("Microsoft365.get_status", %{connected: false, enabled: false}, fn ->
         case Microsoft365.get_status() do
           {:ok, status} -> status
           _ -> %{connected: false, enabled: false}
         end
-      rescue
-        _ -> %{connected: false, enabled: false}
-      end
+      end)
 
     google_status =
-      try do
+      safe_feature_call("GoogleWorkspace.get_status", %{connected: false, enabled: false}, fn ->
         case GoogleWorkspace.get_status() do
           {:ok, status} -> status
           _ -> %{connected: false, enabled: false}
         end
-      rescue
-        _ -> %{connected: false, enabled: false}
-      end
+      end)
 
     # Get correlator stats
     correlator_stats =
-      try do
+      safe_feature_call("EmailCorrelator.get_stats", %{}, fn ->
         EmailCorrelator.get_stats()
-      rescue
-        _ -> %{}
-      end
+      end)
 
     # Get triage stats
     triage_stats =
-      try do
+      safe_feature_call("PhishingTriage.get_stats", %{}, fn ->
         case PhishingTriage.get_stats() do
           s when is_map(s) -> s
           _ -> %{}
         end
-      rescue
-        _ -> %{}
-      end
+      end)
 
     # Get recent attack chains
     attack_chains =
-      try do
+      safe_feature_call("EmailCorrelator.list_attack_chains", [], fn ->
         case EmailCorrelator.list_attack_chains(limit: 10, min_severity: :medium) do
           {:ok, chains} -> Enum.map(chains, &serialize_attack_chain/1)
           _ -> []
         end
-      rescue
-        _ -> []
-      end
+      end)
 
     render_inertia(conn, "EmailSecurity", %{
       page_title: "Email Security",
@@ -10477,6 +10509,20 @@ defmodule TamanduaServerWeb.InertiaController do
     })
   end
 
+  def ml_detections(conn, _params) do
+    org_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+
+    detections = get_recent_ml_detection_rows(org_id, 200)
+
+    render_inertia(conn, "AgentMLDetections", %{
+      page_title: "Agent ML Detections",
+      detections: detections,
+      summary: ml_detection_summary(detections)
+    })
+  end
+
   defp safe_ml_service_healthy? do
     TamanduaServer.Detection.ML.Client.healthy?()
   rescue
@@ -10527,6 +10573,104 @@ defmodule TamanduaServerWeb.InertiaController do
       )
 
       %{}
+  end
+
+  defp get_recent_ml_detection_rows(nil, _limit), do: []
+
+  defp get_recent_ml_detection_rows(org_id, limit) do
+    import Ecto.Query
+
+    from(a in TamanduaServer.Alerts.Alert,
+      where:
+        a.organization_id == ^org_id and
+          (like(a.title, "ML Detection:%") or
+             like(a.title, "Malware detected:%") or
+             like(a.title, "Agent detection: OFFLINE_ML%") or
+             fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
+             fragment("?->>'source' = ?", a.detection_metadata, "ml") or
+             fragment("?->>'detection_source' = ?", a.detection_metadata, "ml")),
+      order_by: [desc: a.inserted_at],
+      limit: ^limit
+    )
+    |> TamanduaServer.Repo.all()
+    |> Enum.map(&serialize_ml_detection_row/1)
+  rescue
+    e ->
+      Logger.warning("get_recent_ml_detection_rows failed: #{Exception.message(e)}")
+      []
+  catch
+    kind, reason ->
+      Logger.warning("get_recent_ml_detection_rows failed: #{inspect(kind)} #{inspect(reason)}")
+      []
+  end
+
+  defp serialize_ml_detection_row(alert) do
+    metadata = alert.detection_metadata || %{}
+    evidence = Map.get(alert, :evidence) || %{}
+    model_runtime = ml_model_runtime(metadata)
+
+    %{
+      id: alert.id,
+      alert_id: alert.id,
+      agent_id: alert.agent_id,
+      severity: alert.severity,
+      status: alert.status,
+      title: alert.title,
+      description: alert.description,
+      prediction: metadata_field(metadata, "prediction") || prediction_from_ml_title(alert.title),
+      malware_family: metadata_field(metadata, "malware_family"),
+      confidence: metadata_field(metadata, "confidence") || metadata_field(metadata, "ml_confidence"),
+      threat_score: alert.threat_score,
+      model_runtime: model_runtime,
+      model_name:
+        metadata_field(metadata, "ml_model") || metadata_field(metadata, "model_name") ||
+          if(model_runtime == "onnx", do: "agent-onnx", else: "ml-service"),
+      model_version:
+        metadata_field(metadata, "model_version") || metadata_field(metadata, "onnx_model_version"),
+      file_path:
+        ml_detection_field(metadata, evidence, [
+          "file_path",
+          "path",
+          "target_path",
+          "sample_path",
+          "image_path"
+        ]),
+      file_hash:
+        ml_detection_field(metadata, evidence, [
+          "file_hash",
+          "sha256",
+          "sample_sha256",
+          "hash",
+          "md5"
+        ]),
+      rule_name: metadata_field(metadata, "rule_name"),
+      inserted_at: format_datetime(alert.inserted_at)
+    }
+  end
+
+  defp ml_detection_field(metadata, evidence, keys) do
+    Enum.find_value(keys, &metadata_field(metadata, &1)) || get_any(evidence, keys)
+  end
+
+  defp ml_detection_summary(detections) do
+    %{
+      total: length(detections),
+      open: Enum.count(detections, &(Map.get(&1, :status) in ["new", "open", "investigating"])),
+      onnx: Enum.count(detections, &(Map.get(&1, :model_runtime) == "onnx")),
+      high_confidence:
+        Enum.count(detections, &(normalized_confidence(Map.get(&1, :confidence)) >= 0.8)),
+      last_seen_at: detections |> List.first() |> then(&(&1 && Map.get(&1, :inserted_at)))
+    }
+  end
+
+  defp normalized_confidence(nil), do: 0.0
+
+  defp normalized_confidence(value) do
+    case Float.parse(to_string(value)) do
+      {number, _} when number > 1.0 -> number / 100.0
+      {number, _} -> number
+      :error -> 0.0
+    end
   end
 
   defp get_recent_ml_alerts(nil, _limit), do: []

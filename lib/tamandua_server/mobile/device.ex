@@ -122,13 +122,16 @@ defmodule TamanduaServer.Mobile.Device do
       :agent_version,
       :serial_number,
       :ip_address,
-      :mac_address
+      :mac_address,
+      :user_email,
+      :user_name,
+      :custom_attributes
     ])
     |> validate_required([:organization_id, :device_id, :platform])
     |> validate_inclusion(:platform, @platforms)
-    |> put_change(:status, "pending")
-    |> put_change(:enrolled_at, NaiveDateTime.utc_now())
-    |> put_change(:last_seen_at, NaiveDateTime.utc_now())
+    |> put_change(:status, "active")
+    |> put_change(:enrolled_at, utc_now())
+    |> put_change(:last_seen_at, utc_now())
     |> unique_constraint([:organization_id, :device_id])
   end
 
@@ -276,7 +279,7 @@ defmodule TamanduaServer.Mobile.Device do
   Query devices not seen within given hours.
   """
   def stale(query \\ __MODULE__, hours \\ 24) do
-    cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(), -hours * 3600)
+    cutoff = NaiveDateTime.add(utc_now(), -hours * 3600)
     from d in query, where: d.last_seen_at < ^cutoff
   end
 
@@ -292,5 +295,10 @@ defmodule TamanduaServer.Mobile.Device do
   """
   def non_compliant(query \\ __MODULE__) do
     from d in query, where: d.mdm_compliance_status != "compliant"
+  end
+
+  defp utc_now do
+    NaiveDateTime.utc_now()
+    |> NaiveDateTime.truncate(:second)
   end
 end

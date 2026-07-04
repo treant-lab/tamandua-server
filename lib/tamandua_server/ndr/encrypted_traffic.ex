@@ -1203,6 +1203,10 @@ defmodule TamanduaServer.NDR.EncryptedTraffic do
   # Helper Functions
   # ============================================================================
 
+  defp reject_empty_values(map) when is_map(map) do
+    Map.reject(map, fn {_key, value} -> value in [nil, "", [], %{}] end)
+  end
+
   defp calculate_entropy(string) when is_binary(string) do
     len = String.length(string)
 

@@ -98,6 +98,29 @@ defmodule TamanduaServerWeb.Controllers.API.V1.DNSControllerTest do
       assert record["pid"] == 4242
     end
 
+    test "omits local DNS listener sockets without a useful remote peer", %{
+      conn: conn,
+      org: org,
+      agent: agent
+    } do
+      insert!(:network_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        payload: %{
+          "direction" => "listening",
+          "local_ip" => "0.0.0.0",
+          "local_port" => 5353,
+          "remote_ip" => "0.0.0.0",
+          "remote_port" => 0,
+          "protocol" => "UDP"
+        }
+      })
+
+      conn = get(conn, "/api/v1/dns/queries")
+
+      assert json_response(conn, 200)["data"] == []
+    end
+
     test "ignores future-dated DNS records", %{conn: conn, org: org, agent: agent} do
       insert!(:dns_event, %{
         agent_id: agent.id,
@@ -109,6 +132,35 @@ defmodule TamanduaServerWeb.Controllers.API.V1.DNSControllerTest do
       conn = get(conn, "/api/v1/dns/queries")
 
       assert json_response(conn, 200)["data"] == []
+    end
+  end
+
+  describe "GET /api/v1/dns/stats" do
+    test "does not count local DNS listener sockets as queries", %{conn: conn, org: org, agent: agent} do
+      insert!(:network_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        payload: %{
+          "direction" => "listening",
+          "local_ip" => "0.0.0.0",
+          "local_port" => 5353,
+          "remote_ip" => "0.0.0.0",
+          "remote_port" => 0,
+          "protocol" => "UDP"
+        }
+      })
+
+      insert!(:dns_event, %{
+        agent_id: agent.id,
+        organization_id: org.id,
+        payload: %{"query" => "visible.example", "query_type" => "A"}
+      })
+
+      conn = get(conn, "/api/v1/dns/stats")
+      stats = json_response(conn, 200)["data"]
+
+      assert stats["total_queries_today"] == 1
+      assert stats["unique_domains"] == 1
     end
   end
 

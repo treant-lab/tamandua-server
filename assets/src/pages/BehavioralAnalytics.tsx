@@ -1657,11 +1657,11 @@ function InvestigationTab({ selectedEntity, anomalies, onEntitySelect }: Investi
 
           <div className="pt-4 space-y-2">
             <a
-              href={`/app/storyline/process/${id}/0`}
+              href={`/app/hunt?q=${encodeURIComponent(`entity_type:${type} entity_id:${id}`)}`}
               className="btn-sentinel btn-sentinel-primary w-full flex items-center justify-center gap-2"
             >
               <GitBranch className="h-4 w-4" />
-              View Storyline
+              Hunt Entity
             </a>
             <a
               href={`/app/timeline?entity=${type}:${id}`}

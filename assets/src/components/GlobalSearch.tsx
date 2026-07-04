@@ -32,6 +32,7 @@ import {
   Key,
   Lock,
   Zap,
+  Smartphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SharedProps } from '@/types'
@@ -57,6 +58,13 @@ interface QuickAction {
   icon: React.ComponentType<{ className?: string }>
   external?: boolean
   requireRole?: 'admin' | 'super_admin'
+}
+
+type SearchSource = 'Agents' | 'Alerts' | 'Events'
+
+interface SearchLiveDataResult {
+  results: SearchResult[]
+  failures: SearchSource[]
 }
 
 const quickActions: QuickAction[] = [
@@ -95,6 +103,7 @@ const searchablePages: QuickAction[] = [
   { id: 'ai-assistant', name: 'AI Assistant', href: '/app/ai-assistant', icon: Brain },
   { id: 'ai-siem', name: 'AI SIEM', href: '/app/ai-siem', icon: Brain },
   { id: 'ml', name: 'ML Dashboard', href: '/app/ml', icon: Brain },
+  { id: 'agent-ml-detections', name: 'Agent ML Detections', href: '/app/ml/detections', icon: AlertTriangle },
   { id: 'behavioral', name: 'Behavioral Analytics', href: '/app/behavioral', icon: Radar },
   { id: 'agentic-analyst', name: 'Agentic Analyst', href: '/app/analyst', icon: FileSearch },
   { id: 'investigations', name: 'Investigations', href: '/app/investigations', icon: ClipboardList },
@@ -122,6 +131,7 @@ const searchablePages: QuickAction[] = [
   { id: 'dns', name: 'DNS Monitoring', href: '/app/dns', icon: Globe },
   { id: 'dns-doh-dot', name: 'DoH / DoT DNS', href: '/app/dns?query_type=DOH', icon: Globe },
   { id: 'ndr', name: 'NDR', href: '/app/ndr', icon: Radar },
+  { id: 'mobile-security', name: 'Mobile Security', href: '/app/mobile', icon: Smartphone },
   { id: 'ndr-tls-sessions', name: 'TLS Sessions', href: '/app/ndr?tab=encrypted&section=tls', icon: Lock },
   { id: 'ndr-ja3', name: 'JA3 Fingerprints', href: '/app/ndr?tab=encrypted&section=ja3', icon: Key },
   { id: 'ndr-certificates', name: 'Certificate Analysis', href: '/app/ndr?tab=encrypted&section=certificates', icon: ShieldCheck },
@@ -178,7 +188,9 @@ function getCsrfToken(): string {
 }
 
 async function readJsonData(response: Response): Promise<any[]> {
-  if (!response.ok) return []
+  if (!response.ok) {
+    throw new Error(`Search request failed with HTTP ${response.status}`)
+  }
   const body = await response.json()
   return Array.isArray(body?.data) ? body.data : []
 }
@@ -194,9 +206,9 @@ function filterSearchablePages(userRole?: string, isSuperAdminProp?: boolean): Q
   })
 }
 
-async function searchLiveData(query: string, pages: QuickAction[]): Promise<SearchResult[]> {
+async function searchLiveData(query: string, pages: QuickAction[]): Promise<SearchLiveDataResult> {
   const trimmed = query.trim()
-  if (!trimmed) return []
+  if (!trimmed) return { results: [], failures: [] }
 
   const staticResults: SearchResult[] = pages
     .filter(page => {
@@ -239,6 +251,7 @@ async function searchLiveData(query: string, pages: QuickAction[]): Promise<Sear
   ])
 
   const results: SearchResult[] = []
+  const failures: SearchSource[] = []
 
   if (agentsResult.status === 'fulfilled') {
     agentsResult.value.forEach((agent: any) => {
@@ -252,6 +265,8 @@ async function searchLiveData(query: string, pages: QuickAction[]): Promise<Sear
         href: `/app/agents/${id}`,
       })
     })
+  } else {
+    failures.push('Agents')
   }
 
   if (alertsResult.status === 'fulfilled') {
@@ -266,6 +281,8 @@ async function searchLiveData(query: string, pages: QuickAction[]): Promise<Sear
         href: `/app/alerts/${id}`,
       })
     })
+  } else {
+    failures.push('Alerts')
   }
 
   if (eventsResult.status === 'fulfilled') {
@@ -280,9 +297,11 @@ async function searchLiveData(query: string, pages: QuickAction[]): Promise<Sear
         href: `/app/events?event_id=${encodeURIComponent(id)}`,
       })
     })
+  } else {
+    failures.push('Events')
   }
 
-  return [...staticResults, ...results].slice(0, 15)
+  return { results: [...staticResults, ...results].slice(0, 15), failures }
 }
 
 // Recent searches stored in localStorage
@@ -319,6 +338,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
   const [results, setResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+  const [sourceFailures, setSourceFailures] = useState<SearchSource[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [recentSearches, setRecentSearches] = useState<string[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
@@ -344,6 +364,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
       setResults([])
       setIsSearching(false)
       setSearchError(null)
+      setSourceFailures([])
       return
     }
 
@@ -351,15 +372,18 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
     const timeout = window.setTimeout(() => {
       setIsSearching(true)
       setSearchError(null)
+      setSourceFailures([])
       searchLiveData(trimmed, visibleSearchablePages)
-        .then((liveResults) => {
+        .then(({ results: liveResults, failures }) => {
           if (!controller.signal.aborted) {
             setResults(liveResults)
+            setSourceFailures(failures)
           }
         })
         .catch(() => {
           if (!controller.signal.aborted) {
             setResults([])
+            setSourceFailures([])
             setSearchError('Search is unavailable right now')
           }
         })
@@ -548,6 +572,18 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
               </div>
             ) : results.length > 0 ? (
               <div className="py-2">
+                {sourceFailures.length > 0 && (
+                  <div
+                    className="mx-4 my-2 rounded-md px-3 py-2 text-xs"
+                    style={{
+                      backgroundColor: 'color-mix(in srgb, var(--warn) 12%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--warn) 26%, transparent)',
+                      color: 'var(--fg-2)',
+                    }}
+                  >
+                    Partial results. {sourceFailures.join(', ')} search did not load cleanly.
+                  </div>
+                )}
                 {Object.entries(groupedResults).map(([type, items]) => {
                   const Icon = typeIcons[type]
                   return (
@@ -616,7 +652,11 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
                   {searchError || `No results found for "${query}"`}
                 </p>
                 <p className="text-xs mt-1" style={{ color: 'var(--subtle)' }}>
-                  {searchError ? 'Check your session and API availability' : 'Try adjusting your search terms'}
+                  {searchError
+                    ? 'Check your session and API availability'
+                    : sourceFailures.length > 0
+                      ? `${sourceFailures.join(', ')} search did not load cleanly`
+                      : 'Try adjusting your search terms'}
                 </p>
               </div>
             )

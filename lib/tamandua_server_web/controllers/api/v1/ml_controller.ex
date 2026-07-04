@@ -72,16 +72,16 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       {:error, _} -> nil
     end
 
-    status_code = if healthy, do: 200, else: 503
     models = normalize_model_inventory(model_info)
     ready = healthy and Enum.any?(models, & &1.trained)
 
     conn
-    |> put_status(status_code)
+    |> put_status(:ok)
     |> json(%{
       data: %{
         enabled: healthy,
         healthy: healthy,
+        degraded: not healthy,
         ready: ready,
         reason: ml_status_reason(healthy, ready, models),
         model_trained: Enum.any?(models, & &1.trained),

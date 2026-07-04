@@ -77,10 +77,17 @@ defmodule TamanduaServer.Settings do
       %{agent_heartbeat_interval: 30, telemetry_batch_size: 100, ...}
   """
   def get(category) when is_atom(category) do
+    ensure_table_available()
+    get_from_table_or_defaults(category)
+  end
+
+  defp get_from_table_or_defaults(category) do
     case :ets.lookup(@table, category) do
       [{^category, settings}] -> settings
       [] -> Map.get(@defaults, category, %{})
     end
+  rescue
+    ArgumentError -> Map.get(@defaults, category, %{})
   end
 
   @doc """
@@ -107,14 +114,27 @@ defmodule TamanduaServer.Settings do
       {:ok, %{agent_heartbeat_interval: 60, telemetry_batch_size: 100, ...}}
   """
   def update(category, updates) when is_atom(category) and is_map(updates) do
-    GenServer.call(__MODULE__, {:update, category, updates})
+    if ensure_table_available() and Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:update, category, updates})
+    else
+      normalized_updates = normalize_keys(updates)
+      updated = Map.merge(Map.get(@defaults, category, %{}), normalized_updates)
+      update_env(category, updated)
+      {:ok, updated}
+    end
   end
 
   @doc """
   Resets a category to its default settings.
   """
   def reset(category) when is_atom(category) do
-    GenServer.call(__MODULE__, {:reset, category})
+    if ensure_table_available() and Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:reset, category})
+    else
+      defaults = Map.get(@defaults, category, %{})
+      update_env(category, defaults)
+      {:ok, defaults}
+    end
   end
 
   @doc """
@@ -142,19 +162,7 @@ defmodule TamanduaServer.Settings do
 
   @impl true
   def init(_opts) do
-    # Create ETS table for settings
-    :ets.new(@table, [
-      :set,
-      :public,
-      :named_table,
-      read_concurrency: true,
-      write_concurrency: true
-    ])
-
-    # Load defaults
-    Enum.each(@defaults, fn {category, settings} ->
-      :ets.insert(@table, {category, settings})
-    end)
+    create_table_with_defaults()
 
     # Load from application environment if configured
     if @persist_to_env do
@@ -166,8 +174,15 @@ defmodule TamanduaServer.Settings do
   end
 
   @impl true
+  def handle_call(:ensure_table, _from, state) do
+    create_table_with_defaults()
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_call({:update, category, updates}, _from, state) do
-    current = get(category)
+    create_table_with_defaults()
+    current = get_from_table_or_defaults(category)
 
     # Convert string keys to atoms for consistency
     normalized_updates = normalize_keys(updates)
@@ -189,6 +204,7 @@ defmodule TamanduaServer.Settings do
 
   @impl true
   def handle_call({:reset, category}, _from, state) do
+    create_table_with_defaults()
     defaults = Map.get(@defaults, category, %{})
     :ets.insert(@table, {category, defaults})
 
@@ -226,6 +242,47 @@ defmodule TamanduaServer.Settings do
   defp normalize_value(value) when is_map(value), do: normalize_keys(value)
   defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
   defp normalize_value(value), do: value
+
+  defp ensure_table_available do
+    case :ets.info(@table) do
+      :undefined ->
+        case Process.whereis(__MODULE__) do
+          nil ->
+            false
+
+          _pid ->
+            GenServer.call(__MODULE__, :ensure_table)
+            true
+        end
+
+      _info ->
+        true
+    end
+  catch
+    :exit, _reason -> false
+  end
+
+  defp create_table_with_defaults do
+    try do
+      :ets.new(@table, [
+        :set,
+        :public,
+        :named_table,
+        read_concurrency: true,
+        write_concurrency: true
+      ])
+    rescue
+      ArgumentError -> :ok
+    end
+
+    Enum.each(@defaults, fn {category, settings} ->
+      if :ets.lookup(@table, category) == [] do
+        :ets.insert(@table, {category, settings})
+      end
+    end)
+
+    :ok
+  end
 
   defp load_from_env do
     config = Application.get_all_env(:tamandua_server)

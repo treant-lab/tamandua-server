@@ -97,7 +97,7 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
   end
 
   describe "pending_commands/1" do
-    test "returns pending commands ordered by priority and age" do
+    test "returns deliverable (pending + sent) commands ordered by priority and age" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
       TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
 
@@ -105,16 +105,17 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       {:ok, cmd1} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 1}, priority: 0)
       {:ok, cmd2} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 2}, priority: 10)
       {:ok, cmd3} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 3}, priority: 5)
+      {:ok, cmd4} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 4}, priority: 1)
 
-      # Mark one as sent
+      # Mark one as sent (may never have reached the agent), one as completed
       Repo.update!(AgentCommand.mark_sent(cmd1))
+      Repo.update!(AgentCommand.mark_completed(cmd4))
 
       pending = CommandManager.pending_commands(agent_id)
 
-      # Should only return pending commands, ordered by priority (desc)
-      assert length(pending) == 2
-      assert hd(pending).id == cmd2.id  # Priority 10 first
-      assert List.last(pending).id == cmd3.id  # Priority 5 second
+      # "sent" commands are included for redelivery on reconnect; terminal
+      # statuses are excluded. Ordered by priority (desc).
+      assert Enum.map(pending, & &1.id) == [cmd2.id, cmd3.id, cmd1.id]
     end
   end
 

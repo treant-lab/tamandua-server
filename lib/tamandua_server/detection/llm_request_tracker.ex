@@ -58,7 +58,7 @@ defmodule TamanduaServer.Detection.LLMRequestTracker do
     :ok
   """
   def track_request(agent_id, event) do
-    GenServer.call(__MODULE__, {:track_request, agent_id, event})
+    call_if_started({:track_request, agent_id, event}, :ok)
   end
 
   @doc """
@@ -70,21 +70,33 @@ defmodule TamanduaServer.Detection.LLMRequestTracker do
     - :limit - Maximum number of requests to return (default: 100)
   """
   def get_requests(agent_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:get_requests, agent_id, opts})
+    call_if_started({:get_requests, agent_id, opts}, [])
   end
 
   @doc """
   Get LLM requests made by a specific process.
   """
   def get_requests_for_process(agent_id, pid) do
-    GenServer.call(__MODULE__, {:get_requests_for_process, agent_id, pid})
+    call_if_started({:get_requests_for_process, agent_id, pid}, [])
   end
 
   @doc """
   Get recent requests within time window (default: 5 minutes).
   """
   def get_recent_requests(agent_id, window_seconds \\ 300) do
-    GenServer.call(__MODULE__, {:get_recent_requests, agent_id, window_seconds})
+    call_if_started({:get_recent_requests, agent_id, window_seconds}, [])
+  end
+
+  defp call_if_started(message, fallback) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        fallback
+
+      _pid ->
+        GenServer.call(__MODULE__, message)
+    end
+  catch
+    :exit, _ -> fallback
   end
 
   # Server callbacks

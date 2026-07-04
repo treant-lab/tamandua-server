@@ -31,9 +31,18 @@ defmodule TamanduaServer.Agents.AgentCommand do
     field :error, :string
     field :result, :map
     field :expires_at, :utc_datetime
+    field :dispatch_count, :integer, default: 0
+    field :last_dispatched_at, :utc_datetime
+    field :idempotency_key, :string
 
     timestamps(type: :utc_datetime)
   end
+
+  # Redelivery guardrails: a command is pushed at most @max_dispatch_attempts
+  # times, and never re-pushed within @redispatch_cooldown_seconds of the
+  # previous push (prevents tight redelivery loops across fast reconnects).
+  @max_dispatch_attempts 5
+  @redispatch_cooldown_seconds 30
 
   @valid_statuses ~w(pending sent acknowledged completed failed)
   @valid_command_types ~w(
@@ -72,23 +81,140 @@ defmodule TamanduaServer.Agents.AgentCommand do
       :completed_at,
       :error,
       :result,
-      :expires_at
+      :expires_at,
+      :idempotency_key
     ])
     |> validate_required([:agent_id, :command_type])
     |> validate_inclusion(:status, @valid_statuses)
     |> validate_inclusion(:command_type, @valid_command_types)
     |> validate_number(:priority, greater_than_or_equal_to: 0, less_than_or_equal_to: 10)
+    |> unique_constraint(:idempotency_key,
+      name: :agent_commands_agent_id_idempotency_key_index
+    )
   end
 
   @doc """
-  Get pending commands for an agent, ordered by priority (descending) and insertion time.
+  Creation changeset used by the worker's send_command path.
+
+  Deliberately more permissive than `changeset/2` (which enforces the
+  command-type allowlist) to preserve the behavior of the previous raw-struct
+  insert, while still supporting the optional idempotency key.
   """
-  def pending_for_agent(agent_id, limit \\ 10) do
+  def create_changeset(command, attrs) do
+    command
+    |> cast(attrs, [
+      :agent_id,
+      :command_type,
+      :command_params,
+      :status,
+      :priority,
+      :expires_at,
+      :idempotency_key
+    ])
+    |> validate_required([:agent_id, :command_type])
+    |> validate_inclusion(:status, @valid_statuses)
+    |> unique_constraint(:idempotency_key,
+      name: :agent_commands_agent_id_idempotency_key_index
+    )
+  end
+
+  @doc """
+  Insert a new command, honoring the optional idempotency key.
+
+  Returns:
+
+  - `{:ok, command}` when a new command row was inserted
+  - `{:existing, command}` when `attrs[:idempotency_key]` matched an existing
+    command for the same agent (UI/API retry) — no new row is inserted
+  - `{:error, changeset}` on validation or other insert errors
+  """
+  @spec insert_new(map()) ::
+          {:ok, %__MODULE__{}} | {:existing, %__MODULE__{}} | {:error, Ecto.Changeset.t()}
+  def insert_new(attrs) do
+    changeset = create_changeset(%__MODULE__{}, attrs)
+
+    case TamanduaServer.Repo.insert(changeset) do
+      {:ok, command} ->
+        {:ok, command}
+
+      {:error, %Ecto.Changeset{} = failed} ->
+        agent_id = Ecto.Changeset.get_field(failed, :agent_id)
+        key = Ecto.Changeset.get_field(failed, :idempotency_key)
+
+        if idempotency_conflict?(failed) and is_binary(key) do
+          case TamanduaServer.Repo.get_by(__MODULE__, agent_id: agent_id, idempotency_key: key) do
+            nil -> {:error, failed}
+            existing -> {:existing, existing}
+          end
+        else
+          {:error, failed}
+        end
+    end
+  end
+
+  defp idempotency_conflict?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:idempotency_key, {_msg, meta}} -> meta[:constraint] == :unique
+      _ -> false
+    end)
+  end
+
+  @doc """
+  Get deliverable commands for an agent, ordered by priority (descending) and
+  insertion time.
+
+  Includes both "pending" (never pushed) and "sent" (pushed but never
+  acknowledged) commands: a command marked "sent" right before the worker or
+  channel died was possibly never delivered, so it must be re-offered on
+  reconnect. Agent-side execution is idempotent by command id (replay guard),
+  which makes re-delivering "sent" commands safe. Redelivery loop guards
+  (attempt cap / cooldown) are applied by callers via `dispatch_decision/2`.
+  """
+  def pending_for_agent(agent_id, limit \\ 50) do
     from(c in __MODULE__,
-      where: c.agent_id == ^agent_id and c.status == "pending",
+      where: c.agent_id == ^agent_id and c.status in ["pending", "sent"],
       order_by: [desc: c.priority, asc: c.inserted_at],
       limit: ^limit
     )
+  end
+
+  @doc """
+  Decide whether a pending/sent command should be (re)dispatched.
+
+  Returns:
+
+  - `:dispatch` — push the command to the agent now
+  - `:skip_recently_dispatched` — pushed less than the cooldown ago; leave it
+    alone (the in-flight attempt may still be acknowledged)
+  - `{:fail, reason}` — the dispatch attempt cap was reached without a terminal
+    agent response; the command should be marked failed
+
+  ## Options
+
+  - `:max_attempts` (default #{@max_dispatch_attempts})
+  - `:cooldown_seconds` (default #{@redispatch_cooldown_seconds})
+  - `:now` — clock override for tests
+  """
+  @spec dispatch_decision(%__MODULE__{}, keyword()) ::
+          :dispatch | :skip_recently_dispatched | {:fail, String.t()}
+  def dispatch_decision(%__MODULE__{} = command, opts \\ []) do
+    max_attempts = Keyword.get(opts, :max_attempts, @max_dispatch_attempts)
+    cooldown = Keyword.get(opts, :cooldown_seconds, @redispatch_cooldown_seconds)
+    now = Keyword.get(opts, :now, utc_now_second())
+    attempts = command.dispatch_count || 0
+
+    cond do
+      attempts >= max_attempts ->
+        {:fail,
+         "Dispatch limit reached (#{attempts}/#{max_attempts} attempts without a terminal agent response)"}
+
+      match?(%DateTime{}, command.last_dispatched_at) and
+          DateTime.diff(now, command.last_dispatched_at, :second) < cooldown ->
+        :skip_recently_dispatched
+
+      true ->
+        :dispatch
+    end
   end
 
   @doc """
@@ -132,6 +258,24 @@ defmodule TamanduaServer.Agents.AgentCommand do
   """
   def mark_sent(command) do
     change(command, status: "sent", sent_at: utc_now_second())
+  end
+
+  @doc """
+  Mark a command as dispatched towards the agent.
+
+  Like `mark_sent/1`, but also increments `dispatch_count` and stamps
+  `last_dispatched_at` so redelivery guards (`dispatch_decision/2`) can cap
+  attempts and enforce a cooldown. `sent_at` keeps the first dispatch time.
+  """
+  def mark_dispatched(command) do
+    now = utc_now_second()
+
+    change(command,
+      status: "sent",
+      sent_at: command.sent_at || now,
+      dispatch_count: (command.dispatch_count || 0) + 1,
+      last_dispatched_at: now
+    )
   end
 
   @doc """

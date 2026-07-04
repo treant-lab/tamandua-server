@@ -7,7 +7,7 @@ defmodule TamanduaServerWeb.GraphQL.UserSocket do
   - Token in query string: ?token=jwt_or_session_token
   """
 
-  use Phoenix.Socket
+  use Phoenix.Socket, log: false
   use Absinthe.Phoenix.Socket, schema: TamanduaServerWeb.GraphQL.Schema
 
   alias TamanduaServer.Accounts

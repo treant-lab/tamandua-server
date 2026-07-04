@@ -19,13 +19,13 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
   @impl true
   def mount(params, _session, socket) do
     agent_id = params["agent_id"]
-    agents = Agents.list_agents()
+    agents = safe_list_agents()
 
     # Use provided agent_id or default to first agent
     selected_agent_id = if agent_id do
       agent_id
     else
-      if length(agents) > 0, do: hd(agents).agent_id, else: nil
+      if length(agents) > 0, do: agent_id(hd(agents)), else: nil
     end
 
     if connected?(socket) do
@@ -35,11 +35,7 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
       Process.send_after(self(), :refresh, @refresh_interval)
     end
 
-    requests = if selected_agent_id do
-      LLMRequestTracker.get_requests(selected_agent_id, limit: 50)
-    else
-      []
-    end
+    requests = safe_get_requests(selected_agent_id, limit: 50)
 
     {:ok, assign(socket,
       agent_id: selected_agent_id,
@@ -60,7 +56,7 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
       PubSub.subscribe(TamanduaServer.PubSub, "llm_request:#{agent_id}")
     end
 
-    requests = LLMRequestTracker.get_requests(agent_id, limit: 50)
+    requests = safe_get_requests(agent_id, limit: 50)
     {:noreply, assign(socket, agent_id: agent_id, requests: requests)}
   end
 
@@ -73,12 +69,8 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
         {:noreply, put_flash(socket, :error, "Unknown provider filter")}
 
       filter ->
-        requests = if socket.assigns.agent_id do
-          opts = if filter, do: [provider: filter, limit: 50], else: [limit: 50]
-          LLMRequestTracker.get_requests(socket.assigns.agent_id, opts)
-        else
-          []
-        end
+        opts = if filter, do: [provider: filter, limit: 50], else: [limit: 50]
+        requests = safe_get_requests(socket.assigns.agent_id, opts)
 
         {:noreply, assign(socket, filter_provider: filter, requests: requests)}
     end
@@ -104,11 +96,7 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
   end
 
   def handle_event("manual_refresh", _, socket) do
-    requests = if socket.assigns.agent_id do
-      LLMRequestTracker.get_requests(socket.assigns.agent_id, limit: 50)
-    else
-      []
-    end
+    requests = safe_get_requests(socket.assigns.agent_id, limit: 50)
 
     {:noreply, assign(socket, requests: requests)}
   end
@@ -122,7 +110,7 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
     # Subscribe to new agent
     PubSub.subscribe(TamanduaServer.PubSub, "llm_request:#{agent_id}")
 
-    requests = LLMRequestTracker.get_requests(agent_id, limit: 50)
+    requests = safe_get_requests(agent_id, limit: 50)
 
     {:noreply, assign(socket, agent_id: agent_id, requests: requests, selected_request: nil)}
   end
@@ -136,7 +124,7 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
 
   def handle_info(:refresh, socket) do
     if socket.assigns.auto_refresh && socket.assigns.agent_id do
-      requests = LLMRequestTracker.get_requests(socket.assigns.agent_id, limit: 50)
+      requests = safe_get_requests(socket.assigns.agent_id, limit: 50)
       Process.send_after(self(), :refresh, @refresh_interval)
       {:noreply, assign(socket, requests: requests)}
     else
@@ -198,10 +186,10 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
             <% else %>
               <%= for agent <- @agents do %>
                 <option
-                  value={agent.agent_id}
-                  selected={agent.agent_id == @agent_id}
+                  value={agent_id(agent)}
+                  selected={agent_id(agent) == @agent_id}
                 >
-                  <%= agent.hostname || agent.agent_id %>
+                  <%= agent_name(agent) %>
                 </option>
               <% end %>
             <% end %>
@@ -277,6 +265,37 @@ defmodule TamanduaServerWeb.LLMRequestsLive do
   defp parse_provider_filter("huggingface"), do: :huggingface
   defp parse_provider_filter("other"), do: :other
   defp parse_provider_filter(_), do: :unknown
+
+  defp safe_list_agents do
+    Agents.list_agents()
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp safe_get_requests(nil, _opts), do: []
+  defp safe_get_requests("", _opts), do: []
+
+  defp safe_get_requests(agent_id, opts) do
+    LLMRequestTracker.get_requests(agent_id, opts)
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp agent_id(agent) when is_map(agent) do
+    to_string(Map.get(agent, :agent_id) || Map.get(agent, "agent_id") || Map.get(agent, :id) || Map.get(agent, "id") || "")
+  end
+
+  defp agent_id(_agent), do: ""
+
+  defp agent_name(agent) when is_map(agent) do
+    Map.get(agent, :hostname) || Map.get(agent, "hostname") || Map.get(agent, :name) || Map.get(agent, "name") || agent_id(agent)
+  end
+
+  defp agent_name(_agent), do: "Unknown agent"
 
   defp render_summary_stats(assigns) do
     provider_counts = Enum.reduce(assigns.requests, %{}, fn request, acc ->

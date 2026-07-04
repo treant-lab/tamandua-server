@@ -54,7 +54,7 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
     :ok
   """
   def track_process(agent_id, event) do
-    GenServer.call(__MODULE__, {:track_process, agent_id, event})
+    call_if_started({:track_process, agent_id, event}, :ok)
   end
 
   @doc """
@@ -68,7 +68,7 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
     :ok
   """
   def process_terminated(agent_id, pid) do
-    GenServer.call(__MODULE__, {:process_terminated, agent_id, pid})
+    call_if_started({:process_terminated, agent_id, pid}, :ok)
   end
 
   @doc """
@@ -81,7 +81,20 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
     List of process context maps
   """
   def get_ml_processes(agent_id) do
-    GenServer.call(__MODULE__, {:get_ml_processes, agent_id})
+    if :ets.whereis(:ml_process_tracker) == :undefined do
+      call_if_started({:get_ml_processes, agent_id}, [])
+    else
+      :ets.foldl(
+        fn
+          {{^agent_id, _pid}, context}, acc -> [context | acc]
+          _, acc -> acc
+        end,
+        [],
+        :ml_process_tracker
+      )
+    end
+  catch
+    :exit, _ -> []
   end
 
   @doc """
@@ -95,7 +108,16 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
     Process context map or nil if not found
   """
   def get_process_context(agent_id, pid) do
-    GenServer.call(__MODULE__, {:get_process_context, agent_id, pid})
+    if :ets.whereis(:ml_process_tracker) == :undefined do
+      call_if_started({:get_process_context, agent_id, pid}, nil)
+    else
+      case :ets.lookup(:ml_process_tracker, {agent_id, pid}) do
+        [{{^agent_id, ^pid}, context}] -> context
+        [] -> nil
+      end
+    end
+  catch
+    :exit, _ -> nil
   end
 
   @doc """
@@ -110,7 +132,19 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
     :ok
   """
   def add_model_file(agent_id, pid, file_path) do
-    GenServer.call(__MODULE__, {:add_model_file, agent_id, pid, file_path})
+    call_if_started({:add_model_file, agent_id, pid, file_path}, :ok)
+  end
+
+  defp call_if_started(message, fallback) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        fallback
+
+      _pid ->
+        GenServer.call(__MODULE__, message)
+    end
+  catch
+    :exit, _ -> fallback
   end
 
   # Server callbacks

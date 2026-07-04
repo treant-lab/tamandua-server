@@ -3,10 +3,25 @@ defmodule TamanduaServer.Detection.MLProcessTrackerTest do
 
   alias TamanduaServer.Detection.MLProcessTracker
 
-  setup do
-    # Start a fresh MLProcessTracker for each test
-    {:ok, pid} = start_supervised(MLProcessTracker)
-    {:ok, tracker: pid}
+  setup context do
+    if context[:without_tracker] do
+      :ok
+    else
+      # Start a fresh MLProcessTracker for each test.
+      {:ok, pid} = start_supervised(MLProcessTracker)
+      {:ok, tracker: pid}
+    end
+  end
+
+  describe "when the singleton is unavailable" do
+    @tag :without_tracker
+    test "client API returns safe fallbacks instead of exiting" do
+      assert :ok = MLProcessTracker.track_process("agent-without-tracker", %{})
+      assert :ok = MLProcessTracker.process_terminated("agent-without-tracker", 1234)
+      assert :ok = MLProcessTracker.add_model_file("agent-without-tracker", 1234, "model.gguf")
+      assert [] = MLProcessTracker.get_ml_processes("agent-without-tracker")
+      assert nil == MLProcessTracker.get_process_context("agent-without-tracker", 1234)
+    end
   end
 
   describe "track_process/2" do

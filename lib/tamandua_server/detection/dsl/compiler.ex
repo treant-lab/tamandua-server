@@ -445,12 +445,30 @@ defmodule TamanduaServer.Detection.DSL.Compiler do
     resolve_field_ref(ref, event, captures)
   end
 
+  # DSL `ml("model_name", field.ref)` — score the field value with the ML
+  # service and yield a numeric threat score for use in comparisons.
+  #
+  # The ML service exposes a single POST /predict endpoint (no per-model
+  # routing), so the requested model name is forwarded as pass-through
+  # request metadata rather than selecting an endpoint. ML.Client.predict/1
+  # takes a sample map and returns {:ok, prediction_map}; the map is reduced
+  # to a score with the same semantics as the engine's
+  # calculate_ml_threat_score (fail-closed on untrained model / unknown
+  # verdict). Any error (circuit open, HTTP failure) resolves to 0.0.
   defp resolve_value(%{type: :ml_call, model: model, field: field}, event, captures) do
     field_val = resolve_field_ref(field, event, captures)
+    content = ml_call_content(field_val)
 
-    # Call ML service
-    case TamanduaServer.Detection.ML.Client.predict(model, field_val) do
-      {:ok, score} -> score
+    sample = %{
+      sha256: :crypto.hash(:sha256, content),
+      content: content,
+      file_type: "dsl_field",
+      entropy: 0.0,
+      metadata: %{"model" => model, "source" => "detection_dsl"}
+    }
+
+    case TamanduaServer.Detection.ML.Client.predict(sample) do
+      {:ok, prediction} -> ml_prediction_score(prediction)
       _ -> 0.0
     end
   rescue
@@ -458,6 +476,28 @@ defmodule TamanduaServer.Detection.DSL.Compiler do
   end
 
   defp resolve_value(value, _event, _captures), do: value
+
+  defp ml_call_content(value) when is_binary(value), do: value
+  defp ml_call_content(nil), do: <<>>
+  defp ml_call_content(value) when is_number(value) or is_atom(value), do: to_string(value)
+  defp ml_call_content(value), do: inspect(value)
+
+  # Mirrors EngineWorker.calculate_ml_threat_score: an explicitly untrained
+  # model or an unknown/unrecognized verdict contributes no ML signal (0.0).
+  defp ml_prediction_score(prediction) do
+    if prediction[:model_trained] == false do
+      0.0
+    else
+      confidence = prediction[:confidence] || 0.0
+
+      case prediction[:prediction] do
+        "malicious" -> confidence
+        "suspicious" -> confidence * 0.7
+        "benign" -> 1.0 - confidence
+        _ -> 0.0
+      end
+    end
+  end
 
   defp compare(left, "=", right), do: normalize_value(left) == normalize_value(right)
   defp compare(left, "!=", right), do: normalize_value(left) != normalize_value(right)

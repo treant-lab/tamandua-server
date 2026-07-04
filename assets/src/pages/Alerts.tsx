@@ -119,6 +119,25 @@ function safeStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(item => String(item)).filter(Boolean) : []
 }
 
+function readAlertUrlParam(key: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get(key) || ''
+}
+
+function replaceAlertUrlState(params: Record<string, string>) {
+  if (typeof window === 'undefined') return
+
+  const url = new URL(window.location.href)
+  Object.entries(params).forEach(([key, value]) => {
+    if (!value || value === 'all') {
+      url.searchParams.delete(key)
+    } else {
+      url.searchParams.set(key, value)
+    }
+  })
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
 // ===========================================================================
 // Main Component
 // ===========================================================================
@@ -134,6 +153,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
   const [threatScoreMin, setThreatScoreMin] = useState<string>('')
   const [threatScoreMax, setThreatScoreMax] = useState<string>('')
   const [mitreTechniques, setMitreTechniques] = useState<string[]>([])
+  const [sourceFilter, setSourceFilter] = useState<string>(readAlertUrlParam('source'))
 
   // Selection state
   const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set())
@@ -326,6 +346,8 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
         if (!hasMatch) return false
       }
 
+      if (sourceFilter === 'ml' && !isMlAlert(alert)) return false
+
       return true
     })
 
@@ -349,12 +371,16 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
     return result
   }, [effectiveAlerts, severityFilter, statusFilter, searchQuery, dateFrom, dateTo,
-      threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, sortBy, sortOrder])
+      threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, sourceFilter, sortBy, sortOrder])
 
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1)
-  }, [severityFilter, statusFilter, searchQuery, dateFrom, dateTo, threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter])
+  }, [severityFilter, statusFilter, searchQuery, dateFrom, dateTo, threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, sourceFilter])
+
+  useEffect(() => {
+    replaceAlertUrlState({ source: sourceFilter })
+  }, [sourceFilter])
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / pageSize))
@@ -573,6 +599,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     setThreatScoreMin('')
     setThreatScoreMax('')
     setMitreTechniques([])
+    setSourceFilter('')
   }
 
   // ===========================================================================
@@ -618,6 +645,9 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
               <StatBadge label="Open" value={stats.open} severity="critical" />
               <StatBadge label="Critical" value={stats.critical} severity="critical" />
               <StatBadge label="High" value={stats.high} severity="high" />
+              {sourceFilter === 'ml' && (
+                <StatBadge label="Agent ML" value={stats.filtered} severity="info" />
+              )}
               {stats.filtered !== stats.total && (
                 <StatBadge label="Filtered" value={stats.filtered} severity="info" />
               )}
@@ -700,7 +730,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
           showAdvanced={showAdvancedFilters}
           setShowAdvanced={setShowAdvancedFilters}
           onClear={clearFilters}
-          hasFilters={Boolean(searchQuery || severityFilter.length || statusFilter.length || dateFrom || dateTo)}
+          hasFilters={Boolean(searchQuery || severityFilter.length || statusFilter.length || dateFrom || dateTo || sourceFilter)}
         />
 
         {/* Advanced Filters */}

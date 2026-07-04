@@ -66,6 +66,10 @@ defmodule TamanduaServer.Mobile.AppGuardBuildManifest do
     from manifest in query, where: manifest.app_id == ^app_id
   end
 
+  def by_build_id(query \\ __MODULE__, build_id) do
+    from manifest in query, where: manifest.build_id == ^build_id
+  end
+
   def latest_first(query \\ __MODULE__) do
     from manifest in query, order_by: [desc: manifest.manifest_created_at]
   end

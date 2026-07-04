@@ -35,6 +35,10 @@ import {
   Radio,
   Clipboard,
   Terminal as TerminalIcon,
+  Smartphone,
+  Package,
+  Lock,
+  MapPin,
 } from 'lucide-react'
 import { cn, formatDate, formatRelativeTime, safeCapitalize, severityColor } from '@/lib/utils'
 import { useAgentStatus, useEventStream, getConnectionStatusColor, getConnectionStatusText } from '@/hooks/useSocket'
@@ -140,6 +144,31 @@ interface CliTokenPayload {
   expires_at: string | null
   expires_in_seconds: number
   command: string
+}
+
+interface MobileOverview {
+  agent_id: string
+  mobile: boolean
+  linked: boolean
+  device: Record<string, any> | null
+  posture: Record<string, any> | null
+  compliance: Record<string, any> | null
+  app_inventory: {
+    apps: Array<Record<string, any>>
+    total: number
+    high_risk?: number
+    sideloaded?: number
+  }
+  app_guard: {
+    events: Array<Record<string, any>>
+    total_recent_events: number
+    protected_apps?: string[]
+  }
+  commands: Array<{
+    id: string
+    label: string
+    destructive?: boolean
+  }>
 }
 
 // ---------------------------------------------------------------------------
@@ -338,18 +367,20 @@ function CollectorStatusBadge({ status }: { status: Collector['status'] }) {
 // Quick action button
 // ---------------------------------------------------------------------------
 
-function QuickAction({ label, icon: Icon, color, onClick, loading, disabled }: {
+function QuickAction({ label, icon: Icon, color, onClick, loading, disabled, title }: {
   label: string
   icon: React.ComponentType<{ className?: string }>
   color: string
   onClick: () => void
   loading?: boolean
   disabled?: boolean
+  title?: string
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled || loading}
+      title={title}
       className={cn(
         'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors',
         disabled || loading
@@ -504,9 +535,18 @@ export default function AgentDetail({
     (agent as Agent & { platformCapabilities?: PlatformCapability[]; platform_capabilities?: PlatformCapability[] }).platformCapabilities ||
       (agent as Agent & { platform_capabilities?: PlatformCapability[] }).platform_capabilities
   )
-  const platformCapabilities = reportedPlatformCapabilities.length > 0
+  const platformCapabilities = shouldUseMobileFallbackCapabilities(agent.os_type, reportedPlatformCapabilities)
+    ? fallbackPlatformCapabilities(agent.os_type)
+    : reportedPlatformCapabilities.length > 0
     ? reportedPlatformCapabilities
     : fallbackPlatformCapabilities(agent.os_type)
+  const mobileAgent = isMobilePlatform(agent.os_type)
+  const supportsLiveResponse = capabilityAvailable(platformCapabilities, 'live_response')
+  const supportsNetworkIsolation = capabilityAvailable(platformCapabilities, 'network_isolation')
+  const supportsHostResponse = !mobileAgent && supportsLiveResponse
+  const unsupportedMobileActionTitle = mobileAgent
+    ? 'This endpoint reports mobile posture/App Guard telemetry; host live response is not available for mobile yet.'
+    : undefined
   const { connectionState: agentConnState, status: liveStatus } = useAgentStatus(agent.id)
   const {
     connectionState: eventConnState,
@@ -534,6 +574,9 @@ export default function AgentDetail({
   const [dataSourceHealthError, setDataSourceHealthError] = useState<string | null>(null)
   const [cliToken, setCliToken] = useState<CliTokenPayload | null>(null)
   const [cliTokenLoading, setCliTokenLoading] = useState(false)
+  const [mobileOverview, setMobileOverview] = useState<MobileOverview | null>(null)
+  const [mobileOverviewLoading, setMobileOverviewLoading] = useState(false)
+  const [mobileCommandLoading, setMobileCommandLoading] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -583,6 +626,27 @@ export default function AgentDetail({
   useEffect(() => {
     loadDataSourceHealth()
   }, [loadDataSourceHealth])
+
+  const loadMobileOverview = useCallback(async () => {
+    if (!mobileAgent) {
+      setMobileOverview(null)
+      return
+    }
+
+    setMobileOverviewLoading(true)
+    try {
+      const response = await axios.get(`/api/v1/mobile/agents/${agent.id}/overview`)
+      setMobileOverview(response.data?.data || null)
+    } catch {
+      setMobileOverview(null)
+    } finally {
+      setMobileOverviewLoading(false)
+    }
+  }, [agent.id, mobileAgent])
+
+  useEffect(() => {
+    loadMobileOverview()
+  }, [loadMobileOverview])
 
   const handleProfileChange = async (profile: string) => {
     setSavingProfile(true)
@@ -662,6 +726,10 @@ export default function AgentDetail({
   }, [agent.id])
 
   const handleIsolate = () => {
+    if (!supportsNetworkIsolation) {
+      toast.error('Network isolation is not available for this endpoint platform')
+      return
+    }
     setShowConfirm({
       title: 'Isolate Host',
       message: `This will isolate "${agent.hostname}" from the network. The agent will only be able to communicate with the management server. Are you sure?`,
@@ -673,14 +741,26 @@ export default function AgentDetail({
   }
 
   const handleUnisolate = () => {
+    if (!supportsNetworkIsolation) {
+      toast.error('Network isolation is not available for this endpoint platform')
+      return
+    }
     executeAction(`/api/v1/agents/${agent.id}/unisolate`, {}, 'unisolate')
   }
 
   const handleScan = () => {
+    if (!supportsHostResponse) {
+      toast.error('Host scan response is not available for this endpoint platform')
+      return
+    }
     executeAction('/api/v1/response/scan', { path: '/', recursive: true, max_depth: 5 }, 'scan')
   }
 
   const handleRestartAgent = () => {
+    if (!supportsHostResponse) {
+      toast.error('Agent restart is not available for this endpoint platform')
+      return
+    }
     setShowConfirm({
       title: 'Restart Agent',
       message: `This will restart the Tamandua agent on "${agent.hostname}". There will be a brief gap in monitoring. Are you sure?`,
@@ -692,10 +772,18 @@ export default function AgentDetail({
   }
 
   const handleCollectForensics = () => {
+    if (!supportsHostResponse) {
+      toast.error('Forensics collection is not available for this endpoint platform')
+      return
+    }
     executeAction('/api/v1/response/collect', { path: '/', type: 'memory' }, 'forensics')
   }
 
   const handleGenerateCliToken = async () => {
+    if (!supportsLiveResponse) {
+      toast.error('Live response shell is not available for this endpoint platform')
+      return
+    }
     setCliTokenLoading(true)
     try {
       const response = await axios.post(`/api/v1/live-response/${agent.id}/cli-token`, {
@@ -711,6 +799,29 @@ export default function AgentDetail({
       toast.error(message)
     } finally {
       setCliTokenLoading(false)
+    }
+  }
+
+  const handleMobileCommand = async (command: string) => {
+    const deviceId = mobileOverview?.device?.id
+    if (!deviceId) {
+      toast.error('Mobile device link is not available for this endpoint')
+      return
+    }
+
+    setMobileCommandLoading(command)
+    try {
+      await axios.post(`/api/v1/mobile/devices/${deviceId}/commands/${command}`, {})
+      toast.success(`Mobile ${command} command queued`)
+      loadMobileOverview()
+    } catch (error: unknown) {
+      const message =
+        (error as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error ||
+        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+        `Failed to send mobile ${command} command`
+      toast.error(message)
+    } finally {
+      setMobileCommandLoading(null)
     }
   }
 
@@ -888,6 +999,16 @@ export default function AgentDetail({
         />
 
         <PlatformCapabilitiesPanel capabilities={platformCapabilities} />
+
+        {(mobileAgent || mobileOverview?.mobile) && (
+          <MobileEndpointPanel
+            overview={mobileOverview}
+            loading={mobileOverviewLoading}
+            commandLoading={mobileCommandLoading}
+            onCommand={handleMobileCommand}
+            onRefresh={loadMobileOverview}
+          />
+        )}
 
         {/* Performance Profile */}
         <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -1090,7 +1211,8 @@ export default function AgentDetail({
                   color="bg-red-600/20 text-red-400 hover:bg-red-600/30 border border-red-500/30"
                   onClick={handleIsolate}
                   loading={executingAction === 'isolate'}
-                  disabled={!!executingAction}
+                  disabled={!!executingAction || !supportsNetworkIsolation}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Remove Isolation"
@@ -1098,7 +1220,8 @@ export default function AgentDetail({
                   color="bg-green-600/20 text-green-400 hover:bg-green-600/30 border border-green-500/30"
                   onClick={handleUnisolate}
                   loading={executingAction === 'unisolate'}
-                  disabled={!!executingAction}
+                  disabled={!!executingAction || !supportsNetworkIsolation}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Full Scan"
@@ -1106,7 +1229,8 @@ export default function AgentDetail({
                   color="bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 border border-blue-500/30"
                   onClick={handleScan}
                   loading={executingAction === 'scan'}
-                  disabled={!!executingAction}
+                  disabled={!!executingAction || !supportsHostResponse}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Restart Agent"
@@ -1114,7 +1238,8 @@ export default function AgentDetail({
                   color="bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/30 border border-yellow-500/30"
                   onClick={handleRestartAgent}
                   loading={executingAction === 'restart'}
-                  disabled={!!executingAction}
+                  disabled={!!executingAction || !supportsHostResponse}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Collect Forensics"
@@ -1122,7 +1247,8 @@ export default function AgentDetail({
                   color="bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 border border-purple-500/30"
                   onClick={handleCollectForensics}
                   loading={executingAction === 'forensics'}
-                  disabled={!!executingAction}
+                  disabled={!!executingAction || !supportsHostResponse}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Connect via CLI"
@@ -1130,7 +1256,8 @@ export default function AgentDetail({
                   color="bg-cyan-600/20 text-cyan-300 hover:bg-cyan-600/30 border border-cyan-500/30"
                   onClick={handleGenerateCliToken}
                   loading={cliTokenLoading}
-                  disabled={cliTokenLoading}
+                  disabled={cliTokenLoading || !supportsLiveResponse}
+                  title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
                   label="Response Console"
@@ -1380,6 +1507,185 @@ export default function AgentDetail({
 }
 
 // ---------------------------------------------------------------------------
+// Mobile endpoint panel
+// ---------------------------------------------------------------------------
+
+function MobileEndpointPanel({
+  overview,
+  loading,
+  commandLoading,
+  onCommand,
+  onRefresh,
+}: {
+  overview: MobileOverview | null
+  loading: boolean
+  commandLoading: string | null
+  onCommand: (command: string) => void
+  onRefresh: () => void
+}) {
+  const linked = !!overview?.linked && !!overview.device
+  const posture = overview?.posture || {}
+  const apps = overview?.app_inventory?.apps || []
+  const appGuardEvents = overview?.app_guard?.events || []
+
+  return (
+    <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div>
+          <h2 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+            <Smartphone className="h-5 w-5" /> Mobile Endpoint
+          </h2>
+          <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
+            Mobile posture, app inventory, App Guard signals, and MDM-safe commands.
+          </p>
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border disabled:opacity-50 hover:bg-[var(--surface-2)]"
+          style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+        >
+          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+          Refresh
+        </button>
+      </div>
+
+      {loading && !overview ? (
+        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--muted)' }}>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading mobile endpoint data...
+        </div>
+      ) : !linked ? (
+        <div className="rounded-lg border p-4 text-sm" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' }}>
+          Mobile platform detected, but no mobile device record is linked to this agent yet.
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <MobileMetric label="Risk" value={String(posture.risk_score ?? 0)} tone={Number(posture.risk_score || 0) >= 70 ? 'high' : 'ok'} />
+            <MobileMetric label="MDM" value={overview.device?.mdm?.provider || overview.device?.mdm_provider || 'none'} />
+            <MobileMetric label="Apps" value={String(overview.app_inventory?.total ?? apps.length)} />
+            <MobileMetric label="App Guard" value={String(overview.app_guard?.total_recent_events ?? appGuardEvents.length)} />
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+              <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+                <Shield className="h-4 w-4" /> Posture
+              </h3>
+              <div className="space-y-2 text-sm">
+                <MobileFact label="Compromised" value={posture.jailbroken_or_rooted ? 'Yes' : 'No'} danger={!!posture.jailbroken_or_rooted} />
+                <MobileFact label="Passcode" value={formatMobileBoolean(posture.passcode_enabled)} danger={posture.passcode_enabled === false} />
+                <MobileFact label="Encryption" value={formatMobileBoolean(posture.encryption_enabled)} danger={posture.encryption_enabled === false} />
+                <MobileFact label="Developer mode" value={formatMobileBoolean(posture.developer_mode_enabled)} danger={posture.developer_mode_enabled === true} />
+                <MobileFact label="Compliance" value={overview.compliance?.local_compliant === false ? 'Needs review' : 'Local checks pass'} danger={overview.compliance?.local_compliant === false} />
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+              <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+                <Package className="h-4 w-4" /> App Inventory
+              </h3>
+              {apps.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--muted)' }}>No app inventory reported yet</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                  {apps.slice(0, 8).map(app => (
+                    <div key={String(app.id || app.bundle_id)} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate" style={{ color: 'var(--fg)' }}>{app.app_name || app.bundle_id}</span>
+                      <span className="text-xs shrink-0" style={{ color: app.risk_level === 'high' || app.risk_level === 'critical' ? 'var(--high)' : 'var(--muted)' }}>
+                        {app.risk_level || 'unknown'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+              <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+                <Activity className="h-4 w-4" /> App Guard
+              </h3>
+              {appGuardEvents.length === 0 ? (
+                <p className="text-sm" style={{ color: 'var(--muted)' }}>No App Guard events in the recent mobile window</p>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                  {appGuardEvents.slice(0, 8).map(event => (
+                    <div key={String(event.id)} className="text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate" style={{ color: 'var(--fg)' }}>{event.event_type || event.title}</span>
+                        <span className="text-xs shrink-0" style={{ color: severityTextColor(event.severity) }}>{event.severity || 'info'}</span>
+                      </div>
+                      <p className="text-xs truncate" style={{ color: 'var(--muted)' }}>{event.app_bundle_id || event.app_name || 'protected app'}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {(overview.commands || []).map(command => (
+              <button
+                key={command.id}
+                onClick={() => onCommand(command.id)}
+                disabled={!!commandLoading}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border disabled:opacity-50"
+                style={{
+                  borderColor: command.destructive ? 'rgba(239, 68, 68, 0.4)' : 'var(--border)',
+                  color: command.destructive ? 'var(--crit)' : 'var(--fg)',
+                  backgroundColor: 'var(--surface-alt)',
+                }}
+              >
+                {command.id === 'locate' ? <MapPin className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                {commandLoading === command.id ? 'Sending...' : command.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MobileMetric({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'high' }) {
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+      <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>{label}</p>
+      <p className="mt-1 text-lg font-semibold truncate" style={{ color: tone === 'high' ? 'var(--high)' : tone === 'ok' ? 'var(--emerald-400)' : 'var(--fg)' }}>{value}</p>
+    </div>
+  )
+}
+
+function MobileFact({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
+      <span className="font-medium" style={{ color: danger ? 'var(--high)' : 'var(--fg)' }}>{value}</span>
+    </div>
+  )
+}
+
+function formatMobileBoolean(value: unknown): string {
+  if (value === true) return 'Enabled'
+  if (value === false) return 'Disabled'
+  return 'Unknown'
+}
+
+function severityTextColor(severity: unknown): string {
+  switch (String(severity || '').toLowerCase()) {
+    case 'critical':
+      return 'var(--crit)'
+    case 'high':
+      return 'var(--high)'
+    case 'medium':
+      return 'var(--med)'
+    default:
+      return 'var(--muted)'
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data source health
 // ---------------------------------------------------------------------------
 
@@ -1592,19 +1898,49 @@ function capabilityMaturityStyle(maturity: CapabilityMaturity) {
   }
 }
 
+function isMobilePlatform(osType?: string): boolean {
+  const os = String(osType || '').toLowerCase()
+  return os.includes('android') || os.includes('ios') || os.includes('iphone') || os.includes('ipad')
+}
+
+function shouldUseMobileFallbackCapabilities(osType: string | undefined, capabilities: PlatformCapability[]): boolean {
+  if (!isMobilePlatform(osType)) return false
+  return !capabilities.some(capability =>
+    ['mobile_posture', 'app_inventory', 'app_guard', 'commercial_spyware'].includes(capability.id)
+  )
+}
+
+function capabilityAvailable(capabilities: PlatformCapability[], id: string): boolean {
+  const capability = capabilities.find(item => item.id === id)
+  if (!capability) return false
+  const status = String(capability.status || capability.maturity || '').toLowerCase()
+  return status !== 'unavailable'
+}
+
 function fallbackPlatformCapabilities(osType?: string): PlatformCapability[] {
   const os = String(osType || '').toLowerCase()
-  const platform = os.includes('windows') ? 'windows' : os.includes('linux') ? 'linux' : os.includes('mac') || os.includes('darwin') ? 'macos' : 'unknown'
+  const platform = os.includes('windows') ? 'windows' :
+    os.includes('linux') ? 'linux' :
+    os.includes('mac') || os.includes('darwin') ? 'macos' :
+    os.includes('android') ? 'android' :
+    os.includes('ios') || os.includes('iphone') || os.includes('ipad') ? 'ios' :
+    'unknown'
   const maturityByPlatform: Record<string, Record<string, CapabilityMaturity>> = {
     windows: { endpoint_telemetry: 'supported', kernel_sensor: 'lab', registry_telemetry: 'supported', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
     linux: { endpoint_telemetry: 'partial', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
     macos: { endpoint_telemetry: 'lab', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'lab', network_isolation: 'lab', prevention_policy: 'lab' },
+    android: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
+    ios: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
     unknown: { endpoint_telemetry: 'unavailable', kernel_sensor: 'unavailable', registry_telemetry: 'unavailable', live_response: 'unavailable', network_isolation: 'unavailable', prevention_policy: 'unavailable' },
   }
   const names: Record<string, string> = {
     endpoint_telemetry: 'Endpoint telemetry',
     kernel_sensor: 'Kernel / platform sensor',
     registry_telemetry: 'Registry telemetry',
+    mobile_posture: 'Mobile posture',
+    app_inventory: 'App inventory',
+    app_guard: 'App Guard / RASP',
+    commercial_spyware: 'Commercial spyware indicators',
     live_response: 'Live response shell',
     network_isolation: 'Network isolation',
     prevention_policy: 'Prevention policy enforcement',

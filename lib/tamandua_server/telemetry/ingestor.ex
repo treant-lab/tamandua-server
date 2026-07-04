@@ -308,7 +308,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
       driver_status = Map.get(payload, "driver_status") || Map.get(payload, :driver_status)
 
-      if driver_status && agent_id == "9390f816-2a0f-47c3-aa4b-2b244fa2d737" do
+      if driver_status && debug_agent?(agent_id) do
         Logger.info(
           "[DriverLab] health agent=#{agent_id} driver_status=#{inspect(driver_status)}"
         )
@@ -658,7 +658,9 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   @impl true
-  def handle_batch(:ml, messages, _batch_info, _context) do
+  def handle_batch(:ml, messages, _batch_info, context) do
+    analyze = ml_binary_analyzer(context)
+
     samples =
       messages
       |> Enum.flat_map(fn
@@ -667,18 +669,38 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       end)
 
     if length(samples) > 0 do
-      # Send to ML service for analysis
-      case Engine.analyze_binary(samples) do
-        {:ok, _results} ->
-          Logger.info("ML analysis completed for #{length(samples)} samples")
+      # Send each sample to the ML service individually.
+      # Engine.analyze_binary/1 expects a single sample map (it reads
+      # sample[:agent_id] for shard routing), so passing the whole batch
+      # would raise inside its rescue and silently drop every sample.
+      ok_count =
+        Enum.count(samples, fn sample ->
+          case analyze.(sample) do
+            {:ok, _result} ->
+              true
 
-        {:error, reason} ->
-          Logger.error("ML analysis failed: #{inspect(reason)}")
+            {:error, reason} ->
+              Logger.error("ML analysis failed: #{inspect(reason)}")
+              false
+          end
+        end)
+
+      if ok_count > 0 do
+        Logger.info("ML analysis completed for #{ok_count}/#{length(samples)} samples")
       end
     end
 
     messages
   end
+
+  # The analyzer is resolved from the Broadway context (a keyword list of the
+  # options passed to start_link/1) so tests can inject a capture function;
+  # production always falls back to Engine.analyze_binary/1.
+  defp ml_binary_analyzer(context) when is_list(context) do
+    Keyword.get(context, :ml_binary_analyzer, &Engine.analyze_binary/1)
+  end
+
+  defp ml_binary_analyzer(_context), do: &Engine.analyze_binary/1
 
   @impl true
   def handle_failed(messages, _context) do
@@ -1682,22 +1704,46 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp canonical_present?(_), do: true
 
   defp maybe_log_lab_persist_summary(events, count) do
-    debug_agent_id = System.get_env("TAMANDUA_DEBUG_AGENT_ID", "9390f816-2a0f-47c3-aa4b-2b244fa2d737")
+    case debug_agent_id() do
+      nil ->
+        :ok
 
-    lab_events =
-      Enum.filter(events, fn event ->
-        to_string(event["agent_id"] || event[:agent_id]) == debug_agent_id
-      end)
+      debug_agent_id ->
+        lab_events =
+          Enum.filter(events, fn event ->
+            to_string(event["agent_id"] || event[:agent_id]) == debug_agent_id
+          end)
 
-    if lab_events != [] do
-      type_counts =
-        lab_events
-        |> Enum.map(fn event -> event["event_type"] || event[:event_type] || "unknown" end)
-        |> Enum.frequencies()
+        if lab_events != [] do
+          type_counts =
+            lab_events
+            |> Enum.map(fn event -> event["event_type"] || event[:event_type] || "unknown" end)
+            |> Enum.frequencies()
 
-      Logger.info(
-        "[Ingestor] Persist summary agent=#{debug_agent_id} lab_events=#{length(lab_events)} batch_inserted=#{count} types=#{inspect(type_counts)}"
-      )
+          Logger.info(
+            "[Ingestor] Persist summary agent=#{debug_agent_id} lab_events=#{length(lab_events)} batch_inserted=#{count} types=#{inspect(type_counts)}"
+          )
+        end
+    end
+  end
+
+  # Resolves the agent id used to scope verbose lab/debug logging. Reads the
+  # TAMANDUA_DEBUG_AGENT_ID env var first, then the :debug_agent_id app config.
+  # Returns nil when unset (debug logging disabled); there is deliberately no
+  # baked-in fallback id. Public (@doc false) so tests can exercise it.
+  @doc false
+  def debug_agent_id do
+    normalize_debug_agent_id(System.get_env("TAMANDUA_DEBUG_AGENT_ID")) ||
+      normalize_debug_agent_id(Application.get_env(:tamandua_server, :debug_agent_id))
+  end
+
+  defp normalize_debug_agent_id(value) when is_binary(value) and value != "", do: value
+  defp normalize_debug_agent_id(_), do: nil
+
+  defp debug_agent?(agent_id) do
+    case debug_agent_id() do
+      nil -> false
+      debug_id -> to_string(agent_id) == debug_id
     end
   end
 

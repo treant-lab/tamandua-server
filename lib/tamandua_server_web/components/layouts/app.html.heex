@@ -15,22 +15,22 @@
     </div>
 
     <nav class="p-4 space-y-1">
-      <.link navigate={~p"/dashboard"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/dashboard"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">📊</span>
         <span>Dashboard</span>
       </.link>
 
-      <.link navigate={~p"/agents"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/agents"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">💻</span>
         <span>Agents</span>
       </.link>
 
-      <.link navigate={~p"/alerts"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/alerts"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">🚨</span>
         <span>Alerts</span>
       </.link>
 
-      <.link navigate={~p"/events"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/events"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">📝</span>
         <span>Events</span>
       </.link>
@@ -39,12 +39,12 @@
         Detection
       </div>
 
-      <.link navigate={~p"/hunting"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/hunt"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">🔍</span>
         <span>Threat Hunting</span>
       </.link>
 
-      <.link navigate={~p"/mitre"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/mitre"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">🛡️</span>
         <span>MITRE ATT&CK</span>
       </.link>
@@ -63,9 +63,9 @@
         Response
       </div>
 
-      <.link navigate={~p"/live/runtime/kill-switch"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
-        <span class="text-[var(--color-muted)]">🛑</span>
-        <span>Kill Switch</span>
+      <.link navigate={~p"/app/ai-security/attack-surface"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+        <span class="text-[var(--color-muted)]">🛡️</span>
+        <span>Attack Surface</span>
       </.link>
 
       <.link navigate={~p"/live/remediation/approvals"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
@@ -82,7 +82,7 @@
         System
       </div>
 
-      <.link navigate={~p"/settings"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
+      <.link navigate={~p"/app/settings"} class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-[var(--color-neutral-800)] transition-colors">
         <span class="text-[var(--color-muted)]">⚙️</span>
         <span>Settings</span>
       </.link>

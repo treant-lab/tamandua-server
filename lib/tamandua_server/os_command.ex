@@ -24,6 +24,7 @@ defmodule TamanduaServer.OSCommand do
   }
 
   @safe_path "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  @default_timeout 5_000
 
   @type command_result :: {binary(), non_neg_integer()} | {:error, term()}
 
@@ -40,7 +41,25 @@ defmodule TamanduaServer.OSCommand do
         |> Keyword.update(:env, [{"PATH", @safe_path}], &[{"PATH", @safe_path} | &1])
         |> Keyword.put_new(:stderr_to_stdout, true)
 
-      System.cmd(executable, args, opts)
+      run_with_timeout(executable, args, opts)
+    end
+  end
+
+  defp run_with_timeout(executable, args, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    task =
+      Task.async(fn ->
+        System.cmd(executable, args, opts)
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        Logger.warning("Allowed command timed out", executable: executable, timeout_ms: timeout)
+        {:error, :timeout}
     end
   end
 

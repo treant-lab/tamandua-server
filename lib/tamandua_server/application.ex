@@ -9,6 +9,27 @@ defmodule TamanduaServer.Application do
   - Detection engine
   - Cache
   - Background jobs (Oban)
+
+  ## Supervision layout (fault isolation)
+
+  CORE children (Repo, PubSub, Endpoint, registries, telemetry ingest /
+  Broadway, detection engine + workers, ML client, agent supervision, alert /
+  response pipeline) are direct children of the top-level `one_for_one`
+  supervisor (max_restarts: 50 / 60s), in their original start order.
+
+  PERIPHERAL children (external threat-intel feeds, cloud connectors,
+  integrations, blockchain attestation, analytics, MDR/XDR, deception,
+  compliance, ...) are grouped by domain into named supervisors under
+  `TamanduaServer.Supervisors.*`, each `one_for_one` with its OWN restart
+  budget (max_restarts: 10 / 60s). Each group supervisor is inserted at the
+  exact list position where its children previously sat, so the global
+  startup order is unchanged (each group's children start synchronously,
+  in order, before the next top-level child starts).
+
+  Containment semantics: a flapping peripheral child burns its group's
+  budget, not the shared one. If a group exceeds its budget and dies, the
+  top-level supervisor restarts that group — counting as ONE top-level
+  restart — instead of the whole application dying with it.
   """
 
   use Application
@@ -43,18 +64,28 @@ defmodule TamanduaServer.Application do
                [
                  fn ->
                    TamanduaServerWeb.Plugs.AdaptiveRateLimiter.ensure_table()
-
-                   # Periodic cleanup every 5 minutes
-                   spawn(fn ->
-                     Stream.interval(300_000)
-                     |> Stream.each(fn _ ->
-                       TamanduaServerWeb.Plugs.AdaptiveRateLimiter.cleanup()
-                     end)
-                     |> Stream.run()
-                   end)
                  end
                ]},
             restart: :temporary
+          },
+
+          # Periodic adaptive-rate-limiter cleanup every 5 minutes.
+          # Previously an unsupervised `spawn` inside the init task; now a
+          # supervised, permanent Task so a crash restarts the cleanup loop.
+          %{
+            id: :adaptive_rate_limiter_cleanup,
+            start:
+              {Task, :start_link,
+               [
+                 fn ->
+                   Stream.interval(300_000)
+                   |> Stream.each(fn _ ->
+                     TamanduaServerWeb.Plugs.AdaptiveRateLimiter.cleanup()
+                   end)
+                   |> Stream.run()
+                 end
+               ]},
+            restart: :permanent
           },
 
           # Start the Session Store (ETS tables for tokens)
@@ -95,16 +126,9 @@ defmodule TamanduaServer.Application do
           # (used by ClickHouse flush, remediation, etc.)
           {Task.Supervisor, name: TamanduaServer.TaskSupervisor},
 
-          # Start Solana Client for incident attestation (hackathon MVP)
-          # Submits tamper-evident attestations to Solana devnet
-          TamanduaServer.Solana.Client,
-
-          # Batches self-hosted instance attestations for relay publication
-          TamanduaServer.Solana.RelayBatch,
-
-          # Start Fleet Health Attestation (Proof of Health - hackathon)
-          # Publishes periodic aggregate fleet health proofs to Solana devnet
-          TamanduaServer.Solana.FleetHealthAttestation,
+          # PERIPHERAL GROUP: Solana attestation (Client, RelayBatch,
+          # FleetHealthAttestation) — isolated restart budget, same position/order
+          TamanduaServer.Supervisors.BlockchainSupervisor,
 
           # Start the legacy ETS Cache (backward compatibility)
           TamanduaServer.Cache,
@@ -145,14 +169,9 @@ defmodule TamanduaServer.Application do
           # Start Threat Intelligence service
           TamanduaServer.ThreatIntel,
 
-          # Start MISP Integration (bidirectional sync with MISP servers)
-          TamanduaServer.ThreatIntel.MISP,
-
-          # Start MISP Publisher (queued batch publishing, conflict resolution, IOC sharing)
-          TamanduaServer.ThreatIntel.MISPPublisher,
-
-          # Start IOC Scoring Service (age-based decay, source reputation)
-          TamanduaServer.ThreatIntel.IOCScoring,
+          # PERIPHERAL GROUP: MISP sync + IOC scoring (MISP, MISPPublisher,
+          # IOCScoring) — isolated restart budget, same position/order
+          TamanduaServer.Supervisors.ThreatIntelSyncSupervisor,
 
           # Start RBAC Authorization service
           TamanduaServer.Authorization.RBAC,
@@ -179,22 +198,11 @@ defmodule TamanduaServer.Application do
           # (CVE detection, namespace correlation, escalation chain tracking)
           TamanduaServer.ContainerSecurity.EscapeDetector,
 
-          # Start Kubernetes Admission Controller (validates/mutates pod deployments)
-          TamanduaServer.Kubernetes.AdmissionController,
-
-          # Start Kubernetes Admission Webhook Engine (full pipeline: pod security,
-          # mutation, alerting, stats, versioning, dry-run)
-          TamanduaServer.Kubernetes.AdmissionWebhook,
-
-          # Start Kubernetes Enricher (caches pod metadata for alert enrichment)
-          TamanduaServer.Alerts.Enrichers.KubernetesEnricher,
-
-          # Serverless Security Monitoring (AWS Lambda, Azure Functions, GCP Cloud Functions)
-          TamanduaServer.Serverless.Lambda,
-          TamanduaServer.Serverless.AzureFunctions,
-          TamanduaServer.Serverless.CloudFunctions,
-          TamanduaServer.Serverless.SecurityAnalyzer,
-          TamanduaServer.Serverless.BehavioralBaseline,
+          # PERIPHERAL GROUP: Kubernetes admission + serverless monitoring
+          # (AdmissionController, AdmissionWebhook, KubernetesEnricher,
+          # Serverless.*) — isolated restart budget, same position/order.
+          # ContainerSecurity + EscapeDetector stay core above (alert-critical).
+          TamanduaServer.Supervisors.CloudWorkloadSupervisor,
 
           # Start Oban for background jobs
           {Oban, Application.fetch_env!(:tamandua_server, Oban)},
@@ -236,8 +244,9 @@ defmodule TamanduaServer.Application do
           # Start the Sigma Aggregation Engine (timeframe-based rule evaluation)
           TamanduaServer.Detection.Rules.SigmaAggregator,
 
-          # Start SigmaHQ Community Rules Synchronization (downloads Sigma rules from GitHub)
-          {TamanduaServer.Detection.Rules.SigmaHQSync, [enabled: true, auto_sync: true]},
+          # PERIPHERAL GROUP: SigmaHQ community rule sync (GitHub poller) —
+          # isolated restart budget, same position. SigmaAggregator stays core.
+          TamanduaServer.Supervisors.RuleSyncSupervisor,
 
           # Start the DNS Analyzer (must start before Detection Engine)
           TamanduaServer.Detection.DNSAnalyzer,
@@ -251,74 +260,18 @@ defmodule TamanduaServer.Application do
           TamanduaServer.NDR.LateralDetector,
           TamanduaServer.NDR.EncryptedTraffic,
 
-          # Start Network Discovery modules (SentinelOne Ranger-style)
-          # Device inventory must start first, then rogue detector and vuln scanner
-          TamanduaServer.NetworkDiscovery.DeviceInventory,
-          TamanduaServer.NetworkDiscovery.RogueDetector,
-          TamanduaServer.NetworkDiscovery.DeviceVulnScanner,
-          TamanduaServer.NetworkDiscovery.ScanPolicy,
+          # PERIPHERAL GROUP: network discovery + attack surface management
+          # (NetworkDiscovery.*, ASM.*) — isolated restart budget, same
+          # position/order (DeviceInventory first, then rogue/vuln scanners).
+          TamanduaServer.Supervisors.NetworkDiscoverySupervisor,
 
-          # Start ASM (Attack Surface Management) modules
-          TamanduaServer.ASM.Discovery,
-          TamanduaServer.ASM.Exposure,
-          TamanduaServer.ASM.RiskScoring,
-          TamanduaServer.ASM.Monitor,
-
-          # Start Threat Intel Feed Synchronization
-          TamanduaServer.Detection.ThreatIntelFeeds,
-
-          # Start External Threat Intel Feeds (Abuse.ch, AlienVault OTX)
-          TamanduaServer.Detection.ThreatIntel.Feeds,
-
-          # Start Threat Intel Aggregator (deduplication, bloom filters, hot cache)
-          TamanduaServer.ThreatIntel.Aggregator,
-
-          # Start Threat Attribution Engine (IOC-to-actor correlation, campaigns)
-          TamanduaServer.ThreatIntel.Attribution,
-
-          # Start Campaign Tracker (auto-detects campaigns from attributed alerts)
-          TamanduaServer.ThreatIntel.CampaignTracker,
-
-          # Start Retroactive Scanner (scans historical telemetry for new IOCs)
-          TamanduaServer.ThreatIntel.RetroactiveScanner,
-
-          # Start IOC Relationship Graph (in-memory directed graph with confidence scoring)
-          TamanduaServer.ThreatIntel.Graph,
-
-          # Start TAXII Poller (scheduled polling of TAXII servers for new indicators)
-          TamanduaServer.ThreatIntel.TaxiiPoller,
-
-          # Start Commercial Threat Intel Feeds
-          TamanduaServer.ThreatIntel.Feeds.RecordedFuture,
-          TamanduaServer.ThreatIntel.Feeds.Mandiant,
-          TamanduaServer.ThreatIntel.Feeds.CrowdStrikeIntel,
-          TamanduaServer.ThreatIntel.Feeds.Proofpoint,
-
-          # Start Additional Open Source Feeds
-          TamanduaServer.ThreatIntel.Feeds.EmergingThreats,
-          TamanduaServer.ThreatIntel.Feeds.FeodoTracker,
-          TamanduaServer.ThreatIntel.Feeds.SSLBlacklist,
-          TamanduaServer.ThreatIntel.Feeds.PhishTank,
-          TamanduaServer.ThreatIntel.Feeds.OpenPhish,
-          TamanduaServer.ThreatIntel.Feeds.Spamhaus,
-
-          # Start Socket.dev Supply Chain Threat Intelligence Feed
-          TamanduaServer.ThreatIntel.Feeds.SocketDev,
-
-          # Start Threat Intel Enrichment Service
-          TamanduaServer.Detection.ThreatIntelEnrichment,
-
-          # Start VirusTotal Integration
-          TamanduaServer.Detection.ThreatIntel.VirusTotal,
-
-          # Start AlienVault OTX Integration
-          TamanduaServer.Detection.ThreatIntel.AlienVault,
-
-          # Start Shodan Integration
-          TamanduaServer.Detection.ThreatIntel.Shodan,
-
-          # Start Unified Threat Intel Enrichment
-          TamanduaServer.Detection.ThreatIntel.UnifiedEnrichment,
+          # PERIPHERAL GROUP: external threat-intel feeds, aggregation,
+          # attribution, and third-party enrichment (ThreatIntelFeeds,
+          # Feeds.*, Aggregator, Attribution, CampaignTracker,
+          # RetroactiveScanner, Graph, TaxiiPoller, commercial + OSS feeds,
+          # VirusTotal/AlienVault/Shodan/UnifiedEnrichment) — the highest-risk
+          # flapper group; isolated restart budget, same position/order.
+          TamanduaServer.Supervisors.ThreatIntelFeedsSupervisor,
 
           # Initialize YARA Scanner cache (ETS table, no supervision needed)
           %{
@@ -451,25 +404,11 @@ defmodule TamanduaServer.Application do
           # Start Phishing Analysis & Triage Engine (ETS-backed, campaign clustering)
           TamanduaServer.Detection.Phishing,
 
-          # Enterprise Knowledge Graph & Analytics
-          TamanduaServer.Graph.KnowledgeGraph,
-          TamanduaServer.Graph.Analytics,
-
-          # AI Asset Inventory (enterprise-wide AI component tracking)
-          TamanduaServer.AISecurity.AIInventory,
-          TamanduaServer.AISecurity.AIGateway,
-
-          # AI Security Modules
-          TamanduaServer.AISecurity.AttackSurface,
-          TamanduaServer.AISecurity.AgenticAnalyst,
-          TamanduaServer.AISecurity.PredictiveShield,
-          TamanduaServer.AISecurity.AgentPosture,
-          TamanduaServer.AISecurity.ExposureAgent,
-
-          # AI Interaction Security (AIDR-equivalent: prompt injection, data leak, MCP governance)
-          TamanduaServer.AISecurity.InteractionMonitor,
-          TamanduaServer.AISecurity.MCPGovernance,
-          TamanduaServer.AISecurity.ModelAuditor,
+          # PERIPHERAL GROUP: knowledge graph + AI security monitoring
+          # (Graph.*, AISecurity.*) — isolated restart budget, same
+          # position/order. Ingestor guards its AISecurity calls with
+          # Process.whereis/1 so ingest degrades gracefully.
+          TamanduaServer.Supervisors.AISecuritySupervisor,
 
           # Start Natural Language Threat Hunting
           TamanduaServer.Hunting.NLHunter,
@@ -523,20 +462,10 @@ defmodule TamanduaServer.Application do
           # Start Response Simulator (dry-run and impact analysis)
           TamanduaServer.Response.Simulator,
 
-          # Start Hyperautomation Engine
-          TamanduaServer.Automation.Hyperautomation,
-
-          # Agentic SOAR: Custom AI Agent Builder & Runtime
-          # AgentBuilder: customer-facing agent creation via NL descriptions or explicit specs
-          TamanduaServer.Agentic.AgentBuilder,
-          # AgentRuntime: event-driven execution engine with guardrail enforcement
-          TamanduaServer.Agentic.AgentRuntime,
-          # WorkflowGenerator: converts completed investigations into reusable DAG workflows
-          TamanduaServer.Agentic.WorkflowGenerator,
-          # Orchestrator: central routing, collaboration, conflict resolution, priority queue
-          TamanduaServer.Agentic.Orchestrator,
-          # LearningLoop: self-improving detection with FP tracking, threshold adjustment
-          TamanduaServer.Agentic.LearningLoop,
+          # PERIPHERAL GROUP: hyperautomation + Agentic SOAR (Hyperautomation,
+          # Agentic.*) — isolated restart budget, same position/order.
+          # Deterministic Response.* stack stays core above.
+          TamanduaServer.Supervisors.AgenticSoarSupervisor,
 
           # Start Forensics Collector
           TamanduaServer.Forensics.Collector,
@@ -623,28 +552,10 @@ defmodule TamanduaServer.Application do
           # Start the AI Model Dependency Graph (tracks process->model and model->model dependencies)
           TamanduaServer.AI.DependencyGraph,
 
-          # Start Registry Sync (periodic model registry metadata refresh)
-          TamanduaServer.Registries.RegistrySync,
-
-          # Start Registry Health Check (monitors HuggingFace, MLflow, W&B, Ollama connectivity)
-          {TamanduaServer.Registries.HealthCheck,
-           registries: [
-             huggingface: [module: TamanduaServer.Registries.HuggingFace, config: %{}],
-             mlflow: [module: TamanduaServer.Registries.MLflow, config: %{}],
-             wandb: [module: TamanduaServer.Registries.WandB, config: %{}],
-             ollama: [
-               module: TamanduaServer.Registries.Ollama,
-               config: %{base_url: System.get_env("OLLAMA_URL", "http://localhost:11434")}
-             ]
-           ],
-           interval: 60_000},
-
-          # Start Ollama Watcher (monitors for new model pulls, triggers security scanning)
-          {TamanduaServer.Registries.OllamaWatcher,
-           [
-             poll_interval: 30_000,
-             ollama_url: System.get_env("OLLAMA_URL", "http://localhost:11434")
-           ]},
+          # PERIPHERAL GROUP: external model registry connectors (RegistrySync,
+          # Registries.HealthCheck, OllamaWatcher) — isolated restart budget,
+          # same position/order; child args live in the group module.
+          TamanduaServer.Supervisors.ModelRegistrySupervisor,
 
           # Start the ML Client
           TamanduaServer.Detection.ML.Client,
@@ -657,35 +568,13 @@ defmodule TamanduaServer.Application do
           # TrainingScheduler: scheduled/on-demand retraining, job tracking
           TamanduaServer.ML.TrainingScheduler,
 
-          # Integration Services
-          TamanduaServer.Integrations.MCPServer,
-          TamanduaServer.Integrations.CollaborationSecurity,
-          TamanduaServer.Integrations.AISIEM,
-          TamanduaServer.Integrations.SIEM,
-
-          # Integration Logging (ETS-backed, must start before integrations)
-          TamanduaServer.Integrations.IntegrationLog,
-
-          # Ticketing Integration Router (Jira, ServiceNow dispatch with deduplication)
-          TamanduaServer.Integrations.TicketingRouter,
-
-          # Chat Integration Router (Slack, Teams dispatch for alerts and approvals)
-          TamanduaServer.Integrations.ChatRouter,
-
-          # Slack Bot (workspace configs, slash commands, interactive approval)
-          TamanduaServer.Integrations.SlackBot,
-
-          # Teams Bot (adaptive cards, bot commands, interactive approval)
-          TamanduaServer.Integrations.TeamsBot,
-
-          # SOAR Playbook Executor (execution dispatch, status tracking, retry)
-          TamanduaServer.Integrations.SOAR.Executor,
-
-          # Integration Alert Router (SIEM, SOAR, Ticketing routing)
-          TamanduaServer.Integrations.Router,
-
-          # Inbound Webhook Router (ETS-backed audit, rate limiting)
-          TamanduaServer.Integrations.Webhook.InboundRouter,
+          # PERIPHERAL GROUP: third-party integrations (MCPServer,
+          # CollaborationSecurity, AISIEM, SIEM, IntegrationLog,
+          # Ticketing/Chat routers, Slack/Teams bots, SOAR.Executor, Router,
+          # Webhook.InboundRouter) — isolated restart budget, same
+          # position/order. Notification Throttler/EscalationManager stay
+          # core below (alert notification rate limiting / SLA escalation).
+          TamanduaServer.Supervisors.IntegrationsSupervisor,
 
           # Notification Throttler (ETS-backed rate limiting for notifications)
           TamanduaServer.Notifications.Throttler,
@@ -696,63 +585,35 @@ defmodule TamanduaServer.Application do
           # Device Control & USB Policy Management
           TamanduaServer.DeviceControl,
 
-          # DLP (Data Loss Prevention) Policy Engine and Incident Manager
-          TamanduaServer.DLP.PolicyEngine,
-          TamanduaServer.DLP.IncidentManager,
+          # PERIPHERAL GROUP: DLP + compliance reporting (DLP.PolicyEngine,
+          # DLP.IncidentManager, Compliance) — isolated restart budget,
+          # same position/order. DeviceControl stays core above.
+          TamanduaServer.Supervisors.DataGovernanceSupervisor,
 
-          # Compliance Reporting Framework
-          TamanduaServer.Compliance,
+          # PERIPHERAL GROUP: identity protection + UEBA (Identity.*,
+          # Detection.BaselineLearner) — isolated restart budget, same
+          # position/order. AzureAD is an external cloud connector.
+          TamanduaServer.Supervisors.IdentitySupervisor,
 
-          # Identity Protection
-          TamanduaServer.Identity.RiskScoring,
-          TamanduaServer.Identity.AzureAD,
+          # PERIPHERAL GROUP: vulnerability intelligence + patching + breach
+          # monitoring (Vulnerability.NVD/EPSS/KEV, PatchManagement.Engine,
+          # DarkWebMonitor, CredentialHygiene) — external feed pollers;
+          # isolated restart budget, same position/order.
+          TamanduaServer.Supervisors.VulnerabilityManagementSupervisor,
 
-          # Behavioral Baseline Learning & User Risk Scoring
-          TamanduaServer.Detection.BaselineLearner,
-          TamanduaServer.Identity.UserProfiler,
-          TamanduaServer.Identity.PeerClustering,
-          TamanduaServer.Identity.RiskEngine,
+          # PERIPHERAL GROUP: MDR service delivery (Delivery, AnalystConsole,
+          # Metrics) — isolated restart budget, same position/order.
+          TamanduaServer.Supervisors.MDRSupervisor,
 
-          # Vulnerability Management
-          TamanduaServer.Vulnerability.NVD,
-          TamanduaServer.Vulnerability.EPSS,
-          TamanduaServer.Vulnerability.KEV,
+          # PERIPHERAL GROUP: XDR (Correlator, Ingestor, PartitionedStore,
+          # FederatedSearch) — third-party source ingest, separate from the
+          # core agent telemetry pipeline; isolated restart budget, same
+          # position/order.
+          TamanduaServer.Supervisors.XDRSupervisor,
 
-          # Patch Management Engine (risk-based patch prioritization, canary deployment,
-          # maintenance windows, rollback-on-failure; integrates with Vulnerability.*)
-          TamanduaServer.PatchManagement.Engine,
-
-          # Dark Web & Credential Breach Monitoring (HIBP, Intelligence X, custom feeds;
-          # domain/email/executive monitoring, k-anonymity password checking)
-          TamanduaServer.ThreatIntel.DarkWebMonitor,
-
-          # Credential Hygiene Checker (password reuse detection, certificate expiry,
-          # API key rotation tracking, service account hygiene)
-          TamanduaServer.ThreatIntel.CredentialHygiene,
-
-          # MDR (Managed Detection & Response) Delivery Framework
-          # Alert queue, SLA timers, escalation paths, customer communication, service tiers
-          TamanduaServer.MDR.Delivery,
-
-          # MDR Analyst Console (triage, investigation workspaces, cross-customer
-          # correlation, knowledge base, shift management, performance tracking)
-          TamanduaServer.MDR.AnalystConsole,
-
-          # MDR Metrics & Reporting (SLA compliance, MTTD/MTTR/MTTC, detection efficacy,
-          # alert volume trends, executive reports)
-          TamanduaServer.MDR.Metrics,
-
-          # XDR (Extended Detection & Response)
-          TamanduaServer.XDR.Correlator,
-          {TamanduaServer.XDR.Ingestor, []},
-
-          # Scalable Log Partitioning & Federated Search
-          TamanduaServer.XDR.PartitionedStore,
-          TamanduaServer.XDR.FederatedSearch,
-
-          # Deception Technology (Breadcrumbs, Analytics)
-          TamanduaServer.Deception.Breadcrumbs,
-          TamanduaServer.Deception.Analytics,
+          # PERIPHERAL GROUP: deception technology (Breadcrumbs, Analytics) —
+          # isolated restart budget, same position/order.
+          TamanduaServer.Supervisors.DeceptionSupervisor,
 
           # Cloud Security Detection Rules (50+ rules)
           TamanduaServer.Cloud.DetectionRules,
@@ -770,15 +631,10 @@ defmodule TamanduaServer.Application do
           # MITRE ATT&CK Coverage Tracker — maps rules to techniques, identifies gaps
           TamanduaServer.Detection.MitreCoverage,
 
-          # SLO Monitoring & Error Budget Tracking
-          TamanduaServer.SLO.Tracker,
-          TamanduaServer.SLO.ErrorBudget,
-
-          # False Positive Analysis & Tuning System
-          TamanduaServer.FPAnalysis.FPTracker,
-          TamanduaServer.FPAnalysis.FPPatterns,
-          TamanduaServer.FPAnalysis.AutoTuner,
-          TamanduaServer.FPAnalysis.BaselineLearner
+          # PERIPHERAL GROUP: SLO tracking + FP analysis/tuning (SLO.*,
+          # FPAnalysis.*) — isolated restart budget, same position/order.
+          # MitreCoverage stays core above (detection domain).
+          TamanduaServer.Supervisors.ObservabilitySupervisor
 
           # Web endpoint starts near PubSub above so external feed initialization
           # cannot block HTTP readiness during deployment.
@@ -798,6 +654,10 @@ defmodule TamanduaServer.Application do
     # have no live OCSP responder -- are unaffected.
     children = maybe_add_ocsp(children)
 
+    # Top-level budget applies to CORE children. Peripheral domains run under
+    # TamanduaServer.Supervisors.* group supervisors with their own smaller
+    # budgets (10/60s); a group that exhausts its budget and dies costs ONE
+    # top-level restart here instead of taking the whole application down.
     opts = [
       strategy: :one_for_one,
       name: TamanduaServer.Supervisor,
@@ -962,6 +822,11 @@ defmodule TamanduaServer.Application do
       # syncing remains outside lab-light; this gives the ingestor local IOC
       # lookups without booting the full threat-intel stack.
       TamanduaServer.ThreatIntel,
+      # Expose DNS/threat-intel feed catalog health in lab-light without
+      # automatically pulling large external feeds. Operators can opt in to
+      # live feed sync with TAMANDUA_LAB_LIGHT_THREAT_INTEL_FEEDS=true.
+      {TamanduaServer.Detection.ThreatIntelFeeds,
+       [enabled: lab_light_threat_intel_feeds_enabled?()]},
       TamanduaServer.Agents.OrgLookup,
       TamanduaServer.Agents.Registry,
       TamanduaServer.Agents.TokenManager,
@@ -972,6 +837,10 @@ defmodule TamanduaServer.Application do
        max_restarts: 100,
        max_seconds: 60},
       TamanduaServer.Validation.EDRTester,
+      # DNSAnalyzer is lightweight ETS state plus persisted blocklist access.
+      # Keep it available in lab-light so DNS blocklist management and NDR DNS
+      # correlation do not degrade to controller fallbacks.
+      TamanduaServer.Detection.DNSAnalyzer,
       # NDR live views are in-memory GenServers. Keep them in lab-light so
       # /api/v1/ndr/* has live data without requiring the full detection stack.
       # Telemetry.Ingestor feeds these directly when Detection.Engine is absent.
@@ -1028,6 +897,10 @@ defmodule TamanduaServer.Application do
 
   defp lab_light? do
     System.get_env("TAMANDUA_LAB_LIGHT", "false") == "true"
+  end
+
+  defp lab_light_threat_intel_feeds_enabled? do
+    System.get_env("TAMANDUA_LAB_LIGHT_THREAT_INTEL_FEEDS", "false") == "true"
   end
 
   defp maybe_auto_init_pki do

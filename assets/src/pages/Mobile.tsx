@@ -31,7 +31,6 @@ import {
   TrendingUp,
   Eye,
   FileWarning,
-  Construction,
   Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -122,6 +121,55 @@ interface MobileDevice {
   enrolled_at: string | null
 }
 
+interface MobileDevicesResponse {
+  data?: MobileDevice[]
+  devices?: MobileDevice[]
+  meta?: {
+    total?: number
+  }
+  total?: number
+}
+
+interface AppGuardBuildManifest {
+  id: string
+  build_id: string
+  app_id: string
+  platform: 'android' | 'ios'
+  version?: {
+    name?: string
+    code?: string
+    build_number?: string
+  }
+  artifact?: {
+    type?: string
+    filename?: string
+    sha256?: string
+    size_bytes?: number
+  }
+  signing?: {
+    scheme?: string
+    certificate_sha256?: string
+    key_alias?: string
+    team_id?: string
+  }
+  sdk?: {
+    version?: string
+    config_sha256?: string
+    enabled_signals?: string[]
+  }
+  policy_id?: string
+  created_at?: string | null
+}
+
+interface AppGuardBuildVerification {
+  schema: 'tamandua.app_guard.build_verification/v1'
+  build_id: string
+  app_id: string
+  verified: boolean
+  checks: Record<string, boolean | null>
+  claim_boundary: string
+}
+
 // ============================================================================
 // Main component
 // ============================================================================
@@ -131,7 +179,7 @@ export default function Mobile() {
   const [mdmStatus, setMdmStatus] = useState<MDMIntegration[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'overview' | 'devices' | 'apps' | 'events' | 'setup'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'devices' | 'apps' | 'builds' | 'events' | 'setup'>('overview')
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -166,6 +214,7 @@ export default function Mobile() {
     { id: 'overview', label: 'Overview', icon: Activity },
     { id: 'devices', label: 'Devices', icon: Smartphone },
     { id: 'apps', label: 'Apps', icon: Package },
+    { id: 'builds', label: 'App Guard Builds', icon: Shield },
     { id: 'events', label: 'Events', icon: AlertTriangle },
     { id: 'setup', label: 'Setup Guide', icon: Settings },
   ]
@@ -175,11 +224,11 @@ export default function Mobile() {
       <Head title="Mobile Security - Tamandua EDR" />
 
       <div className="space-y-6">
-        {/* Mobile roadmap banner */}
+        {/* Mobile operational status */}
         <div
           className="rounded-xl p-6"
           style={{
-            background: 'linear-gradient(to right, rgba(47, 196, 113, 0.12), rgba(168, 85, 247, 0.12))',
+            background: 'linear-gradient(to right, rgba(47, 196, 113, 0.12), rgba(47, 196, 113, 0.04))',
             border: '1px solid rgba(47, 196, 113, 0.3)',
           }}
         >
@@ -188,22 +237,22 @@ export default function Mobile() {
               className="p-3 rounded-lg"
               style={{ background: 'var(--emerald-glow)' }}
             >
-              <Construction className="h-8 w-8" style={{ color: 'var(--emerald-400)' }} />
+              <Shield className="h-8 w-8" style={{ color: 'var(--emerald-400)' }} />
             </div>
             <div className="flex-1">
-              <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--fg)' }}>Mobile Agent Support - Roadmap</h2>
+              <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--fg)' }}>Mobile Device Monitoring</h2>
               <p className="mb-4" style={{ color: 'var(--muted)' }}>
-                We are building native iOS and Android agents to extend Tamandua EDR protection to mobile devices.
-                The foundation architecture is complete - see our detailed design document for the roadmap.
+                Mobile Security is connected to the device inventory API. Review enrolled iOS and Android devices,
+                monitor posture, and track MDM enrollment from this workspace.
               </p>
               <div className="flex flex-wrap gap-3">
-                <a
-                  href="/docs/MOBILE_AGENT_ARCHITECTURE.md"
+                <button
+                  onClick={() => setActiveTab('devices')}
                   className="btn-sentinel btn-sentinel-primary"
                 >
-                  <Eye className="h-4 w-4" />
-                  View Architecture Doc
-                </a>
+                  <Smartphone className="h-4 w-4" />
+                  View Devices
+                </button>
                 <button
                   onClick={() => setActiveTab('setup')}
                   className="btn-sentinel btn-sentinel-secondary"
@@ -291,6 +340,10 @@ export default function Mobile() {
 
             {activeTab === 'apps' && (
               <AppsTab />
+            )}
+
+            {activeTab === 'builds' && (
+              <BuildsTab />
             )}
 
             {activeTab === 'events' && (
@@ -464,7 +517,7 @@ function OverviewTab({ stats, posture, mdmStatus }: {
 
       {/* Supported Features */}
       <div className="card-sentinel p-6">
-        <h3 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Planned Capabilities</h3>
+        <h3 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Protection Capabilities</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[
             { icon: Shield, title: 'Jailbreak/Root Detection', desc: 'Detect compromised devices instantly' },
@@ -521,9 +574,15 @@ function DevicesTab() {
         headers: { 'Accept': 'application/json' },
       })
       if (!res.ok) throw new Error(`Failed to load devices (${res.status})`)
-      const json = await res.json()
-      setDevices(json.data || [])
-      setTotal(json.meta?.total ?? (json.data || []).length)
+      const json: MobileDevicesResponse = await res.json()
+      const nextDevices = Array.isArray(json.data)
+        ? json.data
+        : Array.isArray(json.devices)
+          ? json.devices
+          : []
+
+      setDevices(nextDevices)
+      setTotal(json.meta?.total ?? json.total ?? nextDevices.length)
     } catch (err) {
       logger.error('Failed to fetch devices:', err)
       setError(err instanceof Error ? err.message : 'Failed to load devices')
@@ -568,20 +627,13 @@ function DevicesTab() {
         <Smartphone className="h-16 w-16 mx-auto mb-4" style={{ color: 'var(--subtle)' }} />
         <h3 className="text-xl font-semibold mb-2" style={{ color: 'var(--fg)' }}>No Devices Registered</h3>
         <p className="mb-6 max-w-md mx-auto" style={{ color: 'var(--muted)' }}>
-          Deploy the Tamandua mobile agent to your iOS and Android devices to start monitoring.
-          Devices can also be synced from your MDM solution.
+          The device API is reachable, but it did not return any mobile devices for this organization.
+          Enrolled agents and synced MDM devices will appear here automatically.
         </p>
-        <div className="flex justify-center gap-3">
-          <button className="btn-sentinel btn-sentinel-secondary cursor-not-allowed opacity-50" disabled>
-            <Download className="h-4 w-4" />
-            Download iOS Agent
-          </button>
-          <button className="btn-sentinel btn-sentinel-secondary cursor-not-allowed opacity-50" disabled>
-            <Download className="h-4 w-4" />
-            Download Android Agent
-          </button>
-        </div>
-        <p className="text-xs mt-4" style={{ color: 'var(--subtle)' }}>Agents are in development and will be available soon</p>
+        <button onClick={fetchDevices} className="btn-sentinel btn-sentinel-secondary">
+          <RefreshCw className="h-4 w-4" />
+          Refresh Devices
+        </button>
       </div>
     )
   }
@@ -614,7 +666,7 @@ function DevicesTab() {
           <tbody>
             {devices.map((device) => (
               <tr
-                key={device.id}
+                key={device.id || device.device_id}
                 className="hover:bg-[var(--surface-2)]"
                 style={{ borderBottom: '1px solid var(--hairline)' }}
               >
@@ -671,6 +723,204 @@ function DevicesTab() {
                 </td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// App Guard builds tab
+// ============================================================================
+function BuildsTab() {
+  const [builds, setBuilds] = useState<AppGuardBuildManifest[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null)
+  const [verifyingBuildId, setVerifyingBuildId] = useState<string | null>(null)
+  const [verifications, setVerifications] = useState<Record<string, AppGuardBuildVerification>>({})
+
+  const fetchBuilds = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await apiFetch<AppGuardBuildManifest[]>('/api/v1/mobile/app_guard/builds?limit=100')
+      setBuilds(Array.isArray(data) ? data : [])
+    } catch (err) {
+      logger.error('Failed to fetch App Guard builds:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load App Guard builds')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchBuilds()
+  }, [fetchBuilds])
+
+  const verifyBuild = useCallback(async (build: AppGuardBuildManifest) => {
+    setVerifyingBuildId(build.build_id)
+    setError(null)
+    try {
+      const res = await fetch(`/api/v1/mobile/app_guard/builds/${encodeURIComponent(build.build_id)}/verify`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          artifact_sha256: build.artifact?.sha256,
+          certificate_sha256: build.signing?.certificate_sha256,
+          config_sha256: build.sdk?.config_sha256,
+        }),
+      })
+      if (!res.ok) throw new Error(`Verification failed (${res.status})`)
+      const json = await res.json()
+      const verification: AppGuardBuildVerification = json.data ?? json
+      setVerifications((current) => ({ ...current, [build.build_id]: verification }))
+      setExpandedBuildId(build.build_id)
+    } catch (err) {
+      logger.error('Failed to verify App Guard build:', err)
+      setError(err instanceof Error ? err.message : 'Failed to verify App Guard build')
+    } finally {
+      setVerifyingBuildId(null)
+    }
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin" style={{ color: 'var(--emerald-400)' }} />
+        <span className="ml-3" style={{ color: 'var(--muted)' }}>Loading App Guard builds...</span>
+      </div>
+    )
+  }
+
+  if (error && builds.length === 0) {
+    return (
+      <div className="card-sentinel p-8 text-center">
+        <AlertCircle className="h-12 w-12 mx-auto mb-4" style={{ color: 'var(--crit)' }} />
+        <h3 className="text-xl font-semibold mb-2" style={{ color: 'var(--fg)' }}>Error Loading Builds</h3>
+        <p className="mb-4" style={{ color: 'var(--muted)' }}>{error}</p>
+        <button onClick={fetchBuilds} className="btn-sentinel btn-sentinel-primary">
+          <RefreshCw className="h-4 w-4" />
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  if (builds.length === 0) {
+    return (
+      <div className="card-sentinel p-8 text-center">
+        <Shield className="h-16 w-16 mx-auto mb-4" style={{ color: 'var(--subtle)' }} />
+        <h3 className="text-xl font-semibold mb-2" style={{ color: 'var(--fg)' }}>No Build Manifests</h3>
+        <p className="mb-6 max-w-md mx-auto" style={{ color: 'var(--muted)' }}>
+          Protected app builds submitted through the App Guard manifest API will appear here.
+          Verification compares metadata hashes only; it does not upload or modify binaries.
+        </p>
+        <button onClick={fetchBuilds} className="btn-sentinel btn-sentinel-secondary">
+          <RefreshCw className="h-4 w-4" />
+          Refresh Builds
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm" style={{ color: 'var(--muted)' }}>
+            {builds.length} protected build manifest{builds.length !== 1 ? 's' : ''}
+          </p>
+          {error && <p className="text-xs mt-1" style={{ color: 'var(--crit)' }}>{error}</p>}
+        </div>
+        <button onClick={fetchBuilds} className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm">
+          <RefreshCw className="h-4 w-4" />
+          Refresh
+        </button>
+      </div>
+
+      <div className="card-sentinel overflow-hidden p-0">
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              <th className="px-4 py-3 font-medium text-left" style={{ color: 'var(--muted)' }}>Build</th>
+              <th className="px-4 py-3 font-medium text-left" style={{ color: 'var(--muted)' }}>App</th>
+              <th className="px-4 py-3 font-medium text-left" style={{ color: 'var(--muted)' }}>Artifact</th>
+              <th className="px-4 py-3 font-medium text-left" style={{ color: 'var(--muted)' }}>SDK</th>
+              <th className="px-4 py-3 font-medium text-left" style={{ color: 'var(--muted)' }}>Verification</th>
+              <th className="px-4 py-3 font-medium text-right" style={{ color: 'var(--muted)' }}>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {builds.map((build) => {
+              const verification = verifications[build.build_id]
+              const expanded = expandedBuildId === build.build_id
+              return (
+                <tr key={build.id || build.build_id} style={{ borderBottom: '1px solid var(--hairline)' }}>
+                  <td className="px-4 py-3 align-top">
+                    <button
+                      onClick={() => setExpandedBuildId(expanded ? null : build.build_id)}
+                      className="font-mono text-xs text-left hover:opacity-80 max-w-[220px] truncate"
+                      title={build.build_id}
+                      style={{ color: 'var(--fg)' }}
+                    >
+                      {build.build_id}
+                    </button>
+                    {expanded && (
+                      <div className="mt-3 space-y-1 text-xs" style={{ color: 'var(--muted)' }}>
+                        <div>artifact sha256: <span className="font-mono">{build.artifact?.sha256 || '-'}</span></div>
+                        <div>cert sha256: <span className="font-mono">{build.signing?.certificate_sha256 || '-'}</span></div>
+                        <div>config sha256: <span className="font-mono">{build.sdk?.config_sha256 || '-'}</span></div>
+                        {verification && (
+                          <div>checks: <span className="font-mono">{JSON.stringify(verification.checks)}</span></div>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div className="font-medium" style={{ color: 'var(--fg)' }}>{build.app_id}</div>
+                    <div className="text-xs capitalize" style={{ color: 'var(--muted)' }}>{build.platform}</div>
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div style={{ color: 'var(--fg-2)' }}>{build.artifact?.type || '-'}</div>
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>{build.version?.name || '-'}</div>
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div style={{ color: 'var(--fg-2)' }}>{build.sdk?.version || '-'}</div>
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}>{build.policy_id || '-'}</div>
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <span className={cn(
+                      "badge-sentinel badge-sentinel-pill",
+                      verification?.verified === true ? 'badge-sentinel-success' :
+                      verification?.verified === false ? 'badge-sentinel-critical' :
+                      'badge-sentinel-default'
+                    )}>
+                      {verification ? (verification.verified ? 'verified' : 'failed') : 'unverified'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 align-top text-right">
+                    <button
+                      onClick={() => verifyBuild(build)}
+                      disabled={verifyingBuildId === build.build_id}
+                      className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm"
+                    >
+                      {verifyingBuildId === build.build_id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <CheckCircle className="h-4 w-4" />
+                      )}
+                      Verify
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

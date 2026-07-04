@@ -75,6 +75,25 @@ defmodule TamanduaServer.Detection.Rules.FalcoTest do
       assert rule.condition =~ "container.id != host"
     end
 
+    test "does not treat Falco field prefixes as macro references" do
+      yaml = """
+      - macro: container
+        condition: container.id != host
+      - macro: spawned_process
+        condition: evt.type = execve
+      - rule: shell_in_container
+        desc: Shell in container
+        condition: spawned_process and container
+        output: "container=%container.name"
+        priority: WARNING
+        tags: [container]
+      """
+
+      assert {:ok, [rule]} = Falco.parse_string(yaml)
+      assert rule.condition =~ "container.id != host"
+      assert rule.condition =~ "evt.type = execve"
+    end
+
     test "expands lists in conditions" do
       yaml = """
       - list: shell_binaries

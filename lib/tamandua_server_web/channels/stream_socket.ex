@@ -5,7 +5,7 @@ defmodule TamanduaServerWeb.StreamSocket do
   This socket handles WebSocket connections for real-time event streaming,
   providing a dedicated endpoint separate from the dashboard socket.
   """
-  use Phoenix.Socket
+  use Phoenix.Socket, log: false
 
   # Channels for streaming
   channel "stream:alerts", TamanduaServerWeb.AlertStreamChannel

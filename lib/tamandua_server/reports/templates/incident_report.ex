@@ -74,10 +74,20 @@ defmodule TamanduaServer.Reports.Templates.IncidentReport do
     max_incidents = Map.get(params, "max_incidents", 50)
     include_resolved = Map.get(params, "include_resolved", true)
 
-    # Get alerts in range
-    alerts_in_range = safe_call(fn ->
-      Alerts.list_alerts_in_range(date_from, date_to)
-    end, [])
+    # Tenant scoping: alert data must be limited to the caller's
+    # organization. When no organization is provided we fail closed
+    # (empty list) instead of returning cross-tenant data.
+    organization_id = params["organization_id"] || params[:organization_id]
+
+    # Get alerts in range (tenant-scoped)
+    alerts_in_range =
+      if organization_id do
+        safe_call(fn ->
+          Alerts.list_alerts_in_range_for_org(organization_id, date_from, date_to)
+        end, [])
+      else
+        []
+      end
 
     # Apply filters
     filtered_alerts = alerts_in_range
@@ -313,8 +323,10 @@ defmodule TamanduaServer.Reports.Templates.IncidentReport do
     actions = []
 
     # Count response actions taken
+    # Alert schema has no :response_actions field today; Map.get/2 returns
+    # nil (instead of raising KeyError) so the section degrades gracefully.
     response_counts = alerts
-    |> Enum.flat_map(fn a -> a.response_actions || [] end)
+    |> Enum.flat_map(fn a -> Map.get(a, :response_actions) || [] end)
     |> Enum.frequencies()
 
     actions = if map_size(response_counts) > 0 do

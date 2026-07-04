@@ -129,11 +129,21 @@ interface DNSPageProps {
 interface DNSQueryMeta {
   partial: boolean
   defaultWindowHours?: number
+  timeRange?: string
   scope?: string
   hasMore?: boolean
   totalIsEstimate?: boolean
   limit?: number
   offset?: number
+}
+
+type DNSTimeRange = '24h' | '7d' | '30d' | 'all'
+
+const DNS_TIME_RANGE_LABELS: Record<DNSTimeRange, string> = {
+  '24h': 'Last 24h',
+  '7d': 'Last 7d',
+  '30d': 'Last 30d',
+  all: 'All history',
 }
 
 const DNS_EVENT_TYPES = new Set(['dns_query', 'dns', 'dns_response', 'name_resolution', 'domain_lookup'])
@@ -993,6 +1003,20 @@ function readDnsUrlParam(key: string): string {
   return new URLSearchParams(window.location.search).get(key) || ''
 }
 
+function replaceDnsUrlState(params: Record<string, string>) {
+  if (typeof window === 'undefined') return
+
+  const url = new URL(window.location.href)
+  Object.entries(params).forEach(([key, value]) => {
+    if (!value || value === 'all' || (key === 'tab' && value === 'live-feed')) {
+      url.searchParams.delete(key)
+    } else {
+      url.searchParams.set(key, value)
+    }
+  })
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
 export default function DNS({
   stats: initialStats,
   queries: initialQueries,
@@ -1030,7 +1054,22 @@ export default function DNS({
   const [queryTypeFilter, setQueryTypeFilter] = useState(readDnsUrlParam('query_type') || 'all')
   const [agentFilter, setAgentFilter] = useState(readDnsUrlParam('agent_id') || 'all')
   const [processFilter, setProcessFilter] = useState(readDnsUrlParam('process') || readDnsUrlParam('process_name'))
+  const [timeRange, setTimeRange] = useState<DNSTimeRange>(() => {
+    const range = readDnsUrlParam('time_range')
+    return ['24h', '7d', '30d', 'all'].includes(range) ? range as DNSTimeRange : '24h'
+  })
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
+
+  useEffect(() => {
+    replaceDnsUrlState({
+      tab: activeTab,
+      q: searchQuery,
+      query_type: queryTypeFilter,
+      agent_id: agentFilter,
+      process: processFilter,
+      time_range: timeRange,
+    })
+  }, [activeTab, searchQuery, queryTypeFilter, agentFilter, processFilter, timeRange])
 
   // Blocklist state
   const [newBlockDomain, setNewBlockDomain] = useState('')
@@ -1131,6 +1170,7 @@ export default function DNS({
       const params = new URLSearchParams()
       params.set('page', String(page))
       params.set('per_page', '50')
+      params.set('time_range', timeRange)
       if (searchQuery) params.set('domain', searchQuery)
       if (queryTypeFilter !== 'all') params.set('query_type', queryTypeFilter)
       if (agentFilter !== 'all') params.set('agent_id', agentFilter)
@@ -1148,6 +1188,7 @@ export default function DNS({
         setQueryMeta({
           partial: Boolean(meta.partial),
           defaultWindowHours: Number(meta.default_window_hours ?? meta.defaultWindowHours) || undefined,
+          timeRange: typeof meta.time_range === 'string' ? meta.time_range : timeRange,
           scope: typeof meta.scope === 'string' ? meta.scope : undefined,
           hasMore: typeof meta.has_more === 'boolean' ? meta.has_more : undefined,
           totalIsEstimate: Boolean(meta.total_is_estimate ?? meta.totalIsEstimate),
@@ -1177,11 +1218,13 @@ export default function DNS({
     } finally {
       setLoading(false)
     }
-  }, [searchQuery, queryTypeFilter, agentFilter, processFilter])
+  }, [searchQuery, queryTypeFilter, agentFilter, processFilter, timeRange])
 
   const fetchTopDomains = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/dns/top-domains', {
+      const params = new URLSearchParams()
+      params.set('time_range', timeRange)
+      const res = await fetch(`/api/v1/dns/top-domains?${params.toString()}`, {
         credentials: 'include',
         headers: { 'Accept': 'application/json' },
       })
@@ -1196,7 +1239,7 @@ export default function DNS({
     } catch (error) {
       setApiError(`Top domains failed: ${error instanceof Error ? error.message : 'network error'}`)
     }
-  }, [])
+  }, [timeRange])
 
   const fetchBlocklist = useCallback(async () => {
     try {
@@ -1563,6 +1606,8 @@ export default function DNS({
           setAgentFilter={setAgentFilter}
           processFilter={processFilter}
           setProcessFilter={setProcessFilter}
+          timeRange={timeRange}
+          setTimeRange={setTimeRange}
           expandedRow={expandedRow}
           setExpandedRow={setExpandedRow}
           pagination={pagination}
@@ -1672,6 +1717,8 @@ interface LiveDNSFeedProps {
   setAgentFilter: (v: string) => void
   processFilter: string
   setProcessFilter: (v: string) => void
+  timeRange: DNSTimeRange
+  setTimeRange: (v: DNSTimeRange) => void
   expandedRow: string | null
   setExpandedRow: (v: string | null) => void
   pagination: { page: number; perPage: number; total: number }
@@ -1700,6 +1747,8 @@ function LiveDNSFeed({
   setAgentFilter,
   processFilter,
   setProcessFilter,
+  timeRange,
+  setTimeRange,
   expandedRow,
   setExpandedRow,
   pagination,
@@ -1709,9 +1758,12 @@ function LiveDNSFeed({
   getExportData,
 }: LiveDNSFeedProps) {
   const queryTypes = ['A', 'AAAA', 'MX', 'CNAME', 'TXT', 'NS', 'SOA', 'SRV', 'PTR', 'TRANSPORT', 'DOH', 'DOT']
-  const defaultWindowLabel = queryMeta?.defaultWindowHours
-    ? `${queryMeta.defaultWindowHours}h default window`
-    : 'Live and recent telemetry'
+  const selectedRangeLabel = DNS_TIME_RANGE_LABELS[timeRange] || 'Selected window'
+  const defaultWindowLabel = timeRange === 'all'
+    ? 'All retained DNS telemetry'
+    : queryMeta?.defaultWindowHours
+      ? `${queryMeta.defaultWindowHours}h default window`
+      : selectedRangeLabel
   const totalLabel = queryMeta?.totalIsEstimate
     ? `${pagination.total.toLocaleString()} estimated records`
     : `${pagination.total.toLocaleString()} records`
@@ -1817,6 +1869,17 @@ function LiveDNSFeed({
             ))}
           </Select>
 
+          <Select
+            value={timeRange}
+            onValueChange={(value) => setTimeRange(value as DNSTimeRange)}
+            placeholder="Time range"
+            className="bg-[var(--surface-alt)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--fg)] focus:ring-2 focus:ring-[var(--sol-cyan)]"
+          >
+            {Object.entries(DNS_TIME_RANGE_LABELS).map(([value, label]) => (
+              <SelectItem key={value} value={value}>{label}</SelectItem>
+            ))}
+          </Select>
+
           <span className="text-sm text-[var(--muted)]">
             {loading ? 'Loading DNS records...' : `${queries.length} DNS records`}
           </span>
@@ -1850,9 +1913,9 @@ function LiveDNSFeed({
             {totalLabel}
             {queryMeta?.hasMore ? ' available' : ''}
           </span>
-          {queryMeta?.defaultWindowHours && (
+          {queryMeta?.defaultWindowHours && timeRange === '24h' && (
             <span>
-              Use filters or API time parameters for historical investigation beyond the default window.
+              Select 7d, 30d, or All history for historical DNS investigation beyond the default window.
             </span>
           )}
         </div>
@@ -1881,14 +1944,16 @@ function LiveDNSFeed({
                   <p>
                     {loading
                       ? 'Loading DNS telemetry...'
-                      : 'No DNS records found'}
+                      : 'No persisted DNS telemetry found'}
                   </p>
                   <p className="text-sm mt-1">
                     {loading
                       ? 'Fetching historical queries, resolver events, DoH, and DoT telemetry'
                       : apiError
                         ? 'DNS query feed failed. Check the API error above before treating this as an empty tenant.'
-                        : 'Adjust filters or wait for DNS query, resolver, DoH, or DoT telemetry'}
+                        : queryMeta?.totalIsEstimate && pagination.total === 0
+                          ? 'The DNS API is healthy, but no query, resolver, DoH, or DoT records were persisted in the selected window.'
+                          : 'Adjust filters or wait for DNS query, resolver, DoH, or DoT telemetry'}
                   </p>
                 </td>
               </tr>

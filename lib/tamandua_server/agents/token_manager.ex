@@ -40,7 +40,15 @@ defmodule TamanduaServer.Agents.TokenManager do
   @default_token_ttl_hours 720
   @default_refresh_window_percent 60
   @minimum_token_ttl_hours 720
-  @default_refresh_grace_seconds 30 * 24 * 3600
+  # Grace period after token expiry during which an agent may still refresh.
+  # 7 days balances offline-agent recovery against the window in which a
+  # stolen expired token remains usable (previously 30 days, which kept
+  # exfiltrated tokens refreshable for a full month past expiry).
+  @default_refresh_grace_seconds 7 * 24 * 3600
+  # Refresh counts above this threshold are anomalous for a normally
+  # behaving agent (with a 720h TTL and 60% refresh window this represents
+  # years of continuous refreshes) and may indicate token abuse.
+  @default_refresh_count_warning_threshold 100
 
   defmodule AgentToken do
     use Ecto.Schema
@@ -391,6 +399,8 @@ defmodule TamanduaServer.Agents.TokenManager do
                   "Refreshed token for agent #{agent_id}, generation #{generation}, refresh count #{updated_token_record.refresh_count}"
                 )
 
+                maybe_warn_refresh_count_anomaly(updated_token_record, agent_id, generation)
+
                 {:ok, new_jwt, updated_token_record}
 
               {:error, changeset} ->
@@ -686,15 +696,59 @@ defmodule TamanduaServer.Agents.TokenManager do
     end
   end
 
-  defp validate_refresh_grace(token_record) do
-    grace_seconds =
-      Application.get_env(
-        :tamandua_server,
-        :agent_token_refresh_grace_seconds,
-        @default_refresh_grace_seconds
-      )
+  @doc """
+  The effective refresh grace period in seconds.
 
-    cutoff = DateTime.add(token_record.expires_at, grace_seconds, :second)
+  Configurable via `config :tamandua_server, :agent_token_refresh_grace_seconds`.
+  Defaults to 7 days.
+  """
+  def refresh_grace_seconds do
+    Application.get_env(
+      :tamandua_server,
+      :agent_token_refresh_grace_seconds,
+      @default_refresh_grace_seconds
+    )
+  end
+
+  @doc """
+  The refresh-count threshold above which a warning is logged.
+
+  Configurable via
+  `config :tamandua_server, :agent_token_refresh_count_warning_threshold`.
+  Defaults to #{@default_refresh_count_warning_threshold}.
+  """
+  def refresh_count_warning_threshold do
+    Application.get_env(
+      :tamandua_server,
+      :agent_token_refresh_count_warning_threshold,
+      @default_refresh_count_warning_threshold
+    )
+  end
+
+  # Log a warning when an agent's token has been refreshed an anomalous
+  # number of times -- a possible indicator of a replayed/stolen token
+  # being kept alive indefinitely through refreshes.
+  # Public (but undocumented) so the anomaly path is directly testable
+  # without a full DB-backed refresh cycle.
+  @doc false
+  def maybe_warn_refresh_count_anomaly(token_record, agent_id, generation) do
+    threshold = refresh_count_warning_threshold()
+
+    if is_integer(threshold) and threshold > 0 and
+         (token_record.refresh_count || 0) > threshold do
+      Logger.warning(
+        "Anomalous token refresh count for agent #{agent_id}: " <>
+          "#{token_record.refresh_count} refreshes on generation #{generation} " <>
+          "(threshold #{threshold}). Possible token abuse -- consider rotating " <>
+          "the agent token generation."
+      )
+    end
+
+    :ok
+  end
+
+  defp validate_refresh_grace(token_record) do
+    cutoff = DateTime.add(token_record.expires_at, refresh_grace_seconds(), :second)
 
     if DateTime.compare(DateTime.utc_now(), cutoff) == :lt do
       :ok

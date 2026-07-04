@@ -23,6 +23,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   alias TamanduaServer.Telemetry.IncidentCandidates
   alias TamanduaServer.Detection.Correlator
   alias TamanduaServer.Agents
+  alias TamanduaServer.Mobile
 
   require Logger
 
@@ -181,7 +182,10 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         label: "Timeline correlation"
       )
 
-    serialized = serialize_timeline_events(events, organization_id, evidence)
+    serialized =
+      events
+      |> serialize_timeline_events(organization_id, evidence)
+      |> merge_mobile_timeline_events(organization_id, params, limit)
 
     json(conn, %{
       data: serialized,
@@ -233,12 +237,23 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       )
       |> maybe_filter_correlation_event(params["event_id"])
 
-    correlations =
+    {correlation_rows, partial_reason} =
       query
-      |> safe_repo_all("Timeline correlations")
+      |> safe_repo_all_with_meta("Timeline correlations")
+
+    correlations =
+      correlation_rows
       |> Enum.map(&serialize_event_correlation/1)
 
-    json(conn, %{data: correlations})
+    json(conn, %{
+      data: correlations,
+      meta: %{
+        count: length(correlations),
+        limit: limit,
+        partial: not is_nil(partial_reason),
+        partial_reason: partial_reason
+      }
+    })
   end
 
   def incident_candidates(conn, params) do
@@ -303,14 +318,14 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       |> min(24 * 30)
       |> then(&DateTime.add(DateTime.utc_now(), -&1 * 60 * 60, :second))
 
-    events =
+    {events, partial_reason} =
       from(e in Event,
         where: e.timestamp >= ^since,
         order_by: [desc: e.timestamp],
         limit: ^limit
       )
       |> scope_events_to_org(organization_id)
-      |> safe_repo_all("Timeline readiness")
+      |> safe_repo_all_with_meta("Timeline readiness")
 
     json(conn, %{
       data: build_readiness(events, organization_id),
@@ -318,7 +333,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         since: format_timestamp(since),
         eventCount: length(events),
         eventLimit: limit,
-        scoring: "telemetry-contract/v1"
+        scoring: "telemetry-contract/v1",
+        partial: not is_nil(partial_reason),
+        partial_reason: partial_reason
       }
     })
   end
@@ -714,6 +731,98 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     end)
   end
 
+  defp merge_mobile_timeline_events(serialized_events, nil, _params, _limit), do: serialized_events
+
+  defp merge_mobile_timeline_events(serialized_events, organization_id, params, limit) do
+    if mobile_timeline_filtered_out?(params) do
+      serialized_events
+    else
+      mobile_events =
+        organization_id
+        |> Mobile.list_organization_events(limit: limit, hours: timeline_mobile_hours(params))
+        |> Enum.map(&serialize_mobile_timeline_event/1)
+
+      (serialized_events ++ mobile_events)
+      |> Enum.sort_by(&(&1.timestamp || ""), :desc)
+      |> Enum.take(limit)
+    end
+  rescue
+    error ->
+      Logger.warning("Timeline mobile event projection failed: #{Exception.message(error)}")
+      serialized_events
+  catch
+    :exit, reason ->
+      Logger.warning("Timeline mobile event projection failed: exit #{inspect(reason)}")
+      serialized_events
+  end
+
+  defp mobile_timeline_filtered_out?(%{"agent_ids" => agent_ids})
+       when is_binary(agent_ids) and agent_ids != "",
+       do: true
+
+  defp mobile_timeline_filtered_out?(_params), do: false
+
+  defp serialize_mobile_timeline_event(event) do
+    payload = event.payload || %{}
+
+    %{
+      id: event.id,
+      timestamp: format_timestamp(event.timestamp),
+      eventType: "alert",
+      severity: event.severity || "info",
+      title: event.title || "Mobile security event",
+      description: event.description || mobile_timeline_description(event, payload),
+      agentId: mobile_timeline_agent_id(event),
+      hostname: mobile_timeline_hostname(event),
+      details:
+        payload
+        |> Map.put_new("source", "mobile")
+        |> Map.put_new("mobile_event_id", event.id)
+        |> Map.put_new("app_guard", app_guard_payload?(payload)),
+      relatedEvents: [],
+      mitreTechniques: mobile_mitre_techniques(event, payload),
+      correlationEvidence: [],
+      entities: [],
+      telemetryQuality: %{score: 100, missing: []},
+      telemetryContract: %{category: "mobile", status: "ok"}
+    }
+  end
+
+  defp mobile_timeline_description(event, payload) do
+    app = Map.get(payload, "app") || %{}
+    app_name = event.app_name || app["display_name"] || app["package_or_bundle_id"]
+
+    [event.event_type, app_name]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join(" - ")
+  end
+
+  defp mobile_timeline_agent_id(event) do
+    case Map.get(event, :device) do
+      %{device_id: device_id} -> device_id
+      _ -> event.device_id
+    end
+  end
+
+  defp mobile_timeline_hostname(event) do
+    case Map.get(event, :device) do
+      %{model: model} when is_binary(model) and model != "" -> model
+      %{device_id: device_id} -> device_id
+      _ -> "Mobile"
+    end
+  end
+
+  defp mobile_mitre_techniques(event, payload) do
+    cond do
+      is_binary(event.mitre_technique) -> [event.mitre_technique]
+      is_list(payload["mitre_techniques"]) -> payload["mitre_techniques"]
+      true -> []
+    end
+  end
+
+  defp app_guard_payload?(%{"schema" => "tamandua.app_guard.event/v1"}), do: true
+  defp app_guard_payload?(_payload), do: false
+
   defp maybe_filter_correlation_event(query, nil), do: query
   defp maybe_filter_correlation_event(query, ""), do: query
 
@@ -1085,6 +1194,21 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         end
     end
   end
+
+  defp timeline_mobile_hours(%{"start_time" => start_time})
+       when is_binary(start_time) and start_time != "" do
+    case parse_iso_datetime(start_time) do
+      %DateTime{} = datetime ->
+        DateTime.diff(DateTime.utc_now(), datetime, :hour)
+        |> max(1)
+        |> min(24 * 30)
+
+      _ ->
+        24
+    end
+  end
+
+  defp timeline_mobile_hours(_params), do: 24
 
   defp get_org_agent_hostnames(nil), do: %{}
 

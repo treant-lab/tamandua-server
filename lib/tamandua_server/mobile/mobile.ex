@@ -9,6 +9,8 @@ defmodule TamanduaServer.Mobile do
   import Ecto.Query
   require Logger
 
+  alias TamanduaServer.Agents
+  alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Repo
 
   alias TamanduaServer.Mobile.{
@@ -89,13 +91,15 @@ defmodule TamanduaServer.Mobile do
     |> maybe_filter_mdm(filters)
   end
 
-  defp maybe_filter_platform(query, %{"platform" => platform}) when platform != "" do
+  defp maybe_filter_platform(query, %{"platform" => platform})
+       when is_binary(platform) and platform != "" do
     Device.by_platform(query, platform)
   end
 
   defp maybe_filter_platform(query, _), do: query
 
-  defp maybe_filter_status(query, %{"status" => status}) when status != "" do
+  defp maybe_filter_status(query, %{"status" => status})
+       when is_binary(status) and status != "" do
     Device.by_status(query, status)
   end
 
@@ -148,9 +152,25 @@ defmodule TamanduaServer.Mobile do
   Registers a new mobile device from the agent.
   """
   def register_device(attrs) do
-    %Device{}
-    |> Device.registration_changeset(attrs)
-    |> Repo.insert()
+    attrs = normalize_registration_attrs(attrs)
+    organization_id = attrs["organization_id"] || attrs[:organization_id]
+    device_id = attrs["device_id"] || attrs[:device_id]
+
+    device_result =
+      case get_device_by_device_id(organization_id, device_id) do
+        nil ->
+          %Device{}
+          |> Device.registration_changeset(attrs)
+          |> Repo.insert()
+
+        %Device{} = device ->
+          update_device(device, attrs)
+      end
+
+    with {:ok, device} <- device_result,
+         {:ok, _agent} <- upsert_mobile_agent(device) do
+      {:ok, device}
+    end
   end
 
   @doc """
@@ -166,9 +186,195 @@ defmodule TamanduaServer.Mobile do
   Updates device security posture.
   """
   def update_device_posture(%Device{} = device, attrs) do
-    device
-    |> Device.posture_changeset(attrs)
-    |> Repo.update()
+    attrs = normalize_posture_attrs(attrs)
+
+    with {:ok, updated_device} <-
+           device
+           |> Device.posture_changeset(attrs)
+           |> Repo.update(),
+         {:ok, _agent} <- upsert_mobile_agent(updated_device) do
+      {:ok, updated_device}
+    end
+  end
+
+  defp normalize_posture_attrs(attrs) when is_map(attrs) do
+    security_checks = attrs["security_checks"] || attrs[:security_checks] || %{}
+    now = utc_now()
+
+    %{}
+    |> maybe_put("is_jailbroken", first_present(security_checks, ["jailbroken", :jailbroken]))
+    |> maybe_put(
+      "is_rooted",
+      first_present(security_checks, [
+        "jailbroken_or_rooted",
+        :jailbroken_or_rooted,
+        "rooted",
+        :rooted
+      ])
+    )
+    |> maybe_put(
+      "passcode_enabled",
+      first_present(security_checks, [
+        "passcode_enabled",
+        :passcode_enabled,
+        "passcode_set",
+        :passcode_set
+      ])
+    )
+    |> maybe_put(
+      "encryption_enabled",
+      first_present(security_checks, ["encryption_enabled", :encryption_enabled])
+    )
+    |> maybe_put(
+      "biometric_enabled",
+      first_present(security_checks, ["biometric_enabled", :biometric_enabled])
+    )
+    |> maybe_put(
+      "developer_mode_enabled",
+      first_present(security_checks, [
+        "developer_mode",
+        :developer_mode,
+        "developer_mode_enabled",
+        :developer_mode_enabled
+      ])
+    )
+    |> maybe_put(
+      "usb_debugging_enabled",
+      first_present(security_checks, [
+        "adb_enabled",
+        :adb_enabled,
+        "usb_debugging",
+        :usb_debugging,
+        "usb_debugging_enabled",
+        :usb_debugging_enabled
+      ])
+    )
+    |> maybe_put(
+      "last_seen_at",
+      parse_mobile_timestamp(
+        attrs["last_seen"] || attrs[:last_seen] || attrs["collected_at"] || attrs[:collected_at]
+      ) || now
+    )
+  end
+
+  defp normalize_posture_attrs(_attrs), do: %{"last_seen_at" => utc_now()}
+
+  defp first_present(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      case Map.fetch(map, key) do
+        {:ok, value} when not is_nil(value) -> value
+        _ -> nil
+      end
+    end)
+  end
+
+  defp first_present(_map, _keys), do: nil
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp parse_mobile_timestamp(nil), do: nil
+
+  defp parse_mobile_timestamp(%NaiveDateTime{} = value),
+    do: NaiveDateTime.truncate(value, :second)
+
+  defp parse_mobile_timestamp(%DateTime{} = value) do
+    value
+    |> DateTime.to_naive()
+    |> NaiveDateTime.truncate(:second)
+  end
+
+  defp parse_mobile_timestamp(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    with {:error, _} <- DateTime.from_iso8601(trimmed),
+         {:error, _} <- NaiveDateTime.from_iso8601(String.replace_suffix(trimmed, "Z", "")) do
+      nil
+    else
+      {:ok, %DateTime{} = datetime, _offset} -> parse_mobile_timestamp(datetime)
+      {:ok, %NaiveDateTime{} = naive} -> parse_mobile_timestamp(naive)
+    end
+  end
+
+  defp parse_mobile_timestamp(_value), do: nil
+
+  defp utc_now do
+    NaiveDateTime.utc_now()
+    |> NaiveDateTime.truncate(:second)
+  end
+
+  defp normalize_registration_attrs(attrs) do
+    now = utc_now()
+
+    attrs
+    |> Map.put("status", "active")
+    |> Map.put("last_seen_at", now)
+    |> Map.put_new("enrolled_at", now)
+  end
+
+  defp upsert_mobile_agent(%Device{} = device) do
+    case get_mobile_agent(device.organization_id, device.device_id) do
+      nil ->
+        Agents.create_agent_for_org(device.organization_id, mobile_agent_attrs(device, %Agent{}))
+
+      %Agent{} = agent ->
+        Agents.update_agent(agent, mobile_agent_attrs(device, agent))
+    end
+  end
+
+  defp get_mobile_agent(organization_id, device_id) do
+    Agent
+    |> where([a], a.organization_id == ^organization_id and a.machine_id == ^device_id)
+    |> Repo.one()
+  end
+
+  defp mobile_agent_attrs(%Device{} = device, %Agent{} = agent) do
+    %{
+      hostname: mobile_agent_hostname(device),
+      ip_address: device.ip_address || agent.ip_address,
+      os_type: device.platform,
+      os_version: device.os_version,
+      agent_version: device.agent_version,
+      machine_id: device.device_id,
+      status: "online",
+      last_seen_at: device.last_seen_at || utc_now(),
+      config: mobile_agent_config(device, agent.config || %{}),
+      tags: merge_mobile_agent_tags(agent.tags || [], device)
+    }
+  end
+
+  defp mobile_agent_hostname(%Device{} = device) do
+    cond do
+      is_binary(device.model) and device.model != "" ->
+        device.model
+
+      is_binary(device.manufacturer) and device.manufacturer != "" ->
+        device.manufacturer
+
+      true ->
+        "mobile-" <> String.slice(device.device_id || device.id, 0, 12)
+    end
+  end
+
+  defp mobile_agent_config(%Device{} = device, existing_config) do
+    Map.merge(existing_config, %{
+      "source" => "tamandua_mobile",
+      "mobile_device_id" => device.id,
+      "mobile_device_external_id" => device.device_id,
+      "manufacturer" => device.manufacturer,
+      "model" => device.model,
+      "platform" => device.platform,
+      "user_email" => device.user_email,
+      "user_name" => device.user_name,
+      "mdm_enrolled" => device.mdm_enrolled
+    })
+  end
+
+  defp merge_mobile_agent_tags(existing_tags, %Device{} = device) do
+    (existing_tags ++ ["mobile", "mobile_endpoint", device.platform])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
   end
 
   @doc """
@@ -205,7 +411,10 @@ defmodule TamanduaServer.Mobile do
   Updates device last seen timestamp.
   """
   def touch_device(%Device{} = device) do
-    update_device(device, %{last_seen_at: NaiveDateTime.utc_now()})
+    with {:ok, updated_device} <- update_device(device, %{last_seen_at: utc_now()}),
+         {:ok, _agent} <- upsert_mobile_agent(updated_device) do
+      {:ok, updated_device}
+    end
   end
 
   @doc """
@@ -249,8 +458,6 @@ defmodule TamanduaServer.Mobile do
   Returns {:ok, {inserted, updated, deleted}} counts.
   """
   def sync_device_apps(device_id, apps_data) do
-    now = NaiveDateTime.utc_now()
-
     # Get existing apps
     existing = list_device_apps(device_id, limit: 10000)
     existing_map = Map.new(existing, &{&1.bundle_id, &1})
@@ -414,6 +621,55 @@ defmodule TamanduaServer.Mobile do
     end
   end
 
+  @doc """
+  Fetches one App Guard build manifest scoped to an organization.
+  """
+  def get_app_guard_build_manifest(organization_id, build_id) do
+    AppGuardBuildManifest
+    |> AppGuardBuildManifest.by_organization(organization_id)
+    |> AppGuardBuildManifest.by_build_id(build_id)
+    |> Repo.one()
+  end
+
+  @doc """
+  Verifies client-computed build metadata against a stored App Guard build manifest.
+
+  This is metadata-only: callers submit SHA256 values they computed locally. No
+  APK/AAB/IPA bytes are accepted or stored.
+  """
+  def verify_app_guard_build_manifest(organization_id, build_id, params) do
+    case get_app_guard_build_manifest(organization_id, build_id) do
+      nil ->
+        {:error, :build_manifest_not_found}
+
+      %AppGuardBuildManifest{} = manifest ->
+        checks =
+          [
+            {"artifact_sha256", get_in(manifest.artifact || %{}, ["sha256"])},
+            {"certificate_sha256", get_in(manifest.signing || %{}, ["certificate_sha256"])},
+            {"config_sha256", get_in(manifest.sdk || %{}, ["config_sha256"])}
+          ]
+          |> Enum.map(fn {key, expected} ->
+            {key, compare_optional_sha256(params[key], expected)}
+          end)
+
+        provided = Enum.filter(checks, fn {_key, result} -> not is_nil(result) end)
+
+        if provided == [] do
+          {:error, :no_digests_provided}
+        else
+          {:ok,
+           %{
+             build_id: manifest.build_id,
+             app_id: manifest.app_id,
+             verified: Enum.all?(provided, fn {_key, result} -> result == true end),
+             checks: Map.new(checks),
+             claim_boundary: "metadata_only_no_binary_upload_or_fusion"
+           }}
+        end
+    end
+  end
+
   defp maybe_filter_app_guard_platform(query, nil), do: query
   defp maybe_filter_app_guard_platform(query, ""), do: query
 
@@ -426,6 +682,18 @@ defmodule TamanduaServer.Mobile do
 
   defp maybe_filter_app_guard_app_id(query, app_id),
     do: AppGuardBuildManifest.by_app_id(query, app_id)
+
+  defp compare_optional_sha256(nil, _expected), do: nil
+  defp compare_optional_sha256("", _expected), do: nil
+
+  defp compare_optional_sha256(value, expected) when is_binary(value) and is_binary(expected) do
+    normalized = value |> String.trim() |> String.downcase()
+    expected = String.downcase(expected)
+
+    Regex.match?(~r/^[a-f0-9]{64}$/, normalized) and normalized == expected
+  end
+
+  defp compare_optional_sha256(_value, _expected), do: false
 
   @doc """
   Lists App Guard research programs for an organization.
@@ -766,6 +1034,7 @@ defmodule TamanduaServer.Mobile do
         "[#{alert_source_label(event)}] #{event.title || MobileEvent.event_type_description(event.event_type)}",
       description: build_alert_description(event, device),
       organization_id: event.organization_id,
+      agent_id: mobile_event_agent_id(event, device),
       mitre_techniques: if(mitre_technique, do: [mitre_technique], else: []),
       mitre_tactics: if(mitre_tactic, do: [mitre_tactic], else: []),
       # calculate_mobile_risk_score returns a 0-100 value; canonical threat_score is 0.0-1.0
@@ -807,6 +1076,28 @@ defmodule TamanduaServer.Mobile do
       {:error, reason} ->
         Logger.error("[Mobile] Failed to create alert for event #{event.id}: #{inspect(reason)}")
         {:error, reason}
+    end
+  end
+
+  defp mobile_event_agent_id(%MobileEvent{} = event, %Device{} = device) do
+    device_agent_id(device.organization_id, device.device_id) ||
+      device_agent_id(event.organization_id, device.device_id)
+  end
+
+  defp mobile_event_agent_id(%MobileEvent{} = event, _device) do
+    case Repo.get(Device, event.device_id) do
+      %Device{} = device -> mobile_event_agent_id(event, device)
+      nil -> nil
+    end
+  end
+
+  defp device_agent_id(nil, _device_id), do: nil
+  defp device_agent_id(_organization_id, nil), do: nil
+
+  defp device_agent_id(organization_id, device_id) do
+    case get_mobile_agent(organization_id, device_id) do
+      %Agent{id: agent_id} -> agent_id
+      nil -> nil
     end
   end
 

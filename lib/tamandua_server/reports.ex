@@ -16,6 +16,7 @@ defmodule TamanduaServer.Reports do
   alias TamanduaServer.Reports.Report
   alias TamanduaServer.{Agents, Alerts, Telemetry, Detection, ThreatIntel}
   alias TamanduaServer.Detection.{IOCs, Mitre}
+  alias TamanduaServer.TenantScope
 
   @report_templates %{
     "executive_summary" => "Executive Summary",
@@ -119,10 +120,16 @@ defmodule TamanduaServer.Reports do
   Generates a report based on template_id and date range.
 
   Returns the full report data structure ready for frontend rendering.
+
+  Alert data is tenant-scoped: pass `organization_id` explicitly, or it is
+  derived from the `user` (via `TenantScope.get_tenant_id/1`). When no
+  organization can be resolved the report fails closed for alert data
+  (zero counts / empty lists) instead of leaking cross-tenant alerts.
   """
-  def generate_report(template_id, date_from, date_to, user \\ nil) do
+  def generate_report(template_id, date_from, date_to, user \\ nil, organization_id \\ nil) do
+    organization_id = organization_id || TenantScope.get_tenant_id(user)
     template_name = Map.get(@report_templates, template_id, "Unknown Report")
-    sections = build_sections(template_id, date_from, date_to)
+    sections = build_sections(template_id, date_from, date_to, organization_id)
     generated_by = user_name(user)
 
     report_data = %{
@@ -152,12 +159,12 @@ defmodule TamanduaServer.Reports do
   # Section Builders for Each Report Type
   # ============================================================================
 
-  defp build_sections("executive_summary", date_from, date_to) do
+  defp build_sections("executive_summary", date_from, date_to, organization_id) do
     total_agents = safe_call(fn -> Agents.count_all() end, 0)
     online_agents = safe_call(fn -> Agents.count_online() end, 0)
-    open_alerts = safe_call(fn -> Alerts.count_open() end, 0)
-    critical_alerts = safe_call(fn -> Alerts.count_by_severity(:critical) end, 0)
-    high_alerts = safe_call(fn -> Alerts.count_by_severity(:high) end, 0)
+    open_alerts = org_count_open(organization_id)
+    critical_alerts = org_count_by_severity(organization_id, :critical)
+    high_alerts = org_count_by_severity(organization_id, :high)
     events_today = safe_call(fn -> Telemetry.count_events_today() end, 0)
     detections_today = safe_call(fn -> Detection.count_detections_today() end, 0)
 
@@ -219,14 +226,14 @@ defmodule TamanduaServer.Reports do
     ]
   end
 
-  defp build_sections("incident_report", date_from, date_to) do
-    open_alerts = safe_call(fn -> Alerts.count_open() end, 0)
-    resolved = safe_call(fn -> Alerts.count_by_status("resolved") end, 0)
-    investigating = safe_call(fn -> Alerts.count_by_status("investigating") end, 0)
-    false_positives = safe_call(fn -> Alerts.count_by_status("false_positive") end, 0)
+  defp build_sections("incident_report", date_from, date_to, organization_id) do
+    open_alerts = org_count_open(organization_id)
+    resolved = org_count_by_status(organization_id, "resolved")
+    investigating = org_count_by_status(organization_id, "investigating")
+    false_positives = org_count_by_status(organization_id, "false_positive")
 
-    # Get alerts within date range
-    alerts_in_range = safe_call(fn -> Alerts.list_alerts_in_range(date_from, date_to) end, [])
+    # Get alerts within date range (tenant-scoped)
+    alerts_in_range = org_alerts_in_range(organization_id, date_from, date_to)
     total_incidents = length(alerts_in_range)
 
     # Calculate average response time (time from creation to first status change)
@@ -339,7 +346,7 @@ defmodule TamanduaServer.Reports do
     ]
   end
 
-  defp build_sections("threat_landscape", date_from, date_to) do
+  defp build_sections("threat_landscape", date_from, date_to, organization_id) do
     # IOC statistics
     ioc_stats = safe_call(fn -> IOCs.count_by_type() end, %{})
     total_iocs = safe_call(fn -> IOCs.count(enabled: true) end, 0)
@@ -372,8 +379,8 @@ defmodule TamanduaServer.Reports do
         []
       )
 
-    # Attack vector analysis from alerts
-    alerts_in_range = safe_call(fn -> Alerts.list_alerts_in_range(date_from, date_to) end, [])
+    # Attack vector analysis from alerts (tenant-scoped)
+    alerts_in_range = org_alerts_in_range(organization_id, date_from, date_to)
 
     attack_vectors =
       safe_call(
@@ -458,7 +465,7 @@ defmodule TamanduaServer.Reports do
     ]
   end
 
-  defp build_sections("agent_health", _date_from, _date_to) do
+  defp build_sections("agent_health", _date_from, _date_to, _organization_id) do
     total = safe_call(fn -> Agents.count_all() end, 0)
     online = safe_call(fn -> Agents.count_online() end, 0)
     offline = max(total - online, 0)
@@ -592,7 +599,7 @@ defmodule TamanduaServer.Reports do
     ]
   end
 
-  defp build_sections("compliance_summary", date_from, date_to) do
+  defp build_sections("compliance_summary", date_from, date_to, organization_id) do
     total_agents = safe_call(fn -> Agents.count_all() end, 0)
     online_agents = safe_call(fn -> Agents.count_online() end, 0)
 
@@ -601,8 +608,8 @@ defmodule TamanduaServer.Reports do
     yara_rules = safe_call(fn -> Detection.count_yara_rules() end, 0)
     total_iocs = safe_call(fn -> IOCs.count(enabled: true) end, 0)
 
-    # Alert statistics for compliance
-    alerts_in_range = safe_call(fn -> Alerts.list_alerts_in_range(date_from, date_to) end, [])
+    # Alert statistics for compliance (tenant-scoped)
+    alerts_in_range = org_alerts_in_range(organization_id, date_from, date_to)
     resolved_alerts = Enum.filter(alerts_in_range, &(&1.status == "resolved"))
     false_positive_rate = calculate_false_positive_rate(alerts_in_range)
 
@@ -689,7 +696,7 @@ defmodule TamanduaServer.Reports do
     ]
   end
 
-  defp build_sections(_template_id, date_from, date_to) do
+  defp build_sections(_template_id, date_from, date_to, organization_id) do
     # Generic fallback for unknown templates
     [
       %{
@@ -703,12 +710,37 @@ defmodule TamanduaServer.Reports do
         type: "stats",
         content: [
           %{label: "Total Agents", value: safe_call(fn -> Agents.count_all() end, 0)},
-          %{label: "Open Alerts", value: safe_call(fn -> Alerts.count_open() end, 0)},
+          %{label: "Open Alerts", value: org_count_open(organization_id)},
           %{label: "Events Today", value: safe_call(fn -> Telemetry.count_events_today() end, 0)}
         ]
       }
     ]
   end
+
+  # ============================================================================
+  # Tenant-Scoped Alert Helpers
+  # ============================================================================
+  # Reports must never mix alert data across organizations. When no
+  # organization can be resolved we fail closed (zero counts / empty lists)
+  # rather than fall back to unscoped queries.
+
+  defp org_count_open(nil), do: 0
+  defp org_count_open(org_id), do: safe_call(fn -> Alerts.count_active_for_org(org_id) end, 0)
+
+  defp org_count_by_severity(nil, _severity), do: 0
+
+  defp org_count_by_severity(org_id, severity),
+    do: safe_call(fn -> Alerts.count_by_severity_for_org(org_id, severity) end, 0)
+
+  defp org_count_by_status(nil, _status), do: 0
+
+  defp org_count_by_status(org_id, status),
+    do: safe_call(fn -> Alerts.count_by_status_for_org(org_id, status) end, 0)
+
+  defp org_alerts_in_range(nil, _date_from, _date_to), do: []
+
+  defp org_alerts_in_range(org_id, date_from, date_to),
+    do: safe_call(fn -> Alerts.list_alerts_in_range_for_org(org_id, date_from, date_to) end, [])
 
   # ============================================================================
   # Helper Functions
@@ -725,7 +757,11 @@ defmodule TamanduaServer.Reports do
   end
 
   defp user_name(nil), do: "System"
-  defp user_name(user) when is_map(user), do: user[:name] || user[:email] || user.name || user.email || "Unknown"
+
+  # Structs (e.g. %Accounts.User{}) do not implement the Access behaviour,
+  # so use Map.get/2 instead of user[:name].
+  defp user_name(%_{} = user), do: Map.get(user, :name) || Map.get(user, :email) || "Unknown"
+  defp user_name(user) when is_map(user), do: user[:name] || user[:email] || "Unknown"
   defp user_name(_), do: "Unknown"
 
   defp format_datetime(nil), do: "Never"

@@ -1465,6 +1465,7 @@ defmodule TamanduaServerWeb.Router do
     post("/collab/scan", CollaborationController, :scan_content)
 
     # MCP Server
+    get("/mcp/rpc", MCPController, :schema_status)
     post("/mcp/rpc", MCPController, :json_rpc)
     get("/mcp/rpc/tools/schema/status", MCPController, :schema_status)
     get("/mcp/status", MCPController, :schema_status)
@@ -1908,9 +1909,11 @@ defmodule TamanduaServerWeb.Router do
     get("/logs/stats", LogIngestionController, :stats)
 
     # Mobile Security (Foundation - API stubs)
+    get("/mobile/agents/:agent_id/overview", MobileController, :agent_overview)
     get("/mobile/devices", MobileController, :index)
     get("/mobile/devices/:id", MobileController, :show)
     post("/mobile/devices/register", MobileController, :register)
+    post("/mobile/devices/enroll", MobileController, :register)
     put("/mobile/devices/:id", MobileController, :update)
     delete("/mobile/devices/:id", MobileController, :delete)
 
@@ -1933,6 +1936,7 @@ defmodule TamanduaServerWeb.Router do
     get("/mobile/app_guard/apps/:app_id", MobileController, :show_app_guard_app)
     get("/mobile/app_guard/builds", MobileController, :app_guard_builds)
     post("/mobile/app_guard/builds", MobileController, :create_app_guard_build)
+    post("/mobile/app_guard/builds/:build_id/verify", MobileController, :verify_app_guard_build)
     get("/mobile/app_guard/research/programs", MobileController, :app_guard_research_programs)
 
     post(
@@ -2406,6 +2410,7 @@ defmodule TamanduaServerWeb.Router do
     # New advanced features
     get("/timeline", InertiaController, :timeline)
     get("/timeline/:incident_id", InertiaController, :timeline_detail)
+    get("/storyline", InertiaController, :storyline_index)
     get("/storyline/:alert_id", InertiaController, :storyline)
     get("/storyline/process/:agent_id/:pid", InertiaController, :storyline_process)
     get("/investigations", InertiaController, :investigation_hub)
@@ -2437,6 +2442,9 @@ defmodule TamanduaServerWeb.Router do
     get("/ai-security/agents", InertiaController, :ai_agent_registry)
     get("/ai-security/artifacts", InertiaController, :ai_artifacts)
     get("/ai-security/dependency-graph", InertiaController, :ai_dependency_graph)
+    get("/ai-security/hunting", InertiaController, :nl_hunting)
+    get("/ai-security/ml-dashboard", InertiaController, :ml_dashboard)
+    get("/ai-security/behavioral", InertiaController, :behavioral_analytics)
 
     # Agentic Analyst (Purple AI)
     get("/analyst", InertiaController, :agentic_analyst)
@@ -2452,6 +2460,7 @@ defmodule TamanduaServerWeb.Router do
 
     # Automation
     get("/automation", InertiaController, :hyperautomation)
+    get("/hyperautomation", InertiaController, :hyperautomation)
     get("/automation/workflows/:id", InertiaController, :workflow_detail)
 
     # Exposure Management
@@ -2483,8 +2492,7 @@ defmodule TamanduaServerWeb.Router do
     # Email Security
     get("/email-security", InertiaController, :email_security)
 
-    # Mobile Security is hidden until mobile telemetry and MDM data are real.
-    # get "/mobile", InertiaController, :mobile
+    get("/mobile", InertiaController, :mobile)
 
     # EDR Validation & Benchmark
     get("/validation", InertiaController, :validation_dashboard)
@@ -2514,6 +2522,8 @@ defmodule TamanduaServerWeb.Router do
 
     # ML Malware Detection
     get("/ml", InertiaController, :ml_dashboard)
+    get("/ml/detections", InertiaController, :ml_detections)
+    get("/ml/processes", InertiaController, :ml_dashboard)
 
     get("/reports", InertiaController, :reports)
     get("/audit-log", InertiaController, :audit_log)

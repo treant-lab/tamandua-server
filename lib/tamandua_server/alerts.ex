@@ -489,6 +489,55 @@ defmodule TamanduaServer.Alerts do
   end
 
   @doc """
+  Counts alerts by status for an organization.
+  """
+  def count_by_status_for_org(organization_id, status) do
+    status = to_string(status)
+
+    Alert
+    |> TenantScope.scope_to_tenant(organization_id)
+    |> where([a], a.status == ^status)
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
+  Lists alerts within a date range for an organization.
+
+  Tenant-scoped variant of `list_alerts_in_range/2`. Used by report
+  generation and MCP surfaces so they never return cross-tenant data.
+  """
+  def list_alerts_in_range_for_org(organization_id, date_from, date_to)
+      when is_binary(date_from) and is_binary(date_to) do
+    from_date = parse_date(date_from)
+    to_date = parse_date(date_to)
+
+    query =
+      Alert
+      |> TenantScope.scope_to_tenant(organization_id)
+      |> order_by([a], desc: a.inserted_at)
+      |> preload([:assigned_to])
+
+    query =
+      if from_date do
+        from_naive = NaiveDateTime.new!(from_date, ~T[00:00:00])
+        where(query, [a], a.inserted_at >= ^from_naive)
+      else
+        query
+      end
+
+    query =
+      if to_date do
+        # Add 1 day to include the entire end date
+        to_naive = NaiveDateTime.new!(Date.add(to_date, 1), ~T[00:00:00])
+        where(query, [a], a.inserted_at < ^to_naive)
+      else
+        query
+      end
+
+    Repo.all(query)
+  end
+
+  @doc """
   Returns privacy-safe alert posture counts for a single agent in an organization.
 
   This is used by endpoint security posture attestations. It intentionally returns

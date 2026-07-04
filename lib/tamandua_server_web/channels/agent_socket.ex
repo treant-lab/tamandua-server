@@ -24,13 +24,12 @@ defmodule TamanduaServerWeb.AgentSocket do
   - last_used_at is updated for audit trails
   """
 
-  use Phoenix.Socket
+  use Phoenix.Socket, log: false
   require Logger
 
   alias TamanduaServer.Agents.{Registry, Worker, CertificateManager, Credentials}
   alias TamanduaServer.Agents.TokenManager.AgentToken
   alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.OSCommand
   alias TamanduaServer.Repo
   alias TamanduaServer.Repo.MultiTenant
 
@@ -663,17 +662,77 @@ defmodule TamanduaServerWeb.AgentSocket do
 
   defp extract_cn(_), do: :error
 
-  defp verify_cert_chain(cert_der) do
-    ca_cert_path = Application.get_env(:tamandua_server, :ca_cert_path)
+  # Upper bound on the number of certificates in a validation path (leaf +
+  # intermediates + root). Bounds the issuer walk in build_validation_path/2
+  # against malformed or cyclic CA bundles.
+  @max_cert_chain_length 8
 
-    case load_ca_bundle(ca_cert_path) do
-      {:ok, ca_pem} ->
-        verify_against_ca(cert_der, ca_pem)
+  defp verify_cert_chain(cert_der) do
+    case load_ca_certs() do
+      {:ok, ca_certs} ->
+        verify_against_ca(cert_der, ca_certs)
 
       {:error, reason} ->
         Logger.error("Failed to load CA bundle for mTLS verification: #{inspect(reason)}")
         false
     end
+  end
+
+  # Loads and decodes the trusted CA bundle into a list of DER certificates.
+  # File-based bundles are cached in :persistent_term keyed by path, with the
+  # file mtime stored alongside the parsed certs so the bundle is re-read and
+  # re-parsed only when the file changes on disk.
+  defp load_ca_certs do
+    ca_cert_path = Application.get_env(:tamandua_server, :ca_cert_path)
+    load_ca_certs(ca_cert_path)
+  end
+
+  defp load_ca_certs(path) when is_binary(path) and path != "" do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        cache_key = {__MODULE__, :ca_bundle, path}
+
+        case :persistent_term.get(cache_key, nil) do
+          {^mtime, ca_certs} ->
+            {:ok, ca_certs}
+
+          _ ->
+            with {:ok, ca_pem} <- File.read(path),
+                 {:ok, ca_certs} <- decode_ca_bundle(ca_pem) do
+              :persistent_term.put(cache_key, {mtime, ca_certs})
+              {:ok, ca_certs}
+            else
+              # A bundle that exists but does not parse stays fail-closed;
+              # an unreadable file falls back to the in-process PKI export,
+              # matching the previous load_ca_bundle/1 behavior.
+              {:error, :no_ca_certificates} = error -> error
+              {:error, _} -> load_ca_certs_from_pki()
+            end
+        end
+
+      {:error, _} ->
+        load_ca_certs_from_pki()
+    end
+  end
+
+  defp load_ca_certs(_), do: load_ca_certs_from_pki()
+
+  defp load_ca_certs_from_pki do
+    with {:ok, ca_pem} <- load_ca_bundle_from_pki() do
+      decode_ca_bundle(ca_pem)
+    end
+  end
+
+  defp decode_ca_bundle(ca_pem) do
+    ca_certs =
+      for {:Certificate, der, :not_encrypted} <- :public_key.pem_decode(ca_pem), do: der
+
+    case ca_certs do
+      [] -> {:error, :no_ca_certificates}
+      certs -> {:ok, certs}
+    end
+  rescue
+    _ -> {:error, :no_ca_certificates}
   end
 
   defp load_ca_bundle(path) when is_binary(path) and path != "" do
@@ -699,39 +758,63 @@ defmodule TamanduaServerWeb.AgentSocket do
     :exit, reason -> {:error, reason}
   end
 
-  defp verify_against_ca(cert_der, ca_pem) do
-    cert_file =
-      write_temp_file(:public_key.pem_encode([{:Certificate, cert_der, :not_encrypted}]))
+  # In-VM X.509 path validation (RFC 5280) via :public_key, replacing the
+  # previous shell-out to `openssl verify`: no per-connection process spawn,
+  # no certificate material written to tmp, and no substring matching on
+  # openssl stdout. Fail-closed: any error rejects the certificate.
+  # Public (@doc false) so tests can exercise it directly.
+  @doc false
+  def verify_against_ca(cert_der, ca_certs) when is_list(ca_certs) do
+    case build_validation_path(cert_der, ca_certs) do
+      {:ok, anchor_der, path} ->
+        case :public_key.pkix_path_validation(anchor_der, path, []) do
+          {:ok, _} ->
+            true
 
-    ca_file = write_temp_file(ca_pem)
+          {:error, reason} ->
+            Logger.warning("Certificate path validation failed: #{inspect(reason)}")
+            false
+        end
 
-    try do
-      case OSCommand.run("openssl", ["verify", "-CAfile", ca_file, cert_file]) do
-        {output, 0} ->
-          String.contains?(output, "OK")
-
-        {:error, reason} ->
-          Logger.warning("Certificate path validation could not run: #{inspect(reason)}")
-          false
-
-        {error, _} ->
-          Logger.warning("Certificate path validation failed: #{String.trim(error)}")
-          false
-      end
-    rescue
-      e ->
-        Logger.error("CA verification error: #{inspect(e)}")
+      {:error, reason} ->
+        Logger.warning("Certificate path validation failed: #{inspect(reason)}")
         false
-    after
-      File.rm(cert_file)
-      File.rm(ca_file)
     end
+  rescue
+    e ->
+      Logger.error("CA verification error: #{inspect(e)}")
+      false
   end
 
-  defp write_temp_file(content) do
-    path = Path.join(System.tmp_dir!(), "tamandua_mtls_#{System.unique_integer([:positive])}.pem")
-    File.write!(path, content)
-    path
+  # Builds the RFC 5280 validation path for a leaf certificate by walking
+  # issuer links through the trusted bundle (which may contain a chain, e.g.
+  # root + intermediate) until a self-signed trust anchor is reached.
+  # Returns {:ok, anchor_der, path} where path is ordered from the certificate
+  # issued by the anchor down to the leaf (anchor excluded). Signature
+  # correctness is enforced by :public_key.pkix_path_validation/3.
+  defp build_validation_path(cert_der, ca_certs) do
+    do_build_validation_path(cert_der, ca_certs, [cert_der])
+  end
+
+  defp do_build_validation_path(_cert_der, _ca_certs, path)
+       when length(path) > @max_cert_chain_length do
+    {:error, :certificate_chain_too_long}
+  end
+
+  defp do_build_validation_path(cert_der, ca_certs, path) do
+    case Enum.find(ca_certs, fn ca_der -> :public_key.pkix_is_issuer(cert_der, ca_der) end) do
+      nil ->
+        {:error, :issuer_not_in_ca_bundle}
+
+      issuer_der ->
+        if :public_key.pkix_is_self_signed(issuer_der) do
+          {:ok, issuer_der, path}
+        else
+          do_build_validation_path(issuer_der, List.delete(ca_certs, issuer_der), [
+            issuer_der | path
+          ])
+        end
+    end
   end
 
   defp extract_peer_ip(connect_info) do
@@ -846,7 +929,7 @@ defmodule TamanduaServerWeb.AgentChannel do
   Channel for handling agent communication.
   """
 
-  use TamanduaServerWeb, :channel
+  use Phoenix.Channel, log_join: false
   require Logger
 
   alias TamanduaServer.Agents.{Registry, Worker}
@@ -1104,26 +1187,81 @@ defmodule TamanduaServerWeb.AgentChannel do
   defp log_telemetry_batch_summary(_agent_id, _events), do: :ok
 
   defp should_log_agent_summary?(agent_id) do
-    debug_agent_id = System.get_env("TAMANDUA_DEBUG_AGENT_ID")
-    to_string(agent_id) in [debug_agent_id, "9390f816-2a0f-47c3-aa4b-2b244fa2d737"]
+    case debug_agent_id() do
+      nil -> false
+      debug_id -> to_string(agent_id) == debug_id
+    end
   end
+
+  # Resolves the agent id used to scope verbose lab/debug logging. Reads the
+  # TAMANDUA_DEBUG_AGENT_ID env var first, then the :debug_agent_id app config.
+  # Returns nil when unset (debug logging disabled); there is deliberately no
+  # baked-in fallback id. Public (@doc false) so tests can exercise it.
+  @doc false
+  def debug_agent_id do
+    normalize_debug_agent_id(System.get_env("TAMANDUA_DEBUG_AGENT_ID")) ||
+      normalize_debug_agent_id(Application.get_env(:tamandua_server, :debug_agent_id))
+  end
+
+  defp normalize_debug_agent_id(value) when is_binary(value) and value != "", do: value
+  defp normalize_debug_agent_id(_), do: nil
+
+  # Upper bound on a single binary sample: 50MB decoded. Base64 inflates by
+  # ~4/3, so the encoded payload is size-checked before decoding to avoid
+  # allocating for oversized agent-controlled input.
+  @max_binary_sample_decoded_bytes 50 * 1024 * 1024
+  @max_binary_sample_encoded_bytes div(@max_binary_sample_decoded_bytes * 4, 3)
 
   @impl true
   def handle_in("binary_sample", payload, socket) do
-    sample = %{
-      agent_id: socket.assigns.agent_id,
-      file_path: payload["file_path"],
-      sha256: Base.decode64!(payload["sha256"]),
-      content: Base.decode64!(payload["content"]),
-      total_size: payload["total_size"],
-      entropy: payload["entropy"],
-      file_type: payload["file_type"]
-    }
+    case build_binary_sample(payload, socket.assigns.agent_id) do
+      {:ok, sample} ->
+        # Push to ML pipeline
+        TamanduaServer.Telemetry.Ingestor.push_binary_sample(sample)
 
-    # Push to ML pipeline
-    TamanduaServer.Telemetry.Ingestor.push_binary_sample(sample)
+        {:reply, {:ok, %{status: "processing"}}, socket}
 
-    {:reply, {:ok, %{status: "processing"}}, socket}
+      {:error, reason} ->
+        Logger.warning(
+          "AgentChannel: rejected binary_sample from #{socket.assigns.agent_id}: #{reason}"
+        )
+
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Validates and decodes an agent-submitted binary sample. Agent input is
+  # untrusted even post-auth: malformed base64 must not crash the channel
+  # (Base.decode64!/1 raises) and oversized content must be rejected before
+  # decoding.
+  defp build_binary_sample(payload, agent_id) do
+    encoded_sha256 = payload["sha256"]
+    encoded_content = payload["content"]
+
+    cond do
+      not is_binary(encoded_sha256) or not is_binary(encoded_content) ->
+        {:error, "invalid_payload"}
+
+      byte_size(encoded_content) > @max_binary_sample_encoded_bytes ->
+        {:error, "sample_too_large"}
+
+      true ->
+        with {:ok, sha256} <- Base.decode64(encoded_sha256),
+             {:ok, content} <- Base.decode64(encoded_content) do
+          {:ok,
+           %{
+             agent_id: agent_id,
+             file_path: payload["file_path"],
+             sha256: sha256,
+             content: content,
+             total_size: payload["total_size"],
+             entropy: payload["entropy"],
+             file_type: payload["file_type"]
+           }}
+        else
+          :error -> {:error, "invalid_payload"}
+        end
+    end
   end
 
   @impl true

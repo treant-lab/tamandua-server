@@ -138,7 +138,9 @@ defmodule TamanduaServer.Solana.FleetHealthAttestation do
   @impl true
   def init(_opts) do
     config = Application.get_env(:tamandua_server, __MODULE__, [])
-    enabled = Keyword.get(config, :enabled, true)
+    configured_enabled = Keyword.get(config, :enabled, true)
+    signer_available? = solana_signer_available?()
+    enabled = configured_enabled and signer_available?
     interval_hours = Keyword.get(config, :interval_hours, 1)
     interval_ms = :timer.hours(interval_hours)
     min_agents = Keyword.get(config, :min_agents_for_attestation, @default_min_agents)
@@ -157,10 +159,32 @@ defmodule TamanduaServer.Solana.FleetHealthAttestation do
       # Schedule first attestation after initial delay (5 minutes) to allow agents to connect
       Process.send_after(self(), :initial_attestation, :timer.minutes(5))
     else
-      Logger.info("[FleetHealthAttestation] Disabled by configuration")
+      if configured_enabled and not signer_available? do
+        Logger.warning("[FleetHealthAttestation] Disabled because Solana signer keypair is unavailable")
+      else
+        Logger.info("[FleetHealthAttestation] Disabled by configuration")
+      end
     end
 
     {:ok, state}
+  end
+
+  defp solana_signer_available? do
+    try do
+      case SolanaClient.get_signer_pubkey() do
+        {:ok, _pubkey} -> true
+        _ -> false
+      end
+    rescue
+      _ -> false
+    catch
+      :exit, _ -> false
+    end
+  end
+
+  @impl true
+  def handle_call(:attest_now, _from, %{enabled: false} = state) do
+    {:reply, {:error, :fleet_attestation_disabled}, state}
   end
 
   @impl true

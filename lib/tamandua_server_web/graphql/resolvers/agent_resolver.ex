@@ -162,42 +162,61 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
 
   def isolate_agent(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
-    reason = input[:reason] || "Isolated via GraphQL API"
+    _reason = input[:reason] || "Isolated via GraphQL API"
 
-    case TamanduaServer.Response.Executor.isolate_host(agent_id, reason: reason) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          message: "Agent isolated successfully",
-          action_id: result[:action_id]
-        }}
+    # Org-scope authorization: previously this mutation executed against ANY
+    # agent_id with no tenancy check (and called the nonexistent
+    # Executor.isolate_host/2, crashing at runtime). The actor is enforced by
+    # the Response Executor: cross-org targets are rejected as :unauthorized.
+    with {:ok, actor} <- actor_from_context(context) do
+      case TamanduaServer.Response.Executor.isolate_network(agent_id, allowed_ips: [], actor: actor) do
+        {:ok, _result} ->
+          {:ok, %{
+            success: true,
+            message: "Agent isolation command executed"
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          message: "Failed to isolate: #{inspect(reason)}"
-        }}
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{success: false, message: "Agent not found"}}
+
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            message: "Failed to isolate: #{inspect(reason)}"
+          }}
+      end
     end
   end
 
-  def unisolate_agent(_parent, %{agent_id: agent_id}, %{context: _context}) do
-    case TamanduaServer.Response.Executor.unisolate_host(agent_id) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          message: "Agent unisolated successfully",
-          action_id: result[:action_id]
-        }}
+  def unisolate_agent(_parent, %{agent_id: agent_id}, %{context: context}) do
+    with {:ok, actor} <- actor_from_context(context) do
+      case TamanduaServer.Response.Executor.unisolate_network(agent_id, actor: actor) do
+        {:ok, _result} ->
+          {:ok, %{
+            success: true,
+            message: "Agent de-isolation command executed"
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          message: "Failed to unisolate: #{inspect(reason)}"
-        }}
+        {:error, :unauthorized} ->
+          {:ok, %{success: false, message: "Agent not found"}}
+
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            message: "Failed to unisolate: #{inspect(reason)}"
+          }}
+      end
+    end
+  end
+
+  # Build a response-executor actor from the Absinthe context. Fails closed
+  # when no organization context is present (unauthenticated or misconfigured
+  # callers must not be able to fire response actions).
+  defp actor_from_context(context) do
+    case context[:organization_id] do
+      nil -> {:error, "Not authorized: missing organization context"}
+      org_id -> {:ok, %{organization_id: org_id, user_id: context[:current_user_id]}}
     end
   end
 

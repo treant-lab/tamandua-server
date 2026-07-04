@@ -469,10 +469,18 @@ export const Terminal = forwardRef<TerminalRef, TerminalProps>(
 
           if (disposed || !containerRef.current) return
 
+          // Single source of truth for the mono stack: the Sentinel --mono
+          // token (css/tokens.css). xterm renders to canvas, so the CSS var
+          // must be resolved to a concrete font list at init time.
+          const monoFontStack =
+            getComputedStyle(document.documentElement)
+              .getPropertyValue('--mono')
+              .trim() || '"JetBrains Mono", ui-monospace, monospace'
+
           const terminal = new XTerm({
             cursorBlink: true,
             cursorStyle: 'block',
-            fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace',
+            fontFamily: monoFontStack,
             fontSize: 14,
             lineHeight: 1.2,
             theme: terminalTheme,

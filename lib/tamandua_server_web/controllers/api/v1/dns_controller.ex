@@ -59,6 +59,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   @default_query_limit 50
   @max_query_limit 100
+  @top_domain_sample_limit 200
   @default_query_window_hours 24
   @dns_event_types ["dns_query", "dns", "dns_response", "name_resolution", "domain_lookup"]
   @dns_transport_ports ["53", "5353"]
@@ -230,6 +231,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     - query_type: DNS record type (A, AAAA, TXT, MX, etc.)
     - agent_id:   filter by specific agent
     - severity:   info | medium | high | critical
+    - time_range:  24h | 7d | 30d | all (default 24h)
     - from:       ISO 8601 start time
     - to:         ISO 8601 end time
     - limit:      max results (default 100)
@@ -260,10 +262,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
     base =
       Event
-      |> dns_events_query()
+      |> dns_events_query(params)
       |> scope_event_org(organization_id)
       |> where([e], e.timestamp <= ^now)
-      |> apply_default_query_window(params, now)
+      |> apply_query_window(params, now)
       |> order_by([e], desc: e.timestamp)
 
     # Domain search (ILIKE on known DNS domain fields)
@@ -393,6 +395,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         has_more: has_more,
         total_is_estimate: true,
         default_window_hours: default_query_window_hours(params),
+        time_range: dns_time_range(params),
         scope: "organization_dns_telemetry"
       }, dns_partial_meta([query_error]))
     })
@@ -406,7 +409,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   Return the top 20 most queried domains with counts.
 
   Query parameters:
-    - time_range: "1h" | "24h" | "7d" (default "24h")
+    - time_range: "1h" | "24h" | "7d" | "30d" | "all" (default "24h")
   """
   def top_domains(conn, params) do
     with {:ok, organization_id} <- current_organization_id(conn) do
@@ -417,104 +420,100 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   end
 
   defp top_domains_for_org(conn, params, organization_id) do
-    time_range = params["time_range"] || "24h"
+    time_range = dns_time_range(params)
     start_time = parse_time_range(time_range)
     now = DateTime.utc_now()
 
-    {results, top_domains_error} =
+    base_query =
       Event
-      |> dns_events_query()
+      |> dns_events_query(params)
       |> scope_event_org(organization_id)
-      |> where([e], e.timestamp >= ^start_time)
       |> where([e], e.timestamp <= ^now)
-      |> where(
-        [e],
-        fragment(
-          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain') IS NOT NULL",
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload
-        )
-      )
-      |> group_by([e],
-        fragment(
-          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain')",
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload
-        )
-      )
-      |> select([e], %{
-        domain:
-          fragment(
-            "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain')",
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload,
-            e.payload
-          ),
-        count: count(e.id)
-      })
-      |> order_by([e], desc: count(e.id))
-      |> limit(20)
+
+    base_query =
+      if start_time do
+        where(base_query, [e], e.timestamp >= ^start_time)
+      else
+        base_query
+      end
+
+    {rows, top_domains_error} =
+      base_query
+      |> apply_top_domain_sample_order(time_range)
+      |> limit(@top_domain_sample_limit)
       |> safe_repo_all_with_meta("DNS top domains")
+
+    results =
+      rows
+      |> Enum.map(&serialize_dns_event/1)
+      |> Enum.map(&Map.get(&1, :domain))
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+      |> Enum.frequencies()
+      |> Enum.map(fn {domain, count} -> %{domain: domain, count: count} end)
+      |> Enum.sort_by(fn item -> {-item.count, item.domain} end)
+      |> Enum.take(20)
 
     json(conn, %{
       data: results,
-      meta: Map.merge(%{time_range: time_range, scope: "organization_dns_telemetry"}, dns_partial_meta([top_domains_error]))
+      meta:
+        Map.merge(
+          %{
+            time_range: time_range,
+            scope: "organization_dns_telemetry",
+            sampled: true,
+            sample_limit: @top_domain_sample_limit,
+            sample_order: top_domain_sample_order(time_range),
+            sampled_events: length(rows)
+          },
+          dns_partial_meta([top_domains_error])
+        )
     })
   end
 
   # The agent has emitted DNS telemetry under a few historical shapes. Keep the
   # dashboard query inclusive so live and retained events do not disappear.
-  defp dns_events_query(queryable) do
-    where(queryable, ^dns_event_dynamic())
+  defp dns_events_query(queryable, params \\ %{}) do
+    where(queryable, ^dns_event_dynamic(dns_time_range(params)))
   end
 
   defp scope_event_org(queryable, organization_id) do
     where(queryable, [e], e.organization_id == ^organization_id)
   end
 
-  defp apply_default_query_window(queryable, params, now) do
-    if blank_param?(params["from"]) and blank_param?(params["to"]) do
-      from = DateTime.add(now, -@default_query_window_hours, :hour)
-      where(queryable, [e], e.timestamp >= ^from)
-    else
-      queryable
+  defp apply_query_window(queryable, params, now) do
+    cond do
+      not blank_param?(params["from"]) or not blank_param?(params["to"]) ->
+        queryable
+
+      dns_time_range(params) == "all" ->
+        queryable
+
+      true ->
+        from = parse_time_range(dns_time_range(params), now)
+        where(queryable, [e], e.timestamp >= ^from)
     end
   end
 
   defp default_query_window_hours(params) do
-    if blank_param?(params["from"]) and blank_param?(params["to"]) do
+    if blank_param?(params["from"]) and blank_param?(params["to"]) and dns_time_range(params) == "24h" do
       @default_query_window_hours
     else
       nil
     end
   end
 
+  defp dns_time_range(%{"time_range" => value}) when value in ["1h", "24h", "7d", "30d", "all"], do: value
+  defp dns_time_range(_params), do: "24h"
+
   defp blank_param?(nil), do: true
   defp blank_param?(""), do: true
   defp blank_param?(_), do: false
+
+  defp apply_top_domain_sample_order(query, _time_range) do
+    order_by(query, [e], desc: e.timestamp)
+  end
+
+  defp top_domain_sample_order(_time_range), do: "latest_first"
 
   defp safe_repo_all_with_meta(query, label) do
     {Repo.all(query, timeout: 8_000), nil}
@@ -625,35 +624,22 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     }
   end
 
-  defp dns_event_dynamic do
-    dynamic(
-      [e],
-      e.event_type in ^@dns_event_types or
-        like(e.event_type, "dns%") or
-        ^dns_transport_dynamic() or
-        ^doh_dynamic() or
-        ^dot_dynamic() or
-        fragment(
-          "COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain') IS NOT NULL",
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload,
-          e.payload
-        )
-    )
+  defp dns_event_dynamic(time_range) when time_range in ["24h", "1h"] do
+    dynamic([e], ^dns_explicit_event_dynamic() or ^dns_transport_dynamic() or ^doh_dynamic() or ^dot_dynamic())
+  end
+
+  defp dns_event_dynamic(_time_range), do: dns_explicit_event_dynamic()
+
+  defp dns_explicit_event_dynamic do
+    dynamic([e], e.event_type in ^@dns_event_types or like(e.event_type, "dns%"))
   end
 
   defp dns_transport_dynamic do
     dynamic(
       [e],
       e.event_type in ["network_connect", "network_connection"] and
-        ^network_port_dynamic(@dns_transport_ports)
+        ^network_port_dynamic(@dns_transport_ports) and
+        ^useful_remote_endpoint_dynamic()
     )
   end
 
@@ -661,7 +647,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     dynamic(
       [e],
       e.event_type in ["network_connect", "network_connection"] and
-        ^network_port_dynamic(@dot_ports)
+        ^network_port_dynamic(@dot_ports) and
+        ^useful_remote_endpoint_dynamic()
     )
   end
 
@@ -706,6 +693,36 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     )
   end
 
+  defp useful_remote_endpoint_dynamic do
+    dynamic(
+      [e],
+      fragment(
+        "NULLIF(COALESCE(?->>'remote_ip', ?->>'remoteIp', ?->>'dst_ip', ?->>'destination_ip'), '') IS NOT NULL",
+        e.payload,
+        e.payload,
+        e.payload,
+        e.payload
+      ) and
+        fragment(
+          "COALESCE(?->>'remote_ip', ?->>'remoteIp', ?->>'dst_ip', ?->>'destination_ip') NOT IN ('0.0.0.0', '::', '::0', '[::]')",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        ) and
+        fragment(
+          "COALESCE(?->>'remote_port', ?->>'remotePort', ?->>'destination_port', ?->>'destinationPort', ?->>'dst_port', ?->>'dstPort', ?->>'port') NOT IN ('', '0')",
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload,
+          e.payload
+        )
+    )
+  end
+
   # ==========================================================================
   # GET /api/v1/dns/blocklist
   # ==========================================================================
@@ -739,7 +756,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         meta: Map.merge(%{
           explicit_overrides: length(entries),
           default_feed_count: length(@default_dns_feed_names),
+          default_feeds_loaded: false,
           default_feeds: default_dns_feed_summaries(),
+          default_feed_source: "threat_intel_feed_status",
+          default_feed_note:
+            "Default feed names are configured references, not tenant DNS blocklist entries. Use feed_status_endpoint for live IOC counts and health.",
           feed_status_endpoint: "/api/v1/threat-intel/feed-status",
           scope: "tenant_dns_blocklist_overrides"
         }, dns_partial_meta([blocklist_error]))
@@ -892,7 +913,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     limit = bounded_limit(params["limit"], 50, @max_query_limit)
     offset = bounded_offset(params["offset"])
 
-    # Query alerts that are DNS-related based on title, description, or detection metadata
+    # Query alerts with explicit DNS-related signals. Broad "domain" text matches
+    # pollute the DNS view with script/process alerts, so final row validation below
+    # also requires a DNS marker or a valid domain-bearing C2/IOC signal.
     base_query =
       from(a in Alert,
         left_join: agent in Agent,
@@ -901,15 +924,25 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         where:
           ilike(a.title, ^"%DNS%") or
             ilike(a.title, ^"%DGA%") or
-            ilike(a.title, ^"%domain%") or
             ilike(a.title, ^"%tunneling%") or
+            ilike(a.title, ^"%DoH%") or
+            ilike(a.title, ^"%DoT%") or
+            ilike(a.title, ^"%command and control%") or
+            ilike(a.title, ^"%C2%") or
             ilike(a.title, ^"%exfiltration%") or
             ilike(a.description, ^"%DNS%") or
             ilike(a.description, ^"%DGA%") or
-            ilike(a.description, ^"%domain%") or
+            ilike(a.description, ^"%DoH%") or
+            ilike(a.description, ^"%DoT%") or
+            ilike(a.description, ^"%domain generation%") or
             fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%dns%") or
             fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%dga%") or
-            fragment("?->>'event_type' LIKE ?", a.detection_metadata, "dns%"),
+            fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%doh%") or
+            fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%dot%") or
+            fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%tunnel%") or
+            fragment("?->>'detection_type' ILIKE ?", a.detection_metadata, "%exfil%") or
+            fragment("?->>'event_type' ILIKE ?", a.detection_metadata, "dns%") or
+            fragment("?->>'event_type' ILIKE ?", a.raw_event, "dns%"),
         order_by: [desc: a.inserted_at],
         select: %{
           id: a.id,
@@ -937,16 +970,19 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
     {rows, alerts_error} =
       base_query
-      |> limit(^(limit + 1))
+      |> limit(^(min(limit * 5, @max_query_limit * 5) + 1))
       |> offset(^offset)
       |> safe_repo_all_with_meta("DNS-related alerts")
 
-    has_more = length(rows) > limit
-
     alerts =
       rows
+      |> Enum.filter(&dns_alert_row?/1)
       |> Enum.take(limit)
       |> Enum.map(&serialize_dns_alert/1)
+      |> Enum.reject(&unknown_dns_alert_domain?/1)
+      |> Enum.reject(&trusted_dns_alert_domain?/1)
+
+    has_more = length(rows) > length(alerts) and length(rows) > limit
 
     json(conn, %{
       data: alerts,
@@ -1303,23 +1339,24 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     evidence = alert.evidence || %{}
     raw_event = alert.raw_event || %{}
 
-    # Try to extract domain from various sources
     domain =
-      detection_metadata["domain"] ||
-        detection_metadata[:domain] ||
-        evidence["domain"] ||
-        evidence[:domain] ||
-        raw_event["query"] ||
-        raw_event[:query] ||
-        raw_event["domain"] ||
-        raw_event[:domain] ||
-        extract_domain_from_title(alert.title) ||
-        "Unknown"
+      [
+        map_get_any(detection_metadata, "domain"),
+        map_get_any(detection_metadata, "query"),
+        map_get_any(evidence, "domain"),
+        map_get_any(evidence, "query"),
+        map_get_any(raw_event, "query"),
+        map_get_any(raw_event, "query_name"),
+        map_get_any(raw_event, "domain"),
+        extract_domain_from_title(alert.title)
+      ]
+      |> Enum.find_value(&normalize_dns_domain/1)
 
-    # Determine detection type from metadata or title
+    domain = domain || "Unknown"
+
     detection_type =
-      detection_metadata["detection_type"] ||
-        detection_metadata[:detection_type] ||
+      map_get_any(detection_metadata, "detection_type") ||
+        map_get_any(raw_event, "detection_type") ||
         infer_detection_type(alert.title, alert.description)
 
     %{
@@ -1335,15 +1372,129 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     }
   end
 
+  defp unknown_dns_alert_domain?(%{domain: domain}), do: domain in [nil, "", "Unknown", "unknown"]
+  defp unknown_dns_alert_domain?(_), do: true
+
+  defp trusted_dns_alert_domain?(%{domain: domain}) do
+    domain = normalize_dns_domain(domain)
+
+    domain != nil and domain in trusted_dns_alert_domains()
+  end
+
+  defp trusted_dns_alert_domain?(_), do: false
+
+  defp trusted_dns_alert_domains do
+    env_domains =
+      "TAMANDUA_DNS_ALERT_TRUSTED_DOMAINS"
+      |> System.get_env("")
+      |> String.split(",", trim: true)
+
+    [
+      "agents.tamandua.treantlab.org",
+      "docs.treantlab.org",
+      "relay.tamandua.treantlab.org",
+      "tamandua.treantlab.org"
+      | env_domains
+    ]
+    |> Enum.map(&normalize_dns_domain/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   defp extract_domain_from_title(nil), do: nil
 
   defp extract_domain_from_title(title) do
-    # Try to extract a domain-like pattern from the title
     case Regex.run(~r/([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}/, title) do
       [domain | _] -> domain
       _ -> nil
     end
   end
+
+  defp dns_alert_row?(alert) do
+    detection_metadata = alert.detection_metadata || %{}
+    evidence = alert.evidence || %{}
+    raw_event = alert.raw_event || %{}
+
+    detection_type =
+      map_get_any(detection_metadata, "detection_type") ||
+        map_get_any(raw_event, "detection_type") ||
+        ""
+
+    event_type =
+      map_get_any(detection_metadata, "event_type") ||
+        map_get_any(raw_event, "event_type") ||
+        ""
+
+    domain =
+      [
+        map_get_any(detection_metadata, "domain"),
+        map_get_any(detection_metadata, "query"),
+        map_get_any(evidence, "domain"),
+        map_get_any(evidence, "query"),
+        map_get_any(raw_event, "query"),
+        map_get_any(raw_event, "query_name"),
+        map_get_any(raw_event, "domain"),
+        extract_domain_from_title(alert.title)
+      ]
+      |> Enum.find_value(&normalize_dns_domain/1)
+
+    dns_alert_marker?(detection_type, event_type, alert.title, alert.description) or
+      (domain != nil and c2_or_ioc_marker?(detection_type, alert.title, alert.description))
+  end
+
+  defp dns_alert_marker?(detection_type, event_type, title, description) do
+    detection_text = String.downcase("#{detection_type} #{event_type}")
+    display_text = "#{title} #{description}"
+
+    String.starts_with?(String.downcase(to_string(event_type)), "dns") or
+      String.contains?(detection_text, "dns") or
+      String.contains?(detection_text, "dga") or
+      String.contains?(detection_text, "doh") or
+      String.contains?(detection_text, "dot") or
+      String.contains?(detection_text, "tunnel") or
+      String.contains?(detection_text, "exfil") or
+      Regex.match?(~r/\b(dns|dga|doh|dot|dns-over-https|dns-over-tls|tunnel(?:ing)?|exfil(?:tration)?)\b/i, display_text)
+  end
+
+  defp c2_or_ioc_marker?(detection_type, title, description) do
+    text = String.downcase("#{detection_type} #{title} #{description}")
+
+    String.contains?(text, "command_and_control") or
+      String.contains?(text, "command and control") or
+      String.contains?(text, "c2") or
+      String.contains?(text, "ioc") or
+      String.contains?(text, "malicious domain") or
+      String.contains?(text, "suspicious domain")
+  end
+
+  defp normalize_dns_domain(value) when is_binary(value) do
+    domain =
+      value
+      |> String.trim()
+      |> String.trim_trailing(".")
+      |> String.downcase()
+
+    if valid_dns_domain?(domain), do: domain, else: nil
+  end
+
+  defp normalize_dns_domain(_), do: nil
+
+  defp valid_dns_domain?(domain) when is_binary(domain) do
+    blocked_file_like_tlds = ~w(exe dll sys scr bat cmd ps1 msi lnk tmp log json localmachine)
+
+    Regex.match?(~r/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, domain) and
+      not String.contains?(domain, [" ", "/", "\\", ":", "@"]) and
+      List.last(String.split(domain, ".")) not in blocked_file_like_tlds and
+      domain not in ["unknown", "localhost"]
+  end
+
+  defp valid_dns_domain?(_), do: false
+
+  defp map_get_any(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  end
+
+  defp map_get_any(_, _), do: nil
 
   defp infer_detection_type(title, description) do
     text = String.downcase("#{title} #{description}")
@@ -1398,10 +1549,13 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     end
   end
 
-  defp parse_time_range("1h"), do: DateTime.utc_now() |> DateTime.add(-60 * 60, :second)
-  defp parse_time_range("24h"), do: DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
-  defp parse_time_range("7d"), do: DateTime.utc_now() |> DateTime.add(-7 * 24 * 60 * 60, :second)
-  defp parse_time_range(_), do: DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
+  defp parse_time_range(range), do: parse_time_range(range, DateTime.utc_now())
+  defp parse_time_range("1h", now), do: DateTime.add(now, -60 * 60, :second)
+  defp parse_time_range("24h", now), do: DateTime.add(now, -24 * 60 * 60, :second)
+  defp parse_time_range("7d", now), do: DateTime.add(now, -7 * 24 * 60 * 60, :second)
+  defp parse_time_range("30d", now), do: DateTime.add(now, -30 * 24 * 60 * 60, :second)
+  defp parse_time_range("all", _now), do: nil
+  defp parse_time_range(_, now), do: DateTime.add(now, -24 * 60 * 60, :second)
 
   defp format_timestamp(%NaiveDateTime{} = ts), do: NaiveDateTime.to_iso8601(ts)
   defp format_timestamp(%DateTime{} = ts), do: DateTime.to_iso8601(ts)
@@ -1442,9 +1596,13 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       %{
         name: name,
         enabled: true,
-        health: "configured",
+        health: "validation_pending",
         ioc_count: 0,
-        inserted: 0
+        inserted: 0,
+        loaded: false,
+        source: "threat_intel_feed_status",
+        description:
+          "Configured DNS feed reference; live IOC counts and health are reported by the threat-intel feed-status endpoint."
       }
     end)
   end

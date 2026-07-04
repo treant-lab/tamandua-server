@@ -224,6 +224,84 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
     end
   end
 
+  describe "handle_batch(:ml, ...) binary sample dispatch" do
+    test "invokes the analyzer once per sample with the sample map (not the whole list)" do
+      parent = self()
+
+      analyzer = fn sample ->
+        send(parent, {:analyzed, sample})
+        {:ok, %{sha256: sample[:sha256]}}
+      end
+
+      samples = [
+        %{agent_id: "agent-1", sha256: "aa", content: <<1, 2, 3>>},
+        %{agent_id: "agent-2", sha256: "bb", content: <<4, 5, 6>>}
+      ]
+
+      messages = Enum.map(samples, &ml_message/1)
+
+      result = Ingestor.handle_batch(:ml, messages, %{}, ml_binary_analyzer: analyzer)
+
+      assert result == messages
+
+      for sample <- samples do
+        assert_received {:analyzed, ^sample}
+      end
+
+      refute_received {:analyzed, _}
+    end
+
+    test "continues past per-sample analyzer errors and still processes the rest" do
+      parent = self()
+
+      analyzer = fn sample ->
+        send(parent, {:analyzed, sample})
+
+        if sample[:agent_id] == "agent-bad" do
+          {:error, :ml_unavailable}
+        else
+          {:ok, %{}}
+        end
+      end
+
+      samples = [
+        %{agent_id: "agent-bad", sha256: "aa", content: <<1>>},
+        %{agent_id: "agent-good", sha256: "bb", content: <<2>>}
+      ]
+
+      messages = Enum.map(samples, &ml_message/1)
+
+      assert ^messages = Ingestor.handle_batch(:ml, messages, %{}, ml_binary_analyzer: analyzer)
+
+      for sample <- samples do
+        assert_received {:analyzed, ^sample}
+      end
+    end
+
+    test "ignores non-sample messages without invoking the analyzer" do
+      parent = self()
+      analyzer = fn sample -> send(parent, {:analyzed, sample}) end
+
+      messages = [
+        %Message{
+          data: %{"event_type" => "process_start"},
+          acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+        }
+      ]
+
+      assert ^messages = Ingestor.handle_batch(:ml, messages, %{}, ml_binary_analyzer: analyzer)
+
+      refute_received {:analyzed, _}
+    end
+  end
+
+  defp ml_message(sample) do
+    %Message{
+      data: {:binary_sample, sample},
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+    }
+  end
+
   defp base_event(detections, overrides \\ %{}) do
     Map.merge(
       %{

@@ -283,6 +283,16 @@ defmodule TamanduaServer.Reports.Engine do
     user = opts[:user]
     params = opts[:params] || %{}
 
+    # Tenant scoping: resolve the organization from opts or the user and
+    # inject it into template params so templates only query scoped alert
+    # data. Callers that provide no organization (e.g. system schedulers)
+    # get fail-closed alert sections (empty/zero) rather than
+    # cross-tenant data.
+    organization_id =
+      opts[:organization_id] || TamanduaServer.TenantScope.get_tenant_id(user)
+
+    params = Map.put(params, "organization_id", organization_id)
+
     Logger.info("Generating report: #{template_id} (#{date_from} to #{date_to})")
 
     try do

@@ -159,6 +159,7 @@ export default function MLDashboard({
   const predictions = predictionHistory.length > 0 ? predictionHistory : recentPredictions || []
   const statusModelTrained = mlStatus?.model_trained
   const isModelTrained = statusModelTrained ?? (model != null && model.trained)
+  const hasModelInfo = isModelTrained && model != null
   const serviceHealthy = mlStatus?.healthy ?? service?.healthy
   const serviceReady = mlStatus?.ready ?? isModelTrained
   const serviceUrl = mlStatus?.service_url || service?.url || 'not configured'
@@ -398,13 +399,24 @@ export default function MLDashboard({
 
       <div className="space-y-6">
         {/* Header */}
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
-            ML Dashboard
-          </h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-            Malware-SMELL model status, statistics, and training
-          </p>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
+              ML Dashboard
+            </h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
+              Malware-SMELL model status, statistics, training, and agent-side ONNX signal health
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => openOperationalView('/app/ml/detections')}
+            className="btn-sentinel btn-sentinel-secondary"
+          >
+            <AlertTriangle className="h-4 w-4" />
+            Agent ML Detections
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
         </div>
 
         {/* Service Health */}
@@ -519,7 +531,7 @@ export default function MLDashboard({
                 Model Info
               </h2>
             </div>
-            {isModelTrained ? (
+            {hasModelInfo ? (
               <div className="p-4 grid grid-cols-2 gap-4">
                 <div
                   className="rounded-lg p-3"
@@ -638,9 +650,13 @@ export default function MLDashboard({
             ) : (
               <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                 <Brain className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p className="text-lg">Model not trained</p>
+                <p className="text-lg">
+                  {isModelTrained ? 'Model metadata unavailable' : 'Model not trained'}
+                </p>
                 <p className="text-sm mt-1">
-                  Train the Malware-SMELL model using the training section below
+                  {isModelTrained
+                    ? 'The ML service reports a trained model, but did not return model details yet.'
+                    : 'Train the Malware-SMELL model using the training section below'}
                 </p>
               </div>
             )}

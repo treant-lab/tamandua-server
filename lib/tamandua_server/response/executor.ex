@@ -35,9 +35,52 @@ defmodule TamanduaServer.Response.Executor do
   Executes a response action on a given agent.
 
   This sends the command to the agent via WebSocket and waits for a response.
+
+  ## Authorization
+
+  The action map may carry an `:actor` (or `"actor"`) entry identifying who
+  requested the action:
+
+    * `%{organization_id: org_id, user_id: user_id}` — a user/API actor. The
+      target agent MUST belong to `org_id`; otherwise the action is rejected
+      with `{:error, :unauthorized}` and an audit entry is written. This closes
+      the cross-organization response bypass: without this check any
+      authenticated caller could kill/isolate/quarantine on ANY agent.
+    * `:system` — an internal/autonomous actor (no org scoping applied here;
+      alert/agent organization consistency is still verified when an alert is
+      given).
+    * absent — legacy call sites. When an alert with an `organization_id` is
+      provided, the agent's organization (from the in-memory Registry) must
+      match the alert's organization (confused-deputy defense).
   """
   @spec execute_response(Alert.t() | nil, map()) :: {:ok, map()} | {:error, atom() | String.t()}
   def execute_response(alert, %{action_type: action_type, agent_id: agent_id, params: params} = action) do
+    case authorize_response(alert, action) do
+      :ok ->
+        do_execute_response(alert, action)
+
+      {:error, :unauthorized} ->
+        actor = response_actor(action)
+
+        Logger.warning(
+          "BLOCKED unauthorized response action #{action_type} on agent #{agent_id} " <>
+            "(organization scope mismatch, actor: #{inspect(sanitize_actor(actor))})"
+        )
+
+        audit_unauthorized_response(agent_id, action_type, params, actor)
+
+        if alert do
+          record_action(alert.id, agent_id, action_type, params, :unauthorized, %{
+            error: "unauthorized: organization scope mismatch"
+          }, actor)
+        end
+
+        {:error, :unauthorized}
+    end
+  end
+
+  defp do_execute_response(alert, %{action_type: action_type, agent_id: agent_id, params: params} = action) do
+    actor = response_actor(action)
     Logger.info("Executing response action #{action_type} on agent #{agent_id}")
 
     result =
@@ -51,7 +94,7 @@ defmodule TamanduaServer.Response.Executor do
 
     case result do
       {:ok, response} ->
-        if alert, do: record_action(alert.id, agent_id, action_type, params, :success, response)
+        if alert, do: record_action(alert.id, agent_id, action_type, params, :success, response, actor)
 
         # Trigger Proof of Remediation attestation asynchronously
         maybe_attest_remediation(agent_id, action_type, params, response, alert)
@@ -59,7 +102,7 @@ defmodule TamanduaServer.Response.Executor do
         {:ok, response}
 
       {:error, reason} ->
-        if alert, do: record_action(alert.id, agent_id, action_type, params, :failed, %{error: inspect(reason)})
+        if alert, do: record_action(alert.id, agent_id, action_type, params, :failed, %{error: inspect(reason)}, actor)
         {:error, reason}
     end
   end
@@ -109,14 +152,28 @@ defmodule TamanduaServer.Response.Executor do
   @doc """
   Executes a response action without an associated alert.
   Useful for manual responses or automated playbooks.
+
+  Options:
+    - `:actor` - `%{organization_id: org_id, user_id: user_id}` or `:system`.
+      When a user actor is given the target agent must belong to the actor's
+      organization (see `execute_response/2`).
   """
-  @spec execute_action(String.t(), String.t(), map()) :: {:ok, map()} | {:error, atom() | String.t()}
-  def execute_action(agent_id, action_type, params \\ %{}) do
-    execute_response(nil, %{
+  @spec execute_action(String.t(), String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, atom() | String.t()}
+  def execute_action(agent_id, action_type, params \\ %{}, opts \\ []) do
+    action = %{
       action_type: action_type,
       agent_id: agent_id,
       params: params
-    })
+    }
+
+    action =
+      case Keyword.get(opts, :actor) do
+        nil -> action
+        actor -> Map.put(action, :actor, actor)
+      end
+
+    execute_response(nil, action)
   end
 
   @doc """
@@ -170,13 +227,19 @@ defmodule TamanduaServer.Response.Executor do
 
   @doc """
   Kill a process on the agent.
+
+  Options:
+    - `:force` - force kill (default: false)
+    - `:actor` - `%{organization_id: org_id, user_id: user_id}` or `:system`;
+      org-scoped actors may only target agents in their own organization
+      (see `execute_response/2`).
   """
   @spec kill_process(String.t(), integer(), keyword()) :: {:ok, map()} | {:error, atom()}
   def kill_process(agent_id, pid, opts \\ []) do
     execute_action(agent_id, "kill_process", %{
       pid: pid,
       force: Keyword.get(opts, :force, false)
-    })
+    }, actor: Keyword.get(opts, :actor))
   end
 
   @doc """
@@ -213,13 +276,13 @@ defmodule TamanduaServer.Response.Executor do
         execute_action(agent_id, "quarantine_file", %{
           path: path,
           delete_after: Keyword.get(opts, :delete_after, false)
-        })
+        }, actor: Keyword.get(opts, :actor))
 
       true ->
         execute_action(agent_id, "quarantine_file", %{
           path: path,
           delete_after: Keyword.get(opts, :delete_after, false)
-        })
+        }, actor: Keyword.get(opts, :actor))
     end
   end
 
@@ -235,7 +298,7 @@ defmodule TamanduaServer.Response.Executor do
     result = execute_action(agent_id, "isolate_network", %{
       allowed_ips: Keyword.get(opts, :allowed_ips, []),
       duration_seconds: Keyword.get(opts, :duration, 0)
-    })
+    }, actor: Keyword.get(opts, :actor))
 
     # Process isolation status from the agent response
     case result do
@@ -260,9 +323,9 @@ defmodule TamanduaServer.Response.Executor do
   struct confirming the de-isolation.  We update the agent record to clear
   the isolation state and broadcast the change.
   """
-  @spec unisolate_network(String.t()) :: {:ok, map()} | {:error, atom()}
-  def unisolate_network(agent_id) do
-    result = execute_action(agent_id, "unisolate_network", %{})
+  @spec unisolate_network(String.t(), keyword()) :: {:ok, map()} | {:error, atom()}
+  def unisolate_network(agent_id, opts \\ []) do
+    result = execute_action(agent_id, "unisolate_network", %{}, actor: Keyword.get(opts, :actor))
 
     # Process de-isolation status from the agent response
     case result do
@@ -331,10 +394,30 @@ defmodule TamanduaServer.Response.Executor do
   """
   @spec collect_forensics(String.t(), map() | keyword()) :: {:ok, String.t()} | {:error, atom()}
   def collect_forensics(agent_id, options \\ %{}) do
-    Logger.info("Collecting forensics from agent #{agent_id} with options: #{inspect(options)}")
-
     # Normalize options to a map (callers may pass keyword lists)
     options = if is_list(options), do: Map.new(options), else: options
+
+    # The actor is authorization metadata, not a command option — pop it so it
+    # is never forwarded to the agent as part of the command payload.
+    {actor, options} = Map.pop(options, :actor)
+
+    case authorize_actor_for_agent(actor, agent_id) do
+      :ok ->
+        do_collect_forensics(agent_id, options, actor)
+
+      {:error, :unauthorized} ->
+        Logger.warning(
+          "BLOCKED unauthorized forensics collection on agent #{agent_id} " <>
+            "(organization scope mismatch, actor: #{inspect(sanitize_actor(actor))})"
+        )
+
+        audit_unauthorized_response(agent_id, "collect_forensics", options, actor)
+        {:error, :unauthorized}
+    end
+  end
+
+  defp do_collect_forensics(agent_id, options, actor) do
+    Logger.info("Collecting forensics from agent #{agent_id} with options: #{inspect(options)}")
 
     default_options = %{
       memory_dump: false,
@@ -373,7 +456,7 @@ defmodule TamanduaServer.Response.Executor do
 
     # Execute the forensics collection asynchronously to avoid blocking
     Task.start(fn ->
-      case execute_action(agent_id, "collect_forensics", merged_options) do
+      case execute_action(agent_id, "collect_forensics", merged_options, actor: actor) do
         {:ok, response} ->
           artifacts = Map.get(response, "artifacts", [])
           size_bytes = Map.get(response, "size_bytes", 0)
@@ -463,6 +546,137 @@ defmodule TamanduaServer.Response.Executor do
 
   # Private functions
 
+  # ---------------------------------------------------------------------------
+  # Organization-scope authorization
+  # ---------------------------------------------------------------------------
+
+  defp response_actor(%{actor: actor}), do: actor
+  defp response_actor(%{"actor" => actor}), do: actor
+  defp response_actor(_), do: nil
+
+  # Authorize a response action before execution.
+  #
+  # - With a user actor (`%{organization_id: ...}`): the target agent must
+  #   belong to the actor's organization (fail closed).
+  # - With `:system` or no actor: when an alert carrying an organization_id is
+  #   present, the agent's organization (from the Registry) must match it
+  #   (confused-deputy defense); otherwise legacy behavior is preserved.
+  defp authorize_response(alert, action) do
+    agent_id = remote_target(action) || action[:agent_id] || action["agent_id"]
+
+    case response_actor(action) do
+      nil -> authorize_alert_scope(alert, agent_id)
+      :system -> authorize_alert_scope(alert, agent_id)
+      %{} = actor -> authorize_actor_for_agent(actor, agent_id)
+      _other -> {:error, :unauthorized}
+    end
+  end
+
+  # nil / :system actors are internal callers; a map actor must be org-scoped.
+  defp authorize_actor_for_agent(nil, _agent_id), do: :ok
+  defp authorize_actor_for_agent(:system, _agent_id), do: :ok
+
+  defp authorize_actor_for_agent(%{} = actor, agent_id) do
+    actor_org = actor[:organization_id] || actor["organization_id"]
+
+    cond do
+      is_nil(actor_org) ->
+        # An explicit actor without an organization is not a valid scope —
+        # fail closed rather than silently skipping the check.
+        {:error, :unauthorized}
+
+      true ->
+        case agent_organization(agent_id) do
+          {:ok, ^actor_org} -> :ok
+          {:ok, _other_org} -> {:error, :unauthorized}
+          :unknown -> db_org_check(actor_org, agent_id)
+        end
+    end
+  end
+
+  defp authorize_actor_for_agent(_actor, _agent_id), do: {:error, :unauthorized}
+
+  defp authorize_alert_scope(nil, _agent_id), do: :ok
+
+  defp authorize_alert_scope(alert, agent_id) do
+    alert_org = Map.get(alert, :organization_id)
+
+    case {alert_org, agent_organization(agent_id)} do
+      {nil, _} -> :ok
+      {org, {:ok, org}} -> :ok
+      {_org, {:ok, _other}} -> {:error, :unauthorized}
+      # Agent org unknown (offline or legacy registry entry without org):
+      # preserve legacy behavior — execution will fail with agent_offline /
+      # agent_not_found downstream if the agent is not actually reachable.
+      {_org, :unknown} -> :ok
+    end
+  end
+
+  # Resolve the agent's organization from the in-memory Registry (agents must
+  # be registered/online to receive commands, so this is the authoritative
+  # source for reachable agents).
+  defp agent_organization(agent_id) when is_binary(agent_id) do
+    case Registry.get(agent_id) do
+      {:ok, %{organization_id: org}} when not is_nil(org) -> {:ok, org}
+      _ -> :unknown
+    end
+  end
+
+  defp agent_organization(_), do: :unknown
+
+  # Fallback tenancy check against the database for agents that are not in the
+  # Registry (or registered without an organization). Any failure — not found,
+  # cast error, DB unavailable — denies the action (fail closed).
+  defp db_org_check(actor_org, agent_id) do
+    case TamanduaServer.Agents.get_agent_for_org(actor_org, agent_id) do
+      {:ok, _agent} -> :ok
+      _ -> {:error, :unauthorized}
+    end
+  rescue
+    _ -> {:error, :unauthorized}
+  end
+
+  # Best-effort audit of a blocked cross-org response attempt. Must never
+  # crash the caller (the DB may be unavailable); failures are logged.
+  defp audit_unauthorized_response(agent_id, action_type, params, actor) do
+    actor_ref =
+      case actor do
+        %{} = a -> a[:user_id] || a["user_id"] || :system
+        _ -> :system
+      end
+
+    TamanduaServer.Response.Audit.log_action(
+      "response_unauthorized",
+      %{
+        action: to_string(action_type),
+        params: sanitize_params(params),
+        reason: "organization_scope_mismatch",
+        actor: sanitize_actor(actor)
+      },
+      agent_id,
+      actor_ref
+    )
+  rescue
+    e ->
+      Logger.error("Failed to audit unauthorized response attempt: #{inspect(e)}")
+      :error
+  end
+
+  defp sanitize_actor(%{} = actor) do
+    %{
+      organization_id: actor[:organization_id] || actor["organization_id"],
+      user_id: actor[:user_id] || actor["user_id"]
+    }
+  end
+
+  defp sanitize_actor(actor), do: actor
+
+  defp sanitize_params(params) when is_map(params), do: params
+  defp sanitize_params(params), do: %{"value" => inspect(params)}
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
   # Protected targets that should NEVER be killed/quarantined/isolated in a real
   # deployment. This is REPORT-ONLY instrumentation: callers log a "would-block"
   # message but do not change behavior. Match is on the case-insensitive basename
@@ -502,7 +716,7 @@ defmodule TamanduaServer.Response.Executor do
   defp remote_target(%{"target_agent_id" => target}) when is_binary(target) and target != "", do: target
   defp remote_target(_), do: nil
 
-  defp record_action(alert_id, agent_id, action_type, params, status, result) do
+  defp record_action(alert_id, agent_id, action_type, params, status, result, actor) do
     now = DateTime.utc_now()
 
     # Record the action in the database for audit trail
@@ -515,6 +729,19 @@ defmodule TamanduaServer.Response.Executor do
       result: result,
       executed_at: now
     }
+
+    # Record actor identity (who requested the action) when available so the
+    # audit trail can attribute responses to a user and organization.
+    action_attrs =
+      case actor do
+        %{} = a ->
+          action_attrs
+          |> maybe_put(:executed_by_id, a[:user_id] || a["user_id"])
+          |> maybe_put(:organization_id, a[:organization_id] || a["organization_id"])
+
+        _ ->
+          action_attrs
+      end
 
     # Also record to DETS-backed in-memory history for fast lookup and deduplication
     ResponseHistory.record(action_attrs)

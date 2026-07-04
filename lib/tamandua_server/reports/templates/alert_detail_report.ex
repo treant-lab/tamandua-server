@@ -79,12 +79,20 @@ defmodule TamanduaServer.Reports.Templates.AlertDetailReport do
     include_fps = Map.get(params, "include_false_positives", false)
     max_alerts = Map.get(params, "max_alerts", 100)
 
-    # Fetch alerts in range
-    alerts = safe_call(fn ->
-      Alerts.list_alerts_in_range(date_from, date_to)
-      |> filter_alerts(include_resolved, include_fps)
-      |> Enum.take(max_alerts)
-    end, [])
+    # Fetch alerts in range (tenant-scoped; fails closed to [] when no
+    # organization is provided to avoid cross-tenant leakage)
+    organization_id = params["organization_id"] || params[:organization_id]
+
+    alerts =
+      if organization_id do
+        safe_call(fn ->
+          Alerts.list_alerts_in_range_for_org(organization_id, date_from, date_to)
+          |> filter_alerts(include_resolved, include_fps)
+          |> Enum.take(max_alerts)
+        end, [])
+      else
+        []
+      end
 
     total_alerts = length(alerts)
 

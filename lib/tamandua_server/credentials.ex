@@ -640,6 +640,40 @@ defmodule TamanduaServer.Credentials do
     end)
   end
 
+  @doc false
+  # Hard-fail production boot when credential validation reported errors.
+  #
+  # Escape hatch: setting the environment variable
+  # `TAMANDUA_ALLOW_DEGRADED_CREDENTIALS=true` (or the application config
+  # `config :tamandua_server, :allow_degraded_credentials, true`) allows the
+  # node to boot anyway. This is intended ONLY for lab/dev-like profiles that
+  # run a :prod release without real secrets; its use is logged as CRITICAL so
+  # it is impossible to miss in production logs.
+  #
+  # Exposed as a public function (with @doc false) so the enforcement logic is
+  # unit-testable without having to fabricate a full production credential set.
+  @spec enforce_production_credentials!([{:error, String.t()}]) :: :ok
+  def enforce_production_credentials!(errors) do
+    if degraded_credentials_allowed?() do
+      Logger.critical(
+        "[Credentials] TAMANDUA_ALLOW_DEGRADED_CREDENTIALS is set: booting DESPITE " <>
+          "#{length(errors)} credential validation error(s). This escape hatch is for " <>
+          "lab/dev profiles only and MUST NOT be used in a real production deployment."
+      )
+
+      :ok
+    else
+      raise "Credential validation failed in production: #{length(errors)} error(s). " <>
+              "Fix the credentials listed above, or (lab/dev profiles ONLY) set " <>
+              "TAMANDUA_ALLOW_DEGRADED_CREDENTIALS=true to boot degraded."
+    end
+  end
+
+  defp degraded_credentials_allowed? do
+    System.get_env("TAMANDUA_ALLOW_DEGRADED_CREDENTIALS") == "true" or
+      Application.get_env(:tamandua_server, :allow_degraded_credentials, false) == true
+  end
+
   defp log_credential_warnings(warnings, env) do
     errors = Enum.filter(warnings, fn {level, _} -> level == :error end)
     warns = Enum.filter(warnings, fn {level, _} -> level == :warning end)
@@ -657,9 +691,7 @@ defmodule TamanduaServer.Credentials do
         See docs/security/CREDENTIAL_ROTATION.md for rotation procedures.
         """)
 
-        # NOTE: For now we log critical instead of raising to avoid breaking existing deployments.
-        # TODO: Re-enable raise once all deployments have proper credentials configured.
-        # raise "Credential validation failed in production"
+        enforce_production_credentials!(errors)
       else
         Logger.error("""
         [Credentials] Credential validation errors (non-production):

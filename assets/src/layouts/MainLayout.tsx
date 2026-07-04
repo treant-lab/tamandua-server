@@ -42,6 +42,7 @@ import {
   GitBranch,
   Key,
   Lock,
+  Smartphone,
 } from 'lucide-react'
 import { cn, safeInitial } from '@/lib/utils'
 import type { SharedProps, Tenant } from '@/types'
@@ -186,6 +187,7 @@ const navigationGroups: ExtendedNavGroup[] = [
       { name: 'AI Assistant', href: '/app/ai-assistant', icon: Brain },
       { name: 'AI SIEM', href: '/app/ai-siem', icon: Cpu },
       { name: 'ML Dashboard', href: '/app/ml', icon: Cpu },
+      { name: 'Agent ML Detections', href: '/app/ml/detections', icon: AlertTriangle },
       { name: 'Behavioral', href: '/app/behavioral', icon: Bug },
       { name: 'Agentic Analyst', href: '/app/analyst', icon: FileSearch },
     ],
@@ -245,6 +247,7 @@ const navigationGroups: ExtendedNavGroup[] = [
       { name: 'Network', href: '/app/network', icon: Network },
       { name: 'DNS', href: '/app/dns', icon: Globe },
       { name: 'NDR', href: '/app/ndr', icon: Radar },
+      { name: 'Mobile Security', href: '/app/mobile', icon: Smartphone },
       { name: 'TLS Sessions', href: '/app/ndr?tab=encrypted&section=tls', icon: Lock },
       { name: 'JA3 Fingerprints', href: '/app/ndr?tab=encrypted&section=ja3', icon: Key },
       { name: 'Certificates', href: '/app/ndr?tab=encrypted&section=certificates', icon: ShieldCheck },

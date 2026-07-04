@@ -138,6 +138,9 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   """
   def delete(conn, %{"id" => id}) do
     case Hyperautomation.delete_workflow(id) do
+      :ok ->
+        send_resp(conn, :no_content, "")
+
       {:ok, _} ->
         send_resp(conn, :no_content, "")
 

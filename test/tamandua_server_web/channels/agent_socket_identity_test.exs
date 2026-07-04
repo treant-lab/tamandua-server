@@ -25,7 +25,10 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
     org = insert(:organization)
 
     # Create test agent
-    agent = insert(:agent, organization_id: org.id)
+    # Pass the persisted org as the association (not organization_id):
+    # agent_factory defaults `organization: build(:organization)`, and Ecto
+    # rejects setting the FK while the assoc change is present.
+    agent = insert(:agent, organization: org)
 
     on_exit(fn ->
       # Restore original config
@@ -194,7 +197,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       {:ok, jti, _} = Credentials.issue_credential(agent.id, org.id)
 
       # Create another agent
-      other_agent = insert(:agent, organization_id: org.id)
+      other_agent = insert(:agent, organization: org)
 
       # Create a JWT with the OTHER agent's ID but the first agent's credential
       claims = %{

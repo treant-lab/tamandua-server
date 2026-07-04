@@ -17,7 +17,7 @@ import {
   FileText,
   Loader2,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -80,6 +80,13 @@ interface MCPTestResult {
   message: string
   checkedAt: string
   durationMs?: number
+  toolCount?: number
+}
+
+interface MCPRuntimeStatus {
+  mcpAlive?: boolean
+  degraded?: boolean
+  healthMessage?: string
   toolCount?: number
 }
 
@@ -153,6 +160,41 @@ export default function MCPServers({
   const [loading, setLoading] = useState<string | null>(null)
   const [schemaServer, setSchemaServer] = useState<MCPServer | null>(null)
   const [testResults, setTestResults] = useState<Record<string, MCPTestResult>>({})
+  const [catalogTools, setCatalogTools] = useState<MCPTool[]>(_tools)
+  const [runtimeStatus, setRuntimeStatus] = useState<MCPRuntimeStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    axios.get('/api/v1/mcp/status', { headers: { Accept: 'application/json' } })
+      .then((response) => {
+        if (cancelled) return
+        const data = response.data?.data || {}
+        const hydratedTools = normalizeTools({ data: data.tools || data.toolSchemas || [] })
+        if (hydratedTools.length > 0) {
+          setCatalogTools(hydratedTools)
+        }
+        setRuntimeStatus({
+          mcpAlive: Boolean(data.mcpAlive),
+          degraded: Boolean(data.degraded),
+          healthMessage: data.healthMessage ? String(data.healthMessage) : undefined,
+          toolCount: typeof data.toolCount === 'number' ? data.toolCount : hydratedTools.length,
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setRuntimeStatus({
+          mcpAlive: false,
+          degraded: true,
+          healthMessage: error?.message || 'MCP status endpoint could not be reached',
+          toolCount: catalogTools.length,
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleTestConnection = async (server: MCPServer) => {
     const serverId = server.id
@@ -188,18 +230,55 @@ export default function MCPServers({
       toast.success(`MCP JSON-RPC tools/list responded with ${rpcTools.length} tools`)
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
-      const status = err.response?.status ? `HTTP ${err.response.status}: ` : ''
-      const message = `${status}${err.response?.data?.error || err.response?.data?.message || err.message || 'MCP protocol check failed'}`
-      setTestResults(prev => ({
-        ...prev,
-        [serverId]: {
-          status: 'error',
-          message,
-          checkedAt: new Date().toISOString(),
-          durationMs: Math.round(performance.now() - startedAt),
-        },
-      }))
-      toast.error(message)
+      try {
+        const statusRes = await axios.get('/api/v1/mcp/status', { headers: { Accept: 'application/json' } })
+        const data = statusRes.data?.data || {}
+        const fallbackTools = normalizeTools({ data: data.tools || data.toolSchemas || [] })
+        const toolCount = typeof data.toolCount === 'number' ? data.toolCount : fallbackTools.length
+        const durationMs = Math.round(performance.now() - startedAt)
+        const healthMessage = data.healthMessage ? ` (${data.healthMessage})` : ''
+        const message = `JSON-RPC check failed, REST status returned ${toolCount} tools${healthMessage}`
+
+        if (fallbackTools.length > 0) {
+          setCatalogTools(fallbackTools)
+        }
+        setRuntimeStatus({
+          mcpAlive: Boolean(data.mcpAlive),
+          degraded: true,
+          healthMessage: message,
+          toolCount,
+        })
+        setTestResults(prev => ({
+          ...prev,
+          [serverId]: {
+            status: toolCount > 0 ? 'success' : 'error',
+            message,
+            checkedAt: new Date().toISOString(),
+            durationMs,
+            toolCount,
+          },
+        }))
+        if (toolCount > 0) {
+          toast.success(message)
+        } else {
+          toast.error(message)
+        }
+      } catch (fallbackError: unknown) {
+        const fallbackErr = fallbackError as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
+        const status = err.response?.status ? `HTTP ${err.response.status}: ` : ''
+        const fallbackStatus = fallbackErr.response?.status ? `; status fallback HTTP ${fallbackErr.response.status}` : ''
+        const message = `${status}${err.response?.data?.error || err.response?.data?.message || err.message || 'MCP protocol check failed'}${fallbackStatus}`
+        setTestResults(prev => ({
+          ...prev,
+          [serverId]: {
+            status: 'error',
+            message,
+            checkedAt: new Date().toISOString(),
+            durationMs: Math.round(performance.now() - startedAt),
+          },
+        }))
+        toast.error(message)
+      }
     } finally {
       setLoading(null)
     }
@@ -213,39 +292,50 @@ export default function MCPServers({
     setSchemaServer(schemaServer?.id === server.id ? null : server)
   }
 
+  const effectiveStats = {
+    ...stats,
+    mcpAlive: runtimeStatus?.mcpAlive ?? stats.mcpAlive,
+    healthMessage: runtimeStatus?.healthMessage || stats.healthMessage,
+    totalTools: Math.max(stats.totalTools ?? 0, runtimeStatus?.toolCount ?? 0, catalogTools.length),
+  }
+
   const normalizedServers = (servers.length > 0 ? servers : [{
     id: 'tamandua-mcp',
     name: 'Tamandua MCP Server',
-    status: 'disconnected' as const,
-    healthMessage: stats.healthMessage || 'MCP status has not been reported by the server',
-    toolCount: _tools.length,
+    status: effectiveStats.mcpAlive ? 'active' as const : 'disconnected' as const,
+    healthMessage: effectiveStats.healthMessage || 'MCP status has not been reported by the server',
+    toolCount: catalogTools.length,
     contextProviderCount: contextProviders.length,
-    totalRequests: stats.totalRequests || 0,
-    successRate: stats.totalRequests ? Math.round(((stats.successfulRequests || 0) / stats.totalRequests) * 1000) / 10 : 0,
+    totalRequests: effectiveStats.totalRequests || 0,
+    successRate: effectiveStats.totalRequests ? Math.round(((effectiveStats.successfulRequests || 0) / effectiveStats.totalRequests) * 1000) / 10 : 0,
   }]).map(server => ({
     ...server,
     endpoint: server.endpoint || '/api/v1/mcp/rpc',
-    tools: server.tools || _tools,
+    status: effectiveStats.mcpAlive && ((server.endpoint || '/api/v1/mcp/rpc').includes('/api/v1/mcp') || server.id === 'tamandua-mcp')
+      ? 'active' as const
+      : server.status,
+    healthMessage: effectiveStats.healthMessage || server.healthMessage,
+    tools: (server.tools && server.tools.length > 0) ? server.tools : catalogTools,
   }))
 
   const visibleStats = {
-    totalServers: stats.totalServers ?? normalizedServers.length,
-    connectedServers: stats.connectedServers ?? normalizedServers.filter(s => s.status === 'active' || s.status === 'connected').length,
+    totalServers: effectiveStats.totalServers ?? normalizedServers.length,
+    connectedServers: effectiveStats.connectedServers ?? normalizedServers.filter(s => s.status === 'active' || s.status === 'connected').length,
     totalTools: Math.max(
-      stats.totalTools ?? 0,
-      _tools.length,
+      effectiveStats.totalTools ?? 0,
+      catalogTools.length,
       ...normalizedServers.map(server => (server.tools || []).length || server.toolCount || 0)
     ),
-    requestsToday: stats.requestsToday ?? stats.totalRequests ?? 0,
+    requestsToday: effectiveStats.requestsToday ?? effectiveStats.totalRequests ?? 0,
   }
   const catalogAvailable = visibleStats.totalTools > 0 || contextProviders.length > 0
-  const degradedCatalogMode = stats.mcpAlive === false && catalogAvailable
+  const degradedCatalogMode = effectiveStats.mcpAlive === false && catalogAvailable
   const mcpUnavailable =
-    stats.mcpAlive === false ||
+    effectiveStats.mcpAlive === false ||
     normalizedServers.some((server) => server.status === 'error' || server.status === 'disconnected')
   const inventoryUnavailable = visibleStats.totalTools === 0 && mcpUnavailable && !catalogAvailable
   const healthMessage =
-    stats.healthMessage ||
+    effectiveStats.healthMessage ||
     normalizedServers.find((server) => server.healthMessage)?.healthMessage ||
     'MCP server inventory is unavailable'
   const operationMode = degradedCatalogMode

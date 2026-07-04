@@ -10,6 +10,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
 
   require Logger
 
+  alias TamanduaServer.Agents
   alias TamanduaServer.Response
   alias TamanduaServer.Response.Executor
 
@@ -52,6 +53,21 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
   - `quarantine_and_restore` - Quarantine threat and restore from backup
   """
   def execute(conn, %{"agent_id" => agent_id, "action_type" => action_type} = params) do
+    # Authorize: the target agent must belong to the caller's organization.
+    # Errors fall through to FallbackController (403 forbidden / 404 not_found).
+    with {:ok, _agent, org_id} <- authorize_agent(conn, agent_id) do
+      do_execute(conn, agent_id, action_type, params, org_id)
+    end
+  end
+
+  def execute(conn, _params) do
+    conn
+    |> put_status(400)
+    |> json(%{success: false, error: "Missing required parameters: agent_id, action_type"})
+  end
+
+  defp do_execute(conn, agent_id, action_type, params, org_id) do
+    user = conn.assigns[:current_user]
     healing_params = Map.get(params, "params", %{})
     auto_rollback = Map.get(params, "auto_rollback", false)
     timeout = parse_int(Map.get(params, "timeout"), 30)
@@ -68,7 +84,9 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
             "timeout" => timeout
           }),
           status: "pending",
-          source: "self_healing"
+          source: "self_healing",
+          organization_id: org_id,
+          executed_by_id: user && user.id
         }
 
         with {:ok, action} <- Response.create_action(action_attrs),
@@ -122,12 +140,6 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
     end
   end
 
-  def execute(conn, _params) do
-    conn
-    |> put_status(400)
-    |> json(%{success: false, error: "Missing required parameters: agent_id, action_type"})
-  end
-
   @doc """
   Get healing action history.
 
@@ -139,9 +151,19 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
   - `limit` - Maximum number of results (default: 100)
   """
   def history(conn, params) do
+    case current_org_id(conn) do
+      nil -> {:error, :forbidden}
+      org_id -> do_history(conn, params, org_id)
+    end
+  end
+
+  defp do_history(conn, params, org_id) do
     filters = %{
       agent_id: params["agent_id"],
       status: params["status"],
+      # Always scope history to the caller's organization to prevent
+      # cross-tenant disclosure of response actions.
+      organization_id: org_id,
       limit: parse_int(params["limit"], 100)
     }
 
@@ -181,68 +203,19 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
         {:error, :not_found}
 
       action ->
-        if can_rollback_action?(action) do
-          case execute_rollback(action, reason) do
-            {:ok, rollback_result} ->
-              # Create rollback action record
-              rollback_attrs = %{
-                agent_id: action.agent_id,
-                action_type: "rollback_#{action.action_type}",
-                parameters: %{
-                  "original_action_id" => action_id,
-                  "reason" => reason
-                },
-                status: "success",
-                result: rollback_result,
-                executed_at: DateTime.utc_now()
-              }
-
-              {:ok, _rollback_action} = Response.create_action(rollback_attrs)
-
-              # Update original action status
-              Response.update_action_result(action, %{
-                status: "rolled_back",
-                error_message: reason
-              })
-
-              json(conn, %{
-                success: true,
-                data: %{
-                  action_id: action_id,
-                  status: "rolled_back",
-                  rollback_result: rollback_result
-                }
-              })
-
-            {:error, :non_reversible, message} ->
-              # The action type is inherently non-reversible.
-              # Return 422 (Unprocessable Entity) with a descriptive explanation.
-              conn
-              |> put_status(422)
-              |> json(%{
-                success: false,
-                error: "Action is non-reversible",
-                reason: message,
-                action_type: String.replace_prefix(action.action_type || "", "heal_", "")
-              })
-
-            {:error, reason} ->
-              conn
-              |> put_status(500)
-              |> json(%{success: false, error: "Rollback failed: #{inspect(reason)}"})
-          end
-        else
-          conn
-          |> put_status(400)
-          |> json(%{
-            success: false,
-            error: "Action cannot be rolled back",
-            reason: get_rollback_error_reason(action)
-          })
+        # Authorize: the action must belong to the caller's organization.
+        # Cross-org actions are reported as 404 to avoid leaking existence.
+        with {:ok, org_id} <- authorize_action(conn, action) do
+          do_rollback(conn, action, action_id, reason, org_id)
         end
     end
   rescue
     Ecto.NoResultsError ->
+      {:error, :not_found}
+
+    Ecto.Query.CastError ->
+      # Malformed action_id (not a valid UUID) -- treat as not found
+      # instead of surfacing a 500.
       {:error, :not_found}
   end
 
@@ -250,6 +223,128 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
     conn
     |> put_status(400)
     |> json(%{success: false, error: "Missing required parameter: action_id"})
+  end
+
+  defp do_rollback(conn, action, action_id, reason, org_id) do
+    user = conn.assigns[:current_user]
+
+    if can_rollback_action?(action) do
+      case execute_rollback(action, reason) do
+        {:ok, rollback_result} ->
+          # Create rollback action record
+          rollback_attrs = %{
+            agent_id: action.agent_id,
+            action_type: "rollback_#{action.action_type}",
+            parameters: %{
+              "original_action_id" => action_id,
+              "reason" => reason
+            },
+            status: "success",
+            result: rollback_result,
+            executed_at: DateTime.utc_now(),
+            organization_id: org_id,
+            executed_by_id: user && user.id
+          }
+
+          {:ok, _rollback_action} = Response.create_action(rollback_attrs)
+
+          # Update original action status
+          Response.update_action_result(action, %{
+            status: "rolled_back",
+            error_message: reason
+          })
+
+          json(conn, %{
+            success: true,
+            data: %{
+              action_id: action_id,
+              status: "rolled_back",
+              rollback_result: rollback_result
+            }
+          })
+
+        {:error, :non_reversible, message} ->
+          # The action type is inherently non-reversible.
+          # Return 422 (Unprocessable Entity) with a descriptive explanation.
+          conn
+          |> put_status(422)
+          |> json(%{
+            success: false,
+            error: "Action is non-reversible",
+            reason: message,
+            action_type: String.replace_prefix(action.action_type || "", "heal_", "")
+          })
+
+        {:error, rollback_error} ->
+          conn
+          |> put_status(500)
+          |> json(%{success: false, error: "Rollback failed: #{inspect(rollback_error)}"})
+      end
+    else
+      conn
+      |> put_status(400)
+      |> json(%{
+        success: false,
+        error: "Action cannot be rolled back",
+        reason: get_rollback_error_reason(action)
+      })
+    end
+  end
+
+  # ── Organization authorization helpers ────────────────────────────────
+
+  # Resolve the caller's organization from the authenticated connection.
+  defp current_org_id(conn) do
+    conn.assigns[:current_organization_id] ||
+      (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+  end
+
+  # Verify the target agent belongs to the caller's organization.
+  # Returns {:ok, agent, org_id} on success, {:error, :forbidden} when the
+  # caller has no organization context, or {:error, :not_found} when the
+  # agent does not exist within the caller's organization (avoids leaking
+  # the existence of agents in other tenants).
+  defp authorize_agent(conn, agent_id) do
+    case current_org_id(conn) do
+      nil ->
+        {:error, :forbidden}
+
+      org_id ->
+        with {:ok, _uuid} <- cast_uuid(agent_id),
+             {:ok, agent} <- Agents.get_agent_for_org(org_id, agent_id) do
+          {:ok, agent, org_id}
+        else
+          _ -> {:error, :not_found}
+        end
+    end
+  end
+
+  defp cast_uuid(value) when is_binary(value), do: Ecto.UUID.cast(value)
+  defp cast_uuid(_value), do: :error
+
+  # Verify a response action belongs to the caller's organization.
+  # New actions carry an explicit organization_id stamp; legacy actions
+  # (organization_id is nil) are authorized through their agent's tenancy.
+  defp authorize_action(conn, action) do
+    case current_org_id(conn) do
+      nil ->
+        {:error, :forbidden}
+
+      org_id ->
+        cond do
+          action.organization_id == org_id ->
+            {:ok, org_id}
+
+          is_nil(action.organization_id) and not is_nil(action.agent_id) ->
+            case Agents.get_agent_for_org(org_id, action.agent_id) do
+              {:ok, _agent} -> {:ok, org_id}
+              {:error, :not_found} -> {:error, :not_found}
+            end
+
+          true ->
+            {:error, :not_found}
+        end
+    end
   end
 
   # Private functions

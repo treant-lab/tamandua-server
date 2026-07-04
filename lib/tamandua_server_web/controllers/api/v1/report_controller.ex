@@ -65,7 +65,8 @@ defmodule TamanduaServerWeb.API.V1.ReportController do
       # Validate dates
       with {:ok, _} <- Date.from_iso8601(date_from),
            {:ok, _} <- Date.from_iso8601(date_to) do
-        report_data = Reports.generate_report(template_id, date_from, date_to, user)
+        organization_id = TamanduaServer.TenantScope.get_tenant_id(conn)
+        report_data = Reports.generate_report(template_id, date_from, date_to, user, organization_id)
         json(conn, %{data: report_data})
       else
         _ ->
@@ -420,6 +421,7 @@ defmodule TamanduaServerWeb.API.V1.ReportController do
       date_to: date_to,
       format: format,
       user: user,
+      organization_id: TamanduaServer.TenantScope.get_tenant_id(conn),
       params: params["params"] || %{}
     ]
 

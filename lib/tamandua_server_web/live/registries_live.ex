@@ -34,21 +34,32 @@ defmodule TamanduaServerWeb.RegistriesLive do
       Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "registries:ollama")
       # Schedule periodic refresh
       :timer.send_interval(@refresh_interval, :refresh)
+      Process.send_after(self(), :load_registry_data, 0)
     end
 
     {:ok,
      socket
      |> assign_page_title()
      |> assign_registry_filter(nil)
-     |> assign_sync_status()
-     |> assign_models()
-     |> assign_blocked_count()
-     |> assign_provenance_stats()}
+     |> assign(models: [])
+     |> assign(sync_status: default_sync_status())
+     |> assign(blocked_count: 0, blocked_models: [])
+     |> assign(provenance_stats: %{})}
   end
 
   @impl true
   def handle_info(:refresh, socket) do
     {:noreply, assign_sync_status(socket)}
+  end
+
+  @impl true
+  def handle_info(:load_registry_data, socket) do
+    {:noreply,
+     socket
+     |> assign_sync_status()
+     |> assign_models()
+     |> assign_blocked_count()
+     |> assign_provenance_stats()}
   end
 
   # Health status change - degraded
@@ -168,6 +179,20 @@ defmodule TamanduaServerWeb.RegistriesLive do
 
   defp assign_registry_filter(socket, registry) do
     assign(socket, registry_filter: registry)
+  end
+
+  defp default_sync_status do
+    RegistryManager.list_registries()
+    |> Enum.map(fn registry ->
+      %{
+        registry: registry,
+        last_sync: nil,
+        health_status: :unknown,
+        last_check: nil,
+        consecutive_failures: 0,
+        last_error: nil
+      }
+    end)
   end
 
   defp assign_sync_status(socket) do

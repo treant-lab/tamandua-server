@@ -751,7 +751,16 @@ defmodule TamanduaServer.Telemetry.ClickHouse do
     payload = event["payload"] || event[:payload] || %{}
     ts = format_event_timestamp(event)
 
-    response_data_raw = payload["response_data"] || payload[:response_data] || []
+    response_data_raw =
+      payload["response_data"] ||
+        payload[:response_data] ||
+        payload["responses"] ||
+        payload[:responses] ||
+        payload["answers"] ||
+        payload[:answers] ||
+        payload["resolved_ips"] ||
+        payload[:resolved_ips] ||
+        []
     response_data =
       cond do
         is_list(response_data_raw) -> response_data_raw
@@ -764,9 +773,20 @@ defmodule TamanduaServer.Telemetry.ClickHouse do
       agent_id: to_string(event["agent_id"] || event[:agent_id] || ""),
       organization_id: to_string(event["organization_id"] || event[:organization_id] || ""),
       timestamp: ts,
-      process_id: to_integer(payload["pid"] || payload[:pid], 0),
+      process_id: to_integer(payload["pid"] || payload[:pid] || payload["process_id"] || payload[:process_id], 0),
       process_name: to_string(payload["process_name"] || payload[:process_name] || ""),
-      query_name: to_string(payload["query_name"] || payload[:query_name] || payload["domain"] || payload[:domain] || ""),
+      query_name:
+        to_string(
+          payload["query_name"] ||
+            payload[:query_name] ||
+            payload["query"] ||
+            payload[:query] ||
+            payload["domain"] ||
+            payload[:domain] ||
+            payload["dns_query"] ||
+            payload[:dns_query] ||
+            ""
+        ),
       query_type: to_string(payload["query_type"] || payload[:query_type] || ""),
       response_code: to_integer(payload["response_code"] || payload[:response_code], 0),
       response_data: response_data,

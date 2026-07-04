@@ -3,10 +3,8 @@
 
 ExUnit.start(exclude: [:pending])
 
-# Configure ExCoveralls if available
-if Code.ensure_loaded?(ExCoveralls) do
-  ExCoveralls.start()
-end
+# Coverage (excoveralls) is driven by `mix coveralls`; it must not be started
+# manually here (ExCoveralls.start/0 does not exist and crashed every run).
 
 # Configure Ecto Sandbox for test isolation
 Ecto.Adapters.SQL.Sandbox.mode(TamanduaServer.Repo, :manual)

@@ -188,9 +188,12 @@ defmodule TamanduaServer.Detection.Rules.Falco do
     # Extract macro names referenced in condition
     # Macros are referenced as bare identifiers
     Enum.filter(macro_names, fn name ->
-      # Match whole word only (not substring)
-      String.match?(condition, ~r/\b#{Regex.escape(name)}\b/)
+      String.match?(condition, macro_reference_regex(name))
     end)
+  end
+
+  defp macro_reference_regex(name) do
+    ~r/(?<![\w.])#{Regex.escape(name)}(?![\w.])/
   end
 
   defp expand_macros(macros, lists) do
@@ -220,7 +223,7 @@ defmodule TamanduaServer.Detection.Rules.Falco do
                         )
 
           # Replace macro references with parenthesized expansion
-          String.replace(acc, ~r/\b#{Regex.escape(macro_name)}\b/, "(#{macro_value})")
+          String.replace(acc, macro_reference_regex(macro_name), "(#{macro_value})")
         end
       end)
 

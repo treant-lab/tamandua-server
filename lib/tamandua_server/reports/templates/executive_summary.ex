@@ -72,15 +72,35 @@ defmodule TamanduaServer.Reports.Templates.ExecutiveSummary do
     max_incidents = Map.get(params, "max_incidents", 10)
     max_threats = Map.get(params, "max_threats", 10)
 
+    # Tenant scoping: alert data must be limited to the caller's
+    # organization. When no organization is provided we fail closed
+    # (zero counts / empty lists) instead of returning cross-tenant data.
+    organization_id = params["organization_id"] || params[:organization_id]
+
     # Gather metrics
     total_agents = safe_call(fn -> Agents.count_all() end, 0)
     online_agents = safe_call(fn -> Agents.count_online() end, 0)
     offline_agents = max(total_agents - online_agents, 0)
 
-    open_alerts = safe_call(fn -> Alerts.count_open() end, 0)
-    critical_alerts = safe_call(fn -> Alerts.count_by_severity(:critical) end, 0)
-    high_alerts = safe_call(fn -> Alerts.count_by_severity(:high) end, 0)
-    resolved_alerts = safe_call(fn -> Alerts.count_by_status("resolved") end, 0)
+    open_alerts =
+      if organization_id,
+        do: safe_call(fn -> Alerts.count_active_for_org(organization_id) end, 0),
+        else: 0
+
+    critical_alerts =
+      if organization_id,
+        do: safe_call(fn -> Alerts.count_by_severity_for_org(organization_id, :critical) end, 0),
+        else: 0
+
+    high_alerts =
+      if organization_id,
+        do: safe_call(fn -> Alerts.count_by_severity_for_org(organization_id, :high) end, 0),
+        else: 0
+
+    resolved_alerts =
+      if organization_id,
+        do: safe_call(fn -> Alerts.count_by_status_for_org(organization_id, "resolved") end, 0),
+        else: 0
 
     events_period = safe_call(fn -> Telemetry.count_events_in_range(date_from, date_to) end, 0)
     detections_period = safe_call(fn -> Detection.count_detections_in_range(date_from, date_to) end, 0)
@@ -96,20 +116,25 @@ defmodule TamanduaServer.Reports.Templates.ExecutiveSummary do
       end)
     end, [])
 
-    # Get recent critical incidents
-    critical_incidents = safe_call(fn ->
-      Alerts.list_alerts_in_range(date_from, date_to)
-      |> Enum.filter(&(&1.severity in ["critical", :critical]))
-      |> Enum.take(max_incidents)
-      |> Enum.map(fn a ->
-        [
-          format_datetime(a.inserted_at),
-          a.title || "Untitled",
-          to_string(a.severity),
-          to_string(a.status)
-        ]
-      end)
-    end, [])
+    # Get recent critical incidents (tenant-scoped; empty when no org)
+    critical_incidents =
+      if organization_id do
+        safe_call(fn ->
+          Alerts.list_alerts_in_range_for_org(organization_id, date_from, date_to)
+          |> Enum.filter(&(&1.severity in ["critical", :critical]))
+          |> Enum.take(max_incidents)
+          |> Enum.map(fn a ->
+            [
+              format_datetime(a.inserted_at),
+              a.title || "Untitled",
+              to_string(a.severity),
+              to_string(a.status)
+            ]
+          end)
+        end, [])
+      else
+        []
+      end
 
     # Build sections
     sections = [

@@ -323,6 +323,8 @@ export default function Network({ connections: initialConnections, stats: initia
     setLoading(true)
     try {
       const params = new URLSearchParams()
+      params.append('since', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      params.append('limit', '100')
       if (protocolFilter !== 'all') params.append('protocol', protocolFilter)
       if (agentFilter !== 'all') params.append('agent_id', agentFilter)
       if (debouncedIp) params.append('ip', debouncedIp)

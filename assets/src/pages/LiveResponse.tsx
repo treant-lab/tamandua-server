@@ -254,14 +254,21 @@ const quickActions: BuiltinCommand[] = [
 const LIVE_RESPONSE_TABS_KEY = 'tamandua.liveResponse.tabs.v1'
 
 function canStartLiveResponse(agent: Agent | null | undefined): boolean {
+  if (isMobileAgent(agent)) return false
   return agent?.status === 'online' || agent?.status === 'degraded'
 }
 
 function liveResponseStatusLabel(agent: Agent | null | undefined): string {
   if (!agent) return 'Select an agent'
+  if (isMobileAgent(agent)) return 'Live response shell is not available for mobile endpoints'
   if (agent.status === 'online') return 'Ready'
   if (agent.status === 'degraded') return 'Limited telemetry, shell may still be available'
   return 'Agent is offline'
+}
+
+function isMobileAgent(agent: Agent | null | undefined): boolean {
+  const os = String(agent?.os_type || '').toLowerCase()
+  return os.includes('android') || os.includes('ios') || os.includes('iphone') || os.includes('ipad')
 }
 
 // ============================================================================
@@ -739,6 +746,7 @@ function FileBrowser({
   }
 
   return (
+    <>
     <div
       className="rounded-xl border flex flex-col max-h-80"
       style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
@@ -974,6 +982,31 @@ function FileBrowser({
         )}
       </div>
     </div>
+
+    <Dialog
+      open={!!pendingQuarantine}
+      onOpenChange={(o) => !o && setPendingQuarantine(null)}
+      title="Quarantine file"
+      description={pendingQuarantine ? `Quarantine ${pendingQuarantine.filePath}? The file will be moved to the agent's quarantine vault and removed from its original location.` : ''}
+    >
+      <DialogFooter>
+        <button
+          type="button"
+          className="btn-sentinel btn-sentinel-secondary"
+          onClick={() => setPendingQuarantine(null)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-sentinel btn-sentinel-danger"
+          onClick={confirmQuarantine}
+        >
+          Quarantine file
+        </button>
+      </DialogFooter>
+    </Dialog>
+    </>
   )
 }
 
@@ -1904,29 +1937,6 @@ export default function LiveResponse({
         </div>
       </div>
 
-      <Dialog
-        open={!!pendingQuarantine}
-        onOpenChange={(o) => !o && setPendingQuarantine(null)}
-        title="Quarantine file"
-        description={pendingQuarantine ? `Quarantine ${pendingQuarantine.filePath}? The file will be moved to the agent's quarantine vault and removed from its original location.` : ''}
-      >
-        <DialogFooter>
-          <button
-            type="button"
-            className="btn-sentinel btn-sentinel-secondary"
-            onClick={() => setPendingQuarantine(null)}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn-sentinel btn-sentinel-danger"
-            onClick={confirmQuarantine}
-          >
-            Quarantine file
-          </button>
-        </DialogFooter>
-      </Dialog>
     </MainLayout>
   )
 }

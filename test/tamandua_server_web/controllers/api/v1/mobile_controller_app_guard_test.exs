@@ -1,20 +1,22 @@
 defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
   use TamanduaServerWeb.ConnCase, async: false
 
+  import Ecto.Query
   import TamanduaServer.Factory
 
   alias TamanduaServer.Alerts.Alert
+  alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Mobile
   alias TamanduaServer.Mobile.MobileEvent
   alias TamanduaServer.Repo
 
   setup %{conn: conn} do
     {org_a, _agent_a} = create_agent_with_org()
-    user_a = insert!(:user, %{organization_id: org_a.id, role: "admin"})
+    user_a = insert!(:user, %{organization: org_a, role: "admin"})
     {:ok, token_a, _claims} = TamanduaServer.Guardian.encode_and_sign(user_a)
 
     {other_org, _agent_b} = create_agent_with_org()
-    user_b = insert!(:user, %{organization_id: other_org.id, role: "admin"})
+    user_b = insert!(:user, %{organization: other_org, role: "admin"})
     {:ok, token_b, _claims} = TamanduaServer.Guardian.encode_and_sign(user_b)
 
     %{
@@ -24,6 +26,102 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       token_b: token_b,
       org_a: org_a
     }
+  end
+
+  describe "mobile agent web overview" do
+    test "resolves the mobile device linked to an endpoint agent", %{conn_a: conn, org_a: org} do
+      {:ok, device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-web-overview-1",
+          "platform" => "android",
+          "model" => "Pixel 8",
+          "os_version" => "15",
+          "agent_version" => "1.2.3",
+          "passcode_enabled" => true,
+          "encryption_enabled" => true
+        })
+
+      {:ok, _sync} =
+        Mobile.sync_device_apps(device.id, [
+          %{
+            "bundle_id" => "com.example.wallet",
+            "app_name" => "Example Wallet",
+            "version" => "2.0.0",
+            "installer" => "play_store"
+          }
+        ])
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-web-overview-1")
+
+      conn = get(conn, "/api/v1/mobile/agents/#{agent.id}/overview")
+      body = json_response(conn, 200)["data"]
+
+      assert body["mobile"] == true
+      assert body["linked"] == true
+      assert body["device"]["id"] == device.id
+      assert body["posture"]["risk_score"] == device.risk_score
+      assert [%{"bundle_id" => "com.example.wallet"}] = body["app_inventory"]["apps"]
+      assert Enum.map(body["commands"], & &1["id"]) == ["locate", "lock", "wipe"]
+    end
+
+    test "returns unlinked overview when an agent has no mobile identifier", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      agent = insert!(:agent, %{organization_id: org.id, machine_id: nil, config: %{}})
+
+      conn = get(conn, "/api/v1/mobile/agents/#{agent.id}/overview")
+      body = json_response(conn, 200)["data"]
+
+      assert body["agent_id"] == agent.id
+      assert body["linked"] == false
+      assert body["device"] == nil
+    end
+
+    test "returns not found for mobile commands against unknown devices", %{conn_a: conn} do
+      conn = post(conn, "/api/v1/mobile/devices/#{Ecto.UUID.generate()}/commands/lock", %{})
+
+      assert json_response(conn, 404)["error"] == "Device not found"
+    end
+
+    test "requires response permission for mobile device commands", %{org_a: org} do
+      analyst = insert!(:user, %{organization: org, role: "analyst"})
+      {:ok, analyst_token, _claims} = TamanduaServer.Guardian.encode_and_sign(analyst)
+
+      {:ok, device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-command-authz-1",
+          "platform" => "android",
+          "model" => "Pixel 8"
+        })
+
+      conn =
+        auth_conn(analyst_token)
+        |> post("/api/v1/mobile/devices/#{device.id}/commands/locate", %{})
+
+      body = json_response(conn, 403)
+      assert body["error"] == "forbidden"
+      assert body["required_permission"] == "agents_command"
+    end
+
+    test "allows admins to run safe mobile locate command", %{conn_a: conn, org_a: org} do
+      {:ok, device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-command-admin-1",
+          "platform" => "android",
+          "model" => "Pixel 8"
+        })
+
+      conn = post(conn, "/api/v1/mobile/devices/#{device.id}/commands/locate", %{})
+      body = json_response(conn, 200)
+
+      assert body["success"] == true
+      assert body["command"] == "locate"
+      assert body["device_id"] == "android-command-admin-1"
+    end
   end
 
   describe "POST /api/v1/mobile/app_guard/events" do
@@ -278,6 +376,79 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert [%{"build_id" => "agbld_wallet_android_20260627_001"}] = list_body["data"]
     end
 
+    test "verifies build manifest digests without storing binary", %{
+      conn_a: conn,
+      token_a: token
+    } do
+      conn = post(conn, "/api/v1/mobile/app_guard/apps", protected_app_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      conn = post(auth_conn(token), "/api/v1/mobile/app_guard/builds", build_manifest_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      conn =
+        post(
+          auth_conn(token),
+          "/api/v1/mobile/app_guard/builds/agbld_wallet_android_20260627_001/verify",
+          %{
+            "artifact_sha256" => String.duplicate("3", 64),
+            "certificate_sha256" => String.duplicate("1", 64),
+            "config_sha256" => String.duplicate("2", 64)
+          }
+        )
+
+      body = json_response(conn, 200)
+      assert body["data"]["schema"] == "tamandua.app_guard.build_verification/v1"
+      assert body["data"]["verified"] == true
+      assert body["data"]["checks"]["artifact_sha256"] == true
+      assert body["data"]["checks"]["certificate_sha256"] == true
+      assert body["data"]["checks"]["config_sha256"] == true
+      assert body["data"]["claim_boundary"] == "metadata_only_no_binary_upload_or_fusion"
+
+      conn =
+        post(
+          auth_conn(token),
+          "/api/v1/mobile/app_guard/builds/agbld_wallet_android_20260627_001/verify",
+          %{"artifact_sha256" => String.duplicate("a", 64)}
+        )
+
+      body = json_response(conn, 200)
+      assert body["data"]["verified"] == false
+      assert body["data"]["checks"]["artifact_sha256"] == false
+      assert body["data"]["checks"]["certificate_sha256"] == nil
+      assert body["data"]["checks"]["config_sha256"] == nil
+    end
+
+    test "build verification requires digests and is scoped by organization", %{
+      conn_a: conn,
+      token_a: token_a,
+      token_b: token_b
+    } do
+      conn = post(conn, "/api/v1/mobile/app_guard/apps", protected_app_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      conn = post(auth_conn(token_a), "/api/v1/mobile/app_guard/builds", build_manifest_payload())
+      assert json_response(conn, 201)["success"] == true
+
+      conn =
+        post(
+          auth_conn(token_a),
+          "/api/v1/mobile/app_guard/builds/agbld_wallet_android_20260627_001/verify",
+          %{}
+        )
+
+      assert json_response(conn, 422)["error"] =~ "at least one"
+
+      conn =
+        post(
+          auth_conn(token_b),
+          "/api/v1/mobile/app_guard/builds/agbld_wallet_android_20260627_001/verify",
+          %{"artifact_sha256" => String.duplicate("3", 64)}
+        )
+
+      assert json_response(conn, 404)["error"] == "Build manifest not found"
+    end
+
     test "rejects unsupported protected app and build schemas", %{conn_a: conn, token_a: token} do
       conn = post(conn, "/api/v1/mobile/app_guard/apps", %{"schema" => "unknown"})
       assert json_response(conn, 422)["error"] == "Unsupported App Guard protected app schema"
@@ -438,6 +609,66 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
   end
 
   describe "legacy mobile device tenant isolation" do
+    test "enrolls the current mobile app endpoint idempotently", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      payload = %{
+        "device_id" => "tmnd-mobile-app-1",
+        "platform" => "android",
+        "model" => "Moto G9",
+        "manufacturer" => "Motorola",
+        "os_version" => "15",
+        "agent_version" => "1.0.0+42",
+        "user_email" => "victor@test.com",
+        "custom_attributes" => %{
+          "app_ownership" => "tamandua_mobile_endpoint"
+        }
+      }
+
+      conn = post(conn, "/api/v1/mobile/devices/enroll", payload)
+
+      body = json_response(conn, 201)
+      assert body["data"]["device_id"] == "tmnd-mobile-app-1"
+      assert body["data"]["platform"] == "android"
+      assert body["data"]["status"] == "active"
+      assert body["message"] == "Device enrolled successfully."
+
+      device = Mobile.get_device_by_device_id(org.id, "tmnd-mobile-app-1")
+      assert device.user_email == "victor@test.com"
+      assert device.custom_attributes["app_ownership"] == "tamandua_mobile_endpoint"
+      assert device.status == "active"
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "tmnd-mobile-app-1")
+      assert agent.hostname == "Moto G9"
+      assert agent.os_type == "android"
+      assert agent.os_version == "15"
+      assert agent.agent_version == "1.0.0+42"
+      assert agent.status == "online"
+      assert agent.config["source"] == "tamandua_mobile"
+      assert agent.config["mobile_device_id"] == device.id
+      assert "mobile_endpoint" in agent.tags
+
+      conn =
+        post(conn, "/api/v1/mobile/devices/enroll", Map.put(payload, "model", "Moto G9 Play"))
+
+      body = json_response(conn, 201)
+      assert body["data"]["id"] == device.id
+      assert body["data"]["model"] == "Moto G9 Play"
+
+      assert Repo.get_by!(Agent, organization_id: org.id, machine_id: "tmnd-mobile-app-1").hostname ==
+               "Moto G9 Play"
+
+      assert Repo.aggregate(
+               from(a in Agent,
+                 where: a.organization_id == ^org.id and a.machine_id == ^"tmnd-mobile-app-1"
+               ),
+               :count
+             ) == 1
+
+      assert length(elem(Mobile.list_devices(org.id), 0)) == 1
+    end
+
     test "does not expose another organization's legacy mobile device", %{
       conn_b: conn,
       org_a: org_a
@@ -453,6 +684,64 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       conn = get(conn, "/api/v1/mobile/devices/#{device.id}")
 
       assert json_response(conn, 404)["error"] == "Device not found"
+    end
+
+    test "updates and reads posture through external mobile install id", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      {:ok, device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "tmnd-posture-readback-1",
+          "platform" => "android",
+          "model" => "Moto G9"
+        })
+
+      payload = %{
+        "collected_at" => "2026-07-04T14:47:55Z",
+        "last_seen" => "2026-07-04T14:47:55Z",
+        "security_checks" => %{
+          "jailbroken_or_rooted" => true,
+          "passcode_enabled" => true,
+          "encryption_enabled" => true,
+          "developer_mode" => true,
+          "adb_enabled" => true,
+          "foreground_service_running" => true
+        }
+      }
+
+      conn = post(conn, "/api/v1/mobile/devices/tmnd-posture-readback-1/posture", payload)
+      body = json_response(conn, 200)["data"]
+
+      assert body["risk_score"] == 60
+      assert "jailbroken_or_rooted" in body["risk_factors"]
+      assert "developer_mode_enabled" in body["risk_factors"]
+      assert "usb_debugging_enabled" in body["risk_factors"]
+
+      updated = Mobile.get_device_by_device_id(org.id, "tmnd-posture-readback-1")
+      assert updated.id == device.id
+      assert updated.last_seen_at == ~N[2026-07-04 14:47:55]
+      assert updated.is_rooted == true
+      assert updated.passcode_enabled == true
+      assert updated.encryption_enabled == true
+      assert updated.developer_mode_enabled == true
+      assert updated.usb_debugging_enabled == true
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "tmnd-posture-readback-1")
+      assert agent.last_seen_at == ~N[2026-07-04 14:47:55]
+      assert agent.status == "online"
+
+      conn = get(conn, "/api/v1/mobile/devices/tmnd-posture-readback-1/posture")
+      posture = json_response(conn, 200)["data"]
+
+      assert posture["id"] == device.id
+      assert posture["device_id"] == "tmnd-posture-readback-1"
+      assert posture["external_device_id"] == "tmnd-posture-readback-1"
+      assert posture["last_assessment"] == "2026-07-04T14:47:55"
+      assert posture["security_checks"]["jailbroken_or_rooted"] == true
+      assert posture["security_checks"]["developer_mode"] == true
+      assert posture["security_checks"]["usb_debugging"] == true
     end
   end
 

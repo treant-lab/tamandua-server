@@ -71,7 +71,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec attribute_alert(map()) :: {:ok, [map()]} | {:error, term()}
   def attribute_alert(alert) do
-    GenServer.call(__MODULE__, {:attribute_alert, alert}, 30_000)
+    call_if_started({:attribute_alert, alert}, {:error, :attribution_unavailable}, 30_000)
   end
 
   @doc """
@@ -79,7 +79,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec correlate_iocs([map()]) :: {:ok, map()} | {:error, term()}
   def correlate_iocs(iocs) do
-    GenServer.call(__MODULE__, {:correlate_iocs, iocs}, 60_000)
+    call_if_started({:correlate_iocs, iocs}, {:error, :attribution_unavailable}, 60_000)
   end
 
   @doc """
@@ -87,7 +87,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec get_campaign(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_campaign(campaign_id) do
-    GenServer.call(__MODULE__, {:get_campaign, campaign_id})
+    call_if_started({:get_campaign, campaign_id}, {:error, :not_found})
   end
 
   @doc """
@@ -95,7 +95,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec list_campaigns(keyword()) :: [map()]
   def list_campaigns(opts \\ []) do
-    GenServer.call(__MODULE__, {:list_campaigns, opts})
+    call_if_started({:list_campaigns, opts}, [])
   end
 
   @doc """
@@ -103,7 +103,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec upsert_campaign(map()) :: {:ok, map()} | {:error, term()}
   def upsert_campaign(campaign) do
-    GenServer.call(__MODULE__, {:upsert_campaign, campaign})
+    call_if_started({:upsert_campaign, campaign}, {:error, :attribution_unavailable})
   end
 
   @doc """
@@ -111,7 +111,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec link_iocs_to_campaign(String.t(), [String.t()]) :: :ok
   def link_iocs_to_campaign(campaign_id, ioc_ids) do
-    GenServer.call(__MODULE__, {:link_iocs_to_campaign, campaign_id, ioc_ids})
+    call_if_started({:link_iocs_to_campaign, campaign_id, ioc_ids}, :ok)
   end
 
   @doc """
@@ -119,7 +119,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec get_actor_profile(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_actor_profile(actor_id) do
-    GenServer.call(__MODULE__, {:get_actor_profile, actor_id})
+    call_if_started({:get_actor_profile, actor_id}, {:error, :not_found})
   end
 
   @doc """
@@ -127,7 +127,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec find_actors_by_ttp(String.t()) :: [map()]
   def find_actors_by_ttp(technique_id) do
-    GenServer.call(__MODULE__, {:find_actors_by_ttp, technique_id})
+    call_if_started({:find_actors_by_ttp, technique_id}, [])
   end
 
   @doc """
@@ -135,7 +135,7 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec find_actors_by_target(map()) :: [map()]
   def find_actors_by_target(target) do
-    GenServer.call(__MODULE__, {:find_actors_by_target, target})
+    call_if_started({:find_actors_by_target, target}, [])
   end
 
   @doc """
@@ -143,7 +143,15 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec get_stats() :: map()
   def get_stats do
-    GenServer.call(__MODULE__, :get_stats)
+    call_if_started(:get_stats, %{
+      status: :unavailable,
+      attributions_made: 0,
+      campaigns_tracked: 0,
+      iocs_linked: 0,
+      campaigns_in_memory: 0,
+      actor_ioc_links: 0,
+      ttp_actor_links: 0
+    })
   end
 
   @doc """
@@ -151,7 +159,27 @@ defmodule TamanduaServer.ThreatIntel.Attribution do
   """
   @spec rebuild_indexes() :: :ok
   def rebuild_indexes do
-    GenServer.cast(__MODULE__, :rebuild_indexes)
+    if Process.whereis(__MODULE__) do
+      GenServer.cast(__MODULE__, :rebuild_indexes)
+    end
+
+    :ok
+  end
+
+  defp call_if_started(request, default, timeout \\ 5_000) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        default
+
+      _pid ->
+        GenServer.call(__MODULE__, request, timeout)
+    end
+  catch
+    :exit, {:noproc, _} -> default
+    :exit, {:normal, _} -> default
+    :exit, {:shutdown, _} -> default
+    :exit, :normal -> default
+    :exit, :shutdown -> default
   end
 
   # ============================================================================

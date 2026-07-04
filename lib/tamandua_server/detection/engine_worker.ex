@@ -1905,11 +1905,21 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp canonical_mitre_technique(_), do: nil
 
   defp calculate_ml_threat_score(prediction) do
-    case prediction[:prediction] do
-      "malicious" -> prediction[:confidence]
-      "suspicious" -> prediction[:confidence] * 0.7
-      "benign" -> 1.0 - prediction[:confidence]
-      _ -> 0.5
+    # Fail-closed: an untrained model (explicit model_trained == false) or an
+    # "unknown"/unrecognized verdict (e.g. total ensemble failure) must not
+    # contribute a synthetic 0.5 threat signal — treat as "no ML signal" (0.0).
+    untrained =
+      prediction[:model_trained] == false or prediction["model_trained"] == false
+
+    if untrained do
+      0.0
+    else
+      case prediction[:prediction] do
+        "malicious" -> prediction[:confidence]
+        "suspicious" -> prediction[:confidence] * 0.7
+        "benign" -> 1.0 - prediction[:confidence]
+        _ -> 0.0
+      end
     end
   end
 

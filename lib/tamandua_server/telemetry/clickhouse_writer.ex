@@ -568,7 +568,15 @@ defmodule TamanduaServer.Telemetry.ClickHouseWriter do
     payload = event["payload"] || event[:payload] || %{}
 
     response_data_raw =
-      payload["response_data"] || payload[:response_data] || []
+      payload["response_data"] ||
+        payload[:response_data] ||
+        payload["responses"] ||
+        payload[:responses] ||
+        payload["answers"] ||
+        payload[:answers] ||
+        payload["resolved_ips"] ||
+        payload[:resolved_ips] ||
+        []
 
     response_data =
       cond do
@@ -582,10 +590,13 @@ defmodule TamanduaServer.Telemetry.ClickHouseWriter do
       timestamp: format_event_timestamp(event),
       agent_id: to_str(event, "agent_id"),
       organization_id: to_str(event, "organization_id"),
-      process_id: to_uint(payload, "pid", 0),
+      process_id: to_uint(payload, "pid", 0) |> fallback_uint(to_uint(payload, "process_id", 0)),
       process_name: to_str(payload, "process_name"),
       query_name:
-        to_str(payload, "query_name") |> fallback(to_str(payload, "domain")),
+        to_str(payload, "query_name")
+        |> fallback(to_str(payload, "query"))
+        |> fallback(to_str(payload, "domain"))
+        |> fallback(to_str(payload, "dns_query")),
       query_type: to_str(payload, "query_type"),
       response_code: to_uint(payload, "response_code", 0),
       response_data: response_data,

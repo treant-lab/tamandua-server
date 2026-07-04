@@ -13,7 +13,7 @@ defmodule TamanduaServerWeb.DashboardSocket do
   - Channel join/leave audit trail
   - Development mode fallback with mock user
   """
-  use Phoenix.Socket
+  use Phoenix.Socket, log: false
   require Logger
 
   alias TamanduaServer.AuditLog

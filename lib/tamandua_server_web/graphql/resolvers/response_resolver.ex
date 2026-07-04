@@ -76,33 +76,49 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     pid = input.pid
     user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      alert_id: input[:alert_id],
-      force: input[:force] || false,
-      reason: input[:reason]
-    ]
+    # SECURITY: org-scoped actor is required; the Response Executor rejects
+    # cross-organization targets with :unauthorized (fail closed).
+    with {:ok, actor} <- actor_from_context(context) do
+      opts = [
+        requested_by: user_id,
+        alert_id: input[:alert_id],
+        force: input[:force] || false,
+        reason: input[:reason],
+        actor: actor
+      ]
 
-    case Executor.kill_process(agent_id, pid, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          pid: pid,
-          process_name: result[:process_name],
-          message: "Process terminated successfully",
-          action_id: result[:action_id]
-        }}
+      case Executor.kill_process(agent_id, pid, opts) do
+        {:ok, result} ->
+          {:ok, %{
+            success: true,
+            agent_id: agent_id,
+            pid: pid,
+            process_name: result[:process_name],
+            message: "Process terminated successfully",
+            action_id: result[:action_id]
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          pid: pid,
-          process_name: nil,
-          message: "Failed to kill process: #{inspect(reason)}",
-          action_id: nil
-        }}
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            pid: pid,
+            process_name: nil,
+            message: "Agent not found",
+            action_id: nil
+          }}
+
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            pid: pid,
+            process_name: nil,
+            message: "Failed to kill process: #{inspect(reason)}",
+            action_id: nil
+          }}
+      end
     end
   end
 
@@ -111,35 +127,52 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     path = input.path
     user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      alert_id: input[:alert_id],
-      reason: input[:reason],
-      delete_original: input[:delete_original] || false
-    ]
+    # SECURITY: org-scoped actor is required; the Response Executor rejects
+    # cross-organization targets with :unauthorized (fail closed).
+    with {:ok, actor} <- actor_from_context(context) do
+      opts = [
+        requested_by: user_id,
+        alert_id: input[:alert_id],
+        reason: input[:reason],
+        delete_original: input[:delete_original] || false,
+        actor: actor
+      ]
 
-    case Executor.quarantine_file(agent_id, path, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          path: path,
-          sha256: result[:sha256],
-          quarantine_path: result[:quarantine_path],
-          message: "File quarantined successfully",
-          action_id: result[:action_id]
-        }}
+      case Executor.quarantine_file(agent_id, path, opts) do
+        {:ok, result} ->
+          {:ok, %{
+            success: true,
+            agent_id: agent_id,
+            path: path,
+            sha256: result[:sha256],
+            quarantine_path: result[:quarantine_path],
+            message: "File quarantined successfully",
+            action_id: result[:action_id]
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          path: path,
-          sha256: nil,
-          quarantine_path: nil,
-          message: "Failed to quarantine file: #{inspect(reason)}",
-          action_id: nil
-        }}
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            path: path,
+            sha256: nil,
+            quarantine_path: nil,
+            message: "Agent not found",
+            action_id: nil
+          }}
+
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            path: path,
+            sha256: nil,
+            quarantine_path: nil,
+            message: "Failed to quarantine file: #{inspect(reason)}",
+            action_id: nil
+          }}
+      end
     end
   end
 
@@ -324,36 +357,63 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     agent_id = input.agent_id
     user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      type: input[:collection_type] || "full",
-      paths: input[:paths] || [],
-      include_memory: input[:include_memory] || false,
-      investigation_id: input[:investigation_id]
-    ]
+    # SECURITY: org-scoped actor is required; the Response Executor rejects
+    # cross-organization targets with :unauthorized (fail closed).
+    with {:ok, actor} <- actor_from_context(context) do
+      opts = [
+        requested_by: user_id,
+        type: input[:collection_type] || "full",
+        paths: input[:paths] || [],
+        include_memory: input[:include_memory] || false,
+        investigation_id: input[:investigation_id],
+        actor: actor
+      ]
 
-    case Executor.collect_forensics(agent_id, opts) do
-      {:ok, collection_id} ->
-        {:ok, %{
-          success: true,
-          collection_id: collection_id,
-          agent_id: agent_id,
-          status: "in_progress",
-          artifacts_count: 0,
-          size_bytes: 0,
-          message: "Forensics collection started"
-        }}
+      case Executor.collect_forensics(agent_id, opts) do
+        {:ok, collection_id} ->
+          {:ok, %{
+            success: true,
+            collection_id: collection_id,
+            agent_id: agent_id,
+            status: "in_progress",
+            artifacts_count: 0,
+            size_bytes: 0,
+            message: "Forensics collection started"
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          collection_id: nil,
-          agent_id: agent_id,
-          status: "failed",
-          artifacts_count: 0,
-          size_bytes: 0,
-          message: "Failed to start collection: #{inspect(reason)}"
-        }}
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{
+            success: false,
+            collection_id: nil,
+            agent_id: agent_id,
+            status: "failed",
+            artifacts_count: 0,
+            size_bytes: 0,
+            message: "Agent not found"
+          }}
+
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            collection_id: nil,
+            agent_id: agent_id,
+            status: "failed",
+            artifacts_count: 0,
+            size_bytes: 0,
+            message: "Failed to start collection: #{inspect(reason)}"
+          }}
+      end
+    end
+  end
+
+  # Build a response-executor actor from the Absinthe context. Fails closed
+  # when no organization context is present (unauthenticated or misconfigured
+  # callers must not be able to fire response actions).
+  defp actor_from_context(context) do
+    case context[:organization_id] do
+      nil -> {:error, "Not authorized: missing organization context"}
+      org_id -> {:ok, %{organization_id: org_id, user_id: context[:current_user_id]}}
     end
   end
 end

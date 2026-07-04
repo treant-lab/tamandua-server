@@ -98,8 +98,17 @@ defmodule TamanduaServer.Reports.Templates.ThreatReport do
       end)
     end, [])
 
-    # Get alerts in range for analysis
-    alerts_in_range = safe_call(fn -> Alerts.list_alerts_in_range(date_from, date_to) end, [])
+    # Get alerts in range for analysis (tenant-scoped; fails closed to []
+    # when no organization is provided to avoid cross-tenant leakage)
+    organization_id = params["organization_id"] || params[:organization_id]
+
+    alerts_in_range =
+      if organization_id do
+        safe_call(fn -> Alerts.list_alerts_in_range_for_org(organization_id, date_from, date_to) end, [])
+      else
+        []
+      end
+
     total_alerts = length(alerts_in_range)
 
     # Attack vector analysis from alerts

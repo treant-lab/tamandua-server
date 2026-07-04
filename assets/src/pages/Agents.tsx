@@ -1732,6 +1732,9 @@ function getAgentPlatformCapabilities(
       agent.platform_capabilities ||
       apiRows?.find(row => row.agentId === agent.id)?.platformCapabilities
   )
+  if (shouldUseMobileFallbackCapabilities(agent.os_type, reported)) {
+    return fallbackPlatformCapabilities(agent.os_type)
+  }
   return reported.length > 0 ? reported : fallbackPlatformCapabilities(agent.os_type)
 }
 
@@ -1771,11 +1774,27 @@ function capabilityMaturityStyle(maturity: CapabilityMaturity) {
   }
 }
 
+function isMobilePlatform(osType?: string): boolean {
+  const os = String(osType || '').toLowerCase()
+  return os.includes('android') || os.includes('ios') || os.includes('iphone') || os.includes('ipad')
+}
+
+function shouldUseMobileFallbackCapabilities(osType: string | undefined, capabilities: PlatformCapability[]): boolean {
+  if (!isMobilePlatform(osType)) return false
+  return !capabilities.some(capability =>
+    ['mobile_posture', 'app_inventory', 'app_guard', 'commercial_spyware'].includes(capability.id)
+  )
+}
+
 function shortCapabilityName(id: string) {
   const labels: Record<string, string> = {
     endpoint_telemetry: 'telemetry',
     kernel_sensor: 'kernel',
     registry_telemetry: 'registry',
+    mobile_posture: 'posture',
+    app_inventory: 'apps',
+    app_guard: 'app guard',
+    commercial_spyware: 'spyware',
     live_response: 'response',
     network_isolation: 'isolate',
     prevention_policy: 'prevent',
@@ -1785,17 +1804,28 @@ function shortCapabilityName(id: string) {
 
 function fallbackPlatformCapabilities(osType?: string): PlatformCapability[] {
   const os = String(osType || '').toLowerCase()
-  const platform = os.includes('windows') ? 'windows' : os.includes('linux') ? 'linux' : os.includes('mac') || os.includes('darwin') ? 'macos' : 'unknown'
+  const platform = os.includes('windows') ? 'windows' :
+    os.includes('linux') ? 'linux' :
+    os.includes('mac') || os.includes('darwin') ? 'macos' :
+    os.includes('android') ? 'android' :
+    os.includes('ios') || os.includes('iphone') || os.includes('ipad') ? 'ios' :
+    'unknown'
   const maturityByPlatform: Record<string, Record<string, CapabilityMaturity>> = {
     windows: { endpoint_telemetry: 'supported', kernel_sensor: 'lab', registry_telemetry: 'supported', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
     linux: { endpoint_telemetry: 'partial', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
     macos: { endpoint_telemetry: 'lab', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'lab', network_isolation: 'lab', prevention_policy: 'lab' },
+    android: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
+    ios: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
     unknown: { endpoint_telemetry: 'unavailable', kernel_sensor: 'unavailable', registry_telemetry: 'unavailable', live_response: 'unavailable', network_isolation: 'unavailable', prevention_policy: 'unavailable' },
   }
   const names: Record<string, string> = {
     endpoint_telemetry: 'Endpoint telemetry',
     kernel_sensor: 'Kernel / platform sensor',
     registry_telemetry: 'Registry telemetry',
+    mobile_posture: 'Mobile posture',
+    app_inventory: 'App inventory',
+    app_guard: 'App Guard / RASP',
+    commercial_spyware: 'Commercial spyware indicators',
     live_response: 'Live response shell',
     network_isolation: 'Network isolation',
     prevention_policy: 'Prevention policy enforcement',

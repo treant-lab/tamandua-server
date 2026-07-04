@@ -407,13 +407,22 @@ end
 
 # Test environment configuration
 if config_env() == :test do
+  # Defaults preserved; env vars allow pointing tests at a differently
+  # provisioned Postgres (e.g. the docker-compose container or CI).
   config :tamandua_server, TamanduaServer.Repo,
-    username: "postgres",
-    password: "postgres",
-    hostname: "localhost",
+    username: System.get_env("TEST_DB_USER", "postgres"),
+    password: System.get_env("TEST_DB_PASS", "postgres"),
+    hostname: System.get_env("TEST_DB_HOST", "localhost"),
+    port: String.to_integer(System.get_env("TEST_DB_PORT", "5432")),
     database: "tamandua_server_test#{System.get_env("MIX_TEST_PARTITION")}",
     pool: Ecto.Adapters.SQL.Sandbox,
-    pool_size: 10
+    pool_size: String.to_integer(System.get_env("TEST_DB_POOL_SIZE", "10")),
+    # Defaults match DBConnection's built-ins; env vars let slow environments
+    # (e.g. proxied/dockerized Postgres) run long migrations without timeouts.
+    timeout: String.to_integer(System.get_env("TEST_DB_TIMEOUT", "15000")),
+    ownership_timeout: String.to_integer(System.get_env("TEST_DB_OWNERSHIP_TIMEOUT", "15000")),
+    queue_target: String.to_integer(System.get_env("TEST_DB_QUEUE_TARGET", "50")),
+    queue_interval: String.to_integer(System.get_env("TEST_DB_QUEUE_INTERVAL", "1000"))
 
   config :tamandua_server, TamanduaServerWeb.Endpoint,
     http: [ip: {127, 0, 0, 1}, port: 4002],

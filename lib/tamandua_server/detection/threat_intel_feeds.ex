@@ -211,6 +211,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   def handle_call(:get_status, _from, state) do
     # Build comprehensive feed status including sync interval and health
     stale_threshold = state.sync_interval * 2
+    {total_iocs, iocs_by_type, iocs_by_source} = feed_ioc_counts(state)
 
     feed_health = Enum.reduce(state.sync_status, %{}, fn {name, info}, acc ->
       health = cond do
@@ -232,11 +233,17 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       api_keys: state.api_keys,
       configured_providers: get_configured_providers(state),
       custom_feeds: state.custom_feeds,
-      total_iocs: IOCs.count(),
-      iocs_by_type: IOCs.count_by_type(),
-      iocs_by_source: IOCs.count_by_source()
+      total_iocs: total_iocs,
+      iocs_by_type: iocs_by_type,
+      iocs_by_source: iocs_by_source
     }
     {:reply, status, state}
+  end
+
+  defp feed_ioc_counts(%{enabled: false}), do: {0, %{}, %{}}
+
+  defp feed_ioc_counts(_state) do
+    {IOCs.count(), IOCs.count_by_type(), IOCs.count_by_source()}
   end
 
   @impl true

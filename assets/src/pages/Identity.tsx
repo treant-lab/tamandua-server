@@ -147,6 +147,27 @@ interface IdentityPageProps {
   identityAvailability?: IdentityAvailability
 }
 
+type IdentityTab = 'overview' | 'users' | 'signins' | 'privileges' | 'service_accounts'
+
+const identityTabs: IdentityTab[] = ['overview', 'users', 'signins', 'privileges', 'service_accounts']
+
+function readIdentityTabParam(): IdentityTab {
+  if (typeof window === 'undefined') return 'overview'
+  const tab = new URLSearchParams(window.location.search).get('tab') as IdentityTab | null
+  return tab && identityTabs.includes(tab) ? tab : 'overview'
+}
+
+function replaceIdentityUrlState(tab: IdentityTab) {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (tab === 'overview') {
+    url.searchParams.delete('tab')
+  } else {
+    url.searchParams.set('tab', tab)
+  }
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
 const defaultStats: IdentityStats = {
   totalUsers: 0,
   highRiskUsers: 0,
@@ -174,11 +195,15 @@ export default function Identity({
   serviceAccounts = [],
   identityAvailability = {},
 }: IdentityPageProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'signins' | 'privileges' | 'service_accounts'>('overview')
+  const [activeTab, setActiveTab] = useState<IdentityTab>(readIdentityTabParam)
   const [selectedUser, setSelectedUser] = useState<UserRisk | null>(null)
   const [timeRange, setTimeRange] = useState<'1h' | '24h' | '7d' | '30d'>('24h')
   const [searchTerm, setSearchTerm] = useState('')
   const [riskFilter, setRiskFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
+
+  useEffect(() => {
+    replaceIdentityUrlState(activeTab)
+  }, [activeTab])
 
   const identityStats = stats || defaultStats
   const sourceStatus = (source: keyof IdentityAvailability) => identityAvailability[source] || 'available'

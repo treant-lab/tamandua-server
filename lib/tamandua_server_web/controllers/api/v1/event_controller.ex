@@ -2,6 +2,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Telemetry
+  alias TamanduaServer.Mobile
   alias TamanduaServer.Detection.Correlator
   require Logger
 
@@ -19,14 +20,30 @@ defmodule TamanduaServerWeb.API.V1.EventController do
       event_type: params["event_type"],
       organization_id: organization_id,
       limit: limit,
-      offset: bounded_offset(params["offset"])
+      offset: bounded_offset(params["offset"]),
+      since: parse_datetime(params["since"]),
+      until: parse_datetime(params["until"]),
+      skip_agent_lookup: true
     }
 
-    events = safe_list_events(filters, "Event index")
+    {events, partial_reason} = safe_list_events(filters, "Event index")
+
+    serialized_events =
+      events
+      |> Enum.map(&serialize/1)
+      |> merge_mobile_events(organization_id, limit, params)
 
     json(conn, %{
-      data: Enum.map(events, &serialize/1),
-      meta: %{limit: limit, offset: filters.offset, scoped: not is_nil(organization_id)}
+      data: serialized_events,
+      meta: %{
+        limit: limit,
+        offset: filters.offset,
+        scoped: not is_nil(organization_id),
+        since: format_timestamp(filters.since),
+        until: format_timestamp(filters.until),
+        partial: not is_nil(partial_reason),
+        partial_reason: partial_reason
+      }
     })
   end
 
@@ -93,25 +110,34 @@ defmodule TamanduaServerWeb.API.V1.EventController do
       |> put_status(:forbidden)
       |> json(%{error: "Organization scope is required to search events"})
     else
-      results =
+      {results, partial_reason} =
         try do
-          Telemetry.search_events(query, time_range, limit,
-            organization_id: organization_id,
-            skip_agent_lookup: true
-          )
+          results =
+            Telemetry.search_events(query, time_range, limit,
+              organization_id: organization_id,
+              skip_agent_lookup: true
+            )
+
+          {results, nil}
         rescue
           exception ->
             Logger.warning("[EventController] search failed: #{Exception.message(exception)}")
-            []
+            {[], "event_search_failed"}
         catch
           :exit, reason ->
             Logger.warning("[EventController] search failed: exit #{inspect(reason)}")
-            []
+            {[], "event_search_exit"}
         end
 
       json(conn, %{
         data: Enum.map(results, &serialize/1),
-        meta: %{query: query, time_range: time_range, scoped: true}
+        meta: %{
+          query: query,
+          time_range: time_range,
+          scoped: true,
+          partial: not is_nil(partial_reason),
+          partial_reason: partial_reason
+        }
       })
     end
   end
@@ -161,6 +187,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
         agent_id: agent_id,
         time_window_minutes: time_window,
         count: length(related_events),
+        partial: not is_nil(partial_reason),
         partial_reason: partial_reason
       }
     })
@@ -248,6 +275,70 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     }
   end
 
+  defp merge_mobile_events(serialized_events, nil, _limit, _params), do: serialized_events
+
+  defp merge_mobile_events(serialized_events, _organization_id, _limit, %{"agent_id" => agent_id})
+       when is_binary(agent_id) and agent_id != "",
+       do: serialized_events
+
+  defp merge_mobile_events(serialized_events, organization_id, limit, params) do
+    mobile_events =
+      organization_id
+      |> Mobile.list_organization_events(
+        limit: limit,
+        offset: bounded_offset(params["offset"]),
+        hours: mobile_hours(params)
+      )
+      |> Enum.map(&serialize_mobile_event/1)
+
+    (serialized_events ++ mobile_events)
+    |> Enum.sort_by(&(&1.timestamp || ""), :desc)
+    |> Enum.take(limit)
+  rescue
+    exception ->
+      Logger.warning("[EventController] mobile event projection failed: #{Exception.message(exception)}")
+      serialized_events
+  catch
+    :exit, reason ->
+      Logger.warning("[EventController] mobile event projection failed: exit #{inspect(reason)}")
+      serialized_events
+  end
+
+  defp serialize_mobile_event(event) do
+    payload = event.payload || %{}
+
+    %{
+      id: event.id,
+      agent_id: mobile_event_agent_id(event),
+      agent_hostname: mobile_event_hostname(event),
+      event_type: event.event_type || "mobile_event",
+      timestamp: format_timestamp(event.timestamp),
+      payload:
+        payload
+        |> Map.put_new("source", "mobile")
+        |> Map.put_new("mobile_event_id", event.id)
+        |> Map.put_new("app_guard", app_guard_payload?(payload))
+    }
+  end
+
+  defp mobile_event_agent_id(event) do
+    case Map.get(event, :device) do
+      %{device_id: device_id} -> device_id
+      _ -> event.device_id
+    end
+  end
+
+  defp mobile_event_hostname(event) do
+    case Map.get(event, :device) do
+      %{model: model} when is_binary(model) and model != "" -> model
+      %{device_id: device_id} -> device_id
+      _ -> nil
+    end
+  end
+
+  defp app_guard_payload?(%{"schema" => "tamandua.app_guard.event/v1"}), do: true
+  defp app_guard_payload?(_payload), do: false
+
   defp format_timestamp(%NaiveDateTime{} = ts), do: NaiveDateTime.to_iso8601(ts)
   defp format_timestamp(%DateTime{} = ts), do: DateTime.to_iso8601(ts)
   defp format_timestamp(ts) when is_binary(ts), do: ts
@@ -276,20 +367,46 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     |> max(0)
   end
 
+  defp parse_datetime(nil), do: nil
+  defp parse_datetime(""), do: nil
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _ -> nil
+    end
+  end
+
+  defp parse_datetime(_), do: nil
+
+  defp mobile_hours(%{"since" => since}) when is_binary(since) and since != "" do
+    case parse_datetime(since) do
+      %DateTime{} = datetime ->
+        DateTime.diff(DateTime.utc_now(), datetime, :hour)
+        |> max(1)
+        |> min(24 * 30)
+
+      _ ->
+        24
+    end
+  end
+
+  defp mobile_hours(_params), do: 24
+
   defp current_organization_id(conn) do
     conn.assigns[:current_organization_id] ||
       (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
   end
 
   defp safe_list_events(filters, label) do
-    Telemetry.list_events(filters)
+    {Telemetry.list_events(filters), nil}
   rescue
     exception ->
       Logger.warning("[EventController] #{label} failed: #{Exception.message(exception)}")
-      []
+      {[], "event_query_failed"}
   catch
     :exit, reason ->
       Logger.warning("[EventController] #{label} failed: exit #{inspect(reason)}")
-      []
+      {[], "event_query_exit"}
   end
 end

@@ -112,6 +112,25 @@ function apiErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? `${fallback}: ${error.message}` : fallback
 }
 
+function timelinePartialMessage(meta: Record<string, unknown> | undefined): string | null {
+  if (!meta?.partial) return null
+
+  const reason = String(
+    meta.partialReason ||
+    meta.correlationPartialReason ||
+    meta.queryPartialReason ||
+    'partial_result'
+  )
+
+  const labels: Record<string, string> = {
+    correlation_timeout: 'Correlation analysis timed out for this event window. Events are loaded, but related-event scoring is partial.',
+    query_timeout: 'Timeline event query timed out. Results may be incomplete for this window.',
+    partial_result: 'Timeline data loaded with partial correlation metadata.',
+  }
+
+  return labels[reason] || `Timeline data loaded with partial metadata (${reason}).`
+}
+
 interface CorrelationResult {
   id: string
   correlationId?: string
@@ -583,7 +602,7 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
       } else {
         setEventList([])
       }
-      setTimelineError(null)
+      setTimelineError(timelinePartialMessage(response.data?.correlationMeta))
 
       const [readinessResponse, candidatesResponse] = await Promise.allSettled([
         axios.get('/api/v1/timeline/readiness', { params: { hours: timeRange === '7d' ? '168' : '24' } }),
