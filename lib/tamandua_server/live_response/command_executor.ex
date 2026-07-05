@@ -90,43 +90,41 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
     "shell_execute"
   ]
 
-  # All supported command types
-  @supported_commands [
+  # Server/control-plane contract for live response commands sent through
+  # `Worker.send_command/3`: command names accepted by the API, agent wire
+  # command_type, and required payload keys.
+  @command_contracts %{
     # File operations
-    "list_directory",
-    "read_file",
-    "download_file",
-    "upload_file",
-    "delete_file",
-    "hash_file",
-    "get_file_metadata",
+    "list_directory" => %{agent_command_type: "file_list", required: [:path]},
+    "read_file" => %{agent_command_type: "file_download", required: [:path]},
+    "download_file" => %{agent_command_type: "file_download", required: [:path]},
+    "upload_file" => %{agent_command_type: "file_upload", required: [:path, :content]},
+    "hash_file" => %{agent_command_type: "file_hash", required: [:path]},
     # Process operations
-    "list_processes",
-    "kill_process",
-    "suspend_process",
-    "get_process_details",
+    "list_processes" => %{agent_command_type: "process_list", required: []},
+    "kill_process" => %{agent_command_type: "process_kill", required: [:pid]},
+    "suspend_process" => %{agent_command_type: "process_suspend", required: [:pid]},
     # Registry operations
-    "list_keys",
-    "get_value",
-    "search_registry",
+    "list_keys" => %{agent_command_type: "registry_query", required: [:key]},
     # Network operations
-    "list_connections",
-    "list_listening_ports",
-    "dns_cache",
-    "arp_table",
+    "list_connections" => %{agent_command_type: "network_connections", required: []},
+    "dns_cache" => %{agent_command_type: "dns_cache", required: []},
     # System info
-    "os_info",
-    "installed_software",
-    "services",
-    "scheduled_tasks",
-    "autoruns",
+    "os_info" => %{agent_command_type: "os_info", required: []},
+    "services" => %{agent_command_type: "service_list", required: []},
+    "scheduled_tasks" => %{agent_command_type: "scheduled_tasks", required: []},
+    "autoruns" => %{agent_command_type: "startup_items", required: []},
     # Memory
-    "dump_process_memory",
-    "list_loaded_modules",
-    "shell_execute",
+    "dump_process_memory" => %{agent_command_type: "process_dump", required: [:pid]},
+    "memory_yara_scan" => %{agent_command_type: "memory_scan", required: []},
+    "memory_strings" => %{agent_command_type: "memory_strings", required: [:pid]},
+    "list_loaded_modules" => %{agent_command_type: "list_loaded_modules", required: [:pid]},
+    "shell_execute" => %{agent_command_type: "shell_execute", required: [:command]},
     # Evidence collection
-    "collect_artifacts"
-  ]
+    "collect_artifacts" => %{agent_command_type: "collect_artifact", required: [:artifacts]}
+  }
+
+  @supported_commands Map.keys(@command_contracts)
 
   # ============================================================================
   # Public API
@@ -346,6 +344,14 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
   """
   @spec supported_commands() :: [String.t()]
   def supported_commands, do: @supported_commands
+
+  @doc """
+  Returns the server-to-agent contract for supported live response commands.
+  """
+  @spec command_contracts() :: %{
+          String.t() => %{agent_command_type: String.t(), required: [atom()]}
+        }
+  def command_contracts, do: @command_contracts
 
   @doc """
   Returns the list of commands that require elevated authorization.
@@ -761,64 +767,19 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
   end
 
   defp validate_args(command, args) do
-    case command do
-      cmd when cmd in ["list_directory", "read_file", "download_file", "delete_file", "hash_file", "get_file_metadata"] ->
-        if Map.has_key?(args, :path) or Map.has_key?(args, "path") do
-          :ok
-        else
-          {:error, :missing_required_arg_path}
-        end
-
-      cmd when cmd in ["kill_process", "suspend_process", "get_process_details", "dump_process_memory", "list_loaded_modules"] ->
-        if Map.has_key?(args, :pid) or Map.has_key?(args, "pid") do
-          :ok
-        else
-          {:error, :missing_required_arg_pid}
-        end
-
-      "upload_file" ->
-        has_path = Map.has_key?(args, :path) or Map.has_key?(args, "path")
-        has_content = Map.has_key?(args, :content) or Map.has_key?(args, "content")
-
-        if has_path and has_content do
-          :ok
-        else
-          {:error, :missing_required_args}
-        end
-
-      cmd when cmd in ["list_keys", "get_value"] ->
-        if Map.has_key?(args, :key) or Map.has_key?(args, "key") do
-          :ok
-        else
-          {:error, :missing_required_arg_key}
-        end
-
-      "search_registry" ->
-        if Map.has_key?(args, :pattern) or Map.has_key?(args, "pattern") do
-          :ok
-        else
-          {:error, :missing_required_arg_pattern}
-        end
-
-      "collect_artifacts" ->
-        if Map.has_key?(args, :artifacts) or Map.has_key?(args, "artifacts") do
-          :ok
-        else
-          {:error, :missing_required_arg_artifacts}
-        end
-
-      "shell_execute" ->
-        if Map.has_key?(args, :command) or Map.has_key?(args, "command") do
-          :ok
-        else
-          {:error, :missing_required_arg_command}
-        end
-
-      _ ->
-        # Commands without required args
-        :ok
+    @command_contracts
+    |> Map.fetch!(command)
+    |> Map.fetch!(:required)
+    |> Enum.find(&(not has_arg?(args, &1)))
+    |> case do
+      nil -> :ok
+      missing -> {:error, missing_required_arg(missing)}
     end
   end
+
+  defp has_arg?(args, key), do: Map.has_key?(args, key) or Map.has_key?(args, Atom.to_string(key))
+
+  defp missing_required_arg(key), do: :"missing_required_arg_#{key}"
 
   defp validate_session_active(%{status: status}) when status in [:active, :idle], do: :ok
   defp validate_session_active(%{status: :expired}), do: {:error, :session_expired}
@@ -858,8 +819,10 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
   defp dispatch_to_agent(agent_id, command, args, timeout) do
     case AgentRegistry.get_worker_pid(agent_id) do
       {:ok, pid} ->
+        %{agent_command_type: agent_command_type} = Map.fetch!(@command_contracts, command)
+
         payload = %{
-          command_type: agent_command_type(command),
+          command_type: agent_command_type,
           payload: args
         }
 
@@ -874,25 +837,6 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
         {:error, :agent_not_connected}
     end
   end
-
-  defp agent_command_type("list_directory"), do: "file_list"
-  defp agent_command_type("read_file"), do: "file_download"
-  defp agent_command_type("download_file"), do: "file_download"
-  defp agent_command_type("upload_file"), do: "file_upload"
-  defp agent_command_type("hash_file"), do: "file_hash"
-  defp agent_command_type("list_processes"), do: "process_list"
-  defp agent_command_type("kill_process"), do: "process_kill"
-  defp agent_command_type("dump_process_memory"), do: "process_dump"
-  defp agent_command_type("memory_yara_scan"), do: "memory_scan"
-  defp agent_command_type("memory_strings"), do: "memory_strings"
-  defp agent_command_type("list_connections"), do: "network_connections"
-  defp agent_command_type("dns_cache"), do: "dns_cache"
-  defp agent_command_type("list_keys"), do: "registry_query"
-  defp agent_command_type("services"), do: "service_list"
-  defp agent_command_type("scheduled_tasks"), do: "scheduled_tasks"
-  defp agent_command_type("autoruns"), do: "startup_items"
-  defp agent_command_type("shell_execute"), do: "shell_execute"
-  defp agent_command_type(command), do: command
 
   # ============================================================================
   # Private - Output Processing

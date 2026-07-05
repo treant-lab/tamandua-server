@@ -77,9 +77,22 @@ defmodule TamanduaServerWeb.FallbackController do
     |> json(%{error: "Operation timed out", code: "timeout"})
   end
 
-  @doc """
-  Handle validation errors with details.
-  """
+ @doc """
+ Handle required parameter errors.
+ """
+ def call(conn, {:error, :missing_required_param, key}) when is_binary(key) or is_atom(key) do
+ conn
+ |> put_status(:bad_request)
+ |> json(%{
+ error: "Missing required parameter",
+ code: "missing_required_param",
+ parameter: to_string(key)
+ })
+ end
+
+ @doc """
+ Handle validation errors with details.
+ """
   def call(conn, {:error, :invalid_params, details}) when is_map(details) do
     conn
     |> put_status(:bad_request)

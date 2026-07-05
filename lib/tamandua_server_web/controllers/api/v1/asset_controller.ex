@@ -267,6 +267,36 @@ defmodule TamanduaServerWeb.API.V1.AssetController do
     end
   end
 
+  @doc """
+  Analyze software license metadata for an asset.
+
+  This is a conservative metadata review based on installed software inventory.
+  It does not make legal compliance claims.
+  """
+  def license_compliance(conn, %{"id" => id}) do
+    with {:ok, asset} <- AssetManager.get_asset(id),
+         {:ok, analysis} <- AssetManager.analyze_license_metadata(asset) do
+      json(conn, %{
+        data: %{
+          asset_id: analysis.asset_id,
+          hostname: analysis.hostname,
+          generated_at: format_datetime(analysis.generated_at),
+          summary: analysis.summary,
+          findings: analysis.findings,
+          software: analysis.software,
+          caveat:
+            "License risk is classified from inventory-provided license metadata only; unknown entries need enrichment before compliance conclusions."
+        }
+      })
+    else
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, to_string(reason)}
+    end
+  end
+
   # Private functions
 
   defp serialize_asset(asset) do

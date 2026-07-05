@@ -16,6 +16,7 @@ import {
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { Select, SelectItem } from '@/components/ui/baseui'
+import { useTenantFetch } from '@/hooks/useTenantFetch'
 
 interface VulnerabilityStats {
   total_cves: number
@@ -59,6 +60,7 @@ interface SyncStatus {
 }
 
 export default function Vulnerabilities() {
+  const { tenantGet, tenantPost } = useTenantFetch()
   const [stats, setStats] = useState<VulnerabilityStats | null>(null)
   const [cves, setCves] = useState<CVE[]>([])
   const [kevEntries, setKevEntries] = useState<CVE[]>([])
@@ -70,12 +72,13 @@ export default function Vulnerabilities() {
   const [kevFilter, setKevFilter] = useState(false)
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     try {
+      setError(null)
       // Fetch stats
-      const statsRes = await fetch('/api/v1/vulnerabilities/stats')
-      const statsData = await statsRes.json()
+      const statsData = await tenantGet<{ data: VulnerabilityStats }>('/api/v1/vulnerabilities/stats')
       setStats(statsData.data)
 
       // Fetch vulnerabilities
@@ -87,31 +90,28 @@ export default function Vulnerabilities() {
         ...(searchQuery && { search: searchQuery }),
       })
 
-      const cvesRes = await fetch(`/api/v1/vulnerabilities?${params}`)
-      const cvesData = await cvesRes.json()
+      const cvesData = await tenantGet<{ data: CVE[]; pagination?: { total_pages?: number } }>(`/api/v1/vulnerabilities?${params}`)
       setCves(cvesData.data || [])
       setTotalPages(cvesData.pagination?.total_pages || 1)
 
       // Fetch KEV entries
-      const kevRes = await fetch('/api/v1/vulnerabilities/kev?limit=10')
-      const kevData = await kevRes.json()
+      const kevData = await tenantGet<{ data: CVE[] }>('/api/v1/vulnerabilities/kev?limit=10')
       setKevEntries(kevData.data || [])
 
       // Fetch top EPSS
-      const epssRes = await fetch('/api/v1/vulnerabilities/epss/top?limit=10')
-      const epssData = await epssRes.json()
+      const epssData = await tenantGet<{ data: CVE[] }>('/api/v1/vulnerabilities/epss/top?limit=10')
       setTopEpss(epssData.data || [])
 
       // Fetch sync status
-      const syncRes = await fetch('/api/v1/vulnerabilities/sync/status')
-      const syncData = await syncRes.json()
+      const syncData = await tenantGet<{ data: SyncStatus }>('/api/v1/vulnerabilities/sync/status')
       setSyncStatus(syncData.data)
     } catch (error) {
       logger.error('Failed to fetch vulnerability data:', error)
+      setError(error instanceof Error ? error.message : 'Failed to load vulnerability data')
     } finally {
       setLoading(false)
     }
-  }, [page, severityFilter, kevFilter, searchQuery])
+  }, [page, severityFilter, kevFilter, searchQuery, tenantGet])
 
   useEffect(() => {
     fetchData()
@@ -119,15 +119,20 @@ export default function Vulnerabilities() {
 
   const triggerSync = async (type: 'nvd' | 'epss' | 'kev') => {
     try {
-      await fetch(`/api/v1/vulnerabilities/sync/${type}`, { method: 'POST' })
+      setError(null)
+      await tenantPost(`/api/v1/vulnerabilities/sync/${type}`, {})
       // Refresh sync status after a delay
       setTimeout(() => {
-        fetch('/api/v1/vulnerabilities/sync/status')
-          .then(res => res.json())
+        tenantGet<{ data: SyncStatus }>('/api/v1/vulnerabilities/sync/status')
           .then(data => setSyncStatus(data.data))
+          .catch(error => {
+            logger.error('Failed to refresh vulnerability sync status:', error)
+            setError(error instanceof Error ? error.message : 'Failed to refresh sync status')
+          })
       }, 2000)
     } catch (error) {
       logger.error(`Failed to trigger ${type} sync:`, error)
+      setError(error instanceof Error ? error.message : `Failed to trigger ${type.toUpperCase()} sync`)
     }
   }
 
@@ -190,6 +195,20 @@ export default function Vulnerabilities() {
             </button>
           </div>
         </div>
+
+        {/* Stats Cards */}
+        {error && (
+          <div
+            className="rounded-lg px-4 py-3 text-sm"
+            style={{
+              background: 'var(--crit-bg)',
+              border: '1px solid var(--crit)',
+              color: 'var(--crit)'
+            }}
+          >
+            {error}
+          </div>
+        )}
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-4">
@@ -335,7 +354,10 @@ export default function Vulnerabilities() {
               ) : cves.length === 0 ? (
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                   <Shield className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No vulnerabilities found</p>
+                  <p>No CVEs found in the local vulnerability catalog for this query.</p>
+                  <p className="text-sm mt-2" style={{ color: 'var(--subtle)' }}>
+                    This does not prove the environment is vulnerability-free; it depends on NVD/EPSS/KEV sync and asset matching evidence.
+                  </p>
                 </div>
               ) : (
                 cves.map((cve, idx) => (

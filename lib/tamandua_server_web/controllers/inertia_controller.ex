@@ -6489,19 +6489,35 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp serialize_workflow_execution(execution) do
+    duration_seconds = workflow_execution_field(execution, :duration_seconds)
+
     %{
-      id: execution[:id] || execution.id,
-      workflowId: execution[:workflow_id] || execution.workflow_id,
-      triggeredBy: execution[:triggered_by] || execution.triggered_by,
-      triggerData: execution[:trigger_data] || execution.trigger_data || %{},
-      status: execution[:status] || execution.status,
-      startedAt: format_datetime(execution[:started_at] || execution.started_at),
-      completedAt: format_datetime(execution[:completed_at] || execution.completed_at),
-      stepResults: execution[:step_results] || execution.step_results || [],
-      error: execution[:error] || execution.error,
-      duration_ms: execution[:duration_ms] || execution.duration_ms
+      id: workflow_execution_field(execution, :id),
+      workflowId: workflow_execution_field(execution, :workflow_id),
+      triggeredBy:
+        workflow_execution_field(execution, :triggered_by) ||
+          workflow_execution_field(execution, :initiated_by),
+      triggerData:
+        workflow_execution_field(execution, :trigger_data) ||
+          workflow_execution_field(execution, :trigger_event) || %{},
+      status: workflow_execution_field(execution, :status),
+      startedAt: format_datetime(workflow_execution_field(execution, :started_at)),
+      completedAt: format_datetime(workflow_execution_field(execution, :completed_at)),
+      stepResults: workflow_execution_field(execution, :step_results) || %{},
+      error:
+        workflow_execution_field(execution, :error) ||
+          workflow_execution_field(execution, :error_message),
+      duration_ms:
+        workflow_execution_field(execution, :duration_ms) ||
+          if(is_number(duration_seconds), do: trunc(duration_seconds * 1000), else: nil)
     }
   end
+
+  defp workflow_execution_field(execution, key) when is_map(execution) do
+    Map.get(execution, key) || Map.get(execution, Atom.to_string(key))
+  end
+
+  defp workflow_execution_field(_execution, _key), do: nil
 
   # Exposure Management
   def exposure_management(conn, _params) do

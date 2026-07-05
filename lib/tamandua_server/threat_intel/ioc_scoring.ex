@@ -198,7 +198,11 @@ defmodule TamanduaServer.ThreatIntel.IOCScoring do
   """
   @spec get_config() :: map()
   def get_config do
-    GenServer.call(__MODULE__, :get_config)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :get_config)
+    else
+      default_config()
+    end
   end
 
   @doc """
@@ -220,6 +224,20 @@ defmodule TamanduaServer.ThreatIntel.IOCScoring do
   # ============================================================================
   # GenServer Implementation
   # ============================================================================
+
+  defp default_config do
+    %{
+      half_life_days: @default_half_life_days,
+      min_score_threshold: @default_min_score_threshold,
+      max_sighting_boost: @default_max_sighting_boost,
+      fp_weight: @default_fp_weight,
+      correlation_boost: @default_correlation_boost,
+      source_reputation: @source_reputation,
+      type_weights: @type_weights,
+      status: "unavailable",
+      reason: "ioc_scoring_process_not_started"
+    }
+  end
 
   @impl true
   def init(opts) do

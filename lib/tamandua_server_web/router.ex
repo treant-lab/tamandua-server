@@ -931,6 +931,7 @@ defmodule TamanduaServerWeb.Router do
     post("/assets/:id/scan", AssetController, :trigger_scan)
     get("/assets/:id/vulnerabilities", AssetController, :vulnerabilities)
     get("/assets/:id/risk-score", AssetController, :risk_score)
+    get("/assets/:id/license-compliance", AssetController, :license_compliance)
 
     # Forensics (artifact collections)
     resources("/forensics", ForensicsController, only: [:index, :show, :create])

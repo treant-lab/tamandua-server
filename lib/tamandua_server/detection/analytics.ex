@@ -94,7 +94,11 @@ defmodule TamanduaServer.Detection.Analytics do
   """
   @spec get_overview() :: map()
   def get_overview do
-    GenServer.call(__MODULE__, :get_overview)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :get_overview)
+    else
+      empty_overview()
+    end
   end
 
   @doc """
@@ -321,6 +325,22 @@ defmodule TamanduaServer.Detection.Analytics do
   # =========================================================================
   # Call Handlers
   # =========================================================================
+
+  defp empty_overview do
+    %{
+      total_rules: 0,
+      active_rules: 0,
+      total_detections: 0,
+      avg_effectiveness: 0.0,
+      false_positive_rate: 0.0,
+      true_positive_rate: 0.0,
+      detection_rate: 0.0,
+      total_events_processed: 0,
+      avg_pipeline_latency_ms: 0.0,
+      total_recommendations: 0,
+      total_blind_spots: 0
+    }
+  end
 
   @impl true
   def handle_call(:get_overview, _from, state) do

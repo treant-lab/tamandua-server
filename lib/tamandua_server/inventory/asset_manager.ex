@@ -19,6 +19,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
   import Ecto.Query
 
   alias TamanduaServer.{Repo, Agents}
+  alias TamanduaServer.Inventory.LicenseAnalyzer
 
   # Asset schema
   defmodule Asset do
@@ -235,6 +236,19 @@ defmodule TamanduaServer.Inventory.AssetManager do
   def update_software_inventory(agent_id, software_list) do
     GenServer.call(__MODULE__, {:update_software, agent_id, software_list})
   end
+
+  @doc """
+  Analyze license metadata for a persisted asset.
+  """
+  def analyze_license_metadata(asset_id) when is_binary(asset_id) do
+    case get_asset(asset_id) do
+      {:ok, asset} -> {:ok, LicenseAnalyzer.analyze_asset(asset)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def analyze_license_metadata(%Asset{} = asset), do: {:ok, LicenseAnalyzer.analyze_asset(asset)}
+  def analyze_license_metadata(asset) when is_map(asset), do: {:ok, LicenseAnalyzer.analyze_asset(asset)}
 
   @doc """
   Calculate risk score for an asset
@@ -751,21 +765,50 @@ defmodule TamanduaServer.Inventory.AssetManager do
 
   defp process_software_list(software_list, baseline) do
     Enum.map(software_list, fn sw ->
+      name = software_value(sw, "name")
+
       is_authorized = Enum.any?(baseline, fn pattern ->
-        Regex.match?(pattern, sw["name"] || "")
+        Regex.match?(pattern, name || "")
       end)
 
       %{
-        name: sw["name"],
-        version: sw["version"],
-        vendor: sw["vendor"],
-        install_date: sw["install_date"],
-        install_path: sw["install_path"],
+        name: name,
+        version: software_value(sw, "version"),
+        vendor: software_value(sw, "vendor"),
+        license: software_value(sw, "license"),
+        install_date: software_value(sw, "install_date"),
+        install_path: software_value(sw, "install_path"),
+        metadata: software_metadata(sw),
         is_authorized: is_authorized,
-        category: categorize_software(sw["name"])
+        category: categorize_software(name)
       }
     end)
   end
+
+  defp software_value(sw, key) when is_map(sw) do
+    Map.get(sw, key) || Map.get(sw, software_atom_key(key))
+  end
+
+  defp software_value(_sw, _key), do: nil
+
+  defp software_atom_key("license"), do: :license
+  defp software_atom_key("metadata"), do: :metadata
+  defp software_atom_key("licenses"), do: :licenses
+  defp software_atom_key("name"), do: :name
+  defp software_atom_key("version"), do: :version
+  defp software_atom_key("vendor"), do: :vendor
+  defp software_atom_key("install_date"), do: :install_date
+  defp software_atom_key("install_path"), do: :install_path
+  defp software_atom_key(_key), do: nil
+
+  defp software_metadata(sw) when is_map(sw) do
+    case software_value(sw, "metadata") do
+      metadata when is_map(metadata) -> metadata
+      _ -> %{}
+    end
+  end
+
+  defp software_metadata(_sw), do: %{}
 
   defp categorize_software(nil), do: "unknown"
   defp categorize_software(name) do

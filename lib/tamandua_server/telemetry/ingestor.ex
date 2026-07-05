@@ -21,6 +21,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   alias TamanduaServer.Telemetry.IngestorProducer
   alias TamanduaServer.Agents.OrgLookup
   alias TamanduaServer.Telemetry.Enrichment
+  alias TamanduaServer.Vulnerability.AssetScanner
   alias TamanduaServer.AISecurity.{AIGateway, AIInventory, AttackSurface, EndpointUsage}
 
   alias TamanduaServer.NDR.{
@@ -186,6 +187,24 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       event_type in ["package_install", :package_install] ->
         # Route package install events to supply chain detection
         handle_package_install_event(event)
+
+        message
+        |> Message.update_data(fn _ ->
+          Map.put(event, :processed_at, System.system_time(:millisecond))
+        end)
+        |> Message.put_batcher(:default)
+
+      event_type in [
+        "software_inventory",
+        :software_inventory,
+        "software_install",
+        :software_install,
+        "software_change",
+        :software_change
+      ] ->
+        # Keep the raw telemetry event for audit/timeline and project the
+        # inventory item into relational vulnerability tables.
+        handle_software_inventory_event(event)
 
         message
         |> Message.update_data(fn _ ->
@@ -558,6 +577,44 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp ai_discovery_payload?(value), do: truthy?(value)
 
   defp truthy?(value), do: value in [true, "true", 1, "1"]
+
+  defp handle_software_inventory_event(event) do
+    agent_id = event["agent_id"] || event[:agent_id]
+    payload = event["payload"] || event[:payload] || %{}
+    software = software_inventory_items(payload)
+
+    if agent_id && software != [] do
+      case AssetScanner.scan_agent_inventory(agent_id, software) do
+        {:ok, result} ->
+          Logger.debug(
+            "[Ingestor] Software inventory projected agent=#{agent_id} scanned=#{result.software_scanned} vulns=#{result.vulnerabilities_found}"
+          )
+
+        {:error, reason} ->
+          Logger.warning(
+            "[Ingestor] Software inventory projection failed agent=#{agent_id}: #{inspect(reason)}"
+          )
+      end
+    end
+  rescue
+    e ->
+      Logger.warning("[Ingestor] Software inventory processing failed: #{Exception.message(e)}")
+  catch
+    :exit, reason ->
+      Logger.warning("[Ingestor] Software inventory processing exited: #{inspect(reason)}")
+  end
+
+  defp software_inventory_items(%{"software" => software}) when is_list(software), do: software
+  defp software_inventory_items(%{software: software}) when is_list(software), do: software
+
+  defp software_inventory_items(%{"software" => software}) when is_map(software), do: [software]
+  defp software_inventory_items(%{software: software}) when is_map(software), do: [software]
+
+  defp software_inventory_items(payload) when is_map(payload) do
+    if Map.has_key?(payload, "name") or Map.has_key?(payload, :name), do: [payload], else: []
+  end
+
+  defp software_inventory_items(_payload), do: []
 
   defp handle_package_install_event(event) do
     agent_id = event["agent_id"] || event[:agent_id]

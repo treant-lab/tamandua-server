@@ -104,14 +104,25 @@ defmodule TamanduaServer.DeviceControl do
   List all device group policies.
   """
   def list_policies do
-    GenServer.call(__MODULE__, :list_policies)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :list_policies)
+    else
+      default_policies()
+    end
   end
 
   @doc """
   Get policy for a specific device group.
   """
   def get_policy(group) do
-    GenServer.call(__MODULE__, {:get_policy, group})
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:get_policy, group})
+    else
+      case Map.fetch(@default_policies, group) do
+        {:ok, policy} -> {:ok, policy}
+        :error -> {:error, :not_found}
+      end
+    end
   end
 
   @doc """
@@ -132,7 +143,11 @@ defmodule TamanduaServer.DeviceControl do
   Get the global device whitelist.
   """
   def get_whitelist do
-    GenServer.call(__MODULE__, :get_whitelist)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :get_whitelist)
+    else
+      []
+    end
   end
 
   @doc """
@@ -153,7 +168,11 @@ defmodule TamanduaServer.DeviceControl do
   Get the global device blocklist.
   """
   def get_blocklist do
-    GenServer.call(__MODULE__, :get_blocklist)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :get_blocklist)
+    else
+      []
+    end
   end
 
   @doc """
@@ -265,6 +284,12 @@ defmodule TamanduaServer.DeviceControl do
       status: "unavailable",
       reason: "device_control_process_not_started"
     }
+  end
+
+  defp default_policies do
+    @default_policies
+    |> Map.values()
+    |> Enum.sort_by(& &1.group)
   end
 
   # ===========================================================================

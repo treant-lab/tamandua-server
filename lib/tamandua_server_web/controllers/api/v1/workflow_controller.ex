@@ -185,7 +185,7 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
             status: execution.status,
             started_at: execution.started_at,
             completed_at: execution.completed_at,
-            result: execution.result
+            result: execution_result(execution)
           }
         })
 
@@ -457,6 +457,15 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     do: Map.get(config, "conditions") || Map.get(config, :conditions) || []
 
   defp workflow_trigger_conditions(_), do: []
+
+  defp execution_result(execution) do
+    %{
+      step_results: Map.get(execution, :step_results, %{}),
+      completed_steps: Map.get(execution, :completed_steps, []),
+      error_message: Map.get(execution, :error_message),
+      duration_seconds: Map.get(execution, :duration_seconds)
+    }
+  end
 
   defp parse_int(value, fallback, min, max) when is_integer(value), do: clamp(value, min, max)
 

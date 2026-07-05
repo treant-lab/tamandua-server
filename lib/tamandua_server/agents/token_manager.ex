@@ -124,7 +124,11 @@ defmodule TamanduaServer.Agents.TokenManager do
   Returns {:ok, claims} or {:error, reason}.
   """
   def validate_token(token) do
-    GenServer.call(__MODULE__, {:validate_token, token})
+    do_validate_token(token)
+  rescue
+    e ->
+      Logger.error("Token validation failed: #{Exception.message(e)}")
+      {:error, :database_error}
   end
 
   @doc """
@@ -777,9 +781,13 @@ defmodule TamanduaServer.Agents.TokenManager do
   end
 
   defp check_revocation_cache(agent_id, generation) do
-    case :ets.lookup(:agent_token_revocations, {agent_id, generation}) do
-      [] -> :ok
-      [{_, _revoked_at, _reason}] -> {:error, :revoked}
+    if :ets.whereis(:agent_token_revocations) == :undefined do
+      :ok
+    else
+      case :ets.lookup(:agent_token_revocations, {agent_id, generation}) do
+        [] -> :ok
+        [{_, _revoked_at, _reason}] -> {:error, :revoked}
+      end
     end
   end
 

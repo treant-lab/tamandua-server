@@ -27,12 +27,12 @@ defmodule TamanduaServerWeb.API.V1.AnalystController do
       investigation_type = Map.get(params, "investigation_type", "incident")
       investigation_params = Map.get(params, "parameters", %{})
 
-      opts = [
-        trigger: trigger,
-        trigger_id: trigger_id,
-        investigation_type: investigation_type,
-        parameters: investigation_params
-      ]
+      opts = %{
+ trigger: trigger,
+ trigger_id: trigger_id,
+ investigation_type: investigation_type,
+ parameters: investigation_params
+ }
 
       case AgenticAnalyst.start_investigation(opts) do
         {:ok, investigation} ->
@@ -63,26 +63,30 @@ defmodule TamanduaServerWeb.API.V1.AnalystController do
     - limit: Number of results (default 50)
     - offset: Pagination offset
   """
-  def list_investigations(conn, params) do
-    filters = %{
-      status: Map.get(params, "status"),
-      investigation_type: Map.get(params, "investigation_type"),
-      limit: Map.get(params, "limit", 50),
-      offset: Map.get(params, "offset", 0)
-    }
+ def list_investigations(conn, params) do
+ limit = parse_integer_param(Map.get(params, "limit"), 50)
+ offset = parse_integer_param(Map.get(params, "offset"), 0)
 
-    with {:ok, investigations} <- AgenticAnalyst.list_investigations(filters) do
-      json(conn, %{
-        status: "success",
-        data: %{
-          investigations: investigations.items,
-          total: investigations.total,
-          limit: filters.limit,
-          offset: filters.offset
-        }
-      })
-    end
-  end
+ filters = [
+ status: Map.get(params, "status"),
+ investigation_type: Map.get(params, "investigation_type"),
+ limit: limit,
+ offset: offset
+ ]
+
+ investigations = AgenticAnalyst.list_investigations(filters)
+ visible_investigations = investigations |> Enum.drop(offset) |> Enum.take(limit)
+
+ json(conn, %{
+ status: "success",
+ data: %{
+ investigations: Enum.map(visible_investigations, &serialize_investigation/1),
+ total: length(investigations),
+ limit: limit,
+ offset: offset
+ }
+ })
+ end
 
   @doc """
   Get detailed information about a specific investigation.
@@ -201,6 +205,62 @@ defmodule TamanduaServerWeb.API.V1.AnalystController do
   end
 
   # Private helpers
+
+ defp parse_integer_param(value, _default) when is_integer(value) and value >= 0, do: value
+ defp parse_integer_param(value, default) when is_integer(value), do: max(value, default)
+
+ defp parse_integer_param(value, default) when is_binary(value) do
+ case Integer.parse(value) do
+ {parsed, _} when parsed >= 0 -> parsed
+ _ -> default
+ end
+ end
+
+ defp parse_integer_param(_value, default), do: default
+
+ defp serialize_investigation(investigation) do
+ hypotheses = Map.get(investigation, :hypotheses) || []
+ evidence = Map.get(investigation, :evidence) || []
+ recommendations = Map.get(investigation, :recommendations) || []
+ alert = Map.get(investigation, :alert) || %{}
+ state = Map.get(investigation, :state)
+
+ %{
+ id: Map.get(investigation, :id),
+ alertId: Map.get(investigation, :alert_id),
+ title: investigation_title(investigation, alert),
+ status: investigation_status(state),
+ state: state,
+ severity: investigation_severity(alert),
+ startedAt: Map.get(investigation, :started_at),
+ updatedAt: Map.get(investigation, :updated_at),
+ alertCount: if(Map.get(investigation, :alert_id), do: 1, else: 0),
+ findings: length(hypotheses) + length(evidence),
+ assignedAgent: "Agentic Analyst",
+ confidence: Map.get(investigation, :confidence) || 0.0,
+ hypothesesCount: length(hypotheses),
+ recommendationsCount: length(recommendations),
+ triageResult: Map.get(investigation, :triage_result)
+ }
+ end
+
+ defp investigation_title(investigation, alert) do
+ Map.get(alert, :title) ||
+ Map.get(alert, "title") ||
+ Map.get(investigation, :explanation) ||
+ "Investigation #{Map.get(investigation, :id)}"
+ end
+
+ defp investigation_status(state) when state in [:awaiting_review, :action_recommendation], do: "pending_review"
+ defp investigation_status(state) when state in [:completed, :resolved], do: "completed"
+ defp investigation_status(_state), do: "active"
+
+ defp investigation_severity(alert) do
+ severity = Map.get(alert, :severity) || Map.get(alert, "severity") || "medium"
+ severity = severity |> to_string() |> String.downcase()
+
+ if severity in ["critical", "high", "medium", "low"], do: severity, else: "medium"
+ end
 
   defp fetch_required(params, key) do
     case Map.fetch(params, key) do

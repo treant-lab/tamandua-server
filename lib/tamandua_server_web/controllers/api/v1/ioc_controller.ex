@@ -113,10 +113,21 @@ defmodule TamanduaServerWeb.API.V1.IOCController do
       source: ioc.source,
       severity: ioc.severity,
       tags: ioc.tags || [],
-      created_at: DateTime.to_iso8601(ioc.inserted_at),
-      updated_at: DateTime.to_iso8601(ioc.updated_at)
+      created_at: iso8601(ioc.inserted_at),
+      updated_at: iso8601(ioc.updated_at)
     }
   end
+
+  defp iso8601(nil), do: nil
+  defp iso8601(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp iso8601(%NaiveDateTime{} = value) do
+    value
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  defp iso8601(value), do: to_string(value)
 
   defp format_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->

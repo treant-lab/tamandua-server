@@ -15,6 +15,7 @@ defmodule TamanduaServer.Agents do
   alias TamanduaServer.Agents.Agent
 
   @database_presence_stale_after_seconds 120
+  @mobile_database_presence_stale_after_seconds :timer.hours(24) |> div(1000)
 
   # ===========================================================================
   # Tenant-Scoped Functions
@@ -39,7 +40,7 @@ defmodule TamanduaServer.Agents do
     query =
       Agent
       |> TenantScope.scope_to_tenant(organization_id)
-      |> order_by([a], [desc: a.last_seen_at])
+      |> order_by([a], desc: a.last_seen_at)
 
     query =
       if status = Keyword.get(opts, :status) do
@@ -165,7 +166,7 @@ defmodule TamanduaServer.Agents do
         Agent
         |> TenantScope.scope_to_tenant(organization_id)
         |> where([a], a.id not in ^MapSet.to_list(live_ids))
-        |> order_by([a], [desc: a.last_seen_at])
+        |> order_by([a], desc: a.last_seen_at)
         |> Repo.all()
         |> Enum.map(fn a ->
           %{
@@ -183,7 +184,10 @@ defmodule TamanduaServer.Agents do
         |> deduplicate_agents(live_hostnames)
       rescue
         e ->
-          Logger.warning("[Agents] Failed to list offline agents for org #{organization_id}: #{Exception.message(e)}")
+          Logger.warning(
+            "[Agents] Failed to list offline agents for org #{organization_id}: #{Exception.message(e)}"
+          )
+
           []
       end
 
@@ -312,7 +316,19 @@ defmodule TamanduaServer.Agents do
     query =
       Agent
       |> where([a], a.status == "online")
-      |> where([a], is_nil(a.last_seen_at) or a.last_seen_at < ^cutoff)
+      |> where(
+        [a],
+        is_nil(a.last_seen_at) or a.last_seen_at < ^cutoff
+      )
+      |> where(
+        [a],
+        not fragment(
+          "lower(coalesce(?, '')) in ('android', 'ios') or coalesce(?->>'source', '') = 'tamandua_mobile' or coalesce(?, ARRAY[]::varchar[]) @> ARRAY['mobile_endpoint']::varchar[]",
+          a.os_type,
+          a.config,
+          a.tags
+        )
+      )
       |> maybe_exclude_live_presence_ids(live_agent_ids)
 
     case Repo.update_all(query, set: [status: "offline", updated_at: now]) do
@@ -325,7 +341,10 @@ defmodule TamanduaServer.Agents do
     end
   rescue
     e ->
-      Logger.warning("[Agents] Failed to mark stale online agents offline: #{Exception.message(e)}")
+      Logger.warning(
+        "[Agents] Failed to mark stale online agents offline: #{Exception.message(e)}"
+      )
+
       {:error, :update_failed}
   end
 
@@ -349,7 +368,9 @@ defmodule TamanduaServer.Agents do
       {0, _} -> {:error, :not_found}
     end
   rescue
-    Ecto.Query.CastError -> {:error, :invalid_id}
+    Ecto.Query.CastError ->
+      {:error, :invalid_id}
+
     e ->
       Logger.warning(
         "[Agents] Failed to mark agent #{agent_id} #{status}: #{Exception.message(e)}"
@@ -442,7 +463,13 @@ defmodule TamanduaServer.Agents do
     db_agents =
       try do
         import Ecto.Query
-        Repo.all(from a in Agent, where: a.id not in ^MapSet.to_list(live_ids), order_by: [desc: a.last_seen_at])
+
+        Repo.all(
+          from(a in Agent,
+            where: a.id not in ^MapSet.to_list(live_ids),
+            order_by: [desc: a.last_seen_at]
+          )
+        )
         |> Enum.map(fn a ->
           %{
             agent_id: a.id,
@@ -458,7 +485,10 @@ defmodule TamanduaServer.Agents do
         |> deduplicate_agents(live_hostnames)
       rescue
         e ->
-          Logger.warning("[Agents] Failed to list offline agents from DB: #{Exception.message(e)}")
+          Logger.warning(
+            "[Agents] Failed to list offline agents from DB: #{Exception.message(e)}"
+          )
+
           []
       end
 
@@ -529,33 +559,59 @@ defmodule TamanduaServer.Agents do
 
   defp database_presence_status(%Agent{status: status}) when status == "isolated", do: :isolated
 
-  defp database_presence_status(%Agent{status: "online", last_seen_at: last_seen_at}) do
+  defp database_presence_status(%Agent{status: "online", last_seen_at: last_seen_at} = agent) do
     # Dashboard and mTLS ingestion can run in separate BEAM runtimes. In that
     # shape the local ETS registry may be empty while the ingestion runtime has
     # just persisted a heartbeat. Treat only recent persisted presence as live;
     # stale online rows are still collapsed to offline below.
-    if recent_presence?(last_seen_at), do: :online, else: :offline
+    if recent_presence?(last_seen_at, presence_stale_after_seconds(agent)),
+      do: :online,
+      else: :offline
   end
 
   defp database_presence_status(_agent), do: :offline
 
-  defp recent_presence?(nil), do: false
+  defp presence_stale_after_seconds(%Agent{} = agent) do
+    if mobile_agent?(agent),
+      do: @mobile_database_presence_stale_after_seconds,
+      else: @database_presence_stale_after_seconds
+  end
 
-  defp recent_presence?(%NaiveDateTime{} = last_seen_at) do
+  defp mobile_agent?(%Agent{os_type: os_type, config: config, tags: tags}) do
+    os = os_type |> to_string() |> String.downcase()
+    source = config |> normalize_map() |> Map.get("source") |> to_string()
+    tags = tags || []
+
+    String.contains?(os, "android") or String.contains?(os, "ios") or
+      source == "tamandua_mobile" or "mobile_endpoint" in tags
+  end
+
+  defp normalize_map(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  defp normalize_map(_), do: %{}
+
+  defp recent_presence?(nil, _stale_after_seconds), do: false
+
+  defp recent_presence?(%NaiveDateTime{} = last_seen_at, stale_after_seconds) do
     cutoff =
       NaiveDateTime.utc_now()
       |> NaiveDateTime.truncate(:second)
-      |> NaiveDateTime.add(-@database_presence_stale_after_seconds, :second)
+      |> NaiveDateTime.add(-stale_after_seconds, :second)
 
     NaiveDateTime.compare(last_seen_at, cutoff) != :lt
   end
 
-  defp recent_presence?(%DateTime{} = last_seen_at) do
-    cutoff = DateTime.add(DateTime.utc_now(), -@database_presence_stale_after_seconds, :second)
+  defp recent_presence?(%DateTime{} = last_seen_at, stale_after_seconds) do
+    cutoff = DateTime.add(DateTime.utc_now(), -stale_after_seconds, :second)
     DateTime.compare(last_seen_at, cutoff) != :lt
   end
 
-  defp recent_presence?(_last_seen_at), do: false
+  defp recent_presence?(_last_seen_at, _stale_after_seconds), do: false
 
   defp datetime_sort_value(%NaiveDateTime{} = dt), do: NaiveDateTime.to_gregorian_seconds(dt)
   defp datetime_sort_value(%DateTime{} = dt), do: DateTime.to_unix(dt)
@@ -574,7 +630,10 @@ defmodule TamanduaServer.Agents do
   defp datetime_sort_value(_), do: 0
 
   defp get_agent_field(%Agent{} = agent, field), do: Map.get(agent, field)
-  defp get_agent_field(agent, field) when is_map(agent), do: Map.get(agent, field) || Map.get(agent, to_string(field))
+
+  defp get_agent_field(agent, field) when is_map(agent),
+    do: Map.get(agent, field) || Map.get(agent, to_string(field))
+
   defp get_agent_field(_, _), do: nil
 
   defp normalize_opts(opts) when is_map(opts) do
@@ -621,7 +680,9 @@ defmodule TamanduaServer.Agents do
   """
   def get(id) do
     case TamanduaServer.Agents.Registry.get(id) do
-      {:ok, agent} -> agent
+      {:ok, agent} ->
+        agent
+
       {:error, :not_found} ->
         # Try database only if id looks like a UUID
         if uuid?(id), do: Repo.get(Agent, id), else: nil
@@ -634,6 +695,7 @@ defmodule TamanduaServer.Agents do
       :error -> false
     end
   end
+
   defp uuid?(_), do: false
 
   @doc """
@@ -731,6 +793,7 @@ defmodule TamanduaServer.Agents do
             |> Enum.take(limit)
             |> Enum.map(fn child_pid ->
               node = build_flat_process_node(graph, child_pid)
+
               if node do
                 child_count = Graph.out_neighbors(graph, child_pid) |> length()
                 Map.put(node, :child_count, child_count)
@@ -780,6 +843,7 @@ defmodule TamanduaServer.Agents do
           acc
         else
           node = build_flat_process_node(graph, parent)
+
           if node do
             trace_ancestors(graph, parent, MapSet.put(visited, parent), acc ++ [node])
           else
@@ -802,18 +866,20 @@ defmodule TamanduaServer.Agents do
 
       child_count = Graph.out_neighbors(graph, pid) |> length()
 
-      ppid = case Graph.in_neighbors(graph, pid) do
-        [parent | _] when not is_nil(parent) -> parent
-        _ -> 0
-      end
+      ppid =
+        case Graph.in_neighbors(graph, pid) do
+          [parent | _] when not is_nil(parent) -> parent
+          _ -> 0
+        end
 
       %{
         pid: pid || 0,
         ppid: ppid || 0,
-        name: case to_string(info[:name] || "") do
-          "" -> "Process_#{pid || 0}"
-          n -> n
-        end,
+        name:
+          case to_string(info[:name] || "") do
+            "" -> "Process_#{pid || 0}"
+            n -> n
+          end,
         path: to_string(info[:path] || ""),
         cmdline: to_string(info[:cmdline] || ""),
         user: to_string(info[:user] || "unknown"),
@@ -846,19 +912,25 @@ defmodule TamanduaServer.Agents do
     vertex_count = Graph.vertices(graph) |> length()
 
     try do
-      task = Task.async(fn ->
-        if vertex_count > 500 do
-          # Large graph: return top-level only with truncation flag
-          build_top_level_only(graph, vertex_count)
-        else
-          {:ok, do_build_tree_from_graph(graph)}
-        end
-      end)
+      task =
+        Task.async(fn ->
+          if vertex_count > 500 do
+            # Large graph: return top-level only with truncation flag
+            build_top_level_only(graph, vertex_count)
+          else
+            {:ok, do_build_tree_from_graph(graph)}
+          end
+        end)
 
       case Task.yield(task, 5000) || Task.shutdown(task) do
-        {:ok, result} -> result
+        {:ok, result} ->
+          result
+
         nil ->
-          Logger.warning("Process tree building timed out after 5 seconds (#{vertex_count} processes)")
+          Logger.warning(
+            "Process tree building timed out after 5 seconds (#{vertex_count} processes)"
+          )
+
           {:error, :timeout}
       end
     rescue
@@ -885,6 +957,7 @@ defmodule TamanduaServer.Agents do
     top_level =
       Enum.map(roots, fn root_pid ->
         node = build_flat_process_node(graph, root_pid)
+
         if node do
           child_count = Graph.out_neighbors(graph, root_pid) |> length()
           Map.put(node, :child_count, child_count)
@@ -931,18 +1004,20 @@ defmodule TamanduaServer.Agents do
         |> Enum.filter(&(&1 != nil))
 
       # Find parent PID with nil guard
-      ppid = case Graph.in_neighbors(graph, pid) do
-        [parent | _] when not is_nil(parent) -> parent
-        _ -> 0
-      end
+      ppid =
+        case Graph.in_neighbors(graph, pid) do
+          [parent | _] when not is_nil(parent) -> parent
+          _ -> 0
+        end
 
       %{
         pid: pid || 0,
         ppid: ppid || 0,
-        name: case to_string(info[:name] || "") do
-          "" -> "Process_#{pid || 0}"
-          n -> n
-        end,
+        name:
+          case to_string(info[:name] || "") do
+            "" -> "Process_#{pid || 0}"
+            n -> n
+          end,
         path: to_string(info[:path] || ""),
         cmdline: to_string(info[:cmdline] || ""),
         user: to_string(info[:user] || "unknown"),
@@ -1011,6 +1086,7 @@ defmodule TamanduaServer.Agents do
       [{pid, _}] ->
         send(pid, {:send_command, command})
         {:ok, :sent}
+
       [] ->
         {:error, :agent_not_connected}
     end
@@ -1035,7 +1111,8 @@ defmodule TamanduaServer.Agents do
       case state do
         s when s in ["isolated", "partial"] -> "isolated"
         "disabled" -> "online"
-        _ -> nil  # don't change status on "failed"
+        # don't change status on "failed"
+        _ -> nil
       end
 
     attrs =
@@ -1050,25 +1127,27 @@ defmodule TamanduaServer.Agents do
       Phoenix.PubSub.broadcast(
         TamanduaServer.PubSub,
         "agent:#{agent_id}",
-        {:isolation_state_changed, %{
-          agent_id: agent_id,
-          isolation_status: isolation_status,
-          agent_status: updated.status,
-          timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
-        }}
+        {:isolation_state_changed,
+         %{
+           agent_id: agent_id,
+           isolation_status: isolation_status,
+           agent_status: updated.status,
+           timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+         }}
       )
 
       # Also broadcast to the global agents topic for dashboard
       Phoenix.PubSub.broadcast(
         TamanduaServer.PubSub,
         "agents:isolation",
-        {:isolation_state_changed, %{
-          agent_id: agent_id,
-          hostname: updated.hostname,
-          state: state,
-          method: Map.get(isolation_status, "method"),
-          timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
-        }}
+        {:isolation_state_changed,
+         %{
+           agent_id: agent_id,
+           hostname: updated.hostname,
+           state: state,
+           method: Map.get(isolation_status, "method"),
+           timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+         }}
       )
 
       {:ok, updated}
@@ -1083,22 +1162,23 @@ defmodule TamanduaServer.Agents do
   def get_isolation_status(agent_id) do
     case get_agent_safe(agent_id) do
       {:ok, %Agent{isolation_status: nil}} ->
-        {:ok, %{
-          "state" => "disabled",
-          "method" => nil,
-          "rules_applied" => [],
-          "allowlisted_connections" => [],
-          "connectivity_test" => %{
-            "server_reachable" => false,
-            "dns_works" => false,
-            "internet_blocked" => false,
-            "server_latency_ms" => nil,
-            "details" => nil
-          },
-          "applied_at" => nil,
-          "filter_count" => 0,
-          "error" => nil
-        }}
+        {:ok,
+         %{
+           "state" => "disabled",
+           "method" => nil,
+           "rules_applied" => [],
+           "allowlisted_connections" => [],
+           "connectivity_test" => %{
+             "server_reachable" => false,
+             "dns_works" => false,
+             "internet_blocked" => false,
+             "server_latency_ms" => nil,
+             "details" => nil
+           },
+           "applied_at" => nil,
+           "filter_count" => 0,
+           "error" => nil
+         }}
 
       {:ok, %Agent{isolation_status: status}} ->
         {:ok, status}
@@ -1206,15 +1286,18 @@ defmodule TamanduaServer.Agents do
         {:ok, agent} ->
           # Merge heartbeat data into existing isolation_status
           current = agent.isolation_status || %{}
-          updated = Map.merge(current, %{
-            "state" => state,
-            "method" => Map.get(isolation_payload, "method", Map.get(current, "method")),
-            "filter_count" => Map.get(isolation_payload, "filter_count", Map.get(current, "filter_count")),
-            "server_reachable" => Map.get(isolation_payload, "server_reachable"),
-            "dns_works" => Map.get(isolation_payload, "dns_works"),
-            "internet_blocked" => Map.get(isolation_payload, "internet_blocked"),
-            "last_heartbeat_at" => DateTime.utc_now() |> DateTime.to_iso8601()
-          })
+
+          updated =
+            Map.merge(current, %{
+              "state" => state,
+              "method" => Map.get(isolation_payload, "method", Map.get(current, "method")),
+              "filter_count" =>
+                Map.get(isolation_payload, "filter_count", Map.get(current, "filter_count")),
+              "server_reachable" => Map.get(isolation_payload, "server_reachable"),
+              "dns_works" => Map.get(isolation_payload, "dns_works"),
+              "internet_blocked" => Map.get(isolation_payload, "internet_blocked"),
+              "last_heartbeat_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+            })
 
           update_agent(agent, %{isolation_status: updated})
 

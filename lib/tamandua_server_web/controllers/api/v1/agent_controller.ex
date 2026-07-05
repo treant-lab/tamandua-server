@@ -16,6 +16,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   alias TamanduaServer.Telemetry.Event
 
   @live_presence_stale_after_ms :timer.seconds(120)
+  @mobile_presence_stale_after_ms :timer.hours(24)
 
   # Pagination defaults for index/2 to prevent unbounded responses.
   # @default_per_page mirrors the existing list-endpoint convention across
@@ -273,7 +274,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
       PlatformCapabilities.for_agent(agent,
         status:
           effective_agent_status(
-            persisted_status_for_display(agent.status, agent.last_seen_at),
+            persisted_status_for_display(agent.status, agent.last_seen_at, mobile_agent?(agent)),
             live_status_info
           ),
         health:
@@ -744,7 +745,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
   defp serialize(%Agent{} = agent) do
     live_info = live_agent_info(agent.id)
-    persisted_status = persisted_status_for_display(agent.status, agent.last_seen_at)
+
+    persisted_status =
+      persisted_status_for_display(agent.status, agent.last_seen_at, mobile_agent?(agent))
+
     status = effective_agent_status(persisted_status, live_info)
     last_seen_at = live_health_value(live_info, :last_seen_at) || agent.last_seen_at
     health_status = agent_health_status_for_display(agent.id, status)
@@ -775,7 +779,8 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     status =
       persisted_status_for_display(
         agent[:status] || agent["status"] || :offline,
-        agent[:last_seen_at] || agent["last_seen_at"]
+        agent[:last_seen_at] || agent["last_seen_at"],
+        mobile_agent?(agent)
       )
 
     id = agent[:agent_id] || agent["agent_id"] || agent[:id] || agent["id"]
@@ -814,7 +819,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     }
   end
 
-  defp effective_agent_status(_persisted_status, live_info) when is_map(live_info) do
+  defp effective_agent_status(persisted_status, live_info) when is_map(live_info) do
     cond do
       live_worker_connected?(live_info) and live_status?(live_info, :isolated) and
           recent_live_presence?(live_info) ->
@@ -825,7 +830,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         "online"
 
       true ->
-        "offline"
+        to_string(persisted_status || "offline")
     end
   end
 
@@ -840,12 +845,12 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   defp effective_agent_status(persisted_status, _live_info),
     do: to_string(persisted_status || "offline")
 
-  defp persisted_status_for_display(status, last_seen_at)
+  defp persisted_status_for_display(status, last_seen_at, mobile?)
        when status in [:online, "online", :isolated, "isolated"] do
-    if recent_persisted_presence?(last_seen_at), do: status, else: :offline
+    if recent_persisted_presence?(last_seen_at, mobile?), do: status, else: :offline
   end
 
-  defp persisted_status_for_display(status, _last_seen_at), do: status || :offline
+  defp persisted_status_for_display(status, _last_seen_at, _mobile?), do: status || :offline
 
   defp agent_health_status_for_display(_agent_id, status) when status in [:offline, "offline"] do
     %{status: :unknown, reasons: [:offline], metrics: %{}}
@@ -1093,25 +1098,32 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     |> recent_presence_value?()
   end
 
-  defp recent_persisted_presence?(value), do: recent_presence_value?(value)
+  defp recent_persisted_presence?(value, mobile?),
+    do: recent_presence_value?(value, persisted_presence_stale_after_ms(mobile?))
 
-  defp recent_presence_value?(nil), do: false
+  defp persisted_presence_stale_after_ms(true), do: @mobile_presence_stale_after_ms
+  defp persisted_presence_stale_after_ms(_), do: @live_presence_stale_after_ms
 
-  defp recent_presence_value?(value) when is_integer(value) do
-    System.system_time(:millisecond) - value <= @live_presence_stale_after_ms
+  defp recent_presence_value?(value),
+    do: recent_presence_value?(value, @live_presence_stale_after_ms)
+
+  defp recent_presence_value?(nil, _stale_after_ms), do: false
+
+  defp recent_presence_value?(value, stale_after_ms) when is_integer(value) do
+    System.system_time(:millisecond) - value <= stale_after_ms
   end
 
-  defp recent_presence_value?(%NaiveDateTime{} = value) do
+  defp recent_presence_value?(%NaiveDateTime{} = value, stale_after_ms) do
     value
     |> DateTime.from_naive!("Etc/UTC")
-    |> recent_presence_value?()
+    |> recent_presence_value?(stale_after_ms)
   end
 
-  defp recent_presence_value?(%DateTime{} = value) do
-    DateTime.diff(DateTime.utc_now(), value, :millisecond) <= @live_presence_stale_after_ms
+  defp recent_presence_value?(%DateTime{} = value, stale_after_ms) do
+    DateTime.diff(DateTime.utc_now(), value, :millisecond) <= stale_after_ms
   end
 
-  defp recent_presence_value?(_), do: false
+  defp recent_presence_value?(_, _stale_after_ms), do: false
 
   defp normalize_driver_status(nil), do: nil
 
@@ -1219,12 +1231,36 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
       (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
   end
 
-  defp mobile_agent?(%Agent{os_type: os_type}) do
+  defp mobile_agent?(%Agent{os_type: os_type, config: config, tags: tags}) do
     os = String.downcase(to_string(os_type || ""))
+    source = config |> stringify_keys() |> Map.get("source") |> to_string()
+    tags = tags || []
 
     String.contains?(os, "android") or String.contains?(os, "ios") or
-      String.contains?(os, "iphone") or String.contains?(os, "ipad")
+      String.contains?(os, "iphone") or String.contains?(os, "ipad") or
+      source == "tamandua_mobile" or "mobile_endpoint" in tags
   end
+
+  defp mobile_agent?(%{} = agent) do
+    os =
+      (agent[:os_type] || agent["os_type"] || "")
+      |> to_string()
+      |> String.downcase()
+
+    source =
+      (agent[:config] || agent["config"] || %{})
+      |> stringify_keys()
+      |> Map.get("source")
+      |> to_string()
+
+    tags = agent[:tags] || agent["tags"] || []
+
+    String.contains?(os, "android") or String.contains?(os, "ios") or
+      String.contains?(os, "iphone") or String.contains?(os, "ipad") or
+      source == "tamandua_mobile" or "mobile_endpoint" in tags
+  end
+
+  defp mobile_agent?(_), do: false
 
   defp unsupported_mobile_host_action(conn, action) do
     conn

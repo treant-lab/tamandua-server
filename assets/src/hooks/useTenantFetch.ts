@@ -33,6 +33,14 @@ interface UseTenantFetchResult {
   tenantId: string | null
 }
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
+function methodRequiresCsrf(method: string | undefined): boolean {
+  return !['GET', 'HEAD', 'OPTIONS'].includes((method || 'GET').toUpperCase())
+}
+
 /**
  * Hook for making tenant-scoped API requests.
  * All requests automatically include the X-Tenant-ID header.
@@ -53,6 +61,11 @@ export function useTenantFetch(): UseTenantFetchResult {
       // Add default Accept header if not set
       if (!headers.has('Accept')) {
         headers.set('Accept', 'application/json')
+      }
+
+      const csrfToken = getCsrfToken()
+      if (csrfToken && methodRequiresCsrf(options.method) && !headers.has('x-csrf-token')) {
+        headers.set('x-csrf-token', csrfToken)
       }
 
       return fetch(url, {

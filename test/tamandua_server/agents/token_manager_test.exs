@@ -182,6 +182,20 @@ defmodule TamanduaServer.Agents.TokenManagerTest do
       assert claims["generation"] == 1
     end
 
+    test "validates directly while the TokenManager process is busy", %{agent_id: agent_id} do
+      {:ok, jwt, _token} = TokenManager.issue_token(agent_id)
+
+      :ok = :sys.suspend(TokenManager)
+
+      try do
+        assert {:ok, claims} = TokenManager.validate_token(jwt)
+        assert claims["agent_id"] == agent_id
+        assert claims["generation"] == 1
+      after
+        :ok = :sys.resume(TokenManager)
+      end
+    end
+
     test "returns error for revoked token", %{agent_id: agent_id} do
       {:ok, jwt, _token} = TokenManager.issue_token(agent_id)
 

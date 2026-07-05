@@ -57,7 +57,11 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   """
   @spec list_instances() :: [MISPInstance.t()]
   def list_instances do
-    GenServer.call(__MODULE__, :list_instances)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :list_instances)
+    else
+      load_instances()
+    end
   end
 
   @doc """
@@ -113,7 +117,11 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   """
   @spec get_sync_status() :: map()
   def get_sync_status do
-    GenServer.call(__MODULE__, :get_sync_status)
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, :get_sync_status)
+    else
+      %{status: "unavailable", reason: "misp_process_not_started", instances: %{}}
+    end
   end
 
   @doc """
@@ -121,7 +129,11 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   """
   @spec list_events(keyword()) :: [MISPEvent.t()]
   def list_events(opts \\ []) do
-    GenServer.call(__MODULE__, {:list_events, opts})
+    if Process.whereis(__MODULE__) do
+      GenServer.call(__MODULE__, {:list_events, opts})
+    else
+      load_events(opts)
+    end
   end
 
   @doc """

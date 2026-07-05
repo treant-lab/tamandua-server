@@ -42,6 +42,7 @@ defmodule TamanduaServer.Detection.EffectiveCoverage do
     |> filter_by_profile(filters[:profile])
   end
 
+  defp filter_by_collectors(entries, nil), do: entries
   defp filter_by_collectors(entries, []), do: entries
 
   defp filter_by_collectors(entries, collectors) do
@@ -87,7 +88,9 @@ defmodule TamanduaServer.Detection.EffectiveCoverage do
     Enum.any?(totals, &(&1 > 0))
   end
 
-  defp configured_collectors(%{enabled_collectors: collectors}), do: MapSet.new(collectors)
+  defp configured_collectors(%{enabled_collectors: collectors}) when is_list(collectors),
+    do: MapSet.new(collectors)
+
   defp configured_collectors(_filters), do: MapSet.new()
 
   defp entry_status(collector, active_collectors, configured_collectors) do

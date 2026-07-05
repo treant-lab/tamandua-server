@@ -5,6 +5,7 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
   import TamanduaServer.Factory
 
   alias TamanduaServer.Alerts.Alert
+  alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Accounts.{Permission, Role, RolePermission, UserRole}
   alias TamanduaServer.Mobile
@@ -185,6 +186,49 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       body = json_response(conn, 422)
       assert body["platform"] == "mobile"
       assert body["supported_surface"] == "mobile endpoint commands"
+    end
+
+    test "keeps recently checked-in mobile mirrors online without a host worker", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      ten_minutes_ago =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.truncate(:second)
+        |> NaiveDateTime.add(-10 * 60, :second)
+
+      {:ok, _device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-agent-list-status-1",
+          "platform" => "android",
+          "model" => "Pixel Agent List"
+        })
+
+      mobile_agent =
+        Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-agent-list-status-1")
+
+      mobile_agent
+      |> Ecto.Changeset.change(%{status: "online", last_seen_at: ten_minutes_ago})
+      |> Repo.update!()
+
+      desktop_agent =
+        insert!(:agent, %{
+          organization: org,
+          hostname: "stale-desktop-agent",
+          os_type: "windows",
+          status: "online",
+          last_seen_at: ten_minutes_ago
+        })
+
+      assert {:ok, count} = Agents.mark_stale_online_agents_offline([], 120)
+      assert count >= 1
+
+      conn = get(conn, "/api/v1/agents")
+      agents = json_response(conn, 200)["data"]
+
+      assert Enum.find(agents, &(&1["id"] == mobile_agent.id))["status"] == "online"
+      assert Enum.find(agents, &(&1["id"] == desktop_agent.id))["status"] == "offline"
     end
 
     test "rejects batch network isolation for mobile agent mirrors", %{

@@ -149,14 +149,13 @@ export default function Analyst({
   useEffect(() => {
     async function loadInvestigationData() {
       try {
-        const response = await fetch('/api/v1/analyst/investigate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': getCsrfToken(),
-          },
-          body: JSON.stringify({ action: 'list_investigations' }),
-        })
+ const response = await fetch('/api/v1/analyst/investigations', {
+ method: 'GET',
+ credentials: 'same-origin',
+ headers: {
+ 'Accept': 'application/json',
+ },
+ })
 
         if (response.ok) {
           const result = await response.json()
@@ -203,40 +202,42 @@ export default function Analyst({
     abortControllerRef.current = abortController
 
     try {
-      const response = await fetch('/api/v1/analyst/investigate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': getCsrfToken(),
-        },
-        body: JSON.stringify({
-          action: 'chat',
-          query: inputMessage.trim(),
-          context: {
-            investigation_id: selectedInvestigation?.id || null,
-            investigation: selectedInvestigation ? {
-              title: selectedInvestigation.title,
-              severity: selectedInvestigation.severity,
-              status: selectedInvestigation.status,
-              alertCount: selectedInvestigation.alertCount,
-              findings: selectedInvestigation.findings,
-            } : null,
-            evidence: evidence.map(e => ({
-              id: e.id,
-              type: e.type,
-              title: e.title,
-              source_id: e.sourceId,
-              metadata: e.metadata,
-            })),
-            active_investigations_count: investigations.length,
-            previous_messages: chatMessages.slice(-5).map(m => ({
-              role: m.role,
-              content: m.content,
-            })),
-          },
-        }),
-        signal: abortController.signal,
-      })
+ const response = await fetch('/api/v1/ai/chat', {
+ method: 'POST',
+ credentials: 'same-origin',
+ headers: {
+ 'Content-Type': 'application/json',
+ 'Accept': 'application/json',
+ 'X-CSRF-Token': getCsrfToken(),
+ },
+ body: JSON.stringify({
+ message: inputMessage.trim(),
+ context: {
+ type: 'investigation',
+ investigation_id: selectedInvestigation?.id || null,
+ investigation: selectedInvestigation ? {
+ title: selectedInvestigation.title,
+ severity: selectedInvestigation.severity,
+ status: selectedInvestigation.status,
+ alertCount: selectedInvestigation.alertCount,
+ findings: selectedInvestigation.findings,
+ } : null,
+ evidence: evidence.map(e => ({
+ id: e.id,
+ type: e.type,
+ title: e.title,
+ source_id: e.sourceId,
+ metadata: e.metadata,
+ })),
+ active_investigations_count: investigations.length,
+ previous_messages: chatMessages.slice(-5).map(m => ({
+ role: m.role,
+ content: m.content,
+ })),
+ },
+ }),
+ signal: abortController.signal,
+ })
 
       if (!response.ok) {
         throw new Error(`API request failed: ${response.status}`)
@@ -304,25 +305,29 @@ export default function Analyst({
     setAnalysisSteps(steps)
 
     try {
-      const response = await fetch('/api/v1/analyst/investigate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': getCsrfToken(),
-          'Accept': 'text/event-stream, application/json',
-        },
-        body: JSON.stringify({
-          action: 'analyze',
-          investigation_id: targetId,
-          evidence: evidence.map(e => ({
-            id: e.id,
-            type: e.type,
-            title: e.title,
-            source_id: e.sourceId,
-            metadata: e.metadata,
-          })),
-        }),
-      })
+ const response = await fetch('/api/v1/ai/chat', {
+ method: 'POST',
+ credentials: 'same-origin',
+ headers: {
+ 'Content-Type': 'application/json',
+ 'Accept': 'application/json',
+ 'X-CSRF-Token': getCsrfToken(),
+ },
+ body: JSON.stringify({
+ message: `Analyze investigation ${targetId} and summarize findings, risk, MITRE techniques, evidence, and recommended actions.`,
+ context: {
+ type: 'investigation_analysis',
+ investigation_id: targetId,
+ evidence: evidence.map(e => ({
+ id: e.id,
+ type: e.type,
+ title: e.title,
+ source_id: e.sourceId,
+ metadata: e.metadata,
+ })),
+ },
+ }),
+ })
 
       if (!response.ok) {
         throw new Error(`Analysis API failed: ${response.status}`)
@@ -587,19 +592,22 @@ export default function Analyst({
     setEvidenceSearchResults([])
 
     try {
-      const response = await fetch('/api/v1/analyst/investigate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': getCsrfToken(),
-        },
-        body: JSON.stringify({
-          action: 'search_evidence',
-          query: evidenceSearchQuery.trim(),
-          evidence_type: evidenceType,
-          investigation_id: selectedInvestigation?.id || null,
-        }),
-      })
+ const response = await fetch('/api/v1/ai/query', {
+ method: 'POST',
+ credentials: 'same-origin',
+ headers: {
+ 'Content-Type': 'application/json',
+ 'X-CSRF-Token': getCsrfToken(),
+ },
+ body: JSON.stringify({
+ query: evidenceSearchQuery.trim(),
+ context: {
+ type: 'evidence_search',
+ evidence_type: evidenceType,
+ investigation_id: selectedInvestigation?.id || null,
+ },
+ }),
+ })
 
       if (response.ok) {
         const result = await response.json()
