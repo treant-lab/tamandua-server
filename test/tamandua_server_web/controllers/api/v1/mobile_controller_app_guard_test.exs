@@ -6,6 +6,7 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
 
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Agents.Agent
+  alias TamanduaServer.Accounts.{Permission, Role, RolePermission, UserRole}
   alias TamanduaServer.Mobile
   alias TamanduaServer.Mobile.MobileEvent
   alias TamanduaServer.Repo
@@ -13,10 +14,12 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
   setup %{conn: conn} do
     {org_a, _agent_a} = create_agent_with_org()
     user_a = insert!(:user, %{organization: org_a, role: "admin"})
+    grant_permission!(user_a, org_a, :response_isolate)
     {:ok, token_a, _claims} = TamanduaServer.Guardian.encode_and_sign(user_a)
 
     {other_org, _agent_b} = create_agent_with_org()
     user_b = insert!(:user, %{organization: other_org, role: "admin"})
+    grant_permission!(user_b, other_org, :response_isolate)
     {:ok, token_b, _claims} = TamanduaServer.Guardian.encode_and_sign(user_b)
 
     %{
@@ -48,7 +51,9 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
             "bundle_id" => "com.example.wallet",
             "app_name" => "Example Wallet",
             "version" => "2.0.0",
-            "installer" => "play_store"
+            "installer" => "sideload",
+            "permissions" => ["android.permission.SYSTEM_ALERT_WINDOW"],
+            "risk_level" => "high"
           }
         ])
 
@@ -62,6 +67,11 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert body["device"]["id"] == device.id
       assert body["posture"]["risk_score"] == device.risk_score
       assert [%{"bundle_id" => "com.example.wallet"}] = body["app_inventory"]["apps"]
+      assert body["app_inventory"]["total"] == 1
+      assert body["app_inventory"]["high_risk"] == 1
+      assert body["app_inventory"]["sideloaded"] == 1
+      assert body["app_guard"]["total_recent_events"] == 0
+      assert is_list(body["app_guard"]["protected_apps"])
       assert Enum.map(body["commands"], & &1["id"]) == ["locate", "lock", "wipe"]
     end
 
@@ -69,7 +79,7 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       conn_a: conn,
       org_a: org
     } do
-      agent = insert!(:agent, %{organization_id: org.id, machine_id: nil, config: %{}})
+      agent = insert!(:agent, %{organization: org, machine_id: nil, config: %{}})
 
       conn = get(conn, "/api/v1/mobile/agents/#{agent.id}/overview")
       body = json_response(conn, 200)["data"]
@@ -77,6 +87,131 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert body["agent_id"] == agent.id
       assert body["linked"] == false
       assert body["device"] == nil
+    end
+
+    test "projects mobile events and timeline when filtered by linked agent id", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      {:ok, device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-agent-filter-1",
+          "platform" => "android",
+          "model" => "Pixel Filter"
+        })
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-agent-filter-1")
+
+      {:ok, event} =
+        Mobile.ingest_event(%{
+          device_id: device.id,
+          organization_id: org.id,
+          event_type: "tampering_detected",
+          severity: "medium",
+          timestamp: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
+          payload: %{
+            "schema" => "tamandua.app_guard.event/v1",
+            "app" => %{"package_or_bundle_id" => "io.tamandua.appguard.samplewallet"}
+          }
+        })
+
+      events_conn = get(conn, "/api/v1/events?agent_id=#{agent.id}&limit=10")
+      events = json_response(events_conn, 200)["data"]
+
+      assert Enum.any?(events, fn row ->
+               row["id"] == event.id and row["agent_id"] == agent.id and
+                 row["payload"]["mobile_device_id"] == "android-agent-filter-1"
+             end)
+
+      timeline_conn = get(conn, "/api/v1/timeline?agent_ids=#{agent.id}&limit=10")
+      timeline = json_response(timeline_conn, 200)["data"]
+
+      assert Enum.any?(timeline, fn row ->
+               row["id"] == event.id and row["agentId"] == agent.id and
+                 row["details"]["mobile_device_id"] == "android-agent-filter-1"
+             end)
+    end
+
+    test "rejects host-only response surfaces for mobile agent mirrors", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      {:ok, _device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-host-action-1",
+          "platform" => "android",
+          "model" => "Pixel Host Action"
+        })
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-host-action-1")
+
+      isolate_conn = post(conn, "/api/v1/agents/#{agent.id}/isolate", %{})
+      isolate_body = json_response(isolate_conn, 422)
+      assert isolate_body["platform"] == "mobile"
+      assert isolate_body["supported_surface"] == "mobile endpoint commands"
+
+      live_conn = post(conn, "/api/v1/live-response/sessions", %{"agent_id" => agent.id})
+      live_body = json_response(live_conn, 422)
+      assert live_body["platform"] == "mobile"
+      assert live_body["supported_surface"] == "mobile endpoint commands"
+
+      token_conn = post(conn, "/api/v1/live-response/#{agent.id}/cli-token", %{})
+      token_body = json_response(token_conn, 422)
+      assert token_body["platform"] == "mobile"
+      assert token_body["supported_surface"] == "mobile endpoint commands"
+    end
+
+    test "rejects mobile agent isolation before host-only RBAC checks", %{org_a: org} do
+      analyst = insert!(:user, %{organization: org, role: "analyst"})
+      {:ok, analyst_token, _claims} = TamanduaServer.Guardian.encode_and_sign(analyst)
+
+      {:ok, _device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-host-action-no-rbac-1",
+          "platform" => "android",
+          "model" => "Pixel Host Action No RBAC"
+        })
+
+      agent =
+        Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-host-action-no-rbac-1")
+
+      conn =
+        auth_conn(analyst_token)
+        |> post("/api/v1/agents/#{agent.id}/isolate", %{})
+
+      body = json_response(conn, 422)
+      assert body["platform"] == "mobile"
+      assert body["supported_surface"] == "mobile endpoint commands"
+    end
+
+    test "rejects batch network isolation for mobile agent mirrors", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      {:ok, _device} =
+        Mobile.register_device(%{
+          "organization_id" => org.id,
+          "device_id" => "android-batch-host-action-1",
+          "platform" => "android",
+          "model" => "Pixel Batch Action"
+        })
+
+      agent =
+        Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-batch-host-action-1")
+
+      conn =
+        post(conn, "/api/v1/agents/batch/isolate", %{
+          "agent_ids" => [agent.id],
+          "reason" => "mobile parity regression test"
+        })
+
+      body = json_response(conn, 422)
+      assert body["platform"] == "mobile"
+      assert body["supported_surface"] == "mobile endpoint commands"
+      assert body["unsupported_agent_ids"] == [agent.id]
     end
 
     test "returns not found for mobile commands against unknown devices", %{conn_a: conn} do
@@ -176,10 +311,13 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       event = Repo.get!(MobileEvent, body["data"]["id"])
       event = Repo.get!(MobileEvent, event.id)
       alert = Repo.get!(Alert, event.alert_id)
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "ios-device-1")
 
       assert event.alerted == true
       assert event.organization_id == org.id
       assert alert.organization_id == org.id
+      assert alert.agent_id == agent.id
+      assert alert.agent_id != nil
       assert alert.severity == "high"
       assert alert.title == "[App Guard] App Guard debugger_detected"
       assert alert.detection_metadata["source"] == "app_guard"
@@ -743,6 +881,47 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert posture["security_checks"]["developer_mode"] == true
       assert posture["security_checks"]["usb_debugging"] == true
     end
+  end
+
+  defp grant_permission!(user, organization, permission_slug) do
+    permission_slug_string = Atom.to_string(permission_slug)
+
+    permission =
+      Repo.get_by(Permission, slug: permission_slug_string) ||
+        %Permission{}
+        |> Permission.changeset(%{
+          name: permission_slug_string,
+          slug: permission_slug_string,
+          description: Permission.description(permission_slug) || permission_slug_string,
+          category: "response"
+        })
+        |> Repo.insert!()
+
+    role =
+      %Role{}
+      |> Role.changeset(%{
+        name: "Mobile response test role",
+        slug: "mobile_response_test_#{user.id}",
+        builtin: false,
+        priority: 70,
+        organization_id: organization.id
+      })
+      |> Repo.insert!()
+
+    %RolePermission{}
+    |> RolePermission.changeset(%{
+      role_id: role.id,
+      permission_id: permission.id
+    })
+    |> Repo.insert!()
+
+    %UserRole{}
+    |> UserRole.changeset(%{
+      user_id: user.id,
+      role_id: role.id,
+      granted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    })
+    |> Repo.insert!()
   end
 
   defp app_guard_payload do

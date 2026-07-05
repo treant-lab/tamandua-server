@@ -57,7 +57,9 @@ defmodule TamanduaServer.Agents.CommandManager do
         attrs = %{
           agent_id: agent_id,
           command_type: to_string(command_type),
-          command_params: params,
+          # Normalize keys to strings so the in-memory struct matches what a
+          # jsonb round-trip returns (Postgres jsonb always yields string keys).
+          command_params: stringify_keys(params),
           priority: priority,
           status: "pending",
           expires_at: DateTime.add(DateTime.utc_now(), timeout_seconds, :second)
@@ -203,4 +205,13 @@ defmodule TamanduaServer.Agents.CommandManager do
         Logger.debug("Agent #{agent_id} worker not found, command will be sent on reconnect")
     end
   end
+
+  defp stringify_keys(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), stringify_keys(nested_value)}
+    end)
+  end
+
+  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
+  defp stringify_keys(value), do: value
 end

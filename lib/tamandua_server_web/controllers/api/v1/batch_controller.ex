@@ -30,13 +30,16 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
 
   use TamanduaServerWeb, :controller
 
+  import Ecto.Query
+
   require Logger
 
+  alias TamanduaServer.Agents.Agent
   alias TamanduaServer.BatchOperations
   alias TamanduaServer.Repo
   alias Oban.Job
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   # ===========================================================================
   # Alert Batch Operations
@@ -68,11 +71,11 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     resolution_notes = Map.get(params, "resolution_notes", "Batch closed")
 
     case BatchOperations.batch_close_alerts(
-      organization_id,
-      alert_ids,
-      user_id: user_id,
-      resolution_notes: resolution_notes
-    ) do
+           organization_id,
+           alert_ids,
+           user_id: user_id,
+           resolution_notes: resolution_notes
+         ) do
       {:ok, result} ->
         conn
         |> put_status(:ok)
@@ -106,11 +109,11 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     user_id = conn.assigns.current_user.id
 
     case BatchOperations.batch_assign_alerts(
-      organization_id,
-      alert_ids,
-      assigned_to_id,
-      user_id: user_id
-    ) do
+           organization_id,
+           alert_ids,
+           assigned_to_id,
+           user_id: user_id
+         ) do
       {:ok, result} ->
         conn
         |> put_status(:ok)
@@ -148,12 +151,12 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     remove_tags = Map.get(params, "remove_tags", [])
 
     case BatchOperations.batch_tag_alerts(
-      organization_id,
-      alert_ids,
-      user_id: user_id,
-      add_tags: add_tags,
-      remove_tags: remove_tags
-    ) do
+           organization_id,
+           alert_ids,
+           user_id: user_id,
+           add_tags: add_tags,
+           remove_tags: remove_tags
+         ) do
       {:ok, result} ->
         conn
         |> put_status(:ok)
@@ -186,10 +189,10 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     user_id = conn.assigns.current_user.id
 
     case BatchOperations.batch_delete_alerts(
-      organization_id,
-      alert_ids,
-      user_id: user_id
-    ) do
+           organization_id,
+           alert_ids,
+           user_id: user_id
+         ) do
       {:ok, result} ->
         conn
         |> put_status(:ok)
@@ -258,11 +261,11 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     deduplicate = Map.get(params, "deduplicate", true)
 
     case BatchOperations.batch_import_iocs(
-      organization_id,
-      iocs,
-      source: source,
-      deduplicate: deduplicate
-    ) do
+           organization_id,
+           iocs,
+           source: source,
+           deduplicate: deduplicate
+         ) do
       {:ok, %{job_id: job_id}} ->
         conn
         |> put_status(:accepted)
@@ -339,22 +342,24 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     organization_id = conn.assigns.current_organization_id
 
     # Parse expires_at if present
-    updates = if expires_at_str = updates["expires_at"] do
-      case DateTime.from_iso8601(expires_at_str) do
-        {:ok, dt, _offset} ->
-          Map.put(updates, :expires_at, dt)
+    updates =
+      if expires_at_str = updates["expires_at"] do
+        case DateTime.from_iso8601(expires_at_str) do
+          {:ok, dt, _offset} ->
+            Map.put(updates, :expires_at, dt)
 
-        _ ->
-          updates
+          _ ->
+            updates
+        end
+      else
+        updates
       end
-    else
-      updates
-    end
 
     # Convert string keys to atoms for add_tags/remove_tags
-    updates = updates
-    |> Map.put(:add_tags, updates["add_tags"])
-    |> Map.put(:remove_tags, updates["remove_tags"])
+    updates =
+      updates
+      |> Map.put(:add_tags, updates["add_tags"])
+      |> Map.put(:remove_tags, updates["remove_tags"])
 
     case BatchOperations.batch_update_iocs(organization_id, ioc_ids, updates) do
       {:ok, result} ->
@@ -404,12 +409,21 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
 
     reason = Map.get(params, "reason", "Batch isolation")
 
-    case BatchOperations.batch_isolate_agents(
-      organization_id,
-      agent_ids,
-      user_id: user_id,
-      reason: reason
-    ) do
+    result =
+      case reject_mobile_batch_isolation(organization_id, agent_ids) do
+        :ok ->
+          BatchOperations.batch_isolate_agents(
+            organization_id,
+            agent_ids,
+            user_id: user_id,
+            reason: reason
+          )
+
+        {:error, _reason} = error ->
+          error
+      end
+
+    case result do
       {:ok, %{job_id: job_id}} ->
         conn
         |> put_status(:accepted)
@@ -423,6 +437,16 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "Batch size exceeds maximum of #{max}"})
+
+      {:error, {:mobile_agents_unsupported, mobile_agent_ids}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "Batch network isolation is not available for mobile endpoints",
+          platform: "mobile",
+          unsupported_agent_ids: mobile_agent_ids,
+          supported_surface: "mobile endpoint commands"
+        })
 
       {:error, reason} ->
         conn
@@ -446,10 +470,10 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     user_id = conn.assigns.current_user.id
 
     case BatchOperations.batch_scan_agents(
-      organization_id,
-      agent_ids,
-      user_id: user_id
-    ) do
+           organization_id,
+           agent_ids,
+           user_id: user_id
+         ) do
       {:ok, %{job_id: job_id}} ->
         conn
         |> put_status(:accepted)
@@ -486,10 +510,10 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     user_id = conn.assigns.current_user.id
 
     case BatchOperations.batch_collect_forensics(
-      organization_id,
-      agent_ids,
-      user_id: user_id
-    ) do
+           organization_id,
+           agent_ids,
+           user_id: user_id
+         ) do
       {:ok, %{job_id: job_id}} ->
         conn
         |> put_status(:accepted)
@@ -568,6 +592,7 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
   end
 
   defp format_job_errors([]), do: []
+
   defp format_job_errors(errors) when is_list(errors) do
     Enum.map(errors, fn error ->
       %{
@@ -577,5 +602,30 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
       }
     end)
   end
+
+  defp reject_mobile_batch_isolation(_organization_id, []), do: :ok
+
+  defp reject_mobile_batch_isolation(organization_id, agent_ids) do
+    mobile_agent_ids =
+      Agent
+      |> where([a], a.organization_id == ^organization_id and a.id in ^agent_ids)
+      |> select([a], {a.id, a.os_type})
+      |> Repo.all()
+      |> Enum.filter(fn {_id, os_type} -> mobile_os?(os_type) end)
+      |> Enum.map(fn {id, _os_type} -> id end)
+
+    case mobile_agent_ids do
+      [] -> :ok
+      ids -> {:error, {:mobile_agents_unsupported, ids}}
+    end
+  end
+
+  defp mobile_os?(os_type) do
+    os = String.downcase(to_string(os_type || ""))
+
+    String.contains?(os, "android") or String.contains?(os, "ios") or
+      String.contains?(os, "iphone") or String.contains?(os, "ipad")
+  end
+
   defp format_job_errors(_), do: []
 end

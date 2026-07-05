@@ -162,7 +162,8 @@ interface MobileOverview {
   app_guard: {
     events: Array<Record<string, any>>
     total_recent_events: number
-    protected_apps?: string[]
+    protected_apps?: Array<Record<string, any>>
+    protected_total?: number
   }
   commands: Array<{
     id: string
@@ -1527,6 +1528,14 @@ function MobileEndpointPanel({
   const posture = overview?.posture || {}
   const apps = overview?.app_inventory?.apps || []
   const appGuardEvents = overview?.app_guard?.events || []
+  const device = overview?.device || {}
+  const highRiskApps = Number(overview?.app_inventory?.high_risk ?? 0)
+  const sideloadedApps = Number(overview?.app_inventory?.sideloaded ?? 0)
+  const protectedApps = overview?.app_guard?.protected_apps || []
+  const protectedTotal = Number(overview?.app_guard?.protected_total ?? protectedApps.length)
+  const mdmProvider = device.mdm?.provider || device.mdm_provider
+  const mdmCompliance = device.mdm?.compliance_status || posture.mdm_compliance_status
+  const deviceLabel = [device.model, device.os_version].filter(Boolean).join(' / ') || device.device_id || 'mobile endpoint'
 
   return (
     <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -1561,11 +1570,22 @@ function MobileEndpointPanel({
         </div>
       ) : (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
             <MobileMetric label="Risk" value={String(posture.risk_score ?? 0)} tone={Number(posture.risk_score || 0) >= 70 ? 'high' : 'ok'} />
-            <MobileMetric label="MDM" value={overview.device?.mdm?.provider || overview.device?.mdm_provider || 'none'} />
+            <MobileMetric label="MDM" value={formatMobileProvider(mdmProvider)} />
             <MobileMetric label="Apps" value={String(overview.app_inventory?.total ?? apps.length)} />
+            <MobileMetric label="High risk" value={String(highRiskApps)} tone={highRiskApps > 0 ? 'high' : 'ok'} />
+            <MobileMetric label="Sideloaded" value={String(sideloadedApps)} tone={sideloadedApps > 0 ? 'high' : 'ok'} />
             <MobileMetric label="App Guard" value={String(overview.app_guard?.total_recent_events ?? appGuardEvents.length)} />
+          </div>
+
+          <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+              <MobileFact label="Device" value={deviceLabel} />
+              <MobileFact label="Device ID" value={device.device_id || posture.device_id || 'not reported'} />
+              <MobileFact label="User" value={device.user_email || device.user_name || 'not assigned'} />
+              <MobileFact label="Last assessment" value={formatMobileTimestamp(posture.last_assessment || device.last_seen_at)} />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -1577,8 +1597,10 @@ function MobileEndpointPanel({
                 <MobileFact label="Compromised" value={posture.jailbroken_or_rooted ? 'Yes' : 'No'} danger={!!posture.jailbroken_or_rooted} />
                 <MobileFact label="Passcode" value={formatMobileBoolean(posture.passcode_enabled)} danger={posture.passcode_enabled === false} />
                 <MobileFact label="Encryption" value={formatMobileBoolean(posture.encryption_enabled)} danger={posture.encryption_enabled === false} />
+                <MobileFact label="USB debugging" value={formatMobileBoolean(posture.usb_debugging_enabled)} danger={posture.usb_debugging_enabled === true} />
                 <MobileFact label="Developer mode" value={formatMobileBoolean(posture.developer_mode_enabled)} danger={posture.developer_mode_enabled === true} />
                 <MobileFact label="Compliance" value={overview.compliance?.local_compliant === false ? 'Needs review' : 'Local checks pass'} danger={overview.compliance?.local_compliant === false} />
+                <MobileFact label="MDM compliance" value={mdmCompliance || 'not reported'} danger={String(mdmCompliance || '').toLowerCase().includes('non')} />
               </div>
             </div>
 
@@ -1594,7 +1616,7 @@ function MobileEndpointPanel({
                     <div key={String(app.id || app.bundle_id)} className="flex items-center justify-between gap-3 text-sm">
                       <span className="truncate" style={{ color: 'var(--fg)' }}>{app.app_name || app.bundle_id}</span>
                       <span className="text-xs shrink-0" style={{ color: app.risk_level === 'high' || app.risk_level === 'critical' ? 'var(--high)' : 'var(--muted)' }}>
-                        {app.risk_level || 'unknown'}
+                        {app.risk_level || 'not scored'}
                       </span>
                     </div>
                   ))}
@@ -1607,9 +1629,13 @@ function MobileEndpointPanel({
                 <Activity className="h-4 w-4" /> App Guard
               </h3>
               {appGuardEvents.length === 0 ? (
-                <p className="text-sm" style={{ color: 'var(--muted)' }}>No App Guard events in the recent mobile window</p>
+                <div className="space-y-2 text-sm">
+                  <p style={{ color: 'var(--muted)' }}>No App Guard events in the recent mobile window</p>
+                  <MobileFact label="Protected apps" value={String(protectedTotal)} />
+                </div>
               ) : (
                 <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                  <MobileFact label="Protected apps" value={String(protectedTotal)} />
                   {appGuardEvents.slice(0, 8).map(event => (
                     <div key={String(event.id)} className="text-sm">
                       <div className="flex items-center justify-between gap-3">
@@ -1670,6 +1696,17 @@ function formatMobileBoolean(value: unknown): string {
   if (value === true) return 'Enabled'
   if (value === false) return 'Disabled'
   return 'Unknown'
+}
+
+function formatMobileProvider(value: unknown): string {
+  const provider = String(value || '').trim()
+  if (!provider || provider === 'none') return 'none'
+  return provider.replace(/_/g, ' ')
+}
+
+function formatMobileTimestamp(value: unknown): string {
+  if (!value) return 'not reported'
+  return formatDate(String(value))
 }
 
 function severityTextColor(severity: unknown): string {

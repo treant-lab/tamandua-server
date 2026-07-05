@@ -34,7 +34,7 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   alias TamanduaServer.LiveResponse.AuditLogger
   alias TamanduaServer.Forensics.Collector
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   # Command timeout (30 seconds default)
   @default_timeout 30_000
@@ -65,6 +65,7 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   """
   def create_session(conn, %{"agent_id" => agent_id} = params) do
     user = conn.assigns[:current_user]
+    org_id = get_current_organization_id(conn)
 
     opts =
       []
@@ -73,42 +74,50 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
       |> maybe_add_opt(:notes, Map.get(params, "notes"))
       |> maybe_add_opt(:timeout_minutes, Map.get(params, "timeout_minutes"))
 
-    # Pass full user struct for tenant validation
-    case SessionManager.create_session(agent_id, user, opts) do
-      {:ok, session} ->
-        conn
-        |> put_status(:created)
-        |> json(%{
-          data: format_session(session),
-          message: "Live response session created"
-        })
+    case maybe_reject_mobile_live_response(org_id, agent_id) do
+      :ok ->
+        # Pass full user struct for tenant validation
+        case SessionManager.create_session(agent_id, user, opts) do
+          {:ok, session} ->
+            conn
+            |> put_status(:created)
+            |> json(%{
+              data: format_session(session),
+              message: "Live response session created"
+            })
 
-      {:error, :unauthorized} ->
-        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
+          {:error, :unauthorized} ->
+            conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-      {:error, :user_no_organization} ->
-        conn |> put_status(:forbidden) |> json(%{error: "User is not associated with any organization"})
+          {:error, :user_no_organization} ->
+            conn
+            |> put_status(:forbidden)
+            |> json(%{error: "User is not associated with any organization"})
 
-      {:error, :agent_not_found} ->
-        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
+          {:error, :agent_not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
 
-      {:error, :agent_offline} ->
-        conn |> put_status(:service_unavailable) |> json(%{error: "Agent is offline"})
+          {:error, :agent_offline} ->
+            conn |> put_status(:service_unavailable) |> json(%{error: "Agent is offline"})
 
-      {:error, :agent_session_limit} ->
-        conn
-        |> put_status(:too_many_requests)
-        |> json(%{error: "Maximum concurrent sessions per agent reached"})
+          {:error, :agent_session_limit} ->
+            conn
+            |> put_status(:too_many_requests)
+            |> json(%{error: "Maximum concurrent sessions per agent reached"})
 
-      {:error, :user_session_limit} ->
-        conn
-        |> put_status(:too_many_requests)
-        |> json(%{error: "Maximum concurrent sessions per user reached"})
+          {:error, :user_session_limit} ->
+            conn
+            |> put_status(:too_many_requests)
+            |> json(%{error: "Maximum concurrent sessions per user reached"})
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: to_string(reason)})
+        end
+
+      {:error, :mobile_live_response_unsupported} ->
+        mobile_live_response_unsupported(conn)
     end
   end
 
@@ -124,6 +133,7 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
 
     with :ok <- verify_live_response_user(user),
          {:ok, agent} <- Agents.get_agent_for_org(org_id, agent_id),
+         :ok <- reject_mobile_live_response(agent),
          {:ok, token, claims} <-
            TamanduaServer.Guardian.encode_and_sign(
              user,
@@ -159,6 +169,9 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
 
       {:error, :not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
+
+      {:error, :mobile_live_response_unsupported} ->
+        mobile_live_response_unsupported(conn)
 
       {:error, reason} ->
         conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
@@ -328,7 +341,9 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
         conn |> put_status(:forbidden) |> json(%{error: "Command is blocked"})
 
       {:error, :insufficient_permissions} ->
-        conn |> put_status(:forbidden) |> json(%{error: "Insufficient permissions for this command"})
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "Insufficient permissions for this command"})
 
       {:error, :not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "Session not found"})
@@ -739,7 +754,10 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   end
 
   defp format_unix_exp(nil), do: nil
-  defp format_unix_exp(exp) when is_integer(exp), do: exp |> DateTime.from_unix!() |> DateTime.to_iso8601()
+
+  defp format_unix_exp(exp) when is_integer(exp),
+    do: exp |> DateTime.from_unix!() |> DateTime.to_iso8601()
+
   defp format_unix_exp(_), do: nil
 
   # ============================================================================
@@ -886,6 +904,36 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
       nil -> :viewer
       user -> user.role || user[:role] || :analyst
     end
+  end
+
+  defp reject_mobile_live_response(%{os_type: os_type}) do
+    os = String.downcase(to_string(os_type || ""))
+
+    if String.contains?(os, "android") or String.contains?(os, "ios") or
+         String.contains?(os, "iphone") or String.contains?(os, "ipad") do
+      {:error, :mobile_live_response_unsupported}
+    else
+      :ok
+    end
+  end
+
+  defp maybe_reject_mobile_live_response(nil, _agent_id), do: :ok
+
+  defp maybe_reject_mobile_live_response(org_id, agent_id) do
+    case Agents.get_agent_for_org(org_id, agent_id) do
+      {:ok, agent} -> reject_mobile_live_response(agent)
+      _ -> :ok
+    end
+  end
+
+  defp mobile_live_response_unsupported(conn) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      error: "Live response shell is not available for mobile endpoints",
+      platform: "mobile",
+      supported_surface: "mobile endpoint commands"
+    })
   end
 
   defp maybe_add_opt(opts, _key, nil), do: opts

@@ -29,7 +29,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Dialog, DialogFooter, Select, SelectItem, Checkbox } from '@/components/ui/baseui'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // Types
 interface WorkflowStep {
@@ -86,10 +86,18 @@ interface ExecutionStats {
   runningNow: number
 }
 
+interface WorkflowTemplate {
+  id: string
+  name: string
+  description: string
+  trigger_type?: string
+  triggerType?: string
+}
+
 interface HyperautomationPageProps {
   workflows?: AutomationWorkflow[]
   availableActions?: ActionMetric[]
-  templates?: { id: string; name: string; description: string }[]
+  templates?: WorkflowTemplate[]
   executionStats?: ExecutionStats
   recentExecutions?: WorkflowExecution[]
 }
@@ -179,6 +187,45 @@ export default function Automation({
     triggerType: 'manual',
     enabled: true,
   })
+
+  useEffect(() => {
+    const path = window.location.pathname
+    const params = new URLSearchParams(window.location.search)
+    if (path === '/app/automation/new' || params.get('new') === '1') {
+      setShowCreateModal(true)
+    }
+  }, [])
+
+  const openCreateModal = () => {
+    setCreateError(null)
+    setShowCreateModal(true)
+  }
+
+  const openWorkflowDetail = (workflow: AutomationWorkflow) => {
+    router.visit(`/app/automation/workflows/${workflow.id}`)
+  }
+
+  const duplicateWorkflow = (workflow: AutomationWorkflow) => {
+    setNewWorkflow({
+      name: `Copy of ${workflow.name}`,
+      description: workflow.description || '',
+      triggerType: workflow.triggerType || 'manual',
+      enabled: false,
+    })
+    setCreateError(null)
+    setShowCreateModal(true)
+  }
+
+  const applyTemplate = (template: WorkflowTemplate) => {
+    setNewWorkflow({
+      name: template.name || '',
+      description: template.description || '',
+      triggerType: template.triggerType || template.trigger_type || 'manual',
+      enabled: true,
+    })
+    setCreateError(null)
+    setShowCreateModal(true)
+  }
 
   const filteredWorkflows = workflows.filter((workflow) => {
     const matchesSearch = workflow.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -412,7 +459,7 @@ export default function Automation({
 
           <button
             type="button"
-            onClick={() => setShowCreateModal(true)}
+            onClick={openCreateModal}
             className="btn-sentinel-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2"
           >
             <Plus className="h-4 w-4" />
@@ -486,7 +533,16 @@ export default function Automation({
                           <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>{workflow.description}</p>
                         </div>
                       </div>
-                      <button className="p-1 rounded hover:bg-[var(--surface-2)]" style={{ color: 'var(--muted)' }}>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          openWorkflowDetail(workflow)
+                        }}
+                        className="p-1 rounded hover:bg-[var(--surface-2)]"
+                        style={{ color: 'var(--muted)' }}
+                        title="Open workflow"
+                      >
                         <MoreVertical className="h-5 w-5" />
                       </button>
                     </div>
@@ -557,13 +613,31 @@ export default function Automation({
                 <div className="p-4 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border)' }}>
                   <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Workflow Builder</h2>
                   <div className="flex items-center gap-1">
-                    <button className="p-1.5 rounded hover:bg-[var(--surface-2)]" style={{ color: 'var(--muted)' }}>
+                    <button
+                      type="button"
+                      onClick={() => openWorkflowDetail(selectedWorkflow)}
+                      className="p-1.5 rounded hover:bg-[var(--surface-2)]"
+                      style={{ color: 'var(--muted)' }}
+                      title="View workflow"
+                    >
                       <Eye className="h-4 w-4" />
                     </button>
-                    <button className="p-1.5 rounded hover:bg-[var(--surface-2)]" style={{ color: 'var(--muted)' }}>
+                    <button
+                      type="button"
+                      onClick={() => openWorkflowDetail(selectedWorkflow)}
+                      className="p-1.5 rounded hover:bg-[var(--surface-2)]"
+                      style={{ color: 'var(--muted)' }}
+                      title="Edit workflow"
+                    >
                       <Edit className="h-4 w-4" />
                     </button>
-                    <button className="p-1.5 rounded hover:bg-[var(--surface-2)]" style={{ color: 'var(--muted)' }}>
+                    <button
+                      type="button"
+                      onClick={() => duplicateWorkflow(selectedWorkflow)}
+                      className="p-1.5 rounded hover:bg-[var(--surface-2)]"
+                      style={{ color: 'var(--muted)' }}
+                      title="Duplicate workflow"
+                    >
                       <Copy className="h-4 w-4" />
                     </button>
                   </div>
@@ -628,7 +702,12 @@ export default function Automation({
                       )}
                       {executingWorkflowId === selectedWorkflow.id ? 'Running...' : 'Run Now'}
                     </button>
-                    <button className="btn-sentinel-secondary rounded-lg px-3 py-2 text-sm font-medium flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openWorkflowDetail(selectedWorkflow)}
+                      className="btn-sentinel-secondary rounded-lg px-3 py-2 text-sm font-medium flex items-center justify-center gap-2"
+                      title="Workflow settings"
+                    >
                       <Settings className="h-4 w-4" />
                     </button>
                   </div>
@@ -746,6 +825,8 @@ export default function Automation({
                   {templates.slice(0, 4).map((template) => (
                     <button
                       key={template.id}
+                      type="button"
+                      onClick={() => applyTemplate(template)}
                       className="w-full text-left p-3 rounded-lg transition-colors hover:bg-[var(--surface-2)]"
                       style={{ background: 'var(--surface-2)' }}
                     >

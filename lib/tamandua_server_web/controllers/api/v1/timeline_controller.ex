@@ -33,7 +33,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     apply(__MODULE__, action_name(conn), [conn, conn.params])
   rescue
     exception ->
-      Logger.warning("Timeline action #{action_name(conn)} failed: #{Exception.message(exception)}")
+      Logger.warning(
+        "Timeline action #{action_name(conn)} failed: #{Exception.message(exception)}"
+      )
 
       conn
       |> put_status(:service_unavailable)
@@ -62,7 +64,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       })
 
     kind, reason ->
-      Logger.warning("Timeline action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+      Logger.warning(
+        "Timeline action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}"
+      )
 
       conn
       |> put_status(:service_unavailable)
@@ -710,7 +714,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   end
 
   defp scope_events_to_org(query, nil), do: where(query, [e], is_nil(e.organization_id))
-  defp scope_events_to_org(query, organization_id), do: where(query, [e], e.organization_id == ^organization_id)
+
+  defp scope_events_to_org(query, organization_id),
+    do: where(query, [e], e.organization_id == ^organization_id)
 
   defp serialize_timeline_events(events, organization_id, evidence) do
     links_by_id = evidence.event_links || %{}
@@ -731,21 +737,19 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
     end)
   end
 
-  defp merge_mobile_timeline_events(serialized_events, nil, _params, _limit), do: serialized_events
+  defp merge_mobile_timeline_events(serialized_events, nil, _params, _limit),
+    do: serialized_events
 
   defp merge_mobile_timeline_events(serialized_events, organization_id, params, limit) do
-    if mobile_timeline_filtered_out?(params) do
-      serialized_events
-    else
-      mobile_events =
-        organization_id
-        |> Mobile.list_organization_events(limit: limit, hours: timeline_mobile_hours(params))
-        |> Enum.map(&serialize_mobile_timeline_event/1)
+    mobile_events =
+      organization_id
+      |> Mobile.list_organization_events(limit: limit, hours: timeline_mobile_hours(params))
+      |> Enum.map(&serialize_mobile_timeline_event/1)
+      |> filter_mobile_timeline_events_by_agent(params["agent_ids"])
 
-      (serialized_events ++ mobile_events)
-      |> Enum.sort_by(&(&1.timestamp || ""), :desc)
-      |> Enum.take(limit)
-    end
+    (serialized_events ++ mobile_events)
+    |> Enum.sort_by(&(&1.timestamp || ""), :desc)
+    |> Enum.take(limit)
   rescue
     error ->
       Logger.warning("Timeline mobile event projection failed: #{Exception.message(error)}")
@@ -755,12 +759,6 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       Logger.warning("Timeline mobile event projection failed: exit #{inspect(reason)}")
       serialized_events
   end
-
-  defp mobile_timeline_filtered_out?(%{"agent_ids" => agent_ids})
-       when is_binary(agent_ids) and agent_ids != "",
-       do: true
-
-  defp mobile_timeline_filtered_out?(_params), do: false
 
   defp serialize_mobile_timeline_event(event) do
     payload = event.payload || %{}
@@ -778,6 +776,7 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
         payload
         |> Map.put_new("source", "mobile")
         |> Map.put_new("mobile_event_id", event.id)
+        |> Map.put_new("mobile_device_id", mobile_timeline_device_external_id(event))
         |> Map.put_new("app_guard", app_guard_payload?(payload)),
       relatedEvents: [],
       mitreTechniques: mobile_mitre_techniques(event, payload),
@@ -799,6 +798,16 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
 
   defp mobile_timeline_agent_id(event) do
     case Map.get(event, :device) do
+      %{organization_id: organization_id, device_id: device_id} ->
+        Mobile.agent_id_for_device(organization_id, device_id) || device_id
+
+      _ ->
+        event.device_id
+    end
+  end
+
+  defp mobile_timeline_device_external_id(event) do
+    case Map.get(event, :device) do
       %{device_id: device_id} -> device_id
       _ -> event.device_id
     end
@@ -809,6 +818,27 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       %{model: model} when is_binary(model) and model != "" -> model
       %{device_id: device_id} -> device_id
       _ -> "Mobile"
+    end
+  end
+
+  defp filter_mobile_timeline_events_by_agent(events, nil), do: events
+  defp filter_mobile_timeline_events_by_agent(events, ""), do: events
+
+  defp filter_mobile_timeline_events_by_agent(events, agent_ids) when is_binary(agent_ids) do
+    allowed_ids =
+      agent_ids
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    if MapSet.size(allowed_ids) == 0 do
+      events
+    else
+      Enum.filter(events, fn event ->
+        MapSet.member?(allowed_ids, event.agentId) ||
+          MapSet.member?(allowed_ids, get_in(event, [:details, "mobile_device_id"]))
+      end)
     end
   end
 
@@ -1168,7 +1198,9 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   # Apply ISO 8601 time range to the query.
   # The Event schema uses :utc_datetime_usec (DateTime), so we must compare with DateTime values.
   defp apply_time_range(query, start_str, end_str) do
-    start_dt = parse_iso_datetime(start_str) || DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
+    start_dt =
+      parse_iso_datetime(start_str) || DateTime.utc_now() |> DateTime.add(-24 * 60 * 60, :second)
+
     end_dt = parse_iso_datetime(end_str) || DateTime.utc_now()
 
     query

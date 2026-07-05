@@ -8,6 +8,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Agents.PlatformCapabilities
+  alias TamanduaServer.Authorization.RBAC
   alias TamanduaServer.AuditLog
   alias TamanduaServer.Alerts
   alias TamanduaServer.Response
@@ -28,7 +29,6 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   # not sufficient: a viewer/analyst must not be able to isolate, restart, or
   # reconfigure endpoints. The plug fails closed (403) when the user lacks the
   # permission or is unauthenticated.
-  plug(TamanduaServerWeb.Plugs.Authorize, :response_isolate when action in [:isolate, :unisolate])
   plug(TamanduaServerWeb.Plugs.Authorize, :agents_command when action in [:restart_agent])
   plug(TamanduaServerWeb.Plugs.Authorize, :agents_policy when action in [:update_config])
 
@@ -181,9 +181,13 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   end
 
   defp agent_field(%{} = agent, :id),
-    do: Map.get(agent, :id) || Map.get(agent, "id") || Map.get(agent, :agent_id) || Map.get(agent, "agent_id")
+    do:
+      Map.get(agent, :id) || Map.get(agent, "id") || Map.get(agent, :agent_id) ||
+        Map.get(agent, "agent_id")
 
-  defp agent_field(%{} = agent, key), do: Map.get(agent, key) || Map.get(agent, Atom.to_string(key))
+  defp agent_field(%{} = agent, key),
+    do: Map.get(agent, key) || Map.get(agent, Atom.to_string(key))
+
   defp agent_field(agent, key), do: Map.get(agent, key)
 
   def show(conn, %{"id" => id}) do
@@ -272,7 +276,11 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
             persisted_status_for_display(agent.status, agent.last_seen_at),
             live_status_info
           ),
-        health: Map.merge(TamanduaServer.Agents.Registry.get_agent_health_status_detail(id) || %{}, health || %{}),
+        health:
+          Map.merge(
+            TamanduaServer.Agents.Registry.get_agent_health_status_detail(id) || %{},
+            health || %{}
+          ),
         config: config,
         collectors: collectors,
         data_sources: data_source_counts(data_source_health)
@@ -319,63 +327,71 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     user = conn.assigns[:current_user]
     agent = authorize_agent!(conn, id)
 
-    allowed_ips = Map.get(params, "allowed_ips", [])
+    if mobile_agent?(agent) do
+      unsupported_mobile_host_action(conn, "network isolation")
+    else
+      with :ok <- authorize_response_isolate(conn) do
+        allowed_ips = Map.get(params, "allowed_ips", [])
 
-    case TamanduaServer.Response.Executor.isolate_network(id, allowed_ips: allowed_ips) do
-      {:ok, response} ->
-        # The Executor already updated the agent's isolation_status and
-        # broadcast the PubSub event, so just log and respond.
-        AuditLog.log_agent_action(
-          user,
-          "isolate_agent",
-          id,
-          %{
-            hostname: agent.hostname,
-            allowed_ips: allowed_ips,
-            result: "success",
-            isolation_state: get_in(response, ["result_data", "state"]) || "unknown"
-          },
-          request_metadata(conn)
-        )
+        case TamanduaServer.Response.Executor.isolate_network(id, allowed_ips: allowed_ips) do
+          {:ok, response} ->
+            # The Executor already updated the agent's isolation_status and
+            # broadcast the PubSub event, so just log and respond.
+            AuditLog.log_agent_action(
+              user,
+              "isolate_agent",
+              id,
+              %{
+                hostname: agent.hostname,
+                allowed_ips: allowed_ips,
+                result: "success",
+                isolation_state: get_in(response, ["result_data", "state"]) || "unknown"
+              },
+              request_metadata(conn)
+            )
 
-        record_response_action(conn, user, "isolate_network", id, params, "success", response)
+            record_response_action(conn, user, "isolate_network", id, params, "success", response)
 
-        # Re-read agent to get updated isolation_status
-        updated_agent = authorize_agent!(conn, id)
+            # Re-read agent to get updated isolation_status
+            updated_agent = authorize_agent!(conn, id)
 
-        json(conn, %{
-          data: serialize(updated_agent),
-          message: "Agent isolation command executed",
-          isolation_status: updated_agent.isolation_status
-        })
+            json(conn, %{
+              data: serialize(updated_agent),
+              message: "Agent isolation command executed",
+              isolation_status: updated_agent.isolation_status
+            })
 
-      {:error, reason} ->
-        AuditLog.log_agent_action(
-          user,
-          "isolate_agent",
-          id,
-          %{
-            hostname: agent.hostname,
-            result: "failed",
-            error: inspect(reason)
-          },
-          request_metadata(conn)
-        )
+          {:error, reason} ->
+            AuditLog.log_agent_action(
+              user,
+              "isolate_agent",
+              id,
+              %{
+                hostname: agent.hostname,
+                result: "failed",
+                error: inspect(reason)
+              },
+              request_metadata(conn)
+            )
 
-        record_response_action(
-          conn,
-          user,
-          "isolate_network",
-          id,
-          params,
-          "failed",
-          nil,
-          inspect(reason)
-        )
+            record_response_action(
+              conn,
+              user,
+              "isolate_network",
+              id,
+              params,
+              "failed",
+              nil,
+              inspect(reason)
+            )
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+            conn
+            |> put_status(400)
+            |> json(%{success: false, error: inspect(reason)})
+        end
+      else
+        {:error, conn} -> conn
+      end
     end
   end
 
@@ -383,44 +399,52 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     user = conn.assigns[:current_user]
     agent = authorize_agent!(conn, id)
 
-    case TamanduaServer.Response.Executor.unisolate_network(id) do
-      {:ok, response} ->
-        AuditLog.log_agent_action(
-          user,
-          "unisolate_agent",
-          id,
-          %{
-            hostname: agent.hostname,
-            result: "success",
-            isolation_state: get_in(response, ["result_data", "state"]) || "disabled"
-          },
-          request_metadata(conn)
-        )
+    if mobile_agent?(agent) do
+      unsupported_mobile_host_action(conn, "network isolation removal")
+    else
+      with :ok <- authorize_response_isolate(conn) do
+        case TamanduaServer.Response.Executor.unisolate_network(id) do
+          {:ok, response} ->
+            AuditLog.log_agent_action(
+              user,
+              "unisolate_agent",
+              id,
+              %{
+                hostname: agent.hostname,
+                result: "success",
+                isolation_state: get_in(response, ["result_data", "state"]) || "disabled"
+              },
+              request_metadata(conn)
+            )
 
-        updated_agent = authorize_agent!(conn, id)
+            updated_agent = authorize_agent!(conn, id)
 
-        json(conn, %{
-          data: serialize(updated_agent),
-          message: "Agent de-isolation command executed",
-          isolation_status: updated_agent.isolation_status
-        })
+            json(conn, %{
+              data: serialize(updated_agent),
+              message: "Agent de-isolation command executed",
+              isolation_status: updated_agent.isolation_status
+            })
 
-      {:error, reason} ->
-        AuditLog.log_agent_action(
-          user,
-          "unisolate_agent",
-          id,
-          %{
-            hostname: agent.hostname,
-            result: "failed",
-            error: inspect(reason)
-          },
-          request_metadata(conn)
-        )
+          {:error, reason} ->
+            AuditLog.log_agent_action(
+              user,
+              "unisolate_agent",
+              id,
+              %{
+                hostname: agent.hostname,
+                result: "failed",
+                error: inspect(reason)
+              },
+              request_metadata(conn)
+            )
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+            conn
+            |> put_status(400)
+            |> json(%{success: false, error: inspect(reason)})
+        end
+      else
+        {:error, conn} -> conn
+      end
     end
   end
 
@@ -757,6 +781,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     id = agent[:agent_id] || agent["agent_id"] || agent[:id] || agent["id"]
     live_info = live_agent_info(id)
     status = effective_agent_status(status, live_info)
+
     last_seen_at =
       live_health_value(live_info, :last_seen_at) || agent[:last_seen_at] || agent["last_seen_at"]
 
@@ -799,7 +824,8 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
           recent_live_presence?(live_info) ->
         "online"
 
-      true -> "offline"
+      true ->
+        "offline"
     end
   end
 
@@ -811,9 +837,11 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     to_string(persisted_status)
   end
 
-  defp effective_agent_status(persisted_status, _live_info), do: to_string(persisted_status || "offline")
+  defp effective_agent_status(persisted_status, _live_info),
+    do: to_string(persisted_status || "offline")
 
-  defp persisted_status_for_display(status, last_seen_at) when status in [:online, "online", :isolated, "isolated"] do
+  defp persisted_status_for_display(status, last_seen_at)
+       when status in [:online, "online", :isolated, "isolated"] do
     if recent_persisted_presence?(last_seen_at), do: status, else: :offline
   end
 
@@ -1189,6 +1217,42 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   defp current_organization_id(conn) do
     conn.assigns[:current_organization_id] ||
       (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+  end
+
+  defp mobile_agent?(%Agent{os_type: os_type}) do
+    os = String.downcase(to_string(os_type || ""))
+
+    String.contains?(os, "android") or String.contains?(os, "ios") or
+      String.contains?(os, "iphone") or String.contains?(os, "ipad")
+  end
+
+  defp unsupported_mobile_host_action(conn, action) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      success: false,
+      error: "#{action} is not available for mobile endpoints",
+      platform: "mobile",
+      supported_surface: "mobile endpoint commands"
+    })
+  end
+
+  defp authorize_response_isolate(conn) do
+    if RBAC.can?(conn.assigns[:current_user], :response_isolate, nil) do
+      :ok
+    else
+      conn =
+        conn
+        |> put_status(:forbidden)
+        |> put_view(json: TamanduaServerWeb.ErrorJSON)
+        |> render(:error, %{
+          error: "forbidden",
+          message: "You don't have permission to perform this action",
+          required_permission: :response_isolate
+        })
+
+      {:error, conn}
+    end
   end
 
   defp get_client_ip(conn) do

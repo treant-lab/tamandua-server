@@ -3783,7 +3783,7 @@ defmodule TamanduaServer.Alerts do
     )
     |> Repo.one()
     |> case do
-      {hour, _count} -> trunc(hour)
+      {hour, _count} -> numeric_to_integer(hour)
       nil -> 0
     end
 
@@ -3798,6 +3798,11 @@ defmodule TamanduaServer.Alerts do
       lastUpdated: System.system_time(:millisecond)
     }
   end
+
+  defp numeric_to_integer(%Decimal{} = value), do: value |> Decimal.to_float() |> trunc()
+  defp numeric_to_integer(value) when is_float(value), do: trunc(value)
+  defp numeric_to_integer(value) when is_integer(value), do: value
+  defp numeric_to_integer(_value), do: 0
 
   @doc """
   Returns top threat actors/attackers for the TopAttackers dashboard widget.

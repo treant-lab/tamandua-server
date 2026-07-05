@@ -83,6 +83,18 @@ defmodule TamanduaServer.Detection.EngineWorker do
     "dns.cleanbrowsing.org"
   ])
 
+  # ── Async backpressure (load shedding) ─────────────────────────────
+  # Default mailbox depth at which fire-and-forget async analysis events are
+  # shed instead of cast. Override via:
+  #   config :tamandua_server, :detection_engine, max_async_queue: N
+  @max_async_queue 5_000
+  # Events already carrying agent-side detections are high-priority and are
+  # only shed once the mailbox reaches this multiple of the threshold.
+  @high_priority_queue_factor 2
+  # Rate limit for the shed warning log (per shard) so a burst does not
+  # produce one log line per dropped event.
+  @drop_log_interval_ms 10_000
+
   # ── Client API ─────────────────────────────────────────────────────
 
   def start_link(opts) do

@@ -234,6 +234,19 @@ defmodule TamanduaServerWeb.Router do
     post("/auth/logout", MobileAuthController, :logout)
     post("/auth/refresh", MobileAuthController, :refresh)
 
+    # Batch Operations - keep specific /batch routes before dynamic resource ids.
+    post("/alerts/batch/close", BatchController, :close_alerts)
+    post("/alerts/batch/assign", BatchController, :assign_alerts)
+    post("/alerts/batch/tag", BatchController, :tag_alerts)
+    post("/alerts/batch/delete", BatchController, :delete_alerts)
+    post("/iocs/batch/import", BatchController, :import_iocs)
+    post("/iocs/batch/delete", BatchController, :delete_iocs)
+    post("/iocs/batch/update", BatchController, :update_iocs)
+    post("/agents/batch/isolate", BatchController, :isolate_agents)
+    post("/agents/batch/scan", BatchController, :scan_agents)
+    post("/agents/batch/collect-forensics", BatchController, :collect_forensics)
+    get("/jobs/:id", BatchController, :get_job)
+
     # Agents
     get("/agents/data-sources/health", AgentController, :data_sources_health)
     resources("/agents", AgentController, only: [:index, :show, :update, :delete])
@@ -2460,6 +2473,7 @@ defmodule TamanduaServerWeb.Router do
 
     # Automation
     get("/automation", InertiaController, :hyperautomation)
+    get("/automation/new", InertiaController, :hyperautomation)
     get("/hyperautomation", InertiaController, :hyperautomation)
     get("/automation/workflows/:id", InertiaController, :workflow_detail)
 

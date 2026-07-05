@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Activity,
@@ -259,7 +259,11 @@ export default function AISIEM({
               <Link2 className="h-5 w-5" style={{ color: 'var(--emerald-400)' }} />
               <h2 className="card-sentinel-title">Connected SIEMs</h2>
             </div>
-            <button className="btn-sentinel btn-sentinel-primary btn-sentinel-sm flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => router.visit('/app/integrations')}
+              className="btn-sentinel btn-sentinel-primary btn-sentinel-sm flex items-center gap-2"
+            >
               <Server className="h-4 w-4" />
               Add Connection
             </button>
@@ -325,15 +329,27 @@ export default function AISIEM({
 
                   {selectedConnection === connection.id && (
                     <div className="mt-4 pt-4 flex gap-2" style={{ borderTop: '1px solid var(--hairline)' }}>
-                      <button className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => router.visit('/app/integrations')}
+                        className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2"
+                      >
                         <Settings className="h-4 w-4" />
                         Configure
                       </button>
-                      <button className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => router.reload({ only: ['connections', 'stats'] })}
+                        className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2"
+                      >
                         <RefreshCw className="h-4 w-4" />
                         Test
                       </button>
-                      <button className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => router.visit('/app/detection-analytics')}
+                        className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2"
+                      >
                         <BarChart3 className="h-4 w-4" />
                         Metrics
                       </button>
@@ -354,7 +370,12 @@ export default function AISIEM({
                 <Brain className="h-5 w-5" style={{ color: 'var(--sol-magenta)' }} />
                 <h2 className="card-sentinel-title">AI Correlation Rules</h2>
               </div>
-              <button className="text-sm font-medium" style={{ color: 'var(--emerald-400)' }}>
+              <button
+                type="button"
+                onClick={() => router.visit('/app/detection-rules')}
+                className="text-sm font-medium"
+                style={{ color: 'var(--emerald-400)' }}
+              >
                 Manage Rules
               </button>
             </div>
@@ -412,7 +433,12 @@ export default function AISIEM({
                 <Zap className="h-5 w-5" style={{ color: 'var(--emerald-400)' }} />
                 <h2 className="card-sentinel-title">Alert Enrichment Sources</h2>
               </div>
-              <button className="text-sm font-medium" style={{ color: 'var(--emerald-400)' }}>
+              <button
+                type="button"
+                onClick={() => router.visit('/app/threat-intel')}
+                className="text-sm font-medium"
+                style={{ color: 'var(--emerald-400)' }}
+              >
                 Add Source
               </button>
             </div>

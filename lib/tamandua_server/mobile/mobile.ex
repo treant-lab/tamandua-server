@@ -202,52 +202,73 @@ defmodule TamanduaServer.Mobile do
     now = utc_now()
 
     %{}
-    |> maybe_put("is_jailbroken", first_present(security_checks, ["jailbroken", :jailbroken]))
+    |> maybe_put(
+      "is_jailbroken",
+      first_present(attrs, ["is_jailbroken", :is_jailbroken],
+        fallback: first_present(security_checks, ["jailbroken", :jailbroken])
+      )
+    )
     |> maybe_put(
       "is_rooted",
-      first_present(security_checks, [
-        "jailbroken_or_rooted",
-        :jailbroken_or_rooted,
-        "rooted",
-        :rooted
-      ])
+      first_present(attrs, ["is_rooted", :is_rooted],
+        fallback:
+          first_present(security_checks, [
+            "jailbroken_or_rooted",
+            :jailbroken_or_rooted,
+            "rooted",
+            :rooted
+          ])
+      )
     )
     |> maybe_put(
       "passcode_enabled",
-      first_present(security_checks, [
-        "passcode_enabled",
-        :passcode_enabled,
-        "passcode_set",
-        :passcode_set
-      ])
+      first_present(attrs, ["passcode_enabled", :passcode_enabled],
+        fallback:
+          first_present(security_checks, [
+            "passcode_enabled",
+            :passcode_enabled,
+            "passcode_set",
+            :passcode_set
+          ])
+      )
     )
     |> maybe_put(
       "encryption_enabled",
-      first_present(security_checks, ["encryption_enabled", :encryption_enabled])
+      first_present(attrs, ["encryption_enabled", :encryption_enabled],
+        fallback: first_present(security_checks, ["encryption_enabled", :encryption_enabled])
+      )
     )
     |> maybe_put(
       "biometric_enabled",
-      first_present(security_checks, ["biometric_enabled", :biometric_enabled])
+      first_present(attrs, ["biometric_enabled", :biometric_enabled],
+        fallback: first_present(security_checks, ["biometric_enabled", :biometric_enabled])
+      )
     )
     |> maybe_put(
       "developer_mode_enabled",
-      first_present(security_checks, [
-        "developer_mode",
-        :developer_mode,
-        "developer_mode_enabled",
-        :developer_mode_enabled
-      ])
+      first_present(attrs, ["developer_mode_enabled", :developer_mode_enabled],
+        fallback:
+          first_present(security_checks, [
+            "developer_mode",
+            :developer_mode,
+            "developer_mode_enabled",
+            :developer_mode_enabled
+          ])
+      )
     )
     |> maybe_put(
       "usb_debugging_enabled",
-      first_present(security_checks, [
-        "adb_enabled",
-        :adb_enabled,
-        "usb_debugging",
-        :usb_debugging,
-        "usb_debugging_enabled",
-        :usb_debugging_enabled
-      ])
+      first_present(attrs, ["usb_debugging_enabled", :usb_debugging_enabled],
+        fallback:
+          first_present(security_checks, [
+            "adb_enabled",
+            :adb_enabled,
+            "usb_debugging",
+            :usb_debugging,
+            "usb_debugging_enabled",
+            :usb_debugging_enabled
+          ])
+      )
     )
     |> maybe_put(
       "last_seen_at",
@@ -259,16 +280,20 @@ defmodule TamanduaServer.Mobile do
 
   defp normalize_posture_attrs(_attrs), do: %{"last_seen_at" => utc_now()}
 
-  defp first_present(map, keys) when is_map(map) do
-    Enum.find_value(keys, fn key ->
+  defp first_present(map, keys, opts \\ [])
+
+  defp first_present(map, keys, opts) when is_map(map) do
+    fallback = Keyword.get(opts, :fallback)
+
+    Enum.reduce_while(keys, fallback, fn key, fallback ->
       case Map.fetch(map, key) do
-        {:ok, value} when not is_nil(value) -> value
-        _ -> nil
+        {:ok, value} when not is_nil(value) -> {:halt, value}
+        _ -> {:cont, fallback}
       end
     end)
   end
 
-  defp first_present(_map, _keys), do: nil
+  defp first_present(_map, _keys, opts), do: Keyword.get(opts, :fallback)
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
@@ -320,6 +345,20 @@ defmodule TamanduaServer.Mobile do
       %Agent{} = agent ->
         Agents.update_agent(agent, mobile_agent_attrs(device, agent))
     end
+  end
+
+  @doc """
+  Resolves the server Agent mirror id for a mobile device external id.
+  """
+  def agent_id_for_device(organization_id, device_id) do
+    case get_mobile_agent(organization_id, device_id) do
+      %Agent{id: agent_id} -> agent_id
+      nil -> nil
+    end
+  end
+
+  def agent_id_for_device(%Device{} = device) do
+    agent_id_for_device(device.organization_id, device.device_id)
   end
 
   defp get_mobile_agent(organization_id, device_id) do
@@ -1025,16 +1064,46 @@ defmodule TamanduaServer.Mobile do
   """
   def create_alert_from_mobile_event(%MobileEvent{} = event) do
     device = get_device(event.device_id)
+    agent_id = mobile_event_agent_id(event, device)
     {mitre_technique, mitre_name, mitre_tactic} = mitre_for_event(event.event_type)
     risk_score = calculate_mobile_risk_score(event, device)
 
+    if is_nil(agent_id) do
+      Logger.warning(
+        "[Mobile] Skipping alert for event #{event.id}: mobile endpoint agent unavailable " <>
+          "device=#{event.device_id}"
+      )
+
+      {:error, :mobile_agent_unavailable}
+    else
+      create_alert_from_mobile_event(
+        event,
+        device,
+        agent_id,
+        mitre_technique,
+        mitre_name,
+        mitre_tactic,
+        risk_score
+      )
+    end
+  end
+
+  defp create_alert_from_mobile_event(
+         event,
+         device,
+         agent_id,
+         mitre_technique,
+         mitre_name,
+         mitre_tactic,
+         risk_score
+       ) do
     alert_attrs = %{
       severity: event.severity,
       title:
         "[#{alert_source_label(event)}] #{event.title || MobileEvent.event_type_description(event.event_type)}",
       description: build_alert_description(event, device),
       organization_id: event.organization_id,
-      agent_id: mobile_event_agent_id(event, device),
+      agent_id: agent_id,
       mitre_techniques: if(mitre_technique, do: [mitre_technique], else: []),
       mitre_tactics: if(mitre_tactic, do: [mitre_tactic], else: []),
       # calculate_mobile_risk_score returns a 0-100 value; canonical threat_score is 0.0-1.0
@@ -1081,7 +1150,8 @@ defmodule TamanduaServer.Mobile do
 
   defp mobile_event_agent_id(%MobileEvent{} = event, %Device{} = device) do
     device_agent_id(device.organization_id, device.device_id) ||
-      device_agent_id(event.organization_id, device.device_id)
+      device_agent_id(event.organization_id, device.device_id) ||
+      ensure_mobile_event_agent_id(device)
   end
 
   defp mobile_event_agent_id(%MobileEvent{} = event, _device) do
@@ -1098,6 +1168,13 @@ defmodule TamanduaServer.Mobile do
     case get_mobile_agent(organization_id, device_id) do
       %Agent{id: agent_id} -> agent_id
       nil -> nil
+    end
+  end
+
+  defp ensure_mobile_event_agent_id(%Device{} = device) do
+    case upsert_mobile_agent(device) do
+      {:ok, %Agent{id: agent_id}} -> agent_id
+      _ -> nil
     end
   end
 

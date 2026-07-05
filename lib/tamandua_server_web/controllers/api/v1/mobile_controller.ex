@@ -10,8 +10,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   - Response actions
   - MDM integration
 
-  NOTE: This is a foundation/stub implementation. Full mobile agent
-  support requires native iOS/Android agent development.
+  Boundary: this controller supports mobile companion workflows, endpoint
+  enrollment/posture mirroring, MDM actions, and App Guard ingestion. It does not
+  claim full phone-wide EDR telemetry until native iOS/Android sensor evidence
+  and signed release validation exist.
   """
 
   use TamanduaServerWeb, :controller
@@ -24,6 +26,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   alias TamanduaServer.Mobile.DeviceRegistry
   alias TamanduaServer.Mobile.ThreatDetection
   alias TamanduaServer.Mobile.AppInventory
+  alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Authorization.RBAC
 
@@ -86,7 +89,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         device = mobile_device_for_agent(organization_id, agent)
 
         json(conn, %{
-          data: mobile_agent_overview(agent, device)
+          data: mobile_agent_overview_payload(agent, device)
         })
     end
   end
@@ -273,13 +276,13 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Lists installed apps on a device.
   """
   def device_apps(conn, %{"id" => id} = params) do
-    with_legacy_device_for_org(conn, id, fn _device ->
+    with_legacy_device_for_org(conn, id, fn device ->
       opts = [
         limit: parse_int(params["limit"], 500),
         order_by: :app_name
       ]
 
-      apps = Mobile.list_device_apps(id, opts)
+      apps = Mobile.list_device_apps(device.id, opts)
 
       json(conn, %{
         data: Enum.map(apps, &serialize_app/1),
@@ -306,8 +309,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   """
   def sync_apps(conn, %{"id" => id, "apps" => apps_data}) when is_list(apps_data) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case Mobile.sync_device_apps(id, apps_data) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case Mobile.sync_device_apps(device.id, apps_data) do
         {:ok, {inserted, updated, deleted}} ->
           json(conn, %{
             success: true,
@@ -383,14 +386,14 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Lists security events for a device.
   """
   def device_events(conn, %{"id" => id} = params) do
-    with_legacy_device_for_org(conn, id, fn _device ->
+    with_legacy_device_for_org(conn, id, fn device ->
       opts = [
         limit: parse_int(params["limit"], 100),
         offset: parse_int(params["offset"], 0),
         severity: params["severity"]
       ]
 
-      events = Mobile.list_device_events(id, opts)
+      events = Mobile.list_device_events(device.id, opts)
 
       json(conn, %{
         data: Enum.map(events, &serialize_event/1)
@@ -457,7 +460,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         prepared_events =
           Enum.map(events_data, fn event ->
             event
-            |> Map.put("device_id", device_id)
+            |> Map.put("device_id", device.id)
             |> Map.put("organization_id", organization_id)
           end)
 
@@ -1515,16 +1518,33 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     organization_id = get_organization_id(conn)
     attrs = Map.put(params, "organization_id", organization_id)
 
-    changeset = DeviceV2.changeset(struct(DeviceV2), attrs)
+    case get_device_v2_by_external_id(organization_id, params["device_id"]) do
+      nil ->
+        changeset = DeviceV2.changeset(struct(DeviceV2), attrs)
 
-    case Repo.insert(changeset) do
-      {:ok, device} ->
-        conn
-        |> put_status(:created)
-        |> json(%{data: serialize_device_v2(device)})
+        case Repo.insert(changeset) do
+          {:ok, device} ->
+            sync_device_v2_agent(device)
 
-      {:error, changeset} ->
-        {:error, changeset}
+            conn
+            |> put_status(:created)
+            |> json(%{data: serialize_device_v2(device)})
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
+
+      %DeviceV2{} = device ->
+        changeset = DeviceV2.changeset(device, attrs)
+
+        case Repo.update(changeset) do
+          {:ok, updated} ->
+            sync_device_v2_agent(updated)
+            json(conn, %{data: serialize_device_v2(updated)})
+
+          {:error, changeset} ->
+            {:error, changeset}
+        end
     end
   end
 
@@ -1545,6 +1565,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
         case Repo.update(changeset) do
           {:ok, updated} ->
+            sync_device_v2_agent(updated)
+
             json(conn, %{data: serialize_device_v2(updated)})
 
           {:error, changeset} ->
@@ -1815,8 +1837,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Runs compliance checks on a device via DeviceRegistry.
   """
   def compliance_check(conn, %{"id" => id}) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case DeviceRegistry.check_compliance(id) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case DeviceRegistry.check_compliance(device.id) do
         {:ok, report} ->
           json(conn, %{data: report})
 
@@ -1832,8 +1854,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets cached compliance report for a device.
   """
   def compliance_report(conn, %{"id" => id}) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case DeviceRegistry.get_compliance_report(id) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case DeviceRegistry.get_compliance_report(device.id) do
         {:ok, report} ->
           json(conn, %{data: report})
 
@@ -1864,8 +1886,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets the full enriched app inventory for a device.
   """
   def app_inventory(conn, %{"id" => id}) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case AppInventory.get_inventory(id) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case AppInventory.get_inventory(device.id) do
         {:ok, inventory} ->
           json(conn, %{data: inventory})
       end
@@ -1878,8 +1900,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets the app risk score for a device.
   """
   def app_risk(conn, %{"id" => id}) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case AppInventory.get_risk_score(id) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case AppInventory.get_risk_score(device.id) do
         {:ok, risk} ->
           json(conn, %{data: risk})
 
@@ -2043,8 +2065,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Enrolls a device with an MDM provider.
   """
   def enroll_device(conn, %{"id" => id} = params) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case DeviceRegistry.enroll_device(id, params) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case DeviceRegistry.enroll_device(device.id, params) do
         {:ok, device} ->
           json(conn, %{
             success: true,
@@ -2067,8 +2089,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Deactivates (retires) a device.
   """
   def deactivate(conn, %{"id" => id}) do
-    with_legacy_device_for_org(conn, id, fn _device ->
-      case DeviceRegistry.deactivate_device(id) do
+    with_legacy_device_for_org(conn, id, fn device ->
+      case DeviceRegistry.deactivate_device(device.id) do
         {:ok, device} ->
           json(conn, %{
             success: true,
@@ -2152,7 +2174,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     end
   end
 
-  defp mobile_agent_overview(%Agent{} = agent, nil) do
+  defp mobile_agent_overview_payload(%Agent{} = agent, nil) do
     %{
       agent_id: agent.id,
       mobile: mobile_agent?(agent),
@@ -2166,17 +2188,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   end
 
-  defp mobile_agent_overview(%Agent{} = agent, %Device{} = device) do
-    apps =
-      safe_mobile_list(fn ->
-        Mobile.list_device_apps(device.id, limit: 25, order_by: :app_name)
-      end)
-
-    events =
-      safe_mobile_list(fn -> Mobile.list_device_events(device.id, limit: 25, offset: 0) end)
-
-    app_guard_events = Enum.filter(events, &app_guard_event?/1)
-
+  defp mobile_agent_overview_payload(%Agent{} = agent, %Device{} = device) do
     %{
       agent_id: agent.id,
       mobile: true,
@@ -2184,17 +2196,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       device: serialize_device_detail(device),
       posture: mobile_posture_summary(device),
       compliance: local_mobile_compliance(device),
-      app_inventory: %{
-        apps: Enum.map(apps, &serialize_app/1),
-        total: length(apps),
-        high_risk: Enum.count(apps, &(Map.get(&1, :risk_level) in ["high", "critical"])),
-        sideloaded: Enum.count(apps, &(Map.get(&1, :installer) in ["sideloaded", "unknown"]))
-      },
-      app_guard: %{
-        events: Enum.map(app_guard_events, &serialize_event/1),
-        total_recent_events: length(app_guard_events),
-        protected_apps: app_guard_protected_apps_for_events(app_guard_events)
-      },
+      app_inventory: mobile_app_inventory_summary(device),
+      app_guard: mobile_app_guard_summary(device),
       commands: mobile_command_descriptors(agent)
     }
   end
@@ -2244,31 +2247,39 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   end
 
-  defp safe_mobile_list(fun) when is_function(fun, 0) do
-    case fun.() do
-      values when is_list(values) -> values
-      _ -> []
-    end
-  rescue
-    error ->
-      Logger.warning("[Mobile] Optional overview data unavailable: #{Exception.message(error)}")
-      []
+  defp mobile_app_inventory_summary(%Device{} = device) do
+    apps = Mobile.list_device_apps(device.id, limit: 100, order_by: :app_name)
+    high_risk = Enum.count(apps, &(&1.risk_level in ["high", "critical"]))
+
+    sideloaded =
+      Enum.count(apps, fn app ->
+        installer = app.installer |> to_string() |> String.downcase()
+        installer in ["sideload", "sideloaded", "unknown", "manual", "adb"]
+      end)
+
+    %{
+      apps: Enum.map(apps, &serialize_app/1),
+      total: length(apps),
+      high_risk: high_risk,
+      sideloaded: sideloaded
+    }
   end
 
-  defp app_guard_event?(event) do
-    type = event |> Map.get(:event_type) |> to_string()
-    payload = Map.get(event, :payload) || %{}
+  defp mobile_app_guard_summary(%Device{} = device) do
+    events = Mobile.list_device_events(device.id, limit: 8)
 
-    String.starts_with?(type, "app_guard") or
-      type in @app_guard_event_types or
-      Map.get(payload, "schema") == "tamandua.app_guard.event/v1"
-  end
+    protected_apps =
+      Mobile.list_app_guard_protected_apps(device.organization_id,
+        platform: device.platform,
+        limit: 25
+      )
 
-  defp app_guard_protected_apps_for_events(events) do
-    events
-    |> Enum.map(&(Map.get(&1, :app_bundle_id) || Map.get(&1, :app_name)))
-    |> Enum.reject(&blank?/1)
-    |> Enum.uniq()
+    %{
+      events: Enum.map(events, &serialize_event/1),
+      total_recent_events: length(events),
+      protected_apps: Enum.map(protected_apps, &serialize_app_guard_protected_app/1),
+      protected_total: length(protected_apps)
+    }
   end
 
   defp mobile_command_descriptors(%Agent{} = agent) do
@@ -2739,12 +2750,84 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     })
   end
 
+  defp loaded_assoc(struct, assoc) when is_map(struct) do
+    value = Map.get(struct, assoc)
+    if Ecto.assoc_loaded?(value), do: value, else: nil
+  end
+
+  defp loaded_assoc(_struct, _assoc), do: nil
+
+  defp mobile_device_display_name(device) when is_map(device) do
+    cond do
+      is_binary(Map.get(device, :model)) and Map.get(device, :model) != "" ->
+        Map.get(device, :model)
+
+      is_binary(Map.get(device, :manufacturer)) and Map.get(device, :manufacturer) != "" ->
+        Map.get(device, :manufacturer)
+
+      is_binary(Map.get(device, :device_id)) and Map.get(device, :device_id) != "" ->
+        "mobile-" <> String.slice(Map.get(device, :device_id), 0, 12)
+
+      true ->
+        "mobile-device"
+    end
+  end
+
+  defp mobile_event_hostname(event, device) do
+    payload = Map.get(event, :payload) || %{}
+
+    first_present([
+      Map.get(payload, "hostname"),
+      Map.get(payload, "agent_hostname"),
+      Map.get(payload, "device_name"),
+      device && mobile_device_display_name(device),
+      Map.get(event, :device_id)
+    ])
+  end
+
+  defp mobile_event_agent_id(event, device) do
+    payload = Map.get(event, :payload) || %{}
+
+    first_present([
+      Map.get(payload, "agent_id"),
+      Map.get(payload, "agentId"),
+      device && mobile_agent_id_for_device(device)
+    ])
+  end
+
+  defp mobile_agent_id_for_device(%Device{} = device) do
+    case get_agent_by_machine_id(device.organization_id, device.device_id) do
+      %Agent{} = agent -> agent.id
+      _ -> nil
+    end
+  end
+
+  defp mobile_agent_id_for_device(_device), do: nil
+
+  defp get_agent_by_machine_id(nil, _device_id), do: nil
+  defp get_agent_by_machine_id(_organization_id, nil), do: nil
+
+  defp get_agent_by_machine_id(organization_id, device_id) do
+    Agent
+    |> where([a], a.organization_id == ^organization_id and a.machine_id == ^device_id)
+    |> Repo.one()
+  end
+
+  defp first_present(values) when is_list(values) do
+    Enum.find(values, &(not is_nil(&1) and &1 != ""))
+  end
+
   defp serialize_device_summary(device) when is_map(device) do
     %{
       id: device.id,
       device_id: device.device_id,
+      display_name: mobile_device_display_name(device),
       platform: device.platform,
-      model: device.model
+      model: device.model,
+      manufacturer: Map.get(device, :manufacturer),
+      os_version: Map.get(device, :os_version),
+      user_email: Map.get(device, :user_email),
+      user_name: Map.get(device, :user_name)
     }
   end
 
@@ -2766,9 +2849,17 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   end
 
   defp serialize_event(event) do
+    device = loaded_assoc(event, :device)
+    hostname = mobile_event_hostname(event, device)
+
     %{
       id: event.id,
       event_type: event.event_type,
+      source_type: "mobile",
+      agent_id: mobile_event_agent_id(event, device),
+      agentId: mobile_event_agent_id(event, device),
+      hostname: hostname,
+      agent_hostname: hostname,
       severity: event.severity,
       title: event.title,
       description: event.description,
@@ -2778,7 +2869,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
       mitre_tactic: event.mitre_tactic,
       app_bundle_id: event.app_bundle_id,
       app_name: event.app_name,
-      domain: event.domain
+      domain: event.domain,
+      device: serialize_device_summary(device)
     }
   end
 
@@ -2972,6 +3064,18 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     |> Repo.one()
   end
 
+  defp get_device_v2_by_external_id(_organization_id, nil), do: nil
+  defp get_device_v2_by_external_id(_organization_id, ""), do: nil
+
+  defp get_device_v2_by_external_id(organization_id, device_id) do
+    import Ecto.Query
+
+    DeviceV2
+    |> DeviceV2.by_organization(organization_id)
+    |> where([d], d.device_id == ^device_id)
+    |> Repo.one()
+  end
+
   defp get_command_for_org(_organization_id, nil), do: nil
   defp get_command_for_org(_organization_id, ""), do: nil
 
@@ -3007,14 +3111,101 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  defp sync_device_v2_agent(%DeviceV2{} = device) do
+    case upsert_device_v2_agent(device) do
+      {:ok, _agent} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[MobileController] failed to sync mobile v2 device #{device.device_id} as agent: #{inspect(reason)}"
+        )
+
+        :error
+    end
+  end
+
+  defp upsert_device_v2_agent(%DeviceV2{} = device) do
+    case get_device_v2_agent(device.organization_id, device.device_id) do
+      nil ->
+        Agents.create_agent_for_org(
+          device.organization_id,
+          device_v2_agent_attrs(device, %Agent{})
+        )
+
+      %Agent{} = agent ->
+        Agents.update_agent(agent, device_v2_agent_attrs(device, agent))
+    end
+  end
+
+  defp get_device_v2_agent(organization_id, device_id) do
+    Agent
+    |> where([a], a.organization_id == ^organization_id and a.machine_id == ^device_id)
+    |> Repo.one()
+  end
+
+  defp device_v2_agent_attrs(%DeviceV2{} = device, %Agent{} = agent) do
+    %{
+      hostname: device_v2_hostname(device),
+      os_type: device.platform || agent.os_type || "android",
+      os_version: device.os_version || agent.os_version,
+      agent_version: agent.agent_version || "mobile-v2",
+      machine_id: device.device_id,
+      status: "online",
+      last_seen_at: device_v2_naive_time(device.last_seen_at) || utc_now(),
+      config: device_v2_agent_config(device, agent.config || %{}),
+      tags: device_v2_agent_tags(agent.tags || [], device)
+    }
+  end
+
+  defp device_v2_hostname(%DeviceV2{} = device) do
+    cond do
+      is_binary(device.device_name) and device.device_name != "" -> device.device_name
+      is_binary(device.model) and device.model != "" -> device.model
+      true -> "mobile-" <> String.slice(device.device_id || device.id || "unknown", 0, 12)
+    end
+  end
+
+  defp device_v2_agent_config(%DeviceV2{} = device, existing_config) do
+    Map.merge(existing_config, %{
+      "source" => "tamandua_mobile_v2",
+      "mobile_device_v2_id" => device.id,
+      "mobile_device_external_id" => device.device_id,
+      "mobile_owner_email" => device.owner_email,
+      "model" => device.model,
+      "mdm_enrolled" => device.mdm_enrolled,
+      "mdm_provider" => device.mdm_provider,
+      "compliance_status" => device.compliance_status,
+      "live_response" => "mdm_actions_only",
+      "capabilities" => %{
+        "endpoint_telemetry" => "mobile",
+        "live_response" => "mdm_actions_only",
+        "shell" => "unavailable"
+      }
+    })
+  end
+
+  defp device_v2_agent_tags(existing_tags, %DeviceV2{} = device) do
+    (existing_tags ++ ["mobile", "mobile-v2", device.platform, device.mdm_provider])
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  defp device_v2_naive_time(%DateTime{} = value), do: DateTime.to_naive(value)
+  defp device_v2_naive_time(%NaiveDateTime{} = value), do: value
+  defp device_v2_naive_time(_value), do: nil
+
   # ---------------------------------------------------------------------------
   # V2 serializers
   # ---------------------------------------------------------------------------
 
   defp serialize_device_v2(d) when is_map(d) do
+    agent = get_device_v2_agent(d.organization_id, d.device_id)
+
     %{
       id: d.id,
       device_id: d.device_id,
+      agent_id: agent && agent.id,
       device_name: d.device_name,
       platform: d.platform,
       os_version: d.os_version,

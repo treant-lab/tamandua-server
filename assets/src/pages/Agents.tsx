@@ -4,7 +4,7 @@ import {
   Monitor, Wifi, WifiOff, AlertCircle, Clock, Cpu, HardDrive,
   Search, RefreshCw, Shield, ShieldOff, RotateCcw, ExternalLink,
   Activity, Bell, ChevronDown, ChevronUp, Terminal, Eye,
-  Lock, Download, LayoutGrid, LayoutList, Plus
+  Lock, Download, LayoutGrid, LayoutList, Plus, Smartphone
 } from 'lucide-react'
 import { cn, formatDate, formatRelativeTime, safeCapitalize } from '@/lib/utils'
 import { ExportDropdown } from '@/components/ExportDropdown'
@@ -144,6 +144,16 @@ interface AgentCapabilities {
   }
 }
 
+interface MobileOverview {
+  linked?: boolean
+  error?: string
+  device?: Record<string, unknown>
+  posture?: Record<string, unknown>
+  app_inventory?: Record<string, unknown>
+  app_guard?: Record<string, unknown>
+  commands?: Array<Record<string, unknown>>
+}
+
 interface AgentsPageProps {
   agents: AgentEnriched[]
   dataSourceHealth?: Record<string, AgentDataSourceHealth>
@@ -155,7 +165,7 @@ function getCsrfHeaders(): Record<string, string> {
 }
 
 type StatusFilter = 'all' | 'online' | 'offline' | 'degraded' | 'isolated'
-type OsFilter = 'all' | 'windows' | 'linux' | 'macos'
+type OsFilter = 'all' | 'windows' | 'linux' | 'macos' | 'android' | 'ios'
 type SortField = 'hostname' | 'status' | 'os_type' | 'last_seen' | 'ip_address'
 type SortDir = 'asc' | 'desc'
 type ViewMode = 'table' | 'grid'
@@ -171,6 +181,8 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null)
   const [agentDetails, setAgentDetails] = useState<Record<string, any>>({})
   const [loadingDetails, setLoadingDetails] = useState<string | null>(null)
+  const [mobileOverviews, setMobileOverviews] = useState<Record<string, MobileOverview>>({})
+  const [loadingMobileOverview, setLoadingMobileOverview] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -186,6 +198,11 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
   const windowsCount = agents.filter(a => a.os_type?.toLowerCase().includes('windows')).length
   const linuxCount = agents.filter(a => a.os_type?.toLowerCase().includes('linux')).length
   const macCount = agents.filter(a => a.os_type?.toLowerCase().includes('mac') || a.os_type?.toLowerCase().includes('darwin')).length
+  const androidCount = agents.filter(a => a.os_type?.toLowerCase().includes('android')).length
+  const iosCount = agents.filter(a => {
+    const os = a.os_type?.toLowerCase() || ''
+    return os.includes('ios') || os.includes('iphone') || os.includes('ipad')
+  }).length
 
   const mergedDataSourceHealth = useMemo(() => {
     const merged: Record<string, AgentDataSourceHealth> = { ...(dataSourceHealth || {}) }
@@ -265,6 +282,8 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
           case 'windows': return os.includes('windows')
           case 'linux': return os.includes('linux')
           case 'macos': return os.includes('mac') || os.includes('darwin')
+          case 'android': return os.includes('android')
+          case 'ios': return os.includes('ios') || os.includes('iphone') || os.includes('ipad')
           default: return true
         }
       })
@@ -315,14 +334,42 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
     }
   }, [agentDetails])
 
+  const fetchMobileOverview = useCallback(async (agentId: string) => {
+    if (mobileOverviews[agentId]) return
+    setLoadingMobileOverview(agentId)
+    try {
+      const res = await fetch(`/api/v1/mobile/agents/${agentId}/overview`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' },
+      })
+      if (!res.ok) throw new Error(`Mobile endpoint overview failed (${res.status})`)
+      const json = await res.json()
+      setMobileOverviews(prev => ({ ...prev, [agentId]: json.data || json }))
+    } catch (error) {
+      setMobileOverviews(prev => ({
+        ...prev,
+        [agentId]: {
+          linked: false,
+          error: error instanceof Error ? error.message : 'Mobile endpoint overview failed',
+        },
+      }))
+    } finally {
+      setLoadingMobileOverview(null)
+    }
+  }, [mobileOverviews])
+
   const toggleExpand = useCallback((agentId: string) => {
     if (expandedAgent === agentId) {
       setExpandedAgent(null)
     } else {
       setExpandedAgent(agentId)
       fetchAgentDetails(agentId)
+      const agent = agents.find(item => item.id === agentId)
+      if (isMobilePlatform(agent?.os_type)) {
+        fetchMobileOverview(agentId)
+      }
     }
-  }, [expandedAgent, fetchAgentDetails])
+  }, [agents, expandedAgent, fetchAgentDetails, fetchMobileOverview])
 
   // Agent actions
   const isolateAgent = useCallback(async (agentId: string, e: React.MouseEvent) => {
@@ -595,6 +642,8 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
                   { value: 'windows' as OsFilter, label: 'Windows', count: windowsCount, icon: 'windows' },
                   { value: 'linux' as OsFilter, label: 'Linux', count: linuxCount, icon: 'linux' },
                   { value: 'macos' as OsFilter, label: 'macOS', count: macCount, icon: 'macos' },
+                  { value: 'android' as OsFilter, label: 'Android', count: androidCount, icon: 'android' },
+                  { value: 'ios' as OsFilter, label: 'iOS', count: iosCount, icon: 'ios' },
                 ] as const).map(o => (
                   <button
                     key={o.value}
@@ -787,7 +836,9 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAgents.map((agent) => (
+                  {filteredAgents.map((agent) => {
+                    const mobileAgent = isMobilePlatform(agent.os_type)
+                    return (
                     <>
                       <tr
                         key={agent.id}
@@ -862,22 +913,22 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
                               <Tooltip content="Remove Isolation">
                                 <button
                                   onClick={(e) => unisolateAgent(agent.id, e)}
-                                  disabled={actionLoading === agent.id}
+                                  disabled={actionLoading === agent.id || mobileAgent}
                                   className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
                                   style={{ color: 'var(--emerald-400)' }}
-                                  aria-label="Remove Isolation"
+                                  aria-label={mobileAgent ? 'Host isolation unavailable for mobile endpoint' : 'Remove Isolation'}
                                 >
                                   <ShieldOff className="h-4 w-4" />
                                 </button>
                               </Tooltip>
                             ) : (
-                              <Tooltip content="Network Isolate">
+                              <Tooltip content={mobileAgent ? 'Host network isolation is not available for mobile endpoints' : 'Network Isolate'}>
                                 <button
                                   onClick={(e) => isolateAgent(agent.id, e)}
-                                  disabled={actionLoading === agent.id || agent.status === 'offline'}
+                                  disabled={actionLoading === agent.id || agent.status === 'offline' || mobileAgent}
                                   className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
                                   style={{ color: 'var(--high)' }}
-                                  aria-label="Network Isolate"
+                                  aria-label={mobileAgent ? 'Host isolation unavailable for mobile endpoint' : 'Network Isolate'}
                                 >
                                   <Shield className="h-4 w-4" />
                                 </button>
@@ -892,16 +943,20 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
                           <td colSpan={7} className="p-0">
                             <AgentDetailPanel
                               agentId={agent.id}
+                              osType={agent.os_type}
                               details={agentDetails[agent.id]}
                               loading={loadingDetails === agent.id}
                               dataSourceHealth={mergedDataSourceHealth[agent.id]}
                               fallbackCapabilities={getAgentPlatformCapabilities(agent, apiSourceHealth)}
+                              mobileOverview={mobileOverviews[agent.id] || null}
+                              mobileOverviewLoading={loadingMobileOverview === agent.id}
                             />
                           </td>
                         </tr>
                       )}
                     </>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -917,16 +972,22 @@ export default function Agents({ agents: rawAgents, dataSourceHealth = {} }: Age
 
 function AgentDetailPanel({
   agentId,
+  osType,
   details,
   loading,
   dataSourceHealth,
   fallbackCapabilities,
+  mobileOverview,
+  mobileOverviewLoading,
 }: {
   agentId: string
+  osType?: string
   details: any
   loading: boolean
   dataSourceHealth?: AgentDataSourceHealth
   fallbackCapabilities?: PlatformCapability[]
+  mobileOverview?: MobileOverview | null
+  mobileOverviewLoading?: boolean
 }) {
   if (loading) {
     return (
@@ -953,6 +1014,7 @@ function AgentDetailPanel({
   const recentEvents = details.events?.slice(0, 5) || []
   const recentAlerts = details.alerts?.slice(0, 3) || []
   const observedDataSources = details.dataSourceHealth || dataSourceHealth
+  const mobileAgent = isMobilePlatform(osType || details.agent?.os_type || details.os_type)
   const platformCapabilities = normalizePlatformCapabilities(
     details.platformCapabilities || details.platform_capabilities || fallbackCapabilities
   )
@@ -960,27 +1022,30 @@ function AgentDetailPanel({
   return (
     <div className="p-4 space-y-4" style={{ borderTop: '1px solid var(--border)', backgroundColor: 'var(--surface)' }}>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {/* Health */}
-        <div className="space-y-2">
-          <h4 className="text-sm font-medium flex items-center gap-2" style={{ color: 'var(--fg)' }}>
-            <Activity className="h-4 w-4" /> System Health
-          </h4>
-          {health ? (
-            <div className="space-y-2">
-              <HealthBar label="CPU" value={health.cpu_usage} />
-              <HealthBar label="Memory" value={health.memory_usage} />
-              <HealthBar label="Disk" value={health.disk_usage} />
-              {health.uptime_seconds > 0 && (
-                <p className="text-xs" style={{ color: 'var(--muted)' }}>
-                  Uptime: {formatUptime(health.uptime_seconds)}
-                </p>
-              )}
-              <DriverStatusCompact status={health.driver_status} />
-            </div>
-          ) : (
-            <p className="text-xs" style={{ color: 'var(--muted)' }}>No health data available</p>
-          )}
-        </div>
+        {mobileAgent ? (
+          <CompactMobileEndpointOverview overview={mobileOverview} loading={!!mobileOverviewLoading} />
+        ) : (
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+              <Activity className="h-4 w-4" /> System Health
+            </h4>
+            {health ? (
+              <div className="space-y-2">
+                <HealthBar label="CPU" value={health.cpu_usage} />
+                <HealthBar label="Memory" value={health.memory_usage} />
+                <HealthBar label="Disk" value={health.disk_usage} />
+                {health.uptime_seconds > 0 && (
+                  <p className="text-xs" style={{ color: 'var(--muted)' }}>
+                    Uptime: {formatUptime(health.uptime_seconds)}
+                  </p>
+                )}
+                <DriverStatusCompact status={health.driver_status} />
+              </div>
+            ) : (
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>No health data available</p>
+            )}
+          </div>
+        )}
 
         {/* Collectors */}
         <div className="space-y-2">
@@ -1070,6 +1135,71 @@ function AgentDetailPanel({
   )
 }
 
+function CompactMobileEndpointOverview({
+  overview,
+  loading,
+}: {
+  overview?: MobileOverview | null
+  loading: boolean
+}) {
+  const device = overview?.device || {}
+  const posture = overview?.posture || {}
+  const appInventory = overview?.app_inventory || {}
+  const appGuard = overview?.app_guard || {}
+  const riskScore = firstDefined(device.risk_score, posture.risk_score, overview && (overview as Record<string, unknown>).risk_score)
+  const lastSync = firstDefined(device.last_seen_at, posture.last_seen_at, device.last_sync_at, posture.last_sync_at)
+  const appTotal = firstDefined(appInventory.total_apps, appInventory.installed_apps, appInventory.app_count)
+  const protectedApps = firstDefined(
+    appGuard.protected_app_count,
+    appGuard.protected_total,
+    appGuard.protected_apps_count,
+    Array.isArray(appGuard.protected_apps) ? appGuard.protected_apps.length : undefined,
+    appInventory.protected_apps,
+    appInventory.protected_app_count
+  )
+  const recentEvents = firstDefined(
+    appGuard.recent_event_count,
+    appGuard.total_recent_events,
+    appGuard.events_last_24h,
+    Array.isArray(appGuard.events) ? appGuard.events.length : undefined
+  )
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-medium flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+        <Smartphone className="h-4 w-4" /> Mobile Endpoint
+      </h4>
+      {loading && !overview ? (
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>Loading mobile endpoint overview...</p>
+      ) : overview?.error ? (
+        <p className="text-xs" style={{ color: 'var(--high)' }}>{overview.error}</p>
+      ) : overview?.linked === false ? (
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>No linked mobile device record yet.</p>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <CompactMobileFact label="State" value={formatCompactValue(device.status || posture.status || 'linked')} />
+          <CompactMobileFact label="Risk" value={riskScore === undefined ? 'not reported' : String(riskScore)} />
+          <CompactMobileFact label="Last sync" value={lastSync ? formatDate(String(lastSync)) : 'not reported'} />
+          <div className="grid grid-cols-3 gap-2">
+            <PolicyMetric label="Apps" value={toCount(appTotal)} />
+            <PolicyMetric label="Guarded" value={toCount(protectedApps)} />
+            <PolicyMetric label="Events" value={toCount(recentEvents)} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CompactMobileFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
+      <span className="font-medium truncate" style={{ color: 'var(--fg)' }}>{value}</span>
+    </div>
+  )
+}
+
 function CollectorPolicySummary({
   details,
   collectors,
@@ -1153,6 +1283,20 @@ function PolicyMetric({ label, value }: { label: string; value: number }) {
       <p className="font-semibold" style={{ color: 'var(--fg)' }}>{value}</p>
     </div>
   )
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find(value => value !== undefined && value !== null && value !== '')
+}
+
+function toCount(value: unknown): number {
+  const count = Number(value)
+  return Number.isFinite(count) && count >= 0 ? count : 0
+}
+
+function formatCompactValue(value: unknown): string {
+  const text = String(value || '').trim()
+  return text ? text.replace(/_/g, ' ') : 'not reported'
 }
 
 function coerceObject(value: unknown): Record<string, any> {
@@ -2030,6 +2174,10 @@ function OsIconSmall({ os, active }: { os: string; active: boolean }) {
     )
   }
 
+  if (os === 'android' || os === 'ios') {
+    return <Smartphone className="h-3 w-3" style={{ color: color || 'var(--emerald-400)' }} />
+  }
+
   return null
 }
 
@@ -2080,6 +2228,7 @@ function AgentCard({
   onUnisolate: (id: string, e: React.MouseEvent) => void
   actionLoading: string | null
 }) {
+  const mobileAgent = isMobilePlatform(agent.os_type)
   const statusColor = agent.status === 'online'
     ? 'var(--emerald-400)'
     : agent.status === 'degraded'
@@ -2188,20 +2337,20 @@ function AgentCard({
             {agent.isolated ? (
               <button
                 onClick={(e) => onUnisolate(agent.id, e)}
-                disabled={actionLoading === agent.id}
+                disabled={actionLoading === agent.id || mobileAgent}
                 className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
                 style={{ color: 'var(--emerald-400)' }}
-                title="Remove Isolation"
+                title={mobileAgent ? 'Host isolation unavailable for mobile endpoint' : 'Remove Isolation'}
               >
                 <ShieldOff className="h-4 w-4" />
               </button>
             ) : (
               <button
                 onClick={(e) => onIsolate(agent.id, e)}
-                disabled={actionLoading === agent.id || agent.status === 'offline'}
+                disabled={actionLoading === agent.id || agent.status === 'offline' || mobileAgent}
                 className="p-1.5 rounded-lg transition-colors disabled:opacity-50 hover:bg-[var(--surface-2)]"
                 style={{ color: 'var(--high)' }}
-                title="Network Isolate"
+                title={mobileAgent ? 'Host network isolation is not available for mobile endpoints' : 'Network Isolate'}
               >
                 <Shield className="h-4 w-4" />
               </button>

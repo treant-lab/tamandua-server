@@ -147,6 +147,10 @@ function normalizeTools(payload: unknown): MCPTool[] {
     .filter((tool): tool is MCPTool => Boolean(tool))
 }
 
+function getCsrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
 export default function MCPServers({
   servers = [],
   tools: _tools = [],
@@ -207,7 +211,10 @@ export default function MCPServers({
         params: {},
         id: Date.now(),
       }, {
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          ...(getCsrfToken() ? { 'X-CSRF-Token': getCsrfToken() } : {}),
+        },
       })
 
       if (rpcRes.data?.error) {

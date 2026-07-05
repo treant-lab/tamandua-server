@@ -690,6 +690,29 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
     setCorrelationResult(null)
   }
 
+  const exportFilteredEvents = () => {
+    const columns = ['timestamp', 'severity', 'eventType', 'title', 'hostname', 'agentId', 'description']
+    const escapeCsv = (value: unknown) => {
+      const text = value === null || value === undefined ? '' : String(value)
+      return `"${text.replace(/"/g, '""')}"`
+    }
+    const csv = [
+      columns.join(','),
+      ...filteredEvents.map(event =>
+        columns.map(column => escapeCsv(event[column as keyof TimelineEvent])).join(',')
+      ),
+    ].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `tamandua-timeline-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
   // Fetch events on filter change
   useEffect(() => {
     if (timeRange !== 'custom') {
@@ -861,7 +884,12 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
               )}
             </button>
 
-            <button className="flex items-center gap-2 bg-[var(--surface)] border border-[var(--hairline)] text-[var(--muted)] hover:bg-[var(--surface-hover)] px-3 py-2 rounded-lg text-sm">
+            <button
+              type="button"
+              onClick={exportFilteredEvents}
+              disabled={filteredEvents.length === 0}
+              className="flex items-center gap-2 bg-[var(--surface)] border border-[var(--hairline)] text-[var(--muted)] hover:bg-[var(--surface-hover)] px-3 py-2 rounded-lg text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            >
               <Download className="h-4 w-4" />
               Export
             </button>

@@ -6,7 +6,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   alias TamanduaServer.Detection.Correlator
   require Logger
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   @default_limit 100
   @max_limit 250
@@ -91,8 +91,9 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
         {count, _} =
           Repo.delete_all(
-            from e in Event,
+            from(e in Event,
               where: e.organization_id == ^organization_id and e.event_type == ^event_type
+            )
           )
 
         json(conn, %{deleted: count, event_type: event_type, scoped: true})
@@ -247,12 +248,16 @@ defmodule TamanduaServerWeb.API.V1.EventController do
         port = payload[:remote_port] || payload["remote_port"] || ""
         "Network connection to #{ip}:#{port}"
 
-      type when type in ["file_create", "file_modify", "file", :file_create, :file_modify, :file] ->
+      type
+      when type in ["file_create", "file_modify", "file", :file_create, :file_modify, :file] ->
         path = payload[:path] || payload["path"] || "Unknown"
         "File operation: #{Path.basename(to_string(path))}"
 
       type when type in ["dns_query", "dns", :dns_query, :dns] ->
-        domain = payload[:query] || payload["query"] || payload[:domain] || payload["domain"] || "unknown"
+        domain =
+          payload[:query] || payload["query"] || payload[:domain] || payload["domain"] ||
+            "unknown"
+
         "DNS query: #{domain}"
 
       type when type in ["registry", :registry] ->
@@ -277,10 +282,6 @@ defmodule TamanduaServerWeb.API.V1.EventController do
 
   defp merge_mobile_events(serialized_events, nil, _limit, _params), do: serialized_events
 
-  defp merge_mobile_events(serialized_events, _organization_id, _limit, %{"agent_id" => agent_id})
-       when is_binary(agent_id) and agent_id != "",
-       do: serialized_events
-
   defp merge_mobile_events(serialized_events, organization_id, limit, params) do
     mobile_events =
       organization_id
@@ -290,13 +291,17 @@ defmodule TamanduaServerWeb.API.V1.EventController do
         hours: mobile_hours(params)
       )
       |> Enum.map(&serialize_mobile_event/1)
+      |> filter_mobile_events_by_agent(params["agent_id"])
 
     (serialized_events ++ mobile_events)
     |> Enum.sort_by(&(&1.timestamp || ""), :desc)
     |> Enum.take(limit)
   rescue
     exception ->
-      Logger.warning("[EventController] mobile event projection failed: #{Exception.message(exception)}")
+      Logger.warning(
+        "[EventController] mobile event projection failed: #{Exception.message(exception)}"
+      )
+
       serialized_events
   catch
     :exit, reason ->
@@ -317,11 +322,22 @@ defmodule TamanduaServerWeb.API.V1.EventController do
         payload
         |> Map.put_new("source", "mobile")
         |> Map.put_new("mobile_event_id", event.id)
+        |> Map.put_new("mobile_device_id", mobile_event_device_external_id(event))
         |> Map.put_new("app_guard", app_guard_payload?(payload))
     }
   end
 
   defp mobile_event_agent_id(event) do
+    case Map.get(event, :device) do
+      %{organization_id: organization_id, device_id: device_id} ->
+        Mobile.agent_id_for_device(organization_id, device_id) || device_id
+
+      _ ->
+        event.device_id
+    end
+  end
+
+  defp mobile_event_device_external_id(event) do
     case Map.get(event, :device) do
       %{device_id: device_id} -> device_id
       _ -> event.device_id
@@ -336,6 +352,15 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     end
   end
 
+  defp filter_mobile_events_by_agent(events, nil), do: events
+  defp filter_mobile_events_by_agent(events, ""), do: events
+
+  defp filter_mobile_events_by_agent(events, agent_id) when is_binary(agent_id) do
+    Enum.filter(events, fn event ->
+      event.agent_id == agent_id || get_in(event, [:payload, "mobile_device_id"]) == agent_id
+    end)
+  end
+
   defp app_guard_payload?(%{"schema" => "tamandua.app_guard.event/v1"}), do: true
   defp app_guard_payload?(_payload), do: false
 
@@ -345,12 +370,14 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   defp format_timestamp(_), do: nil
 
   defp parse_int(nil, default), do: default
+
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp parse_int(value, _default) when is_integer(value), do: value
   defp parse_int(_, default), do: default
 

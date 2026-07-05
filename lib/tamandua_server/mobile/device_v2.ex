@@ -68,7 +68,9 @@ defmodule TamanduaServer.Mobile.DeviceV2 do
     |> validate_required(@required_fields)
     |> validate_inclusion(:platform, @platforms)
     |> validate_inclusion(:compliance_status, @compliance_statuses)
-    |> unique_constraint(:device_id)
+    |> unique_constraint([:organization_id, :device_id],
+      name: :mobile_devices_v2_organization_id_device_id_index
+    )
     |> foreign_key_constraint(:organization_id)
   end
 

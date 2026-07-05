@@ -20,33 +20,33 @@ defmodule TamanduaServer.Mobile.MobileApp do
 
   schema "mobile_app_inventory" do
     # App identification
-    field :bundle_id, :string
-    field :app_name, :string
-    field :version, :string
-    field :version_code, :integer
+    field(:bundle_id, :string)
+    field(:app_name, :string)
+    field(:version, :string)
+    field(:version_code, :integer)
 
     # Security info
-    field :signature_hash, :string
-    field :installer, :string, default: "unknown"
-    field :permissions, {:array, :string}, default: []
-    field :dangerous_permissions, {:array, :string}, default: []
+    field(:signature_hash, :string)
+    field(:installer, :string, default: "unknown")
+    field(:permissions, {:array, :string}, default: [])
+    field(:dangerous_permissions, {:array, :string}, default: [])
 
     # Risk assessment
-    field :risk_level, :string, default: "low"
-    field :risk_reasons, {:array, :string}, default: []
-    field :is_system_app, :boolean, default: false
-    field :is_debuggable, :boolean, default: false
+    field(:risk_level, :string, default: "low")
+    field(:risk_reasons, {:array, :string}, default: [])
+    field(:is_system_app, :boolean, default: false)
+    field(:is_debuggable, :boolean, default: false)
 
     # Metadata
-    field :developer, :string
-    field :category, :string
-    field :size_bytes, :integer
-    field :installed_at, :naive_datetime
-    field :last_updated_at, :naive_datetime
+    field(:developer, :string)
+    field(:category, :string)
+    field(:size_bytes, :integer)
+    field(:installed_at, :naive_datetime)
+    field(:last_updated_at, :naive_datetime)
 
-    belongs_to :device, Device
+    belongs_to(:device, Device)
 
-    field :first_seen_at, :naive_datetime
+    field(:first_seen_at, :naive_datetime)
 
     timestamps()
   end
@@ -75,7 +75,7 @@ defmodule TamanduaServer.Mobile.MobileApp do
   Changeset for syncing app inventory from agent.
   """
   def sync_changeset(app, attrs) do
-    now = NaiveDateTime.utc_now()
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     app
     |> cast(attrs, @required_fields ++ @optional_fields)
@@ -97,15 +97,15 @@ defmodule TamanduaServer.Mobile.MobileApp do
   # Risk assessment based on app characteristics
   defp assess_risk(changeset) do
     if get_change(changeset, :permissions) != nil or
-       get_change(changeset, :installer) != nil or
-       get_change(changeset, :is_debuggable) != nil do
-
+         get_change(changeset, :installer) != nil or
+         get_change(changeset, :is_debuggable) != nil do
       permissions = get_field(changeset, :permissions) || []
       installer = get_field(changeset, :installer) || "unknown"
       debuggable = get_field(changeset, :is_debuggable) || false
       is_system = get_field(changeset, :is_system_app) || false
 
-      {level, reasons, dangerous_perms} = calculate_app_risk(permissions, installer, debuggable, is_system)
+      {level, reasons, dangerous_perms} =
+        calculate_app_risk(permissions, installer, debuggable, is_system)
 
       changeset
       |> put_change(:risk_level, level)
@@ -152,50 +152,56 @@ defmodule TamanduaServer.Mobile.MobileApp do
       critical_perms = Enum.filter(permissions, &(&1 in @critical_permissions))
 
       # Critical permissions
-      {score, reasons} = if length(critical_perms) > 0 do
-        {score + 40, ["critical_permissions:#{Enum.join(critical_perms, ",")}" | reasons]}
-      else
-        {score, reasons}
-      end
-
-      # Many dangerous permissions
-      {score, reasons} = if length(dangerous_perms) >= 5 do
-        {score + 30, ["many_dangerous_permissions:#{length(dangerous_perms)}" | reasons]}
-      else
-        if length(dangerous_perms) >= 3 do
-          {score + 15, ["dangerous_permissions:#{length(dangerous_perms)}" | reasons]}
+      {score, reasons} =
+        if length(critical_perms) > 0 do
+          {score + 40, ["critical_permissions:#{Enum.join(critical_perms, ",")}" | reasons]}
         else
           {score, reasons}
         end
-      end
+
+      # Many dangerous permissions
+      {score, reasons} =
+        if length(dangerous_perms) >= 5 do
+          {score + 30, ["many_dangerous_permissions:#{length(dangerous_perms)}" | reasons]}
+        else
+          if length(dangerous_perms) >= 3 do
+            {score + 15, ["dangerous_permissions:#{length(dangerous_perms)}" | reasons]}
+          else
+            {score, reasons}
+          end
+        end
 
       # Sideloaded
-      {score, reasons} = if installer == "sideload" do
-        {score + 25, ["sideloaded" | reasons]}
-      else
-        {score, reasons}
-      end
+      {score, reasons} =
+        if installer == "sideload" do
+          {score + 25, ["sideloaded" | reasons]}
+        else
+          {score, reasons}
+        end
 
       # Unknown installer
-      {score, reasons} = if installer == "unknown" do
-        {score + 10, ["unknown_installer" | reasons]}
-      else
-        {score, reasons}
-      end
+      {score, reasons} =
+        if installer == "unknown" do
+          {score + 10, ["unknown_installer" | reasons]}
+        else
+          {score, reasons}
+        end
 
       # Debuggable
-      {score, reasons} = if debuggable do
-        {score + 15, ["debuggable" | reasons]}
-      else
-        {score, reasons}
-      end
+      {score, reasons} =
+        if debuggable do
+          {score + 15, ["debuggable" | reasons]}
+        else
+          {score, reasons}
+        end
 
-      level = cond do
-        score >= 60 -> "critical"
-        score >= 40 -> "high"
-        score >= 20 -> "medium"
-        true -> "low"
-      end
+      level =
+        cond do
+          score >= 60 -> "critical"
+          score >= 40 -> "high"
+          score >= 20 -> "medium"
+          true -> "low"
+        end
 
       {level, reasons, dangerous_perms}
     end
@@ -207,41 +213,41 @@ defmodule TamanduaServer.Mobile.MobileApp do
   Query apps by device.
   """
   def by_device(query \\ __MODULE__, device_id) do
-    from a in query, where: a.device_id == ^device_id
+    from(a in query, where: a.device_id == ^device_id)
   end
 
   @doc """
   Query apps by risk level.
   """
   def by_risk_level(query \\ __MODULE__, level) do
-    from a in query, where: a.risk_level == ^level
+    from(a in query, where: a.risk_level == ^level)
   end
 
   @doc """
   Query high-risk apps.
   """
   def high_risk(query \\ __MODULE__) do
-    from a in query, where: a.risk_level in ["high", "critical"]
+    from(a in query, where: a.risk_level in ["high", "critical"])
   end
 
   @doc """
   Query sideloaded apps.
   """
   def sideloaded(query \\ __MODULE__) do
-    from a in query, where: a.installer == "sideload"
+    from(a in query, where: a.installer == "sideload")
   end
 
   @doc """
   Query apps with specific permission.
   """
   def with_permission(query \\ __MODULE__, permission) do
-    from a in query, where: ^permission in a.permissions
+    from(a in query, where: ^permission in a.permissions)
   end
 
   @doc """
   Query apps by bundle ID pattern.
   """
   def by_bundle_pattern(query \\ __MODULE__, pattern) do
-    from a in query, where: ilike(a.bundle_id, ^"%#{pattern}%")
+    from(a in query, where: ilike(a.bundle_id, ^"%#{pattern}%"))
   end
 end
