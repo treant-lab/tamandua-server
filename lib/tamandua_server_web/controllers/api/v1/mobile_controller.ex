@@ -60,6 +60,7 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     browser_tamper_detected
     automation_detected
     network_exfiltration_suspected
+    commercial_spyware_suspected
     integrity_snapshot_changed
     behavior_anomaly_detected
     policy_decision
@@ -1141,34 +1142,8 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   Gets mobile agent configuration.
   """
   def get_config(conn, _params) do
-    _organization_id = get_organization_id(conn)
-
-    # Default configuration - in production, load from DB/settings
-    config = %{
-      agent: %{
-        heartbeat_interval_seconds: 30,
-        event_batch_size: 50,
-        event_flush_interval_seconds: 60
-      },
-      security: %{
-        detect_jailbreak: true,
-        detect_root: true,
-        detect_debugger: true,
-        block_malicious_domains: true,
-        scan_installed_apps: true
-      },
-      network: %{
-        enable_dns_monitoring: true,
-        enable_traffic_analysis: true,
-        blocklist_domains: []
-      },
-      collection: %{
-        collect_app_inventory: true,
-        app_inventory_interval_hours: 24,
-        collect_device_info: true,
-        device_info_interval_hours: 6
-      }
-    }
+    organization_id = get_organization_id(conn)
+    config = load_mobile_config(organization_id)
 
     json(conn, %{data: config})
   end
@@ -1234,6 +1209,49 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
           errors: errors
         })
     end
+  end
+
+  defp load_mobile_config(organization_id) do
+    mobile_category = :"mobile_#{organization_id}"
+
+    current =
+      try do
+        TamanduaServer.Settings.get(mobile_category)
+      rescue
+        _ -> %{}
+      catch
+        _, _ -> %{}
+      end
+
+    deep_merge_config(default_mobile_config(), current || %{})
+  end
+
+  defp default_mobile_config do
+    %{
+      "agent" => %{
+        "heartbeat_interval_seconds" => 30,
+        "event_batch_size" => 50,
+        "event_flush_interval_seconds" => 60
+      },
+      "security" => %{
+        "detect_jailbreak" => true,
+        "detect_root" => true,
+        "detect_debugger" => true,
+        "block_malicious_domains" => true,
+        "scan_installed_apps" => true
+      },
+      "network" => %{
+        "enable_dns_monitoring" => true,
+        "enable_traffic_analysis" => true,
+        "blocklist_domains" => []
+      },
+      "collection" => %{
+        "collect_app_inventory" => true,
+        "app_inventory_interval_hours" => 24,
+        "collect_device_info" => true,
+        "device_info_interval_hours" => 6
+      }
+    }
   end
 
   # Validates the incoming mobile config params against allowed keys and types.
@@ -1746,8 +1764,10 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     organization_id = get_organization_id(conn)
     user = conn.assigns[:current_user]
     device_id = params["device_id"]
+    command_type = params["command_type"]
 
-    with %DeviceV2{} <- get_device_v2_for_org(organization_id, device_id) do
+    with :ok <- authorize_mobile_command(conn, command_type),
+         %DeviceV2{} <- get_device_v2_for_org(organization_id, device_id) do
       attrs =
         params
         |> Map.put("organization_id", organization_id)
@@ -1766,6 +1786,15 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
           {:error, changeset}
       end
     else
+      {:error, :forbidden} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{
+          error: "forbidden",
+          message: "You don't have permission to send mobile device commands",
+          required_permission: "agents_command"
+        })
+
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "Device not found"})
     end
@@ -1801,28 +1830,37 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
         conn |> put_status(:not_found) |> json(%{error: "Command not found"})
 
       command ->
-        now = DateTime.utc_now()
+        if params["device_id"] != command.device_id do
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: "Command device identity mismatch",
+            required_field: "device_id"
+          })
+        else
+          now = DateTime.utc_now()
 
-        updates =
-          %{}
-          |> maybe_put("status", params["status"])
-          |> maybe_put("result", params["result"])
+          updates =
+            %{}
+            |> maybe_put("status", params["status"])
+            |> maybe_put("result", params["result"])
 
-        updates =
-          cond do
-            params["status"] == "sent" -> Map.put(updates, "sent_at", now)
-            params["status"] in ["completed", "failed"] -> Map.put(updates, "completed_at", now)
-            true -> updates
+          updates =
+            cond do
+              params["status"] == "sent" -> Map.put(updates, "sent_at", now)
+              params["status"] in ["completed", "failed"] -> Map.put(updates, "completed_at", now)
+              true -> updates
+            end
+
+          changeset = MDMCommand.changeset(command, updates)
+
+          case Repo.update(changeset) do
+            {:ok, updated} ->
+              json(conn, %{data: serialize_command(updated)})
+
+            {:error, changeset} ->
+              {:error, changeset}
           end
-
-        changeset = MDMCommand.changeset(command, updates)
-
-        case Repo.update(changeset) do
-          {:ok, updated} ->
-            json(conn, %{data: serialize_command(updated)})
-
-          {:error, changeset} ->
-            {:error, changeset}
         end
     end
   end
@@ -2158,16 +2196,22 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     |> Enum.find_value(&get_legacy_device_for_org(organization_id, &1))
     |> case do
       nil ->
+        v2_id =
+          Map.get(config, "mobile_device_v2_id") ||
+            Map.get(config, :mobile_device_v2_id)
+
         external_id =
           Map.get(config, "mobile_device_external_id") ||
             Map.get(config, :mobile_device_external_id) ||
             agent.machine_id
 
-        if blank?(external_id) do
-          nil
-        else
-          get_legacy_device_by_external_id(organization_id, external_id)
-        end
+        get_device_v2_for_org(organization_id, v2_id) ||
+          if blank?(external_id) do
+            nil
+          else
+            get_legacy_device_by_external_id(organization_id, external_id) ||
+              get_device_v2_by_external_id(organization_id, external_id)
+          end
 
       device ->
         device
@@ -2189,15 +2233,39 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
   end
 
   defp mobile_agent_overview_payload(%Agent{} = agent, %Device{} = device) do
+    command_history = mobile_command_history(device)
+
     %{
       agent_id: agent.id,
       mobile: true,
       linked: true,
       device: serialize_device_detail(device),
+      command_device: mobile_command_device_summary(device),
+      last_command: List.first(command_history),
+      command_history: command_history,
       posture: mobile_posture_summary(device),
       compliance: local_mobile_compliance(device),
       app_inventory: mobile_app_inventory_summary(device),
       app_guard: mobile_app_guard_summary(device),
+      commands: mobile_command_descriptors(agent)
+    }
+  end
+
+  defp mobile_agent_overview_payload(%Agent{} = agent, %DeviceV2{} = device) do
+    command_history = mobile_command_history(device)
+
+    %{
+      agent_id: agent.id,
+      mobile: true,
+      linked: true,
+      device: serialize_device_v2(device),
+      command_device: mobile_command_device_summary(device),
+      last_command: List.first(command_history),
+      command_history: command_history,
+      posture: mobile_v2_posture_summary(device),
+      compliance: mobile_v2_compliance(device),
+      app_inventory: %{apps: [], total: 0, high_risk: 0, sideloaded: 0},
+      app_guard: mobile_v2_app_guard_summary(device),
       commands: mobile_command_descriptors(agent)
     }
   end
@@ -2247,6 +2315,40 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   end
 
+  defp mobile_v2_posture_summary(%DeviceV2{} = device) do
+    %{
+      id: device.id,
+      device_id: device.device_id,
+      external_device_id: device.device_id,
+      platform: device.platform,
+      os_version: device.os_version,
+      model: device.model,
+      risk_score: if(device.jailbroken, do: 85, else: 0),
+      risk_factors: if(device.jailbroken, do: ["jailbroken_or_rooted"], else: []),
+      jailbroken_or_rooted: device.jailbroken,
+      passcode_enabled: device.passcode_set,
+      encryption_enabled: device.encryption_enabled,
+      mdm_enrolled: device.mdm_enrolled,
+      mdm_compliance_status: device.compliance_status,
+      last_assessment: format_datetime(device.last_seen_at || device.updated_at)
+    }
+  end
+
+  defp mobile_v2_compliance(%DeviceV2{} = device) do
+    %{
+      jailbroken_or_rooted: device.jailbroken,
+      passcode_enabled: device.passcode_set,
+      encryption_enabled: device.encryption_enabled,
+      mdm_enrolled: device.mdm_enrolled,
+      risk_score: if(device.jailbroken, do: 85, else: 0),
+      risk_factors: if(device.jailbroken, do: ["jailbroken_or_rooted"], else: []),
+      local_compliant:
+        device.jailbroken != true and
+          device.passcode_set != false and
+          device.encryption_enabled != false
+    }
+  end
+
   defp mobile_app_inventory_summary(%Device{} = device) do
     apps = Mobile.list_device_apps(device.id, limit: 100, order_by: :app_name)
     high_risk = Enum.count(apps, &(&1.risk_level in ["high", "critical"]))
@@ -2282,16 +2384,117 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
     }
   end
 
+  defp mobile_v2_app_guard_summary(%DeviceV2{} = device) do
+    events =
+      case get_legacy_device_by_external_id(device.organization_id, device.device_id) do
+        %Device{} = legacy_device -> Mobile.list_device_events(legacy_device.id, limit: 8)
+        _ -> []
+      end
+
+    protected_apps =
+      Mobile.list_app_guard_protected_apps(device.organization_id,
+        platform: device.platform,
+        limit: 25
+      )
+
+    %{
+      events: Enum.map(events, &serialize_event/1),
+      total_recent_events: length(events),
+      protected_apps: Enum.map(protected_apps, &serialize_app_guard_protected_app/1),
+      protected_total: length(protected_apps)
+    }
+  end
+
   defp mobile_command_descriptors(%Agent{} = agent) do
     if mobile_agent?(agent) do
       [
-        %{id: "locate", label: "Locate", destructive: false},
-        %{id: "lock", label: "Lock", destructive: false},
-        %{id: "wipe", label: "Wipe", destructive: true}
+        %{
+          id: "locate",
+          label: "Locate",
+          destructive: false,
+          execution_scope: "mobile_app_endpoint",
+          supported_by_mobile_app: true
+        },
+        %{
+          id: "lock",
+          label: "Lock",
+          destructive: false,
+          execution_scope: "mdm_provider",
+          supported_by_mobile_app: false
+        },
+        %{
+          id: "wipe",
+          label: "Wipe",
+          destructive: true,
+          execution_scope: "mdm_provider",
+          supported_by_mobile_app: false
+        }
       ]
     else
       []
     end
+  end
+
+  defp mobile_command_device_summary(%Device{} = device) do
+    case get_device_v2_by_external_id(device.organization_id, device.device_id) do
+      %DeviceV2{} = command_device ->
+        %{
+          id: command_device.id,
+          device_id: command_device.device_id,
+          platform: command_device.platform,
+          status: mobile_v2_status(command_device)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp mobile_command_device_summary(%DeviceV2{} = command_device) do
+    %{
+      id: command_device.id,
+      device_id: command_device.device_id,
+      platform: command_device.platform,
+      status: mobile_v2_status(command_device)
+    }
+  end
+
+  defp mobile_v2_status(%DeviceV2{} = device) do
+    cond do
+      device.mdm_enrolled == true -> "active"
+      device.last_seen_at != nil -> "active"
+      true -> "pending"
+    end
+  end
+
+  defp mobile_command_history(%Device{} = device) do
+    import Ecto.Query
+
+    case get_device_v2_by_external_id(device.organization_id, device.device_id) do
+      %DeviceV2{} = command_device ->
+        MDMCommand
+        |> MDMCommand.by_organization(device.organization_id)
+        |> MDMCommand.by_device(command_device.id)
+        |> MDMCommand.latest_first()
+        |> limit(5)
+        |> Repo.all()
+        |> Enum.map(&serialize_command/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp mobile_command_history(%DeviceV2{} = command_device) do
+    import Ecto.Query
+
+    MDMCommand
+    |> MDMCommand.by_organization(command_device.organization_id)
+    |> MDMCommand.by_device(command_device.id)
+    |> MDMCommand.latest_first()
+    |> limit(5)
+    |> Repo.all()
+    |> Enum.map(&serialize_command/1)
   end
 
   defp get_legacy_device_for_org(_organization_id, nil), do: nil
@@ -3004,7 +3207,20 @@ defmodule TamanduaServerWeb.API.V1.MobileController do
 
   defp format_mdm_error(other), do: "MDM operation failed: #{inspect(other)}"
 
-  defp authorize_mobile_command(conn, command) when command in ["lock", "wipe", "locate"] do
+  defp authorize_mobile_command(conn, command)
+       when command in [
+              "lock",
+              "wipe",
+              "locate",
+              "ring",
+              "remove_app",
+              "enable_vpn",
+              "push_policy",
+              "push_config",
+              "install_profile",
+              "remove_profile",
+              "update_policy"
+            ] do
     user = conn.assigns[:current_user]
 
     if mobile_command_authorized?(user) do

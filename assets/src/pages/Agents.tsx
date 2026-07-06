@@ -1148,7 +1148,21 @@ function CompactMobileEndpointOverview({
   const appGuard = overview?.app_guard || {}
   const riskScore = firstDefined(device.risk_score, posture.risk_score, overview && (overview as Record<string, unknown>).risk_score)
   const lastSync = firstDefined(device.last_seen_at, posture.last_seen_at, device.last_sync_at, posture.last_sync_at)
-  const appTotal = firstDefined(appInventory.total_apps, appInventory.installed_apps, appInventory.app_count)
+  const appTotal = firstDefined(
+    appInventory.total,
+    appInventory.total_apps,
+    appInventory.installed_apps,
+    appInventory.app_count,
+    Array.isArray(appInventory.apps) ? appInventory.apps.length : undefined
+  )
+  const highRiskApps = toCount(firstDefined(appInventory.high_risk, appInventory.high_risk_apps))
+  const sideloadedApps = toCount(firstDefined(appInventory.sideloaded, appInventory.sideloaded_apps))
+  const compliance = coerceObject(overview?.compliance)
+  const complianceValue = compactComplianceValue(compliance)
+  const complianceDanger =
+    compliance.local_compliant === false ||
+    compliance.overall_compliant === false ||
+    String(device.mdm?.compliance_status || posture.mdm_compliance_status || '').toLowerCase().includes('non')
   const protectedApps = firstDefined(
     appGuard.protected_app_count,
     appGuard.protected_total,
@@ -1179,9 +1193,12 @@ function CompactMobileEndpointOverview({
         <div className="space-y-2 text-xs">
           <CompactMobileFact label="State" value={formatCompactValue(device.status || posture.status || 'linked')} />
           <CompactMobileFact label="Risk" value={riskScore === undefined ? 'not reported' : String(riskScore)} />
+          <CompactMobileFact label="Compliance" value={complianceValue} danger={complianceDanger} />
           <CompactMobileFact label="Last sync" value={lastSync ? formatDate(String(lastSync)) : 'not reported'} />
           <div className="grid grid-cols-3 gap-2">
             <PolicyMetric label="Apps" value={toCount(appTotal)} />
+            <PolicyMetric label="High risk" value={highRiskApps} tone={highRiskApps > 0 ? 'high' : 'ok'} />
+            <PolicyMetric label="Sideloaded" value={sideloadedApps} tone={sideloadedApps > 0 ? 'high' : 'ok'} />
             <PolicyMetric label="Guarded" value={toCount(protectedApps)} />
             <PolicyMetric label="Events" value={toCount(recentEvents)} />
           </div>
@@ -1191,11 +1208,11 @@ function CompactMobileEndpointOverview({
   )
 }
 
-function CompactMobileFact({ label, value }: { label: string; value: string }) {
+function CompactMobileFact({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span style={{ color: 'var(--muted)' }}>{label}</span>
-      <span className="font-medium truncate" style={{ color: 'var(--fg)' }}>{value}</span>
+      <span className="font-medium truncate" style={{ color: danger ? 'var(--high)' : 'var(--fg)' }}>{value}</span>
     </div>
   )
 }
@@ -1276,11 +1293,12 @@ function CollectorPolicySummary({
   )
 }
 
-function PolicyMetric({ label, value }: { label: string; value: number }) {
+function PolicyMetric({ label, value, tone = 'neutral' }: { label: string; value: number; tone?: 'neutral' | 'ok' | 'high' }) {
+  const valueColor = tone === 'high' ? 'var(--high)' : tone === 'ok' ? 'var(--emerald-400)' : 'var(--fg)'
   return (
     <div className="rounded border px-2 py-1.5" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
       <p className="text-[10px]" style={{ color: 'var(--muted)' }}>{label}</p>
-      <p className="font-semibold" style={{ color: 'var(--fg)' }}>{value}</p>
+      <p className="font-semibold" style={{ color: valueColor }}>{value}</p>
     </div>
   )
 }
@@ -1297,6 +1315,14 @@ function toCount(value: unknown): number {
 function formatCompactValue(value: unknown): string {
   const text = String(value || '').trim()
   return text ? text.replace(/_/g, ' ') : 'not reported'
+}
+
+function compactComplianceValue(compliance: Record<string, any>): string {
+  if (compliance.overall_compliant === true) return 'compliant'
+  if (compliance.overall_compliant === false) return 'needs review'
+  if (compliance.local_compliant === true) return 'local checks pass'
+  if (compliance.local_compliant === false) return 'local checks failed'
+  return 'not reported'
 }
 
 function coerceObject(value: unknown): Record<string, any> {
@@ -2201,6 +2227,14 @@ function OsBadge({ os }: { os: Agent['os_type'] }) {
     label = 'macOS'
     bgColor = 'rgba(148, 163, 184, 0.15)'
     textColor = '#94a3b8'
+  } else if (osLower.includes('android')) {
+    label = 'Android'
+    bgColor = 'rgba(16, 185, 129, 0.15)'
+    textColor = 'var(--emerald-400)'
+  } else if (osLower.includes('ios')) {
+    label = 'iOS'
+    bgColor = 'rgba(20, 184, 166, 0.15)'
+    textColor = 'var(--teal-400)'
   }
 
   return (

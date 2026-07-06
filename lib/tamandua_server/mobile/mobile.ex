@@ -55,6 +55,8 @@ defmodule TamanduaServer.Mobile do
     "automation_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "network_exfiltration_suspected" =>
       {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
+    "commercial_spyware_suspected" =>
+      {"T1639", "Exfiltrate Data", "Collection"},
     "integrity_snapshot_changed" =>
       {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
     "behavior_anomaly_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"}
@@ -1276,6 +1278,9 @@ defmodule TamanduaServer.Mobile do
 
         "network_exfiltration_suspected" ->
           " Suspicious protected-app network egress was detected."
+
+        "commercial_spyware_suspected" ->
+          " Commercial spyware-like protected-app telemetry was detected. Treat this as a suspected triage signal, not family attribution."
 
         "integrity_snapshot_changed" ->
           " A protected app or WebView integrity snapshot changed."

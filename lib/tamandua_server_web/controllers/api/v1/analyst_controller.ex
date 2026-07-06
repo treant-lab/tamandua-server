@@ -145,13 +145,22 @@ defmodule TamanduaServerWeb.API.V1.AnalystController do
       }
 
       case AgenticAnalyst.submit_feedback(feedback) do
+        :ok ->
+          json(conn, %{
+            status: "success",
+            data: %{
+              acknowledged: true,
+              investigation_id: investigation_id
+            }
+          })
+
         {:ok, result} ->
           json(conn, %{
             status: "success",
             data: %{
-              feedback_id: result.feedback_id,
+              feedback_id: Map.get(result, :feedback_id),
               acknowledged: true,
-              impact_assessment: result.impact_assessment
+              impact_assessment: Map.get(result, :impact_assessment)
             }
           })
 
@@ -179,26 +188,39 @@ defmodule TamanduaServerWeb.API.V1.AnalystController do
     - max_alerts: Maximum number of alerts to process (default 100)
   """
   def auto_triage(conn, params) do
-    alert_ids = Map.get(params, "alert_ids")
-    auto_investigate = Map.get(params, "auto_investigate", false)
-    max_alerts = Map.get(params, "max_alerts", 100)
+    alert_ids = params |> Map.get("alert_ids", []) |> List.wrap()
+    max_alerts = parse_integer_param(Map.get(params, "max_alerts"), 100)
 
-    opts = [
-      auto_investigate: auto_investigate,
-      max_alerts: max_alerts
-    ]
+    if alert_ids == [] do
+      conn
+      |> put_status(:bad_request)
+      |> json(%{status: "error", message: "alert_ids is required"})
+    else
+      results =
+        alert_ids
+        |> Enum.take(max_alerts)
+        |> Enum.map(fn alert_id -> {alert_id, AgenticAnalyst.auto_triage(alert_id)} end)
 
-    opts = if alert_ids, do: Keyword.put(opts, :alert_ids, alert_ids), else: opts
+      classifications =
+        Enum.flat_map(results, fn
+          {alert_id, {:ok, result}} -> [Map.put(result, :alert_id, alert_id)]
+          _ -> []
+        end)
 
-    with {:ok, triage_result} <- AgenticAnalyst.auto_triage(opts) do
+      errors =
+        Enum.flat_map(results, fn
+          {alert_id, {:error, reason}} -> [%{alert_id: alert_id, reason: inspect(reason)}]
+          _ -> []
+        end)
+
       json(conn, %{
         status: "success",
         data: %{
-          processed_count: triage_result.processed_count,
-          classifications: triage_result.classifications,
-          started_investigations: triage_result.started_investigations,
-          suppressed_count: triage_result.suppressed_count,
-          processing_time_ms: triage_result.processing_time_ms
+          processed_count: length(results),
+          classifications: classifications,
+          started_investigations: Enum.map(classifications, & &1.investigation_id),
+          suppressed_count: 0,
+          errors: errors
         }
       })
     end

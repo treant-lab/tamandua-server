@@ -40,6 +40,7 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "browser_tamper_detected" => "Browser tamper detected",
     "automation_detected" => "Automation detected",
     "network_exfiltration_suspected" => "Network exfiltration suspected",
+    "commercial_spyware_suspected" => "Commercial spyware suspected",
     "integrity_snapshot_changed" => "Integrity snapshot changed",
     "behavior_anomaly_detected" => "Behavior anomaly detected",
     "suspicious_app_installed" => "Suspicious app installed",
@@ -200,6 +201,7 @@ defmodule TamanduaServer.Mobile.MobileEvent do
     "browser_tamper_detected" => {"T1622", "TA0005"},
     "automation_detected" => {"T1622", "TA0007"},
     "network_exfiltration_suspected" => {"T1446", "TA0011"},
+    "commercial_spyware_suspected" => {"T1639", "TA0009"},
     "integrity_snapshot_changed" => {"T1398", "TA0005"},
     "behavior_anomaly_detected" => {"T1622", "TA0007"}
   }

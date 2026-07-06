@@ -8,6 +8,7 @@ defmodule TamanduaServerWeb.API.V1.AssetController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Inventory.AssetManager
+  alias TamanduaServer.Vulnerability.AssetScanner
 
   action_fallback TamanduaServerWeb.FallbackController
 
@@ -275,7 +276,7 @@ defmodule TamanduaServerWeb.API.V1.AssetController do
   """
   def license_compliance(conn, %{"id" => id}) do
     with {:ok, asset} <- AssetManager.get_asset(id),
-         {:ok, analysis} <- AssetManager.analyze_license_metadata(asset) do
+         {:ok, analysis} <- license_analysis(asset) do
       json(conn, %{
         data: %{
           asset_id: analysis.asset_id,
@@ -298,6 +299,19 @@ defmodule TamanduaServerWeb.API.V1.AssetController do
   end
 
   # Private functions
+
+  defp license_analysis(asset) do
+    with {:ok, analysis} <- AssetManager.analyze_license_metadata(asset) do
+      if get_in(analysis, [:summary, :total_software]) == 0 and asset.agent_id do
+        case AssetScanner.license_analysis_for_agent(asset.agent_id) do
+          {:ok, persisted_analysis} -> {:ok, persisted_analysis}
+          _ -> {:ok, analysis}
+        end
+      else
+        {:ok, analysis}
+      end
+    end
+  end
 
   defp serialize_asset(asset) do
     %{

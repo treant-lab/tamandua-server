@@ -151,6 +151,12 @@ interface MobileOverview {
   mobile: boolean
   linked: boolean
   device: Record<string, any> | null
+  command_device?: {
+    id: string
+    device_id?: string
+    platform?: string
+    status?: string
+  } | null
   posture: Record<string, any> | null
   compliance: Record<string, any> | null
   app_inventory: {
@@ -169,7 +175,11 @@ interface MobileOverview {
     id: string
     label: string
     destructive?: boolean
+    execution_scope?: string
+    supported_by_mobile_app?: boolean
   }>
+  command_history?: Array<Record<string, any>>
+  last_command?: Record<string, any> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -532,16 +542,17 @@ export default function AgentDetail({
   alerts,
   config,
 }: AgentDetailPageProps) {
+  const agentPlatform = resolveAgentPlatform(agent)
   const reportedPlatformCapabilities = normalizePlatformCapabilities(
     (agent as Agent & { platformCapabilities?: PlatformCapability[]; platform_capabilities?: PlatformCapability[] }).platformCapabilities ||
       (agent as Agent & { platform_capabilities?: PlatformCapability[] }).platform_capabilities
   )
-  const platformCapabilities = shouldUseMobileFallbackCapabilities(agent.os_type, reportedPlatformCapabilities)
-    ? fallbackPlatformCapabilities(agent.os_type)
+  const platformCapabilities = shouldUseMobileFallbackCapabilities(agentPlatform, reportedPlatformCapabilities)
+    ? fallbackPlatformCapabilities(agentPlatform)
     : reportedPlatformCapabilities.length > 0
     ? reportedPlatformCapabilities
-    : fallbackPlatformCapabilities(agent.os_type)
-  const mobileAgent = isMobilePlatform(agent.os_type)
+    : fallbackPlatformCapabilities(agentPlatform)
+  const mobileAgent = isMobilePlatform(agentPlatform)
   const supportsLiveResponse = capabilityAvailable(platformCapabilities, 'live_response')
   const supportsNetworkIsolation = capabilityAvailable(platformCapabilities, 'network_isolation')
   const supportsHostResponse = !mobileAgent && supportsLiveResponse
@@ -781,7 +792,7 @@ export default function AgentDetail({
   }
 
   const handleGenerateCliToken = async () => {
-    if (!supportsLiveResponse) {
+    if (!supportsHostResponse) {
       toast.error('Live response shell is not available for this endpoint platform')
       return
     }
@@ -804,15 +815,24 @@ export default function AgentDetail({
   }
 
   const handleMobileCommand = async (command: string) => {
-    const deviceId = mobileOverview?.device?.id
-    if (!deviceId) {
+    const commandDeviceId = mobileOverview?.command_device?.id
+    const legacyDeviceId = mobileOverview?.device?.id
+    if (!commandDeviceId && !legacyDeviceId) {
       toast.error('Mobile device link is not available for this endpoint')
       return
     }
 
     setMobileCommandLoading(command)
     try {
-      await axios.post(`/api/v1/mobile/devices/${deviceId}/commands/${command}`, {})
+      if (commandDeviceId) {
+        await axios.post('/api/v1/mobile/v2/commands', {
+          device_id: commandDeviceId,
+          command_type: command,
+          payload: {},
+        })
+      } else {
+        await axios.post(`/api/v1/mobile/devices/${legacyDeviceId}/commands/${command}`, {})
+      }
       toast.success(`Mobile ${command} command queued`)
       loadMobileOverview()
     } catch (error: unknown) {
@@ -1257,7 +1277,7 @@ export default function AgentDetail({
                   color="bg-cyan-600/20 text-cyan-300 hover:bg-cyan-600/30 border border-cyan-500/30"
                   onClick={handleGenerateCliToken}
                   loading={cliTokenLoading}
-                  disabled={cliTokenLoading || !supportsLiveResponse}
+                  disabled={cliTokenLoading || !supportsHostResponse}
                   title={unsupportedMobileActionTitle}
                 />
                 <QuickAction
@@ -1533,9 +1553,15 @@ function MobileEndpointPanel({
   const sideloadedApps = Number(overview?.app_inventory?.sideloaded ?? 0)
   const protectedApps = overview?.app_guard?.protected_apps || []
   const protectedTotal = Number(overview?.app_guard?.protected_total ?? protectedApps.length)
+  const commandHistory = overview?.command_history || []
   const mdmProvider = device.mdm?.provider || device.mdm_provider
   const mdmCompliance = device.mdm?.compliance_status || posture.mdm_compliance_status
-  const deviceLabel = [device.model, device.os_version].filter(Boolean).join(' / ') || device.device_id || 'mobile endpoint'
+  const deviceLabel =
+    device.device_name ||
+    [device.model, device.os_version].filter(Boolean).join(' / ') ||
+    device.device_id ||
+    'mobile endpoint'
+  const ownerLabel = device.user_email || device.owner_email || device.user_name || 'not assigned'
 
   return (
     <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -1571,7 +1597,11 @@ function MobileEndpointPanel({
       ) : (
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
-            <MobileMetric label="Risk" value={String(posture.risk_score ?? 0)} tone={Number(posture.risk_score || 0) >= 70 ? 'high' : 'ok'} />
+            <MobileMetric
+              label="Risk"
+              value={formatMobileRiskScore(posture.risk_score)}
+              tone={mobileRiskTone(posture.risk_score)}
+            />
             <MobileMetric label="MDM" value={formatMobileProvider(mdmProvider)} />
             <MobileMetric label="Apps" value={String(overview.app_inventory?.total ?? apps.length)} />
             <MobileMetric label="High risk" value={String(highRiskApps)} tone={highRiskApps > 0 ? 'high' : 'ok'} />
@@ -1583,7 +1613,7 @@ function MobileEndpointPanel({
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
               <MobileFact label="Device" value={deviceLabel} />
               <MobileFact label="Device ID" value={device.device_id || posture.device_id || 'not reported'} />
-              <MobileFact label="User" value={device.user_email || device.user_name || 'not assigned'} />
+              <MobileFact label="User" value={ownerLabel} />
               <MobileFact label="Last assessment" value={formatMobileTimestamp(posture.last_assessment || device.last_seen_at)} />
             </div>
           </div>
@@ -1665,9 +1695,53 @@ function MobileEndpointPanel({
               >
                 {command.id === 'locate' ? <MapPin className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                 {commandLoading === command.id ? 'Sending...' : command.label}
+                {command.execution_scope === 'mdm_provider' ? (
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>MDM</span>
+                ) : null}
               </button>
             ))}
           </div>
+
+          {(overview.last_command || commandHistory.length > 0) && (
+            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+              <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+                <Activity className="h-4 w-4" /> Command Sync
+              </h3>
+              {overview.last_command && (
+                <MobileFact
+                  label="Last command"
+                  value={`${formatMobileCommandValue(overview.last_command.id)} / ${formatMobileCommandValue(overview.last_command.status)}`}
+                  danger={overview.last_command.status === 'failed'}
+                />
+              )}
+              {commandHistory.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {commandHistory.slice(0, 5).map((entry, index) => (
+                    <div
+                      key={`${String(entry.id || 'command')}-${String(entry.requested_at || index)}`}
+                      className="rounded-md border px-3 py-2 text-sm"
+                      style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface)' }}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium truncate" style={{ color: 'var(--fg)' }}>
+                          {formatMobileCommandValue(entry.id)}
+                        </span>
+                        <span
+                          className="text-xs uppercase"
+                          style={{ color: entry.status === 'failed' ? 'var(--high)' : 'var(--emerald-400)' }}
+                        >
+                          {formatMobileCommandValue(entry.status)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs truncate" style={{ color: 'var(--muted)' }}>
+                        {formatMobileCommandDetail(entry)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1692,6 +1766,19 @@ function MobileFact({ label, value, danger }: { label: string; value: string; da
   )
 }
 
+function formatMobileRiskScore(value: unknown): string {
+  if (value === undefined || value === null || value === '') return 'Unknown'
+  const score = Number(value)
+  return Number.isFinite(score) ? String(score) : 'Unknown'
+}
+
+function mobileRiskTone(value: unknown): 'ok' | 'high' | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const score = Number(value)
+  if (!Number.isFinite(score)) return undefined
+  return score >= 70 ? 'high' : 'ok'
+}
+
 function formatMobileBoolean(value: unknown): string {
   if (value === true) return 'Enabled'
   if (value === false) return 'Disabled'
@@ -1707,6 +1794,21 @@ function formatMobileProvider(value: unknown): string {
 function formatMobileTimestamp(value: unknown): string {
   if (!value) return 'not reported'
   return formatDate(String(value))
+}
+
+function formatMobileCommandValue(value: unknown): string {
+  const text = String(value || '').trim()
+  return text ? text.replace(/_/g, ' ') : 'unknown'
+}
+
+function formatMobileCommandDetail(entry: Record<string, any>): string {
+  if (entry.error) return String(entry.error)
+  const result = entry.result || {}
+  if (result.message) return String(result.message)
+  if (result.status) return `Server status: ${result.status}`
+  if (result.id) return `Command id: ${result.id}`
+  if (entry.transport) return `Transport: ${formatMobileCommandValue(entry.transport)}`
+  return entry.requested_at || 'Command queued'
 }
 
 function severityTextColor(severity: unknown): string {
@@ -1933,6 +2035,35 @@ function capabilityMaturityStyle(maturity: CapabilityMaturity) {
     default:
       return { bg: 'var(--surface-3)', color: 'var(--muted)' }
   }
+}
+
+function resolveAgentPlatform(agent: Agent): string | undefined {
+  const raw = agent as unknown as Record<string, unknown>
+  const mobileDevice = raw.mobile_device && typeof raw.mobile_device === 'object'
+    ? raw.mobile_device as Record<string, unknown>
+    : {}
+  const device = raw.device && typeof raw.device === 'object'
+    ? raw.device as Record<string, unknown>
+    : {}
+  const posture = raw.posture && typeof raw.posture === 'object'
+    ? raw.posture as Record<string, unknown>
+    : {}
+
+  const candidates = [
+    raw.os_type,
+    raw.platform,
+    raw.operating_system,
+    raw.os,
+    mobileDevice.platform,
+    mobileDevice.os_type,
+    device.platform,
+    device.os_type,
+    posture.platform,
+    posture.os_type,
+  ]
+
+  const platform = candidates.find(value => typeof value === 'string' && value.trim())
+  return platform ? String(platform) : undefined
 }
 
 function isMobilePlatform(osType?: string): boolean {

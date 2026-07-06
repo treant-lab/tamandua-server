@@ -9,6 +9,7 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Accounts.{Permission, Role, RolePermission, UserRole}
   alias TamanduaServer.Mobile
+  alias TamanduaServer.Mobile.MDMCommand
   alias TamanduaServer.Mobile.MobileEvent
   alias TamanduaServer.Repo
 
@@ -30,6 +31,29 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       token_b: token_b,
       org_a: org_a
     }
+  end
+
+  describe "mobile configuration" do
+    test "returns persisted per-organization config merged with defaults", %{conn_a: conn} do
+      update_body = %{
+        "agent" => %{"heartbeat_interval_seconds" => 45},
+        "security" => %{"detect_debugger" => false},
+        "network" => %{"blocklist_domains" => ["example.test"]}
+      }
+
+      update_conn = put(conn, "/api/v1/mobile/config", update_body)
+      assert json_response(update_conn, 200)["success"] == true
+
+      conn = get(conn, "/api/v1/mobile/config")
+      body = json_response(conn, 200)["data"]
+
+      assert body["agent"]["heartbeat_interval_seconds"] == 45
+      assert body["agent"]["event_batch_size"] == 50
+      assert body["security"]["detect_debugger"] == false
+      assert body["security"]["detect_root"] == true
+      assert body["network"]["blocklist_domains"] == ["example.test"]
+      assert body["collection"]["collect_device_info"] == true
+    end
   end
 
   describe "mobile agent web overview" do
@@ -58,6 +82,42 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
           }
         ])
 
+      command_device =
+        Repo.insert!(%TamanduaServer.Mobile.DeviceV2{
+          organization_id: org.id,
+          device_id: "android-web-overview-1",
+          device_name: "Pixel 8",
+          platform: "android",
+          mdm_enrolled: true,
+          mdm_provider: "tamandua_mobile"
+        })
+
+      older_command =
+        Repo.insert!(%MDMCommand{
+          organization_id: org.id,
+          device_id: command_device.id,
+          command_type: "locate",
+          status: "completed",
+          payload: %{"precision" => "coarse"},
+          result: %{"location" => "operator-confirmed"},
+          requested_by: "operator@example.test",
+          inserted_at: ~U[2026-07-05 10:00:00Z],
+          updated_at: ~U[2026-07-05 10:01:00Z]
+        })
+
+      latest_command =
+        Repo.insert!(%MDMCommand{
+          organization_id: org.id,
+          device_id: command_device.id,
+          command_type: "ring",
+          status: "failed",
+          payload: %{},
+          result: %{"reason" => "unsupported_on_mobile_app_endpoint"},
+          requested_by: "operator@example.test",
+          inserted_at: ~U[2026-07-05 10:05:00Z],
+          updated_at: ~U[2026-07-05 10:06:00Z]
+        })
+
       agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-web-overview-1")
 
       conn = get(conn, "/api/v1/mobile/agents/#{agent.id}/overview")
@@ -66,6 +126,17 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert body["mobile"] == true
       assert body["linked"] == true
       assert body["device"]["id"] == device.id
+      assert body["command_device"]["id"] == command_device.id
+      assert body["command_device"]["device_id"] == "android-web-overview-1"
+      assert body["last_command"]["id"] == latest_command.id
+      assert body["last_command"]["status"] == "failed"
+      assert Enum.map(body["command_history"], & &1["id"]) == [
+               latest_command.id,
+               older_command.id
+             ]
+      assert body["command_history"] |> List.last() |> Map.get("result") == %{
+               "location" => "operator-confirmed"
+             }
       assert body["posture"]["risk_score"] == device.risk_score
       assert [%{"bundle_id" => "com.example.wallet"}] = body["app_inventory"]["apps"]
       assert body["app_inventory"]["total"] == 1
@@ -74,6 +145,9 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert body["app_guard"]["total_recent_events"] == 0
       assert is_list(body["app_guard"]["protected_apps"])
       assert Enum.map(body["commands"], & &1["id"]) == ["locate", "lock", "wipe"]
+      assert Enum.find(body["commands"], &(&1["id"] == "locate"))["execution_scope"] == "mobile_app_endpoint"
+      assert Enum.find(body["commands"], &(&1["id"] == "lock"))["execution_scope"] == "mdm_provider"
+      assert Enum.find(body["commands"], &(&1["id"] == "wipe"))["supported_by_mobile_app"] == false
     end
 
     test "returns unlinked overview when an agent has no mobile identifier", %{
@@ -303,6 +377,195 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
     end
   end
 
+  describe "mobile v2 device and command APIs" do
+    test "creates a v2 device, syncs agent projection, and stays scoped by org", %{
+      conn_a: conn_a,
+      conn_b: conn_b,
+      org_a: org
+    } do
+      conn =
+        post(conn_a, "/api/v1/mobile/v2/devices", %{
+          "device_id" => "android-v2-contract-1",
+          "device_name" => "Pixel V2 Contract",
+          "platform" => "android",
+          "os_version" => "15",
+          "model" => "Pixel 9",
+          "owner_email" => "owner@example.test",
+          "mdm_enrolled" => true,
+          "mdm_provider" => "tamandua_mobile",
+          "compliance_status" => "compliant",
+          "encryption_enabled" => true,
+          "passcode_set" => true
+        })
+
+      body = json_response(conn, 201)["data"]
+
+      assert body["device_id"] == "android-v2-contract-1"
+      assert body["platform"] == "android"
+      assert body["mdm_enrolled"] == true
+      assert body["agent_id"]
+
+      agent = Repo.get_by!(Agent, organization_id: org.id, machine_id: "android-v2-contract-1")
+      assert agent.id == body["agent_id"]
+      assert agent.os_type == "android"
+      assert "mobile-v2" in agent.tags
+
+      command =
+        Repo.insert!(%MDMCommand{
+          organization_id: org.id,
+          device_id: body["id"],
+          command_type: "locate",
+          status: "pending",
+          requested_by: "operator@example.test"
+        })
+
+      app_guard_conn =
+        post(
+          conn_a,
+          "/api/v1/mobile/app_guard/events",
+          app_guard_payload()
+          |> put_in(["device", "device_id"], "android-v2-contract-1")
+          |> put_in(["platform"], "android")
+          |> put_in(["event_id"], "evt-android-v2-contract-1")
+        )
+
+      assert json_response(app_guard_conn, 201)["data"]["event_id"] == "evt-android-v2-contract-1"
+
+      overview_conn = get(conn_a, "/api/v1/mobile/agents/#{agent.id}/overview")
+      overview = json_response(overview_conn, 200)["data"]
+
+      assert overview["linked"] == true
+      assert overview["device"]["id"] == body["id"]
+      assert overview["device"]["device_id"] == "android-v2-contract-1"
+      assert overview["command_device"]["id"] == body["id"]
+      assert overview["last_command"]["id"] == command.id
+      assert Enum.map(overview["command_history"], & &1["id"]) == [command.id]
+      assert overview["posture"]["platform"] == "android"
+      assert overview["compliance"]["local_compliant"] == true
+      assert overview["app_guard"]["total_recent_events"] == 1
+      assert [%{"payload" => %{"event_id" => "evt-android-v2-contract-1"}}] =
+               overview["app_guard"]["events"]
+
+      conn = get(conn_b, "/api/v1/mobile/v2/devices?platform=android")
+      assert json_response(conn, 200)["data"] == []
+    end
+
+    test "requires response permission before creating v2 mobile commands", %{org_a: org} do
+      analyst = insert!(:user, %{organization: org, role: "analyst"})
+      {:ok, analyst_token, _claims} = TamanduaServer.Guardian.encode_and_sign(analyst)
+
+      device =
+        Repo.insert!(%TamanduaServer.Mobile.DeviceV2{
+          organization_id: org.id,
+          device_id: "android-v2-rbac-1",
+          device_name: "Pixel V2 RBAC",
+          platform: "android",
+          mdm_enrolled: true,
+          mdm_provider: "tamandua_mobile"
+        })
+
+      conn =
+        auth_conn(analyst_token)
+        |> post("/api/v1/mobile/v2/commands", %{
+          "device_id" => device.id,
+          "command_type" => "lock",
+          "payload" => %{"reason" => "rbac regression"}
+        })
+
+      body = json_response(conn, 403)
+      assert body["error"] == "forbidden"
+      assert body["required_permission"] == "agents_command"
+      refute Repo.get_by(MDMCommand, device_id: device.id)
+    end
+
+    test "lists pending v2 commands and records completion status", %{conn_a: conn, org_a: org} do
+      create_conn =
+        post(conn, "/api/v1/mobile/v2/devices", %{
+          "device_id" => "android-v2-command-1",
+          "device_name" => "Pixel V2 Command",
+          "platform" => "android",
+          "mdm_enrolled" => true,
+          "mdm_provider" => "tamandua_mobile"
+        })
+
+      device = json_response(create_conn, 201)["data"]
+
+      command_conn =
+        post(conn, "/api/v1/mobile/v2/commands", %{
+          "device_id" => device["id"],
+          "command_type" => "locate",
+          "payload" => %{"precision" => "coarse"}
+        })
+
+      command = json_response(command_conn, 201)["data"]
+      assert command["device_id"] == device["id"]
+      assert command["command_type"] == "locate"
+      assert command["status"] == "pending"
+      assert command["requested_by"]
+
+      pending_conn =
+        get(conn, "/api/v1/mobile/v2/commands?device_id=#{device["id"]}&status=pending")
+
+      assert [pending] = json_response(pending_conn, 200)["data"]
+      assert pending["id"] == command["id"]
+
+      completed_conn =
+        patch(conn, "/api/v1/mobile/v2/commands/#{command["id"]}/status", %{
+          "device_id" => device["id"],
+          "status" => "completed",
+          "result" => %{"location" => "operator-confirmed"}
+        })
+
+      completed = json_response(completed_conn, 200)["data"]
+      assert completed["status"] == "completed"
+      assert completed["completed_at"]
+      assert completed["result"]["location"] == "operator-confirmed"
+
+      stored = Repo.get_by!(MDMCommand, organization_id: org.id, id: command["id"])
+      assert stored.status == "completed"
+      assert stored.completed_at
+    end
+
+    test "rejects v2 command status updates without matching device identity", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      device =
+        Repo.insert!(%TamanduaServer.Mobile.DeviceV2{
+          organization_id: org.id,
+          device_id: "android-v2-command-identity-1",
+          device_name: "Pixel V2 Identity",
+          platform: "android",
+          mdm_enrolled: true,
+          mdm_provider: "tamandua_mobile"
+        })
+
+      command =
+        Repo.insert!(%MDMCommand{
+          organization_id: org.id,
+          device_id: device.id,
+          command_type: "locate",
+          status: "pending",
+          requested_by: "operator@example.test"
+        })
+
+      conn =
+        patch(conn, "/api/v1/mobile/v2/commands/#{command.id}/status", %{
+          "device_id" => Ecto.UUID.generate(),
+          "status" => "completed",
+          "result" => %{"location" => "wrong-device"}
+        })
+
+      body = json_response(conn, 422)
+      assert body["error"] == "Command device identity mismatch"
+      assert body["required_field"] == "device_id"
+
+      stored = Repo.get!(MDMCommand, command.id)
+      assert stored.status == "pending"
+      assert stored.completed_at == nil
+    end
+  end
+
   describe "POST /api/v1/mobile/app_guard/events" do
     test "ingests App Guard SDK events as mobile telemetry", %{conn_a: conn, org_a: org} do
       Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "mobile:events")
@@ -470,6 +733,56 @@ defmodule TamanduaServerWeb.Controllers.API.V1.MobileControllerAppGuardTest do
       assert alert.detection_metadata["event_type"] == "network_exfiltration_suspected"
       assert alert.raw_event["payload"]["evidence"]["privacy_mode"] == "metadata_only"
       assert "T1446" in alert.mitre_techniques
+    end
+
+    test "ingests commercial spyware suspected App Guard triage events", %{
+      conn_a: conn,
+      org_a: org
+    } do
+      payload =
+        app_guard_payload()
+        |> put_in(["event_id"], "evt-app-guard-spyware-1")
+        |> put_in(["event_type"], "commercial_spyware_suspected")
+        |> put_in(["severity"], "critical")
+        |> put_in(["platform"], "ios")
+        |> put_in(["risk", "decision"], "block")
+        |> put_in(["risk", "score"], 100)
+        |> put_in(["risk", "reasons"], [
+          "commercial_spyware_suspected",
+          "network_exfiltration_suspected",
+          "integrity_snapshot_changed"
+        ])
+        |> put_in(["evidence"], %{
+          "collector" => "app-guard-commercial-spyware-triage",
+          "privacy_mode" => "metadata_only",
+          "spyware_taxonomy" => %{
+            "schema" => "tamandua.app_guard.commercial_spyware_taxonomy/v1",
+            "family" => "mercenary_spyware_general",
+            "evidence_lane" => "protected_app_network_anomaly",
+            "confidence" => "medium",
+            "limitations" => [
+              "suspected protected-app triage signal only",
+              "not device-wide forensic evidence"
+            ]
+          }
+        })
+
+      conn = post(conn, "/api/v1/mobile/app_guard/events", payload)
+
+      body = json_response(conn, 201)
+      event = Repo.get!(MobileEvent, body["data"]["id"])
+      alert = Repo.get!(Alert, event.alert_id)
+
+      assert event.event_type == "commercial_spyware_suspected"
+      assert event.severity == "critical"
+      assert event.title == "App Guard commercial_spyware_suspected"
+      assert alert.title == "[App Guard] App Guard commercial_spyware_suspected"
+      assert alert.detection_metadata["source"] == "app_guard"
+      assert alert.detection_metadata["event_type"] == "commercial_spyware_suspected"
+      assert alert.raw_event["payload"]["evidence"]["privacy_mode"] == "metadata_only"
+      assert alert.raw_event["payload"]["evidence"]["spyware_taxonomy"]["confidence"] == "medium"
+      assert "T1639" in alert.mitre_techniques
+      assert event.organization_id == org.id
     end
 
     test "rejects unsupported App Guard schemas", %{conn_a: conn} do

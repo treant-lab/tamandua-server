@@ -177,7 +177,7 @@ export default function Vulnerabilities() {
           <div>
             <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>Vulnerability Management</h1>
             <p className="mt-1" style={{ color: 'var(--muted)' }}>
-              CVE tracking, EPSS prioritization, and KEV monitoring
+              CVE catalog tracking with EPSS/KEV context; affected assets are matched from agent software inventory when available
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -296,7 +296,12 @@ export default function Vulnerabilities() {
           >
             <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Vulnerabilities</h2>
+                <div>
+                  <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Vulnerabilities</h2>
+                  <p className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                    Open a CVE to see inventory-backed affected assets for your environment.
+                  </p>
+                </div>
               </div>
 
               {/* Filters */}

@@ -135,7 +135,7 @@ export default function Assets({
           />
           <StatCard
             icon={AlertTriangle}
-            label="Vulnerable"
+            label="Inventory Matches"
             value={assetStats.vulnerableAssets}
             color="orange"
           />
@@ -256,7 +256,7 @@ export default function Assets({
                   <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>IP Address</th>
                   <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Criticality</th>
                   <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Status</th>
-                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Vulnerabilities</th>
+                  <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Vulnerability Matches</th>
                   <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Tags</th>
                   <th className="text-left p-4 text-sm font-medium" style={{ color: 'var(--muted)' }}>Actions</th>
                 </tr>
@@ -486,7 +486,7 @@ function VulnerabilityBadges({ vulnerabilities }: { vulnerabilities: Asset['vuln
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1" title="CVE matches from agent software inventory when available">
       {counts.critical > 0 && (
         <span
           className="px-1.5 py-0.5 rounded text-xs font-medium"

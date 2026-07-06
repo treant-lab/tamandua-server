@@ -1,4 +1,5 @@
 import { Head, router } from '@inertiajs/react'
+import { useEffect, useState } from 'react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   ArrowLeft,
@@ -16,8 +17,11 @@ import {
   WifiOff,
   CheckCircle,
   XCircle,
+  FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { logger } from '@/lib/logger'
+import { useTenantFetch } from '@/hooks/useTenantFetch'
 
 interface Asset {
   id: string
@@ -39,14 +43,52 @@ interface Asset {
 interface Vulnerability {
   id: string
   cveId: string
+  cve_id?: string
   title: string
   description: string
   severity: 'critical' | 'high' | 'medium' | 'low'
   cvssScore: number
+  cvss_score?: number
   status: string
   discoveredAt: string
   remediation: string
   affectedComponent: string
+  affected_component?: string
+  affectedSoftwareName?: string
+  affected_software_name?: string
+  affectedSoftwareVersion?: string
+  affected_software_version?: string
+  confidence?: number
+}
+
+interface LicenseCompliance {
+  asset_id: string
+  hostname: string
+  generated_at: string
+  summary?: {
+    total_software?: number
+    with_license_metadata?: number
+    without_license_metadata?: number
+    non_permissive_count?: number
+    by_license_risk?: Record<string, number>
+    data_quality?: {
+      license_metadata_coverage?: number
+      note?: string
+    }
+  }
+  findings?: Array<{
+    type: string
+    severity: string
+    license_risk: string
+    message: string
+    software?: {
+      name?: string
+      version?: string
+      vendor?: string
+      license?: string
+    }
+  }>
+  caveat?: string
 }
 
 interface AssetDetailPageProps {
@@ -93,6 +135,38 @@ const getAgentStatusConfig = (status?: string) => {
   }
 }
 
+const getLicenseRiskColor = (risk?: string) => {
+  switch (risk) {
+    case 'restricted':
+    case 'unlicensed':
+      return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30'
+    case 'commercial':
+    case 'copyleft':
+      return 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+    case 'permissive':
+      return 'bg-green-500/20 text-green-300 border-green-500/30'
+    case 'unknown':
+    default:
+      return 'bg-[var(--surface-alt)] text-[var(--muted)] border-[var(--border)]'
+  }
+}
+
+const formatPercent = (value?: number) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '0%'
+  return `${Math.round(value * 100)}%`
+}
+
+function LicenseStat({ label, value }: { label: string; value?: number | string }) {
+  return (
+    <div className="rounded-lg bg-[var(--surface-alt)] p-3">
+      <p className="text-xs text-[var(--muted)]">{label}</p>
+      <p className="mt-1 text-xl font-semibold text-[var(--fg)]">
+        {typeof value === 'number' ? value.toLocaleString() : value || '0'}
+      </p>
+    </div>
+  )
+}
+
 export default function AssetDetail({
   assetId,
   asset,
@@ -103,6 +177,11 @@ export default function AssetDetail({
   securityPosture,
   error,
 }: AssetDetailPageProps) {
+  const { tenantGet } = useTenantFetch()
+  const [licenseCompliance, setLicenseCompliance] = useState<LicenseCompliance | null>(null)
+  const [licenseLoading, setLicenseLoading] = useState(false)
+  const [licenseError, setLicenseError] = useState<string | null>(null)
+
   const formatDate = (dateString?: string | null) => {
     if (!dateString) return 'N/A'
     return new Intl.DateTimeFormat('en-US', {
@@ -110,6 +189,36 @@ export default function AssetDetail({
       timeStyle: 'medium',
     }).format(new Date(dateString))
   }
+
+  useEffect(() => {
+    if (!assetId || !asset) return
+
+    let cancelled = false
+    const fetchLicenseCompliance = async () => {
+      setLicenseLoading(true)
+      setLicenseError(null)
+      try {
+        const response = await tenantGet<{ data: LicenseCompliance }>(`/api/v1/assets/${assetId}/license-compliance`)
+        if (!cancelled) {
+          setLicenseCompliance(response.data)
+        }
+      } catch (error) {
+        logger.error('Failed to fetch asset license compliance metadata:', error)
+        if (!cancelled) {
+          setLicenseError(error instanceof Error ? error.message : 'Failed to load license metadata')
+          setLicenseCompliance(null)
+        }
+      } finally {
+        if (!cancelled) setLicenseLoading(false)
+      }
+    }
+
+    fetchLicenseCompliance()
+
+    return () => {
+      cancelled = true
+    }
+  }, [assetId, asset, tenantGet])
 
   if (error || !asset) {
     return (
@@ -246,15 +355,31 @@ export default function AssetDetail({
         {/* Vulnerabilities */}
         <div className="card-sentinel rounded-xl">
           <div className="p-4 border-b border-[var(--border)]">
-            <h2 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
-              <Bug className="h-5 w-5 text-[var(--muted)]" />
-              Vulnerabilities ({vulnerabilities.length})
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
+                  <Bug className="h-5 w-5 text-[var(--muted)]" />
+                  Vulnerabilities ({vulnerabilities.length})
+                </h2>
+                <p className="text-xs mt-1 text-[var(--muted)]">
+                  CVE catalog entries are shown here when matched to this asset through agent software inventory.
+                </p>
+              </div>
+              {vulnerabilities.length > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-blue-500/10 text-blue-300 border border-blue-500/30">
+                  <Monitor className="h-3.5 w-3.5" />
+                  Inventory matched
+                </span>
+              )}
+            </div>
           </div>
           {vulnerabilities.length === 0 ? (
             <div className="p-8 text-center text-[var(--muted)]">
               <Shield className="h-10 w-10 mx-auto mb-3 opacity-50" />
-              <p>No vulnerabilities detected</p>
+              <p>No inventory-matched CVEs for this asset</p>
+              <p className="text-xs mt-2">
+                Coverage depends on catalog sync, agent software inventory, and matcher confidence.
+              </p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -271,16 +396,25 @@ export default function AssetDetail({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
-                  {vulnerabilities.map((vuln) => (
+                  {vulnerabilities.map((vuln) => {
+                    const cveId = vuln.cveId || vuln.cve_id || vuln.id
+                    const cvssScore = Number(vuln.cvssScore ?? vuln.cvss_score ?? 0)
+                    const softwareName = vuln.affectedSoftwareName || vuln.affected_software_name
+                    const softwareVersion = vuln.affectedSoftwareVersion || vuln.affected_software_version
+                    const component = softwareName
+                      ? `${softwareName}${softwareVersion ? ` ${softwareVersion}` : ''}`
+                      : vuln.affectedComponent || vuln.affected_component || '-'
+
+                    return (
                     <tr key={vuln.id} className="hover:bg-[var(--surface-alt)] transition-colors">
                       <td className="px-4 py-3">
                         <a
-                          href={`https://nvd.nist.gov/vuln/detail/${vuln.cveId}`}
+                          href={`https://nvd.nist.gov/vuln/detail/${cveId}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-sm text-blue-400 hover:text-blue-300 font-mono"
                         >
-                          {vuln.cveId}
+                          {cveId}
                         </a>
                       </td>
                       <td className="px-4 py-3 text-sm text-[var(--fg)] max-w-[250px] truncate">{vuln.title}</td>
@@ -290,8 +424,8 @@ export default function AssetDetail({
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className={cn('text-sm font-bold', getRiskScoreColor(vuln.cvssScore * 10))}>
-                          {vuln.cvssScore.toFixed(1)}
+                        <span className={cn('text-sm font-bold', getRiskScoreColor(cvssScore * 10))}>
+                          {cvssScore ? cvssScore.toFixed(1) : 'N/A'}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -306,12 +440,93 @@ export default function AssetDetail({
                           {vuln.status.replace(/_/g, ' ')}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-sm text-[var(--muted)]">{vuln.affectedComponent}</td>
+                      <td className="px-4 py-3">
+                        <div className="text-sm text-[var(--fg)]">{component}</div>
+                        {softwareName && (
+                          <div className="text-xs text-[var(--muted)]">from software inventory</div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm text-[var(--muted)] max-w-[200px] truncate">{vuln.remediation}</td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+
+        {/* License Compliance Metadata */}
+        <div className="card-sentinel rounded-xl">
+          <div className="p-4 border-b border-[var(--border)]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-[var(--muted)]" />
+                  License Metadata
+                </h2>
+                <p className="text-xs mt-1 text-[var(--muted)]">
+                  Metadata-only review from installed software inventory. This is not a legal compliance determination.
+                </p>
+              </div>
+              {licenseCompliance?.generated_at && (
+                <span className="text-xs text-[var(--muted)]">Generated {formatDate(licenseCompliance.generated_at)}</span>
+              )}
+            </div>
+          </div>
+          {licenseLoading ? (
+            <div className="p-6 text-sm text-[var(--muted)]">Loading license metadata...</div>
+          ) : licenseError ? (
+            <div className="p-6 text-sm text-[var(--muted)]">
+              License metadata is unavailable: {licenseError}
+            </div>
+          ) : !licenseCompliance ? (
+            <div className="p-6 text-sm text-[var(--muted)]">
+              No license metadata analysis is available for this asset yet.
+            </div>
+          ) : (
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <LicenseStat label="Software" value={licenseCompliance.summary?.total_software} />
+                <LicenseStat label="With metadata" value={licenseCompliance.summary?.with_license_metadata} />
+                <LicenseStat label="Needs review" value={licenseCompliance.summary?.non_permissive_count} />
+                <LicenseStat
+                  label="Coverage"
+                  value={formatPercent(licenseCompliance.summary?.data_quality?.license_metadata_coverage)}
+                />
+              </div>
+
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-alt)] p-3 text-xs text-[var(--muted)]">
+                {licenseCompliance.caveat || licenseCompliance.summary?.data_quality?.note ||
+                  'License risk is classified only from inventory-provided license metadata.'}
+              </div>
+
+              {licenseCompliance.findings && licenseCompliance.findings.length > 0 ? (
+                <div className="space-y-2">
+                  {licenseCompliance.findings.slice(0, 8).map((finding, index) => (
+                    <div key={`${finding.software?.name || 'software'}-${index}`} className="flex items-start justify-between gap-3 rounded-lg bg-[var(--surface-alt)] p-3">
+                      <div>
+                        <div className="text-sm text-[var(--fg)]">
+                          {finding.software?.name || 'Unknown software'}
+                          {finding.software?.version && (
+                            <span className="text-[var(--muted)]"> {finding.software.version}</span>
+                          )}
+                        </div>
+                        <p className="text-xs mt-1 text-[var(--muted)]">{finding.message}</p>
+                      </div>
+                      <span className={cn('px-2 py-0.5 rounded text-xs font-medium border whitespace-nowrap', getLicenseRiskColor(finding.license_risk))}>
+                        {finding.license_risk.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  ))}
+                  {licenseCompliance.findings.length > 8 && (
+                    <p className="text-xs text-[var(--muted)]">+{licenseCompliance.findings.length - 8} more metadata findings</p>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 text-center text-sm text-[var(--muted)]">
+                  No non-permissive findings in available license metadata.
+                </div>
+              )}
             </div>
           )}
         </div>

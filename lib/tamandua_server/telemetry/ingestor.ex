@@ -212,6 +212,15 @@ defmodule TamanduaServer.Telemetry.Ingestor do
         end)
         |> Message.put_batcher(:default)
 
+      event_type in ["software_uninstall", :software_uninstall] ->
+        handle_software_uninstall_event(event)
+
+        message
+        |> Message.update_data(fn _ ->
+          Map.put(event, :processed_at, System.system_time(:millisecond))
+        end)
+        |> Message.put_batcher(:default)
+
       event_type in [
         "inference_request",
         :inference_request,
@@ -610,11 +619,41 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp software_inventory_items(%{"software" => software}) when is_map(software), do: [software]
   defp software_inventory_items(%{software: software}) when is_map(software), do: [software]
 
+  defp software_inventory_items(software) when is_list(software), do: software
+
   defp software_inventory_items(payload) when is_map(payload) do
     if Map.has_key?(payload, "name") or Map.has_key?(payload, :name), do: [payload], else: []
   end
 
   defp software_inventory_items(_payload), do: []
+
+  defp handle_software_uninstall_event(event) do
+    agent_id = event["agent_id"] || event[:agent_id]
+    payload = event["payload"] || event[:payload] || %{}
+    software = software_inventory_items(payload)
+
+    if agent_id && software != [] do
+      Enum.each(software, fn item ->
+        case AssetScanner.remove_agent_software(agent_id, item) do
+          {:ok, result} ->
+            Logger.debug(
+              "[Ingestor] Software uninstall projected agent=#{agent_id} removed=#{result.software_removed} remediated=#{result.vulnerabilities_remediated}"
+            )
+
+          {:error, reason} ->
+            Logger.warning(
+              "[Ingestor] Software uninstall projection failed agent=#{agent_id}: #{inspect(reason)}"
+            )
+        end
+      end)
+    end
+  rescue
+    e ->
+      Logger.warning("[Ingestor] Software uninstall processing failed: #{Exception.message(e)}")
+  catch
+    :exit, reason ->
+      Logger.warning("[Ingestor] Software uninstall processing exited: #{inspect(reason)}")
+  end
 
   defp handle_package_install_event(event) do
     agent_id = event["agent_id"] || event[:agent_id]
