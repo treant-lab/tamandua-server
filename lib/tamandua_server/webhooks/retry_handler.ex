@@ -13,8 +13,7 @@ defmodule TamanduaServer.Webhooks.RetryHandler do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Webhooks
-  alias TamanduaServer.Webhooks.{Webhook, DeliveryLog}
+  alias TamanduaServer.Webhooks.{DeliveryLog}
 
   @doc """
   Calculates the next retry delay based on backoff strategy and error context.

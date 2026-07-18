@@ -348,7 +348,7 @@ defmodule TamanduaServer.Reports.Templates.IncidentReport do
     Enum.take(actions, 10)
   end
 
-  defp build_lessons_learned(alerts, critical_count, fp_count) do
+  defp build_lessons_learned(_alerts, critical_count, fp_count) do
     lessons = [
       "Automate common response actions to reduce mean time to respond.",
       "Improve detection coverage for credential access techniques.",

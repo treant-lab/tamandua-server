@@ -15,7 +15,6 @@ defmodule TamanduaServer.Alerts.CorrelationEngine do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.{Alert, AlertCorrelation, GraphBuilder, Timestamp}
-  alias TamanduaServer.Agents.Agent
 
   # Correlation configuration
   @default_time_window_seconds 3600  # 1 hour
@@ -150,7 +149,7 @@ defmodule TamanduaServer.Alerts.CorrelationEngine do
     include_ml = Keyword.get(opts, :include_ml, true)
 
     # Load alerts with correlations
-    alerts = from(a in Alert,
+    _alerts = from(a in Alert,
       where: a.id in ^alert_ids,
       preload: [:agent, :correlations]
     ) |> Repo.all()
@@ -486,7 +485,7 @@ defmodule TamanduaServer.Alerts.CorrelationEngine do
     end
   end
 
-  defp enhance_with_ml_similarity(graph, alerts) do
+  defp enhance_with_ml_similarity(graph, _alerts) do
     # TODO: Call ML service to compute embedding similarities
     # For now, just return the graph as-is
     graph

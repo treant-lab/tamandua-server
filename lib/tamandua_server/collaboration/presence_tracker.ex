@@ -13,8 +13,6 @@ defmodule TamanduaServer.Collaboration.PresenceTracker do
   require Logger
 
   alias TamanduaServerWeb.Presence
-  alias TamanduaServer.Repo
-  alias TamanduaServer.Accounts.User
 
   @idle_timeout :timer.minutes(5)
   @sweep_interval :timer.minutes(1)

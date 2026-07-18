@@ -10,10 +10,7 @@ defmodule TamanduaServer.Dashboard.WidgetData do
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Detection.Engine
   alias TamanduaServer.Telemetry.Event
-  alias TamanduaServer.Response.ResponseAction
-  alias TamanduaServer.Monitoring.Metric
   alias TamanduaServer.Compliance
   alias TamanduaServer.Billing.UsageRecord
 
@@ -236,7 +233,7 @@ defmodule TamanduaServer.Dashboard.WidgetData do
   # Agent Health Overview
   # ========================
 
-  defp fetch_agent_health_overview_data(config) do
+  defp fetch_agent_health_overview_data(_config) do
     agents = Agent
     |> preload([:health_metrics])
     |> Repo.all()
@@ -822,7 +819,7 @@ defmodule TamanduaServer.Dashboard.WidgetData do
     fetch_detection_efficacy_data(config)
   end
 
-  defp fetch_system_health_data(config) do
+  defp fetch_system_health_data(_config) do
     # Get system metrics
     {:ok, %{
       cpu: %{current: 45, max: 100, threshold: 80, status: "ok"},
@@ -875,10 +872,10 @@ defmodule TamanduaServer.Dashboard.WidgetData do
   defp safe_compliance_posture(framework) do
     try do
       Compliance.get_posture(framework)
-    catch
-      _, _ -> {:error, :unavailable}
     rescue
       _ -> {:error, :unavailable}
+    catch
+      _, _ -> {:error, :unavailable}
     end
   end
 

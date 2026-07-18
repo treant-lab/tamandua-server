@@ -39,7 +39,6 @@ defmodule TamanduaServer.ThreatIntel.Sources.AbuseIPDB do
   require Logger
 
   @api_base "https://api.abuseipdb.com/api/v2"
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   # Rate limiting: conservative for free tier
@@ -583,11 +582,11 @@ defmodule TamanduaServer.ThreatIntel.Sources.AbuseIPDB do
 
       case do_report_ip(ip, opts, state) do
         {{:ok, _}, new_state} ->
-          state = new_state
+          _state = new_state
           {:ok, ip}
 
         {{:error, reason}, new_state} ->
-          state = new_state
+          _state = new_state
           {:error, {ip, reason}}
       end
     end)

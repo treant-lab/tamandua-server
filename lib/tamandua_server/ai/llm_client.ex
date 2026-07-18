@@ -86,7 +86,6 @@ defmodule TamanduaServer.AI.LLMClient do
   # Rate limit retry config
   @rate_limit_codes [429, 529]
   @server_error_codes [500, 502, 503, 504]
-  @retryable_codes @rate_limit_codes ++ @server_error_codes
 
   # API endpoints
   @openai_chat_url "https://api.openai.com/v1/chat/completions"

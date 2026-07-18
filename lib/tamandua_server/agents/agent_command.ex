@@ -65,7 +65,51 @@ defmodule TamanduaServer.Agents.AgentCommand do
     update_agent
     deploy_breadcrumbs
     rotate_breadcrumbs
+    install_patches
+    rollback_patches
+    process_list
+    process_tree_list
+    process_kill
+    process_suspend
+    process_resume
+    process_set_priority
+    process_list_handles
+    process_dump
+    process_create_dump
+    memory_scan
+    memory_strings
+    network_connections
+    dns_cache
+    list_loaded_modules
+    osquery_query
+    file_list
+    file_download
+    file_upload
+    file_hash
+    registry_query
+    os_info
+    service_list
+    scheduled_tasks
+    startup_items
+    shell_execute
+    screen_capture
   )
+
+  # The trailing block above (file_list .. shell_execute) covers the live
+  # response wire types produced by LiveResponse.CommandExecutor
+  # (@command_contracts agent_command_type values) and implemented by the
+  # Rust agent (transport/mod.rs CommandType: FileList, FileDownload,
+  # FileUpload, FileHash, RegistryQuery, OsInfo, ServiceList, ScheduledTasks,
+  # StartupItems, ShellExecute). They were previously missing from this
+  # allowlist, so Worker.send_command -> AgentCommand.insert_new rejected
+  # them with :command_insert_failed before any dispatch happened.
+
+  @doc """
+  Returns the allowlist of command types accepted by the persistent command
+  queue (`changeset/2` and `create_changeset/2` validate inclusion in it).
+  """
+  @spec valid_command_types() :: [String.t()]
+  def valid_command_types, do: @valid_command_types
 
   @doc false
   def changeset(command, attrs) do
@@ -88,17 +132,18 @@ defmodule TamanduaServer.Agents.AgentCommand do
     |> validate_inclusion(:status, @valid_statuses)
     |> validate_inclusion(:command_type, @valid_command_types)
     |> validate_number(:priority, greater_than_or_equal_to: 0, less_than_or_equal_to: 10)
+    |> update_change(:command_params, &stringify_command_params/1)
     |> unique_constraint(:idempotency_key,
       name: :agent_commands_agent_id_idempotency_key_index
     )
   end
 
   @doc """
-  Creation changeset used by the worker's send_command path.
+  Creation changeset used by command queue producers.
 
-  Deliberately more permissive than `changeset/2` (which enforces the
-  command-type allowlist) to preserve the behavior of the previous raw-struct
-  insert, while still supporting the optional idempotency key.
+  Enforces the same command-type allowlist as `changeset/2`, stringifies
+  command parameter keys for the agent wire contract, and supports optional
+  idempotency for retry-safe queue insertion.
   """
   def create_changeset(command, attrs) do
     command
@@ -113,10 +158,22 @@ defmodule TamanduaServer.Agents.AgentCommand do
     ])
     |> validate_required([:agent_id, :command_type])
     |> validate_inclusion(:status, @valid_statuses)
+    |> validate_inclusion(:command_type, @valid_command_types)
+    |> validate_number(:priority, greater_than_or_equal_to: 0, less_than_or_equal_to: 10)
+    |> update_change(:command_params, &stringify_command_params/1)
     |> unique_constraint(:idempotency_key,
       name: :agent_commands_agent_id_idempotency_key_index
     )
   end
+
+  defp stringify_command_params(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), stringify_command_params(nested_value)}
+    end)
+  end
+
+  defp stringify_command_params(value) when is_list(value), do: Enum.map(value, &stringify_command_params/1)
+  defp stringify_command_params(value), do: value
 
   @doc """
   Insert a new command, honoring the optional idempotency key.
@@ -171,8 +228,11 @@ defmodule TamanduaServer.Agents.AgentCommand do
   (attempt cap / cooldown) are applied by callers via `dispatch_decision/2`.
   """
   def pending_for_agent(agent_id, limit \\ 50) do
+    now = utc_now_second()
+
     from(c in __MODULE__,
       where: c.agent_id == ^agent_id and c.status in ["pending", "sent"],
+      where: is_nil(c.expires_at) or c.expires_at > ^now,
       order_by: [desc: c.priority, asc: c.inserted_at],
       limit: ^limit
     )

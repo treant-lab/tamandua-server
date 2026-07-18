@@ -283,13 +283,15 @@ defmodule TamanduaServer.Jobs.NodeEnrichmentJob do
   defp is_external_ip?(_), do: false
 
   defp lookup_threat_intel(ip) do
-    # Optional: query threat intel service
-    case TamanduaServer.ThreatIntel.lookup_ip(ip) do
-      {:ok, data} ->
+    # Optional: query threat intel feed cache. The cache stores IOCs with a
+    # severity/tags shape (not score/categories), so map honestly: a cache
+    # hit means the IP appeared in a threat feed.
+    case TamanduaServer.ThreatIntel.lookup(:ip, ip) do
+      {:ok, ioc} ->
         {:ok, %{
-          threat_score: data[:score],
-          threat_categories: data[:categories],
-          is_malicious: data[:is_malicious]
+          threat_score: severity_to_score(ioc[:severity]),
+          threat_categories: ioc[:tags] || [],
+          is_malicious: true
         }}
 
       _ ->
@@ -298,4 +300,10 @@ defmodule TamanduaServer.Jobs.NodeEnrichmentJob do
   rescue
     _ -> {:error, :not_found}
   end
+
+  defp severity_to_score("critical"), do: 1.0
+  defp severity_to_score("high"), do: 0.8
+  defp severity_to_score("medium"), do: 0.5
+  defp severity_to_score("low"), do: 0.2
+  defp severity_to_score(_), do: 0.5
 end

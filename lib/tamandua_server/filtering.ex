@@ -551,7 +551,7 @@ defmodule TamanduaServer.Filtering do
 
   Returns top values from the database for auto-complete.
   """
-  def get_value_suggestions(field_name, scope, organization_id, limit \\ 100) do
+  def get_value_suggestions(_field_name, _scope, _organization_id, _limit \\ 100) do
     # This would query the actual data
     # For now, return empty list
     []

@@ -1,0 +1,66 @@
+{
+  "schema": "tamandua.trust_posture/v1",
+  "evidence_type": "synthetic_contract",
+  "external_claim_allowed": false,
+  "state": "degraded",
+  "risk_score": 48,
+  "confidence": 45,
+  "evaluated_at": "2026-07-15T18:00:00Z",
+  "reason_codes": [
+    "identity_not_verified",
+    "source_degraded:app_guard",
+    "source_missing:offline_checkpoint",
+    "source_unsupported:runtime_integrity"
+  ],
+  "evidence_completeness": {
+    "complete": false,
+    "required_sources": [
+      "device_identity",
+      "runtime_integrity",
+      "app_guard",
+      "offline_checkpoint"
+    ],
+    "present_sources": ["device_identity", "runtime_integrity", "app_guard"],
+    "fresh_sources": ["device_identity", "app_guard"],
+    "missing_sources": ["offline_checkpoint"],
+    "unsupported_sources": ["runtime_integrity"],
+    "degraded_sources": ["app_guard"],
+    "stale_sources": []
+  },
+  "provenance": {
+    "device_identity": {
+      "source": "device_identity",
+      "status": "available",
+      "freshness": "fresh",
+      "collected_at": "2026-07-15T17:58:00Z",
+      "assurance": "unverified",
+      "device_id": "fixture-device-id-must-not-render"
+    },
+    "runtime_integrity": {
+      "source": "runtime_integrity",
+      "status": "unsupported",
+      "freshness": "unsupported",
+      "collected_at": null,
+      "raw_evidence": "fixture-path-and-address-must-not-render"
+    },
+    "app_guard": {
+      "source": "app_guard",
+      "status": "degraded",
+      "freshness": "fresh",
+      "collected_at": "2026-07-15T17:57:00Z",
+      "decision": "observe"
+    },
+    "offline_checkpoint": {
+      "source": "offline_checkpoint",
+      "status": "missing",
+      "freshness": "missing",
+      "collected_at": null
+    }
+  },
+  "history": {
+    "previous_state": "suspected_clone",
+    "last_adverse_state": "suspected_clone",
+    "recovered_sources": ["device_identity"],
+    "recovery_observed": false
+  }
+}

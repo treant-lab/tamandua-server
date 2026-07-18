@@ -261,7 +261,7 @@ defmodule TamanduaServer.Alerts.Notifier do
   # Private Helpers
   # ===========================================================================
 
-  defp send_to_channels(alert, users, channels, opts \\ []) do
+  defp send_to_channels(alert, users, channels, _opts \\ []) do
     Enum.map(channels, fn channel ->
       try do
         result = case channel do

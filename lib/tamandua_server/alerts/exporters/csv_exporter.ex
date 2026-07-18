@@ -5,7 +5,6 @@ defmodule TamanduaServer.Alerts.Exporters.CSVExporter do
   Uses NimbleCSV for efficient CSV generation with Excel compatibility.
   """
 
-  alias TamanduaServer.Alerts.Alert
 
   # Define CSV module with Excel-compatible settings
   NimbleCSV.define(ExcelCSV, separator: ",", escape: "\"", moduledoc: false)

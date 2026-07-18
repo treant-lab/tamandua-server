@@ -198,7 +198,7 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         enabled: true
       }
 
-      {:ok, playbook} = Playbook.create_playbook(playbook_attrs)
+      {:ok, playbook} = Playbook.create_playbook(playbook_attrs, :system)
 
       assert playbook.name == "Test Playbook"
       assert playbook.enabled == true
@@ -211,15 +211,16 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         name: "List Test Playbook",
         steps: [%{"action" => "send_notification", "params" => %{}}],
         trigger_type: "manual"
-      })
+      }, :system)
 
-      {:ok, playbooks} = Playbook.list_playbooks()
+      {:ok, playbooks} = Playbook.list_playbooks(%{}, :system)
 
       assert is_list(playbooks)
     end
 
     test "executes manual playbook" do
-      {_org, agent} = create_agent_with_org()
+      {org, agent} = create_agent_with_org()
+      scope = {:organization, org.id}
 
       {:ok, playbook} = Playbook.create_playbook(%{
         name: "Manual Execution Test",
@@ -233,14 +234,14 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         ],
         enabled: true,
         require_approval: false
-      })
+      }, scope)
 
       context = %{
         agent_id: agent.id,
         severity: "high"
       }
 
-      {:ok, execution} = Playbook.execute_playbook(playbook.id, context)
+      {:ok, execution} = Playbook.execute_playbook(playbook.id, context, scope)
 
       assert execution.playbook_id == playbook.id
       assert execution.status in ["running", "pending_approval", "completed", "failed"]
@@ -256,14 +257,14 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         enabled: true,
         require_approval: true,
         approval_timeout_minutes: 30
-      })
+      }, :system)
 
-      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{})
+      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{}, :system)
 
       assert execution.status == "pending_approval"
 
       # Should appear in pending approvals
-      {:ok, pending} = Playbook.get_pending_approvals()
+      {:ok, pending} = Playbook.get_pending_approvals(:system)
       assert Enum.any?(pending, fn p -> p.execution.id == execution.id end)
     end
 
@@ -276,13 +277,13 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         ],
         enabled: true,
         require_approval: true
-      })
+      }, :system)
 
-      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{})
+      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{}, :system)
       assert execution.status == "pending_approval"
 
       approver_id = Ecto.UUID.generate()
-      {:ok, approved} = Playbook.approve_execution(execution.id, approver_id)
+      {:ok, approved} = Playbook.approve_execution(execution.id, approver_id, :system)
 
       assert approved.status == "running"
       assert approved.approved_by == approver_id
@@ -297,11 +298,12 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         ],
         enabled: true,
         require_approval: true
-      })
+      }, :system)
 
-      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{})
+      {:ok, execution} = Playbook.execute_playbook(playbook.id, %{}, :system)
 
-      {:ok, cancelled} = Playbook.cancel_execution(execution.id, "Test cancellation")
+      {:ok, cancelled} =
+        Playbook.cancel_execution(execution.id, "Test cancellation", :system)
 
       assert cancelled.status == "cancelled"
       assert cancelled.error_message == "Test cancellation"
@@ -313,12 +315,17 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         trigger_type: "manual",
         steps: [%{"action" => "send_notification", "params" => %{}}],
         enabled: true
-      })
+      }, :system)
 
-      {:ok, updated} = Playbook.update_playbook(playbook.id, %{
-        name: "Updated Playbook Name",
-        enabled: false
-      })
+      {:ok, updated} =
+        Playbook.update_playbook(
+          playbook.id,
+          %{
+            name: "Updated Playbook Name",
+            enabled: false
+          },
+          :system
+        )
 
       assert updated.name == "Updated Playbook Name"
       assert updated.enabled == false
@@ -329,18 +336,18 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         name: "Delete Test Playbook",
         trigger_type: "manual",
         steps: [%{"action" => "send_notification", "params" => %{}}]
-      })
+      }, :system)
 
-      {:ok, _deleted} = Playbook.delete_playbook(playbook.id)
+      {:ok, _deleted} = Playbook.delete_playbook(playbook.id, :system)
 
       # Should no longer be found
-      assert {:error, :not_found} = Playbook.get_playbook(playbook.id)
+      assert {:error, :not_found} = Playbook.get_playbook(playbook.id, :system)
     end
   end
 
   describe "automated response triggers" do
     test "alert triggers matching playbook" do
-      {_org, agent} = create_agent_with_org()
+      {org, agent} = create_agent_with_org()
 
       # Create playbook that triggers on high severity alerts
       {:ok, _playbook} = Playbook.create_playbook(%{
@@ -357,12 +364,13 @@ defmodule TamanduaServer.Integration.ResponseFlowTest do
         ],
         enabled: true,
         require_approval: false
-      })
+      }, {:organization, org.id})
 
       # Create a high severity alert
       alert = %{
         id: Ecto.UUID.generate(),
         agent_id: agent.id,
+        organization_id: org.id,
         severity: "high",
         title: "Test Alert",
         description: "Test alert for playbook trigger",

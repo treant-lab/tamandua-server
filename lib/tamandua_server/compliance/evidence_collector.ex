@@ -6,7 +6,7 @@ defmodule TamanduaServer.Compliance.EvidenceCollector do
   """
 
   require Logger
-  alias TamanduaServer.{Agents, Telemetry, Detection, Alerts, Audit}
+  alias TamanduaServer.{Agents}
   alias TamanduaServer.Compliance.Framework
 
   defmodule Evidence do
@@ -350,9 +350,10 @@ defmodule TamanduaServer.Compliance.EvidenceCollector do
       :adequacy_decisions -> gather_adequacy_decisions()
 
       # Organizational
+      # (:approval_records is handled by the identical clause in the
+      # access-control block above; a duplicate here was unreachable.)
       :policy_documents -> gather_policy_documents()
       :security_policy -> gather_security_policy()
-      :approval_records -> gather_approval_records()
       :policy_distribution -> gather_policy_distribution()
       :role_definitions -> gather_role_definitions()
       :responsibility_matrix -> gather_responsibility_matrix()

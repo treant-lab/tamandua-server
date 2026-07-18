@@ -2,7 +2,11 @@ import { test, expect } from '@playwright/test';
 import { login, waitForInertiaNavigation } from './helpers/auth';
 
 test.describe('Alerts Page', () => {
+  let pageErrors: string[];
+
   test.beforeEach(async ({ page }) => {
+    pageErrors = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
     await login(page, 'admin');
     await page.goto('/app/alerts');
     await waitForInertiaNavigation(page);
@@ -33,10 +37,20 @@ test.describe('Alerts Page', () => {
     const url = page.url();
     expect(url).toContain('/app/alerts');
 
-    // No JavaScript errors
-    const errors: string[] = [];
-    page.on('pageerror', err => errors.push(err.message));
     await page.waitForTimeout(1000);
-    expect(errors.length).toBe(0);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('alert detail renders without runtime reference errors', async ({ page }) => {
+    const detailLink = page.locator('a[href^="/app/alerts/"]').first();
+    if (await detailLink.count() === 0) {
+      test.skip(true, 'No alert detail is available in this environment');
+    }
+
+    await detailLink.click();
+    await waitForInertiaNavigation(page);
+    await expect(page).toHaveURL(/\/app\/alerts\/[^/]+$/);
+    await page.waitForTimeout(500);
+    expect(pageErrors).toEqual([]);
   });
 });

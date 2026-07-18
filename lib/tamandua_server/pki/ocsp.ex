@@ -149,7 +149,7 @@ defmodule TamanduaServer.PKI.OCSP do
   # Internal: orchestration
   # ===========================================================================
 
-  defp do_check(cert_der, issuer_der, cert_id, cache_key, opts) do
+  defp do_check(cert_der, _issuer_der, cert_id, cache_key, opts) do
     with {:ok, url} <- responder_url(cert_der, opts),
          {:ok, request_der} <- build_request(cert_id),
          {:ok, response_der} <- post_request(url, request_der, opts),

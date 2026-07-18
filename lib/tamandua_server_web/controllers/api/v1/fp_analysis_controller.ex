@@ -55,7 +55,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
 
     case result do
       {:ok, report} ->
-        AuditLog.log_action(user, "fp_report_created", %{
+        log_user_action(user, "fp_report_created", %{
           alert_id: alert_id,
           classification: classification
         })
@@ -280,7 +280,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
 
     case FPAnalysis.confirm_pattern(pattern_id, user_id, %{create_suppression: create_suppression}) do
       {:ok, pattern} ->
-        AuditLog.log_action(user, "fp_pattern_confirmed", %{pattern_id: pattern_id})
+        log_user_action(user, "fp_pattern_confirmed", %{pattern_id: pattern_id})
         json(conn, %{data: serialize_pattern(pattern), message: "Pattern confirmed"})
 
       {:error, :not_found} ->
@@ -307,7 +307,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
 
     case FPAnalysis.reject_pattern(pattern_id, user_id, reason) do
       {:ok, pattern} ->
-        AuditLog.log_action(user, "fp_pattern_rejected", %{pattern_id: pattern_id})
+        log_user_action(user, "fp_pattern_rejected", %{pattern_id: pattern_id})
         json(conn, %{data: serialize_pattern(pattern), message: "Pattern rejected"})
 
       {:error, :not_found} ->
@@ -373,7 +373,7 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
 
     case FPAnalysis.apply_recommendation(recommendation_id, user_id) do
       {:ok, recommendation} ->
-        AuditLog.log_action(user, "tuning_recommendation_applied", %{
+        log_user_action(user, "tuning_recommendation_applied", %{
           recommendation_id: recommendation_id
         })
         json(conn, %{data: serialize_recommendation(recommendation), message: "Recommendation applied"})
@@ -491,6 +491,19 @@ defmodule TamanduaServerWeb.API.V1.FPAnalysisController do
   # ===========================================================================
   # Helpers
   # ===========================================================================
+
+  # ===========================================================================
+  # Audit Helper
+  # ===========================================================================
+
+  defp log_user_action(user, action, details) do
+    AuditLog.log(%{
+      action: action,
+      user_id: user && user.id,
+      organization_id: user && user.organization_id,
+      details: details
+    })
+  end
 
   defp serialize_report(report) do
     %{

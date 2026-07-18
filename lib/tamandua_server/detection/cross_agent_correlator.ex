@@ -274,10 +274,11 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
 
   defp process_detection(agent_id, detection) do
     storyline_id = extract_storyline_id(detection)
+    event_id = extract_event_id(detection)
     iocs = extract_iocs(detection)
 
     now = DateTime.utc_now()
-    entry = %{agent_id: agent_id, storyline_id: storyline_id, timestamp: now}
+    entry = %{agent_id: agent_id, storyline_id: storyline_id, event_id: event_id, timestamp: now}
 
     iocs_indexed = 0
     correlations_created = 0
@@ -309,7 +310,7 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
             end
 
             # Check for campaign threshold (3+ distinct agents)
-            all_entries_now = [entry | existing_entries] |> Enum.uniq_by(fn e -> {e.agent_id, e.storyline_id} end)
+            all_entries_now = [entry | existing_entries] |> Enum.uniq_by(&entry_key/1)
             distinct_agents =
               all_entries_now
               |> Enum.map(& &1.agent_id)
@@ -344,15 +345,15 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
   end
 
   defp add_ioc_entry(_key, entry, existing_entries) do
-    # Deduplicate: don't add the same {agent_id, storyline_id} pair twice
+    # Deduplicate: don't add the same {agent_id, storyline_id, event_id} tuple twice.
     already_exists = Enum.any?(existing_entries, fn e ->
-      e.agent_id == entry.agent_id and e.storyline_id == entry.storyline_id
+      same_entry_key?(e, entry)
     end)
 
     if already_exists do
       # Update the timestamp for the existing entry
       Enum.map(existing_entries, fn e ->
-        if e.agent_id == entry.agent_id and e.storyline_id == entry.storyline_id do
+        if same_entry_key?(e, entry) do
           %{e | timestamp: entry.timestamp}
         else
           e
@@ -361,6 +362,12 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
     else
       [entry | existing_entries]
     end
+  end
+
+  defp same_entry_key?(left, right), do: entry_key(left) == entry_key(right)
+
+  defp entry_key(entry) do
+    {Map.get(entry, :agent_id), Map.get(entry, :storyline_id), Map.get(entry, :event_id)}
   end
 
   # ------------------------------------------------------------------
@@ -463,91 +470,224 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
       |> Enum.map(& &1.agent_id)
       |> Enum.uniq()
 
-    if length(distinct_agents) >= @campaign_agent_threshold do
-      # Build the campaign alert
-      agent_ids = distinct_agents
-      storyline_ids =
-        recent_entries
-        |> Enum.map(& &1.storyline_id)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq()
+    cond do
+      length(distinct_agents) < @campaign_agent_threshold ->
+        0
 
-      title = build_campaign_title(ioc_type, ioc_value, length(agent_ids))
-      description = build_campaign_description(ioc_type, ioc_value, agent_ids, storyline_ids)
+      true ->
+        case resolve_campaign_organization(recent_entries) do
+          {:ok, organization_id} ->
+            create_campaign_alert(ioc_type, ioc_value, recent_entries, distinct_agents, organization_id, now)
 
-      alert_attrs = %{
-        severity: "critical",
-        title: title,
-        description: description,
-        event_ids: [],
-        mitre_tactics: campaign_tactics_for_ioc_type(ioc_type),
-        mitre_techniques: campaign_techniques_for_ioc_type(ioc_type),
-        threat_score: 0.95,
-        detection_metadata: %{
-          "rule_type" => "cross_agent_campaign",
-          "rule_name" => "Cross-Agent Campaign: #{ioc_type}",
-          "ioc_type" => to_string(ioc_type),
-          "ioc_value" => ioc_value,
-          "affected_agents" => agent_ids,
-          "affected_storylines" => storyline_ids,
-          "agent_count" => length(agent_ids),
-          "confidence" => 0.95
-        },
-        evidence: %{
-          "campaign_indicator" => %{
-            "ioc_type" => to_string(ioc_type),
-            "ioc_value" => ioc_value,
-            "agent_count" => length(agent_ids),
-            "agents" => agent_ids,
-            "storylines" => storyline_ids
-          }
-        }
-      }
+          {:error, :missing_organization} ->
+            Logger.warning(
+              "[CrossAgentCorrelator] Skipping campaign alert for #{ioc_type}=#{truncate_value(ioc_value)}: " <>
+                "could not resolve organization for all affected agents"
+            )
 
-      # Try to associate with the first agent (campaign alerts span agents)
-      first_agent_id = List.first(agent_ids)
-      alert_attrs = Map.put(alert_attrs, :agent_id, first_agent_id)
+            0
 
-      org_id = try do
-        TamanduaServer.Agents.OrgLookup.get_org_id(first_agent_id)
-      rescue
-        _ -> nil
-      catch
-        :exit, _ -> nil
-      end
+          {:error, {:cross_tenant, organization_ids}} ->
+            Logger.warning(
+              "[CrossAgentCorrelator] Skipping cross-tenant campaign alert for " <>
+                "#{ioc_type}=#{truncate_value(ioc_value)} across organizations #{inspect(organization_ids)}"
+            )
 
-      alert_attrs = if org_id do
-        Map.put(alert_attrs, :organization_id, org_id)
-      else
-        alert_attrs
-      end
-
-      case TamanduaServer.Alerts.create_alert(alert_attrs) do
-        {:ok, alert} ->
-          Logger.warning(
-            "[CrossAgentCorrelator] Campaign alert created: #{alert.id} -- " <>
-              "#{ioc_type}=#{truncate_value(ioc_value)} across #{length(agent_ids)} agents"
-          )
-
-          broadcast_campaign(%{
-            alert_id: alert.id,
-            ioc_type: ioc_type,
-            ioc_value: ioc_value,
-            agent_ids: agent_ids,
-            storyline_ids: storyline_ids,
-            detected_at: now
-          })
-
-          1
-
-        {:error, changeset} ->
-          Logger.error("[CrossAgentCorrelator] Failed to create campaign alert: #{inspect(changeset)}")
-          0
-      end
-    else
-      0
+            0
+        end
     end
   end
+
+  defp create_campaign_alert(ioc_type, ioc_value, recent_entries, distinct_agents, organization_id, now) do
+    agent_ids = Enum.sort(distinct_agents)
+
+    storyline_ids =
+      recent_entries
+      |> Enum.map(& &1.storyline_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    event_ids = campaign_event_ids(recent_entries)
+    contributing_events = campaign_contributing_events(recent_entries)
+    correlation_data = campaign_correlation_data(ioc_type, ioc_value, recent_entries, agent_ids, storyline_ids)
+
+    title = build_campaign_title(ioc_type, ioc_value, length(agent_ids))
+    description = build_campaign_description(ioc_type, ioc_value, agent_ids, storyline_ids)
+
+    alert_attrs = %{
+      severity: "critical",
+      title: title,
+      description: description,
+      event_ids: event_ids,
+      contributing_events: contributing_events,
+      correlation_data: correlation_data,
+      mitre_tactics: campaign_tactics_for_ioc_type(ioc_type),
+      mitre_techniques: campaign_techniques_for_ioc_type(ioc_type),
+      threat_score: 0.95,
+      detection_metadata: %{
+        "rule_type" => "cross_agent_campaign",
+        "rule_name" => "Cross-Agent Campaign: #{ioc_type}",
+        "ioc_type" => to_string(ioc_type),
+        "ioc_value" => ioc_value,
+        "affected_agents" => agent_ids,
+        "affected_storylines" => storyline_ids,
+        "event_ids" => event_ids,
+        "contributing_events" => contributing_events,
+        "agent_count" => length(agent_ids),
+        "confidence" => 0.95
+      },
+      evidence: %{
+        "campaign_indicator" => %{
+          "ioc_type" => to_string(ioc_type),
+          "ioc_value" => ioc_value,
+          "agent_count" => length(agent_ids),
+          "agents" => agent_ids,
+          "storylines" => storyline_ids,
+          "event_ids" => event_ids,
+          "contributing_events" => contributing_events
+        }
+      }
+    }
+
+    first_agent_id = List.first(agent_ids)
+
+    alert_attrs =
+      alert_attrs
+      |> Map.put(:agent_id, first_agent_id)
+      |> Map.put(:organization_id, organization_id)
+
+    case TamanduaServer.Alerts.create_alert(alert_attrs) do
+      {:ok, alert} ->
+        Logger.warning(
+          "[CrossAgentCorrelator] Campaign alert created: #{alert.id} -- " <>
+            "#{ioc_type}=#{truncate_value(ioc_value)} across #{length(agent_ids)} agents"
+        )
+
+        broadcast_campaign(%{
+          alert_id: alert.id,
+          ioc_type: ioc_type,
+          ioc_value: ioc_value,
+          agent_ids: agent_ids,
+          storyline_ids: storyline_ids,
+          event_ids: event_ids,
+          contributing_events: contributing_events,
+          detected_at: now
+        })
+
+        1
+
+      {:error, changeset} ->
+        Logger.error("[CrossAgentCorrelator] Failed to create campaign alert: #{inspect(changeset)}")
+        0
+    end
+  end
+
+  @doc false
+  def campaign_event_ids(entries) when is_list(entries) do
+    entries
+    |> Enum.map(&Map.get(&1, :event_id))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.filter(&valid_uuid?/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc false
+  def campaign_contributing_events(entries) when is_list(entries) do
+    event_refs =
+      entries
+      |> Enum.map(&Map.get(&1, :event_id))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&to_string/1)
+
+    storyline_refs =
+      entries
+      |> Enum.map(&Map.get(&1, :storyline_id))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&"storyline:#{&1}")
+
+    (event_refs ++ storyline_refs)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc false
+  def campaign_correlation_data(ioc_type, ioc_value, entries, agent_ids, storyline_ids) do
+    event_ids = campaign_event_ids(entries)
+
+    all_event_refs =
+      entries
+      |> Enum.map(&Map.get(&1, :event_id))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    %{
+      "correlation_type" => "cross_agent_campaign",
+      "ioc_type" => to_string(ioc_type),
+      "ioc_value" => ioc_value,
+      "agent_ids" => Enum.sort(agent_ids),
+      "storyline_ids" => Enum.sort(storyline_ids),
+      "event_ids" => event_ids,
+      "event_refs" => all_event_refs,
+      "contributing_events" => campaign_contributing_events(entries),
+      "entry_links" => campaign_entry_links(entries)
+    }
+  end
+
+  defp campaign_entry_links(entries) do
+    entries
+    |> Enum.map(fn entry ->
+      %{
+        "agent_id" => Map.get(entry, :agent_id),
+        "event_id" => maybe_to_string(Map.get(entry, :event_id)),
+        "storyline_id" => maybe_to_string(Map.get(entry, :storyline_id))
+      }
+    end)
+    |> Enum.sort_by(fn link ->
+      {link["agent_id"] || "", link["event_id"] || "", link["storyline_id"] || ""}
+    end)
+  end
+
+  defp resolve_campaign_organization(entries) do
+    org_ids =
+      entries
+      |> Enum.map(&Map.get(&1, :agent_id))
+      |> Enum.uniq()
+      |> Enum.map(&resolve_agent_org_id/1)
+
+    cond do
+      Enum.any?(org_ids, &is_nil/1) ->
+        {:error, :missing_organization}
+
+      true ->
+        distinct_org_ids = org_ids |> Enum.uniq() |> Enum.sort()
+
+        case distinct_org_ids do
+          [org_id] -> {:ok, org_id}
+          _ -> {:error, {:cross_tenant, distinct_org_ids}}
+        end
+    end
+  end
+
+  defp resolve_agent_org_id(agent_id) do
+    try do
+      TamanduaServer.Agents.OrgLookup.get_org_id(agent_id)
+    rescue
+      _ -> nil
+    catch
+      :exit, _ -> nil
+    end
+  end
+
+  defp valid_uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  defp valid_uuid?(_), do: false
+
+  defp maybe_to_string(nil), do: nil
+  defp maybe_to_string(value), do: to_string(value)
 
   # ------------------------------------------------------------------
   # IOC Extraction
@@ -684,6 +824,19 @@ defmodule TamanduaServer.Detection.CrossAgentCorrelator do
       detection["storyline_id"] ||
       get_in(detection, [:detection_metadata, "storyline_id"]) ||
       get_in(detection, [:detection_metadata, :storyline_id])
+  end
+
+  defp extract_event_id(detection) do
+    detection[:event_id] ||
+      detection["event_id"] ||
+      detection[:id] ||
+      detection["id"] ||
+      detection[:source_event_id] ||
+      detection["source_event_id"] ||
+      get_in(detection, [:payload, "event_id"]) ||
+      get_in(detection, [:payload, :event_id]) ||
+      get_in(detection, [:detection_metadata, "event_id"]) ||
+      get_in(detection, [:detection_metadata, :event_id])
   end
 
   # ------------------------------------------------------------------

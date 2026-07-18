@@ -196,6 +196,30 @@ defmodule TamanduaServer.XDR.NormalizedEvent do
   def log_formats, do: @log_formats
 
   @doc """
+  Builds an in-memory `%NormalizedEvent{}` struct from a parsed event map.
+
+  Known schema fields are set directly; vendor-specific extra keys are
+  preserved under `:parsed_fields` (mirroring `normalize/3` policy).
+  `source_type` atoms are stringified and `timestamp`/`received_at`
+  default to now.
+
+  This is a plain constructor for parser pipelines -- persistence must
+  still go through `changeset/2`, which performs validation.
+  """
+  def new(attrs) when is_map(attrs) do
+    {known, extras} = Map.split(attrs, __schema__(:fields))
+
+    known =
+      known
+      |> Map.update(:source_type, "custom", &to_string/1)
+      |> Map.put_new_lazy(:timestamp, &DateTime.utc_now/0)
+      |> Map.put_new_lazy(:received_at, &DateTime.utc_now/0)
+      |> Map.update(:parsed_fields, extras, &Map.merge(extras, &1))
+
+    struct(__MODULE__, known)
+  end
+
+  @doc """
   Normalizes raw event data into a standardized format.
   Takes vendor-specific parsed fields and maps them to normalized fields.
   """

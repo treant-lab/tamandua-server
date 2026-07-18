@@ -10,8 +10,8 @@ defmodule TamanduaServerWeb.API.V1.RelayController do
   Relay requests are authenticated via API key (X-Tamandua-Relay-Key header).
   Keys are issued to registered self-hosted operators.
 
-  If no relay key is configured, the endpoint stays open for local lab use.
-  Configure `TAMANDUA_RELAY_API_KEY` before exposing it publicly.
+  The endpoint fails closed when no relay key is configured. Configure
+  `TAMANDUA_RELAY_API_KEY` before enabling the relay.
 
   ## Endpoints
 
@@ -62,6 +62,11 @@ defmodule TamanduaServerWeb.API.V1.RelayController do
         conn
         |> put_status(:unauthorized)
         |> json(%{error: "Invalid or missing relay API key"})
+
+      {:error, :relay_not_configured} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "Relay authentication is not configured"})
 
       {:error, :invalid_attestation, reason} ->
         conn
@@ -115,16 +120,23 @@ defmodule TamanduaServerWeb.API.V1.RelayController do
     expected_key = relay_api_key()
 
     cond do
-      is_nil(expected_key) or expected_key == "" ->
-        :ok
+      not (is_binary(expected_key) and byte_size(expected_key) > 0) ->
+        {:error, :relay_not_configured}
 
-      get_req_header(conn, "x-tamandua-relay-key") == [expected_key] ->
+      relay_key_matches?(get_req_header(conn, "x-tamandua-relay-key"), expected_key) ->
         :ok
 
       true ->
         {:error, :unauthorized}
     end
   end
+
+  defp relay_key_matches?([provided_key], expected_key)
+       when byte_size(provided_key) == byte_size(expected_key) do
+    Plug.Crypto.secure_compare(provided_key, expected_key)
+  end
+
+ defp relay_key_matches?(_provided_keys, _expected_key), do: false
 
   defp validate_attestation(params) do
     required_fields = ["ih", "s", "mt"]

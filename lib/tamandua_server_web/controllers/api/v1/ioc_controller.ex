@@ -2,106 +2,172 @@ defmodule TamanduaServerWeb.API.V1.IOCController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Detection.IOCs
-  alias TamanduaServer.Detection.Engine
+  alias TamanduaServer.Detection.IOCReload
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
+
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :threat_intel_read] when action in [:index, :show]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :threat_intel_add] when action in [:create, :bulk_create]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :threat_intel_manage] when action in [:update, :delete]
+  )
 
   def index(conn, params) do
-    filters = %{
-      type: params["type"],
-      enabled: params["enabled"]
-    }
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      filters = %{
+        type: params["type"],
+        enabled: params["enabled"],
+        organization_id: organization_id
+      }
 
-    iocs = IOCs.list_iocs(filters)
-    json(conn, %{data: Enum.map(iocs, &serialize/1)})
+      iocs = IOCs.list_iocs(filters)
+      json(conn, %{data: Enum.map(iocs, &serialize/1)})
+    end
   end
 
   def show(conn, %{"id" => id}) do
-    ioc = IOCs.get_ioc!(id)
-    json(conn, %{data: serialize(ioc)})
+    with {:ok, organization_id} <- current_organization_id(conn),
+         %{} = ioc <- IOCs.get_ioc_for_organization(organization_id, id) do
+      json(conn, %{data: serialize(ioc)})
+    else
+      nil -> {:error, :not_found}
+      error -> error
+    end
   end
 
   def create(conn, params) do
-    case IOCs.create_ioc(params) do
-      {:ok, ioc} ->
-        # Reload IOCs into the detection engine ETS cache so workers see the new IOC
-        schedule_ioc_reload()
+    with {:ok, organization_id} <- current_organization_id(conn) do
+      case IOCs.create_ioc(Map.put(params, "organization_id", organization_id)) do
+        {:ok, ioc} ->
+          schedule_ioc_reload()
 
-        conn
-        |> put_status(:created)
-        |> json(%{data: serialize(ioc)})
+          conn
+          |> put_status(:created)
+          |> json(%{data: serialize(ioc)})
 
-      {:error, changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{errors: format_errors(changeset)})
+        {:error, %Ecto.Changeset{} = changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
+
+        {:error, _reason} ->
+          {:error, :unprocessable_entity}
+      end
     end
   end
 
   def update(conn, %{"id" => id} = params) do
-    ioc = IOCs.get_ioc!(id)
+    with {:ok, organization_id} <- current_organization_id(conn),
+         %{} = ioc <- IOCs.get_owned_ioc_for_organization(organization_id, id) do
+      case IOCs.update_ioc(ioc, Map.delete(params, "organization_id")) do
+        {:ok, ioc} ->
+          schedule_ioc_reload()
+          json(conn, %{data: serialize(ioc)})
 
-    case IOCs.update_ioc(ioc, params) do
-      {:ok, ioc} ->
-        schedule_ioc_reload()
-        json(conn, %{data: serialize(ioc)})
-
-      {:error, changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{errors: format_errors(changeset)})
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
+      end
+    else
+      nil -> {:error, :not_found}
+      error -> error
     end
   end
 
   def delete(conn, %{"id" => id}) do
-    ioc = IOCs.get_ioc!(id)
+    with {:ok, organization_id} <- current_organization_id(conn),
+         %{} = ioc <- IOCs.get_owned_ioc_for_organization(organization_id, id) do
+      case IOCs.delete_ioc(ioc) do
+        {:ok, _} ->
+          schedule_ioc_reload()
+          send_resp(conn, :no_content, "")
 
-    case IOCs.delete_ioc(ioc) do
-      {:ok, _} ->
-        schedule_ioc_reload()
-        send_resp(conn, :no_content, "")
-
-      {:error, _} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: "Failed to delete IOC"})
+        {:error, _} ->
+          conn
+          |> put_status(400)
+          |> json(%{error: "Failed to delete IOC"})
+      end
+    else
+      nil -> {:error, :not_found}
+      error -> error
     end
   end
 
-  def bulk_create(conn, %{"iocs" => iocs_params}) do
-    results = Enum.map(iocs_params, fn params ->
-      case IOCs.create_ioc(params) do
-        {:ok, ioc} -> {:ok, serialize(ioc)}
-        {:error, changeset} -> {:error, format_errors(changeset)}
-      end
-    end)
-
-    successful = Enum.filter(results, fn {status, _} -> status == :ok end) |> length()
-    failed = length(results) - successful
-
-    # Reload IOCs into detection engine ETS if any were successfully created
-    if successful > 0, do: schedule_ioc_reload()
-
-    json(conn, %{
-      data: %{
-        successful: successful,
-        failed: failed,
-        results: Enum.map(results, fn
-          {:ok, ioc} -> %{success: true, data: ioc}
-          {:error, errors} -> %{success: false, errors: errors}
+  def bulk_create(conn, %{"iocs" => iocs_params})
+      when is_list(iocs_params) and length(iocs_params) <= 100 do
+    with {:ok, organization_id} <- current_organization_id(conn),
+         true <- Enum.all?(iocs_params, &is_map/1) do
+      results =
+        Enum.map(iocs_params, fn params ->
+          case IOCs.create_ioc(Map.put(params, "organization_id", organization_id)) do
+            {:ok, ioc} -> {:ok, serialize(ioc)}
+            {:error, %Ecto.Changeset{} = changeset} -> {:error, format_errors(changeset)}
+            {:error, reason} -> {:error, %{scope: [to_string(reason)]}}
+          end
         end)
-      }
-    })
+
+      successful = Enum.count(results, fn {status, _} -> status == :ok end)
+      failed = length(results) - successful
+
+      if successful > 0, do: schedule_ioc_reload()
+
+      json(conn, %{
+        data: %{
+          successful: successful,
+          failed: failed,
+          results:
+            Enum.map(results, fn
+              {:ok, ioc} -> %{success: true, data: ioc}
+              {:error, errors} -> %{success: false, errors: errors}
+            end)
+        }
+      })
+    else
+      false ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "every IOC entry must be an object"})
+
+      error ->
+        error
+    end
   end
 
-  # Reload IOCs into the detection engine ETS table asynchronously.
-  # Uses Task.start to avoid blocking the API response while the
-  # ETS table is being refreshed from the database.
-  defp schedule_ioc_reload do
-    Task.start(fn ->
-      Engine.reload_iocs()
-    end)
+  def bulk_create(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "iocs must contain at most 100 entries"})
   end
+
+  # Admit a durable, coalesced IOC snapshot reload.
+  defp schedule_ioc_reload do
+    IOCReload.schedule()
+  end
+
+  defp current_organization_id(conn) do
+    organization_id =
+      conn.assigns[:current_organization_id] ||
+        field(conn.assigns[:current_user], :organization_id)
+
+    if is_binary(organization_id) and organization_id != "" do
+      {:ok, organization_id}
+    else
+      {:error, :unauthorized}
+    end
+  end
+
+  defp field(%{} = value, key), do: Map.get(value, key) || Map.get(value, to_string(key))
+  defp field(_, _), do: nil
 
   defp serialize(ioc) do
     %{

@@ -29,9 +29,6 @@ defmodule TamanduaServer.XDR.Correlator do
   require Logger
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.XDR.NormalizedEvent
-  alias TamanduaServer.Agents.OrgLookup
-  alias TamanduaServer.Detection.EventTypes
 
   # ETS tables for correlation
   @xdr_events_table :xdr_correlation_events
@@ -160,7 +157,8 @@ defmodule TamanduaServer.XDR.Correlator do
   ]
 
   # Advanced cross-domain attack patterns (CrowdStrike-level detection)
-  @cross_source_patterns [
+  defp cross_source_patterns do
+    [
     # Phishing to Endpoint Execution
     %{
       name: "phishing_to_execution",
@@ -359,7 +357,8 @@ defmodule TamanduaServer.XDR.Correlator do
         %{source_type: :network, action: ~r/outbound|connect/i, dest_suspicious: true, time_offset_max_ms: 600_000}
       ]
     }
-  ]
+    ]
+  end
 
   defstruct [
     config: @default_config,
@@ -626,12 +625,89 @@ defmodule TamanduaServer.XDR.Correlator do
     {:reply, state.stats, state}
   end
 
+  # ML correlation calls (moved up to keep handle_call/3 clauses contiguous)
+  @impl true
+  def handle_call({:ml_correlate, event1, event2}, _from, state) do
+    score = calculate_ml_correlation_score(event1, event2, state.config)
+    new_state = update_stat(state, :ml_correlations, 1)
+    {:reply, {:ok, score}, new_state}
+  end
+
+  @impl true
+  def handle_call({:group_incident, events, opts}, _from, state) do
+    case do_group_incident(events, opts, state.config) do
+      {:ok, incident} ->
+        :ets.insert(@incident_table, {incident.id, incident})
+        new_state = update_stat(state, :incidents_grouped, 1)
+        {:reply, {:ok, incident}, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:list_incidents, opts}, _from, state) do
+    incidents = :ets.tab2list(@incident_table)
+    |> Enum.map(fn {_id, incident} -> incident end)
+    |> filter_incidents(opts)
+    |> Enum.sort_by(& &1[:created_at], {:desc, DateTime})
+
+    {:reply, {:ok, incidents}, state}
+  end
+
+  @impl true
+  def handle_call({:get_incident, incident_id}, _from, state) do
+    case :ets.lookup(@incident_table, incident_id) do
+      [{^incident_id, incident}] -> {:reply, {:ok, incident}, state}
+      [] -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:build_entity_graph, entity_type, entity_value, opts}, _from, state) do
+    graph = do_build_entity_graph(entity_type, entity_value, opts, state.config)
+    new_state = update_stat(state, :entity_graph_nodes, map_size(graph.nodes))
+    {:reply, {:ok, graph}, new_state}
+  end
+
+  @impl true
+  def handle_call({:get_cross_domain_chains, opts}, _from, state) do
+    chains = do_get_cross_domain_chains(opts, state.config)
+    new_state = update_stat(state, :cross_domain_detections, length(chains))
+    {:reply, {:ok, chains}, new_state}
+  end
+
+  @impl true
+  def handle_call({:calculate_entity_threat_score, entity_type, entity_value}, _from, state) do
+    score = do_calculate_entity_threat_score(entity_type, entity_value, state.config)
+    {:reply, {:ok, score}, state}
+  end
+
+  @impl true
+  def handle_call({:export_correlation, id, format}, _from, state) do
+    result = do_export_correlation(id, format)
+    {:reply, result, state}
+  end
+
   @impl true
   def handle_info(:cleanup, state) do
     cleanup_old_events(state.config)
     schedule_cleanup(state.config.cleanup_interval_ms)
     {:noreply, state}
   end
+
+  @impl true
+  def handle_info(:analyze_incidents, state) do
+    # Periodic incident analysis and auto-grouping
+    if state.config.auto_group_incidents do
+      auto_group_related_alerts(state.config)
+    end
+    schedule_incident_analysis(60_000)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
 
   # ============================================================================
   # Event Indexing
@@ -724,7 +800,7 @@ defmodule TamanduaServer.XDR.Correlator do
 
   defp do_correlate_with_endpoint(xdr_event, config) do
     window_ms = config.correlation_window_ms
-    now = System.system_time(:millisecond)
+    _now = System.system_time(:millisecond)
     event_ts = event_timestamp_ms(xdr_event)
 
     # Get correlation criteria from XDR event
@@ -793,7 +869,7 @@ defmodule TamanduaServer.XDR.Correlator do
     |> Enum.map(fn {_id, entry} -> entry.event end)
   end
 
-  defp match_criteria?(event, criteria) when map_size(criteria) == 0, do: false
+  defp match_criteria?(_event, criteria) when map_size(criteria) == 0, do: false
   defp match_criteria?(event, criteria) do
     payload = event[:payload] || event
 
@@ -1224,11 +1300,11 @@ defmodule TamanduaServer.XDR.Correlator do
 
   defp check_cross_source_patterns(event, config) do
     window_ms = config.correlation_window_ms
-    event_ts = event_timestamp_ms(event)
-    source_type = event[:source_type]
+    _event_ts = event_timestamp_ms(event)
+    _source_type = event[:source_type]
 
     # Check each pattern
-    @cross_source_patterns
+    cross_source_patterns()
     |> Enum.flat_map(fn pattern ->
       if matches_pattern_step?(event, pattern.pattern, 0) do
         # Look for preceding steps
@@ -1437,7 +1513,7 @@ defmodule TamanduaServer.XDR.Correlator do
     |> clamp_integer(@default_timeline_limit, 1, @max_timeline_limit)
   end
 
-  defp clamp_integer(value, default, min_value, max_value) when is_integer(value) do
+  defp clamp_integer(value, _default, min_value, max_value) when is_integer(value) do
     value
     |> max(min_value)
     |> min(max_value)
@@ -1515,86 +1591,6 @@ defmodule TamanduaServer.XDR.Correlator do
   defp update_stat(state, key, increment) do
     %{state | stats: Map.update(state.stats, key, increment, & &1 + increment)}
   end
-
-  # ============================================================================
-  # ML Correlation Handle Calls
-  # ============================================================================
-
-  @impl true
-  def handle_call({:ml_correlate, event1, event2}, _from, state) do
-    score = calculate_ml_correlation_score(event1, event2, state.config)
-    new_state = update_stat(state, :ml_correlations, 1)
-    {:reply, {:ok, score}, new_state}
-  end
-
-  @impl true
-  def handle_call({:group_incident, events, opts}, _from, state) do
-    case do_group_incident(events, opts, state.config) do
-      {:ok, incident} ->
-        :ets.insert(@incident_table, {incident.id, incident})
-        new_state = update_stat(state, :incidents_grouped, 1)
-        {:reply, {:ok, incident}, new_state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:list_incidents, opts}, _from, state) do
-    incidents = :ets.tab2list(@incident_table)
-    |> Enum.map(fn {_id, incident} -> incident end)
-    |> filter_incidents(opts)
-    |> Enum.sort_by(& &1[:created_at], {:desc, DateTime})
-
-    {:reply, {:ok, incidents}, state}
-  end
-
-  @impl true
-  def handle_call({:get_incident, incident_id}, _from, state) do
-    case :ets.lookup(@incident_table, incident_id) do
-      [{^incident_id, incident}] -> {:reply, {:ok, incident}, state}
-      [] -> {:reply, {:error, :not_found}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:build_entity_graph, entity_type, entity_value, opts}, _from, state) do
-    graph = do_build_entity_graph(entity_type, entity_value, opts, state.config)
-    new_state = update_stat(state, :entity_graph_nodes, map_size(graph.nodes))
-    {:reply, {:ok, graph}, new_state}
-  end
-
-  @impl true
-  def handle_call({:get_cross_domain_chains, opts}, _from, state) do
-    chains = do_get_cross_domain_chains(opts, state.config)
-    new_state = update_stat(state, :cross_domain_detections, length(chains))
-    {:reply, {:ok, chains}, new_state}
-  end
-
-  @impl true
-  def handle_call({:calculate_entity_threat_score, entity_type, entity_value}, _from, state) do
-    score = do_calculate_entity_threat_score(entity_type, entity_value, state.config)
-    {:reply, {:ok, score}, state}
-  end
-
-  @impl true
-  def handle_call({:export_correlation, id, format}, _from, state) do
-    result = do_export_correlation(id, format)
-    {:reply, result, state}
-  end
-
-  @impl true
-  def handle_info(:analyze_incidents, state) do
-    # Periodic incident analysis and auto-grouping
-    if state.config.auto_group_incidents do
-      auto_group_related_alerts(state.config)
-    end
-    schedule_incident_analysis(60_000)
-    {:noreply, state}
-  end
-
-  def handle_info(_msg, state), do: {:noreply, state}
 
   # ============================================================================
   # ML Correlation Engine
@@ -1825,7 +1821,7 @@ defmodule TamanduaServer.XDR.Correlator do
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
 
-  defp calculate_incident_confidence(events, config) do
+  defp calculate_incident_confidence(events, _config) do
     # Base confidence on various factors
     event_count_score = min(1.0, length(events) / 10.0) * 0.2
     source_diversity_score = (events |> Enum.map(& &1[:source_type]) |> Enum.uniq() |> length()) / 5.0 * 0.3
@@ -1978,7 +1974,7 @@ defmodule TamanduaServer.XDR.Correlator do
     }
   end
 
-  defp explore_entity_connections(node, 0, _window_ms, nodes, edges), do: {nodes, edges}
+  defp explore_entity_connections(_node, 0, _window_ms, nodes, edges), do: {nodes, edges}
   defp explore_entity_connections(node, depth, window_ms, nodes, edges) do
     # Find events related to this entity
     related_events = find_events_for_entity(node.type, node.value, window_ms)

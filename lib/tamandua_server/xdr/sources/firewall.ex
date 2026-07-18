@@ -14,7 +14,6 @@ defmodule TamanduaServer.XDR.Sources.Firewall do
 
   require Logger
 
-  alias TamanduaServer.XDR.NormalizedEvent
 
   @vendors %{
     "palo_alto" => &__MODULE__.parse_palo_alto/1,

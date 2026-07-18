@@ -13,8 +13,7 @@ defmodule Tamandua.Updates.UpdateServer do
 
   use GenServer
   require Logger
-  alias Tamandua.Updates.{VersionManager, BinarySigner, RolloutOrchestrator}
-  alias Tamandua.Agents
+  alias Tamandua.Updates.{VersionManager, RolloutOrchestrator}
 
   @type download_token :: String.t()
 

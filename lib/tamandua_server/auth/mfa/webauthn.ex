@@ -172,7 +172,7 @@ defmodule TamanduaServer.Auth.MFA.WebAuthn do
     end
   end
 
-  defp parse_attestation_object(attestation_object) do
+  defp parse_attestation_object(_attestation_object) do
     # This is a simplified placeholder
     # In production, use Wax.Metadata to parse CBOR and extract auth data
     {:ok,
@@ -184,7 +184,7 @@ defmodule TamanduaServer.Auth.MFA.WebAuthn do
      }}
   end
 
-  defp verify_signature(authenticator_data, client_data_json, signature, credential) do
+  defp verify_signature(_authenticator_data, _client_data_json, _signature, _credential) do
     # This is a simplified placeholder
     # In production, reconstruct the signed data and verify using the public key
     # signed_data = authenticator_data <> :crypto.hash(:sha256, client_data_json)

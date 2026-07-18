@@ -146,8 +146,18 @@ defmodule TamanduaServer.Workers.RemediationWorker do
       alert_id: workflow.alert_id
     }
 
-    # Trigger escalation via existing mechanism
-    TamanduaServer.Alerts.Notifier.send_escalation_notification(alert)
+    # Trigger escalation via existing mechanism.
+    # Notifier.send_escalation/2 requires an escalation rule (for contact
+    # resolution); notify via every rule matching this alert.
+    case TamanduaServer.Alerts.EscalationRules.get_matching_rules(alert) do
+      [] ->
+        Logger.info("[RemediationWorker] No matching escalation rules for alert #{alert.id}")
+
+      rules ->
+        Enum.each(rules, fn rule ->
+          TamanduaServer.Alerts.Notifier.send_escalation(alert, rule)
+        end)
+    end
 
     Logger.info("[RemediationWorker] Escalate action executed for alert #{alert.id}")
     {:ok, escalate_result}

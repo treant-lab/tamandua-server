@@ -30,7 +30,7 @@ defmodule TamanduaServer.ContainerSecurity do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Repo, Agents, Alerts}
+  alias TamanduaServer.{Alerts}
   alias TamanduaServer.ContainerSecurity.Trivy
 
   @container_table :container_inventory

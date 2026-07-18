@@ -47,7 +47,6 @@ defmodule TamanduaServer.Detection.Rules.SigmaHQSync do
   require Logger
   import Ecto.Query, only: [from: 2]
 
-  alias TamanduaServer.Detection.Rules.Sigma
   alias TamanduaServer.Detection.SigmaRule
   alias TamanduaServer.Accounts.Organization
 
@@ -462,7 +461,7 @@ defmodule TamanduaServer.Detection.Rules.SigmaHQSync do
     Enum.each(rules, fn rule ->
       rule_id = rule["id"] || rule["title"] || UUID.uuid4()
       tags = rule["tags"] || []
-      {tactics, techniques} = extract_mitre_attack(tags)
+      {_tactics, techniques} = extract_mitre_attack(tags)
 
       internal_rule = %{
         id: rule_id,

@@ -17,21 +17,27 @@ defmodule TamanduaServer.Mobile.MDMCommand do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @command_types ~w(lock wipe install_profile remove_profile update_policy ring locate enable_vpn remove_app push_config)
+  @command_types ~w(
+    lock wipe install_profile remove_profile update_policy ring locate enable_vpn remove_app push_config
+    refresh_network_policy collect_diagnostics managed_shell shell_execute dns_status request_dns_vpn_consent
+    enable_dns_protection disable_dns_protection clear_dns_cache block_domain unblock_domain
+    network_status list_network_flows inspect_packet sync_app_inventory inspect_package screen_capture
+    evidence_session cancel_evidence_session
+  )
   @statuses ~w(pending sent completed failed)
 
   schema "mdm_commands" do
-    field :command_type, :string
-    field :status, :string, default: "pending"
-    field :payload, :map, default: %{}
-    field :result, :map, default: %{}
+    field(:command_type, :string)
+    field(:status, :string, default: "pending")
+    field(:payload, :map, default: %{})
+    field(:result, :map, default: %{})
 
-    field :sent_at, :utc_datetime_usec
-    field :completed_at, :utc_datetime_usec
-    field :requested_by, :string
+    field(:sent_at, :utc_datetime_usec)
+    field(:completed_at, :utc_datetime_usec)
+    field(:requested_by, :string)
 
-    belongs_to :device, DeviceV2, foreign_key: :device_id
-    belongs_to :organization, Organization
+    belongs_to(:device, DeviceV2, foreign_key: :device_id)
+    belongs_to(:organization, Organization)
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -60,26 +66,26 @@ defmodule TamanduaServer.Mobile.MDMCommand do
 
   @doc "Query commands by device."
   def by_device(query \\ __MODULE__, device_id) do
-    from c in query, where: c.device_id == ^device_id
+    from(c in query, where: c.device_id == ^device_id)
   end
 
   @doc "Query commands by organization."
   def by_organization(query \\ __MODULE__, organization_id) do
-    from c in query, where: c.organization_id == ^organization_id
+    from(c in query, where: c.organization_id == ^organization_id)
   end
 
   @doc "Query commands by status."
   def by_status(query \\ __MODULE__, status) do
-    from c in query, where: c.status == ^status
+    from(c in query, where: c.status == ^status)
   end
 
   @doc "Query commands by type."
   def by_type(query \\ __MODULE__, command_type) do
-    from c in query, where: c.command_type == ^command_type
+    from(c in query, where: c.command_type == ^command_type)
   end
 
   @doc "Order by most recent first."
   def latest_first(query \\ __MODULE__) do
-    from c in query, order_by: [desc: c.inserted_at]
+    from(c in query, order_by: [desc: c.inserted_at])
   end
 end

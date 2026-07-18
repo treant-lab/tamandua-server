@@ -56,9 +56,9 @@ defmodule TamanduaServer.Reports.Compliance.NIST do
     score = ComplianceBase.calculate_compliance_score(controls)
 
     compliant = Enum.count(controls, & &1.status == :compliant)
-    partial = Enum.count(controls, & &1.status == :partial)
+    _partial = Enum.count(controls, & &1.status == :partial)
     non_compliant = Enum.count(controls, & &1.status == :non_compliant)
-    not_assessed = Enum.count(controls, & &1.status == :not_assessed)
+    _not_assessed = Enum.count(controls, & &1.status == :not_assessed)
     total = length(controls)
 
     controls_by_function = Enum.group_by(controls, & &1.function)

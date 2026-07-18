@@ -105,16 +105,18 @@ defmodule TamanduaServer.Repo.Migrations.SyncMobileDevicesToAgents do
     $$ LANGUAGE plpgsql;
     """)
 
+    execute("DROP TRIGGER IF EXISTS mobile_devices_endpoint_active_trigger ON mobile_devices;")
+
     execute("""
-    DROP TRIGGER IF EXISTS mobile_devices_endpoint_active_trigger ON mobile_devices;
     CREATE TRIGGER mobile_devices_endpoint_active_trigger
     BEFORE INSERT OR UPDATE ON mobile_devices
     FOR EACH ROW
     EXECUTE FUNCTION set_mobile_device_endpoint_active();
     """)
 
+    execute("DROP TRIGGER IF EXISTS mobile_devices_agent_sync_trigger ON mobile_devices;")
+
     execute("""
-    DROP TRIGGER IF EXISTS mobile_devices_agent_sync_trigger ON mobile_devices;
     CREATE TRIGGER mobile_devices_agent_sync_trigger
     AFTER INSERT OR UPDATE ON mobile_devices
     FOR EACH ROW

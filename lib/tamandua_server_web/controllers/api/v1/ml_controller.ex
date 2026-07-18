@@ -16,10 +16,14 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   alias TamanduaServer.Detection.ML.Client, as: MLClient
   alias TamanduaServer.Detection.Engine
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   # Default ML service URL from config or environment
-  @ml_service_url Application.compile_env(:tamandua_server, :ml_service_url, "http://localhost:8000")
+  @ml_service_url Application.compile_env(
+                    :tamandua_server,
+                    :ml_service_url,
+                    "http://localhost:8000"
+                  )
 
   def action(conn, _opts) do
     apply(__MODULE__, action_name(conn), [conn, conn.params])
@@ -38,7 +42,10 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     :exit, {:noproc, _} ->
       conn
       |> put_status(:service_unavailable)
-      |> json(%{error: "ml_service_unavailable", message: "ML service is not running in this boot profile"})
+      |> json(%{
+        error: "ml_service_unavailable",
+        message: "ML service is not running in this boot profile"
+      })
 
     :exit, {:timeout, _} ->
       conn
@@ -46,7 +53,9 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       |> json(%{error: "ml_service_timeout", message: "ML service timed out"})
 
     kind, reason ->
-      Logger.warning("ML API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+      Logger.warning(
+        "ML API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}"
+      )
 
       conn
       |> put_status(:service_unavailable)
@@ -67,10 +76,11 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   def status(conn, _params) do
     healthy = MLClient.healthy?()
 
-    model_info = case MLClient.model_info() do
-      {:ok, info} -> info
-      {:error, _} -> nil
-    end
+    model_info =
+      case MLClient.model_info() do
+        {:ok, info} -> info
+        {:error, _} -> nil
+      end
 
     models = normalize_model_inventory(model_info)
     ready = healthy and Enum.any?(models, & &1.trained)
@@ -89,7 +99,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
         model: model_info,
         models: models,
         model_count: length(models),
-        offline_agent_onnx: offline_agent_onnx_summary(),
+        offline_agent_onnx: offline_agent_onnx_summary(conn),
         service_url: ml_service_url()
       }
     })
@@ -130,7 +140,9 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       {:error, :ml_service_unavailable} ->
         conn
         |> put_status(:service_unavailable)
-        |> json(unavailable_ml_metrics("ML service is not reachable. The circuit breaker is open."))
+        |> json(
+          unavailable_ml_metrics("ML service is not reachable. The circuit breaker is open.")
+        )
 
       {:error, reason} ->
         # Fall back to fetching directly if the client returned a different error.
@@ -280,16 +292,17 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       {:ok, parsed_samples} ->
         case MLClient.predict_batch(parsed_samples) do
           {:ok, predictions} ->
-            results = Enum.zip(samples, predictions)
-            |> Enum.map(fn {sample, prediction} ->
-              %{
-                sha256: sample["sha256"],
-                prediction: prediction.prediction,
-                confidence: Float.round(prediction.confidence, 4),
-                malware_family: prediction.malware_family,
-                threat_assessment: assess_threat(prediction)
-              }
-            end)
+            results =
+              Enum.zip(samples, predictions)
+              |> Enum.map(fn {sample, prediction} ->
+                %{
+                  sha256: sample["sha256"],
+                  prediction: prediction.prediction,
+                  confidence: Float.round(prediction.confidence, 4),
+                  malware_family: prediction.malware_family,
+                  threat_assessment: assess_threat(prediction)
+                }
+              end)
 
             # Calculate batch statistics
             stats = calculate_batch_stats(predictions)
@@ -339,9 +352,11 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   def reload_model(conn, _params) do
     # This would call the ML service reload endpoint
     url = System.get_env("ML_SERVICE_URL", "http://localhost:8000")
-    request = Finch.build(:post, "#{url}/model/reload", [
-      {"content-type", "application/json"}
-    ])
+
+    request =
+      Finch.build(:post, "#{url}/model/reload", [
+        {"content-type", "application/json"}
+      ])
 
     case Finch.request(request, TamanduaServer.Finch, receive_timeout: 30_000) do
       {:ok, %{status: 200, body: body}} ->
@@ -408,40 +423,13 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     offset = bounded_offset(params["offset"])
     prediction_type = normalize_filter(params["prediction"])
 
-    # Query from alerts that were created by ML
-    import Ecto.Query
-
-    query =
-      from(a in TamanduaServer.Alerts.Alert,
-        where:
-          ilike(a.title, "ML Detection:%") or
-            ilike(a.title, "Malware detected:%") or
-            ilike(a.title, "Agent detection: OFFLINE_ML%") or
-            fragment("lower(coalesce(?->>'detection_type', '')) = 'ml'", a.detection_metadata) or
-            fragment("lower(coalesce(?->>'source', '')) = 'ml'", a.detection_metadata) or
-            fragment("lower(coalesce(?->>'detection_source', '')) = 'ml'", a.detection_metadata) or
-            fragment("lower(coalesce(?->>'rule_name', '')) LIKE 'offline_ml%'", a.detection_metadata) or
-            fragment("coalesce(?->>'onnx_model_version', '') != ''", a.detection_metadata) or
-            fragment("coalesce(?->>'ml_model', '') != ''", a.detection_metadata),
-        order_by: [desc: a.inserted_at],
-        limit: ^limit,
-        offset: ^offset
-      )
-
-    query =
-      if prediction_type do
-        where(
-          query,
-          [a],
-          ilike(a.title, ^"%#{prediction_type}%") or
-            fragment("lower(coalesce(?->>'prediction', '')) = lower(?)", a.detection_metadata, ^prediction_type) or
-            fragment("lower(coalesce(?->>'rule_name', '')) LIKE lower(?)", a.detection_metadata, ^"%#{prediction_type}%")
-        )
-      else
-        query
-      end
-
-    alerts = safe_repo_all(query, "ML prediction history")
+    alerts =
+      conn
+      |> recent_ml_alert_candidates(limit, offset)
+      |> Enum.filter(&ml_alert?/1)
+      |> Enum.filter(&prediction_matches?(&1, prediction_type))
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
 
     predictions =
       Enum.map(alerts, fn alert ->
@@ -477,7 +465,89 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       meta: %{
         total: length(predictions),
         limit: limit,
-        offset: offset
+        offset: offset,
+        source: "alerts",
+        claim: "ml_assisted_validation_pending"
+      }
+    })
+  end
+
+  @doc """
+  Compatibility endpoint for ML detections.
+
+  Returns the same organization-scoped alert-derived feed as prediction history.
+  The feed includes offline agent ONNX alerts when present and is intentionally
+  labelled as ML-assisted until formal production validation is complete.
+  """
+  def detections(conn, params) do
+    prediction_history(conn, params)
+  end
+
+  @doc """
+  Return process-oriented ML detections derived from ML/offline-ONNX alerts.
+  """
+  def processes(conn, params) do
+    limit = bounded_limit(params["limit"], 50, 200)
+    offset = bounded_offset(params["offset"])
+
+    alerts =
+      conn
+      |> recent_ml_alert_candidates(limit, offset)
+      |> Enum.filter(&ml_alert?/1)
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+
+    processes =
+      alerts
+      |> Enum.group_by(fn alert ->
+        metadata = alert.detection_metadata || %{}
+        {alert.agent_id, process_identity(metadata, alert)}
+      end)
+      |> Enum.map(fn {{agent_id, process_name}, grouped_alerts} ->
+        latest =
+          Enum.max_by(grouped_alerts, & &1.inserted_at, fn left, right ->
+            DateTime.compare(left, right) != :lt
+          end)
+
+        metadata = latest.detection_metadata || %{}
+
+        %{
+          id: "#{agent_id || "unknown"}:#{process_name}",
+          agent_id: agent_id,
+          process_name: process_name,
+          executable_path: first_metadata(metadata, ["process_path", "image_path", "path", "file_path"]),
+          pid: first_metadata(metadata, ["pid", "process_id"]),
+          model_runtime: ml_model_runtime(metadata),
+          model_version:
+            metadata_field(metadata, "model_version") ||
+              metadata_field(metadata, "onnx_model_version") ||
+              metadata_field(metadata, "ml_model"),
+          prediction:
+            metadata_field(metadata, "prediction") ||
+              prediction_from_rule_name(metadata_field(metadata, "rule_name")) ||
+              extract_prediction_from_title(latest.title),
+          confidence:
+            metadata_field(metadata, "confidence") ||
+              metadata_field(metadata, "ml_confidence"),
+          severity: latest.severity,
+          threat_score: latest.threat_score,
+          alert_count: length(grouped_alerts),
+          latest_alert_id: latest.id,
+          last_seen_at: latest.inserted_at
+        }
+      end)
+      |> Enum.sort(fn left, right ->
+        DateTime.compare(left.last_seen_at, right.last_seen_at) != :lt
+      end)
+
+    json(conn, %{
+      data: processes,
+      meta: %{
+        total: length(processes),
+        limit: limit,
+        offset: offset,
+        source: "alerts",
+        claim: "ml_assisted_validation_pending"
       }
     })
   end
@@ -714,6 +784,7 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp decode_sample_content(_content), do: {:error, "content is required"}
 
   defp decode_hash(nil), do: <<>>
+
   defp decode_hash(hex) when is_binary(hex) do
     case Base.decode16(hex, case: :mixed) do
       {:ok, bytes} -> bytes
@@ -754,13 +825,15 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       malicious: length(by_prediction["malicious"] || []),
       suspicious: length(by_prediction["suspicious"] || []),
       benign: length(by_prediction["benign"] || []),
-      average_confidence: if(total > 0,
-        do: Enum.sum(Enum.map(predictions, & &1.confidence)) / total,
-        else: 0.0
-      ),
-      high_confidence_malicious: Enum.count(predictions, fn p ->
-        p.prediction == "malicious" && p.confidence >= 0.85
-      end)
+      average_confidence:
+        if(total > 0,
+          do: Enum.sum(Enum.map(predictions, & &1.confidence)) / total,
+          else: 0.0
+        ),
+      high_confidence_malicious:
+        Enum.count(predictions, fn p ->
+          p.prediction == "malicious" && p.confidence >= 0.85
+        end)
     }
   end
 
@@ -797,7 +870,8 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     [
       normalize_model_entry(%{
         "name" => info["model_name"] || info[:model_name] || "malware-detector",
-        "version" => info["model_version"] || info[:model_version] || info["version"] || info[:version],
+        "version" =>
+          info["model_version"] || info[:model_version] || info["version"] || info[:version],
         "runtime" => info["runtime"] || info[:runtime] || "ml-service",
         "trained" => trained_model?(info),
         "accuracy" => info["accuracy"] || info[:accuracy],
@@ -812,8 +886,11 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp normalize_model_entry(entry) when is_map(entry) do
     %{
       name: entry["name"] || entry[:name] || entry["model_name"] || entry[:model_name] || "model",
-      version: entry["version"] || entry[:version] || entry["model_version"] || entry[:model_version] || "unknown",
-      runtime: entry["runtime"] || entry[:runtime] || entry["backend"] || entry[:backend] || "ml-service",
+      version:
+        entry["version"] || entry[:version] || entry["model_version"] || entry[:model_version] ||
+          "unknown",
+      runtime:
+        entry["runtime"] || entry[:runtime] || entry["backend"] || entry[:backend] || "ml-service",
       trained: trained_model?(entry),
       accuracy: entry["accuracy"] || entry[:accuracy],
       training_samples: entry["training_samples"] || entry[:training_samples],
@@ -821,7 +898,8 @@ defmodule TamanduaServerWeb.API.V1.MLController do
     }
   end
 
-  defp normalize_model_entry(entry), do: %{name: to_string(entry), version: "unknown", runtime: "ml-service", trained: false}
+  defp normalize_model_entry(entry),
+    do: %{name: to_string(entry), version: "unknown", runtime: "ml-service", trained: false}
 
   defp trained_model?(info) when is_map(info) do
     cond do
@@ -846,24 +924,34 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   end
 
   defp ml_status_reason(false, _ready, _models), do: "ML service is not reachable"
-  defp ml_status_reason(true, true, _models), do: "ML service is healthy and has at least one trained model"
-  defp ml_status_reason(true, false, []), do: "ML service is healthy but did not report model inventory"
-  defp ml_status_reason(true, false, _models), do: "ML service is healthy but no trained model is reported"
 
-  defp offline_agent_onnx_summary do
+  defp ml_status_reason(true, true, _models),
+    do: "ML service is healthy and has at least one trained model"
+
+  defp ml_status_reason(true, false, []),
+    do: "ML service is healthy but did not report model inventory"
+
+  defp ml_status_reason(true, false, _models),
+    do: "ML service is healthy but no trained model is reported"
+
+  defp offline_agent_onnx_summary(conn) do
     import Ecto.Query
 
     query =
       from(a in TamanduaServer.Alerts.Alert,
         where:
           ilike(a.title, "Agent detection: OFFLINE_ML%") or
-            fragment("lower(coalesce(?->>'rule_name', '')) LIKE 'offline_ml%'", a.detection_metadata) or
+            fragment(
+              "lower(coalesce(?->>'rule_name', '')) LIKE 'offline_ml%'",
+              a.detection_metadata
+            ) or
             fragment("coalesce(?->>'onnx_model_version', '') != ''", a.detection_metadata),
         select: %{
           total: count(a.id),
           last_seen_at: max(a.inserted_at)
         }
       )
+      |> scope_alert_query_to_current_org(conn)
 
     case TamanduaServer.Repo.one(query, timeout: 5_000) do
       %{total: total, last_seen_at: last_seen_at} ->
@@ -882,15 +970,33 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       %{enabled: false, total_alerts: 0, last_seen_at: nil, unavailable: true}
   end
 
+  defp scope_alert_query_to_current_org(query, conn) do
+    import Ecto.Query
+
+    case current_organization_id(conn) do
+      nil -> query
+      organization_id -> where(query, [a], a.organization_id == ^organization_id)
+    end
+  end
+
+  defp current_organization_id(conn) do
+    conn.assigns[:current_organization_id] ||
+      case conn.assigns[:current_user] do
+        %{organization_id: organization_id} -> organization_id
+        _ -> nil
+      end
+  end
+
   defp count_telemetry_samples do
     # This would count actual samples from telemetry
     %{malware: 0, goodware: 0, total: 0}
   end
 
   defp extract_prediction_from_title(title) do
-    if is_binary(title) and String.contains?(title, ["Malware detected", "ML Detection", "OFFLINE_ML"]),
-      do: "malicious",
-      else: "unknown"
+    if is_binary(title) and
+         String.contains?(title, ["Malware detected", "ML Detection", "OFFLINE_ML"]),
+       do: "malicious",
+       else: "unknown"
   end
 
   defp extract_family_from_title(title) when is_binary(title) do
@@ -903,12 +1009,14 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp extract_family_from_title(_), do: nil
 
   defp parse_int(nil, default), do: default
+
   defp parse_int(val, default) when is_binary(val) do
     case Integer.parse(val) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp parse_int(val, _) when is_integer(val), do: val
   defp parse_int(_, default), do: default
 
@@ -947,13 +1055,60 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp metadata_atom_key("ml_model"), do: :ml_model
   defp metadata_atom_key("confidence"), do: :confidence
   defp metadata_atom_key("ml_confidence"), do: :ml_confidence
+  defp metadata_atom_key("process_name"), do: :process_name
+  defp metadata_atom_key("process"), do: :process
+  defp metadata_atom_key("image"), do: :image
+  defp metadata_atom_key("image_path"), do: :image_path
+  defp metadata_atom_key("process_path"), do: :process_path
+  defp metadata_atom_key("path"), do: :path
+  defp metadata_atom_key("file_path"), do: :file_path
+  defp metadata_atom_key("pid"), do: :pid
+  defp metadata_atom_key("process_id"), do: :process_id
   defp metadata_atom_key(_), do: nil
+
+  defp first_metadata(metadata, keys) do
+    Enum.find_value(keys, fn key ->
+      case metadata_field(metadata, key) do
+        value when is_binary(value) ->
+          value = String.trim(value)
+          if value == "", do: nil, else: value
+
+        nil ->
+          nil
+
+        value ->
+          value
+      end
+    end)
+  end
+
+  defp process_identity(metadata, alert) do
+    first_metadata(metadata, [
+      "process_name",
+      "process",
+      "image",
+      "image_path",
+      "process_path",
+      "path",
+      "file_path"
+    ]) ||
+      extract_family_from_title(alert.title) ||
+      "unknown_process"
+  end
 
   defp ml_model_runtime(metadata) when is_map(metadata) do
     cond do
-      present_metadata?(metadata, "onnx_model_version") -> "onnx"
-      metadata_field(metadata, "ml_model") |> to_string() |> String.downcase() |> String.contains?("onnx") -> "onnx"
-      true -> "ml"
+      present_metadata?(metadata, "onnx_model_version") ->
+        "onnx"
+
+      metadata_field(metadata, "ml_model")
+      |> to_string()
+      |> String.downcase()
+      |> String.contains?("onnx") ->
+        "onnx"
+
+      true ->
+        "ml"
     end
   end
 
@@ -979,8 +1134,93 @@ defmodule TamanduaServerWeb.API.V1.MLController do
 
   defp prediction_from_rule_name(_), do: nil
 
+  defp recent_ml_alert_candidates(conn, limit, offset) do
+    import Ecto.Query
+
+    candidate_limit =
+      limit
+      |> Kernel.+(offset)
+      |> max(50)
+      |> Kernel.*(5)
+      |> min(1_000)
+
+    query =
+      from(a in TamanduaServer.Alerts.Alert,
+        order_by: [desc: a.inserted_at],
+        limit: ^candidate_limit,
+        select: %{
+          id: a.id,
+          agent_id: a.agent_id,
+          title: a.title,
+          severity: a.severity,
+          threat_score: a.threat_score,
+          detection_metadata: a.detection_metadata,
+          inserted_at: a.inserted_at
+        }
+      )
+      |> scope_alert_query_to_current_org(conn)
+
+    safe_repo_all(query, "ML recent alert candidates")
+  end
+
+  defp ml_alert?(alert) do
+    metadata = alert.detection_metadata || %{}
+    title = alert.title || ""
+    normalized_title = String.downcase(title)
+
+    String.starts_with?(title, "ML Detection:") or
+      String.starts_with?(title, "Malware detected:") or
+      String.starts_with?(title, "Agent detection: OFFLINE_ML") or
+      String.contains?(normalized_title, "offline_ml") or
+      metadata_equals?(metadata, "detection_type", "ml") or
+      metadata_equals?(metadata, "source", "ml") or
+      metadata_equals?(metadata, "detection_source", "ml") or
+      metadata_starts_with?(metadata, "rule_name", "offline_ml") or
+      present_metadata?(metadata, "onnx_model_version") or
+      present_metadata?(metadata, "ml_model")
+  end
+
+  defp prediction_matches?(_alert, nil), do: true
+  defp prediction_matches?(_alert, ""), do: true
+
+  defp prediction_matches?(alert, prediction_type) do
+    metadata = alert.detection_metadata || %{}
+    prediction = String.downcase(to_string(prediction_type))
+    title = String.downcase(alert.title || "")
+
+    String.contains?(title, prediction) or
+      metadata_equals?(metadata, "prediction", prediction) or
+      metadata_contains?(metadata, "rule_name", prediction)
+  end
+
+  defp metadata_equals?(metadata, key, expected) do
+    value =
+      metadata
+      |> metadata_field(key)
+      |> to_string()
+      |> String.downcase()
+
+    value == String.downcase(expected)
+  end
+
+  defp metadata_contains?(metadata, key, needle) do
+    metadata
+    |> metadata_field(key)
+    |> to_string()
+    |> String.downcase()
+    |> String.contains?(String.downcase(needle))
+  end
+
+  defp metadata_starts_with?(metadata, key, prefix) do
+    metadata
+    |> metadata_field(key)
+    |> to_string()
+    |> String.downcase()
+    |> String.starts_with?(String.downcase(prefix))
+  end
+
   defp safe_repo_all(query, label) do
-    TamanduaServer.Repo.all(query, timeout: 8_000)
+    TamanduaServer.Repo.all(query, timeout: 2_000)
   rescue
     exception ->
       Logger.warning("[MLController] #{label} failed: #{Exception.message(exception)}")
@@ -1035,7 +1275,8 @@ defmodule TamanduaServerWeb.API.V1.MLController do
       precision: normalize_metric(data["precision"]),
       recall: normalize_metric(data["recall"]),
       f1_score: normalize_metric(data["f1_score"] || data["f1"]),
-      last_trained: data["last_trained"] || data["trained_at"] || DateTime.utc_now() |> DateTime.to_iso8601(),
+      last_trained:
+        data["last_trained"] || data["trained_at"] || DateTime.utc_now() |> DateTime.to_iso8601(),
       samples_processed: data["samples_processed"] || data["total_predictions"] || 0,
       inference_latency: data["inference_latency"] || data["avg_latency_ms"] || 0
     }
@@ -1083,16 +1324,23 @@ defmodule TamanduaServerWeb.API.V1.MLController do
   defp forward_training_request(dataset_id, epochs, batch_size) do
     url = "#{ml_service_url()}/train"
 
-    body = Jason.encode!(%{
-      dataset: dataset_id,
-      epochs: epochs,
-      batch_size: batch_size
-    })
+    body =
+      Jason.encode!(%{
+        dataset: dataset_id,
+        epochs: epochs,
+        batch_size: batch_size
+      })
 
-    request = Finch.build(:post, url, [
-      {"content-type", "application/json"},
-      {"accept", "application/json"}
-    ], body)
+    request =
+      Finch.build(
+        :post,
+        url,
+        [
+          {"content-type", "application/json"},
+          {"accept", "application/json"}
+        ],
+        body
+      )
 
     case Finch.request(request, TamanduaServer.Finch, receive_timeout: 30_000) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201, 202] ->

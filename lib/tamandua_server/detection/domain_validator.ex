@@ -438,7 +438,7 @@ defmodule TamanduaServer.Detection.DomainValidator do
   defp do_levenshtein(s, []), do: length(s)
 
   defp do_levenshtein(s, t) do
-    s_len = length(s)
+    _s_len = length(s)
     t_len = length(t)
 
     # Initialize the matrix

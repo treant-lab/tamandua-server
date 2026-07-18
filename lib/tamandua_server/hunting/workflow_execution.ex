@@ -30,11 +30,26 @@ defmodule TamanduaServer.Hunting.WorkflowExecution do
     field :final_report, :map
 
     belongs_to :workflow, TamanduaServer.Hunting.Workflow
-    belongs_to :executed_by, TamanduaServer.Accounts.User
-    belongs_to :organization, TamanduaServer.Organizations.Organization
 
-    has_many :step_results, TamanduaServer.Hunting.WorkflowStepResult
-    has_many :workflow_findings, TamanduaServer.Hunting.WorkflowFinding
+    # The migration column is `executed_by` (NOT `executed_by_id` — see
+    # 20260220600004_create_hunting_workflows.exs). Ecto forbids an association
+    # sharing its FK column name, so the association is `:executed_by_user`
+    # while the persisted field stays `:executed_by`.
+    belongs_to :executed_by_user, TamanduaServer.Accounts.User,
+      foreign_key: :executed_by
+
+    # The organizations schema lives under Accounts (there is no
+    # TamanduaServer.Organizations.Organization module).
+    belongs_to :organization, TamanduaServer.Accounts.Organization
+
+    # Child schemas declare `belongs_to :execution` and the migration column is
+    # `execution_id` (see 20260220600004_create_hunting_workflows.exs), so the
+    # default FK guess (`workflow_execution_id`) must be overridden.
+    has_many :step_results, TamanduaServer.Hunting.WorkflowStepResult,
+      foreign_key: :execution_id
+
+    has_many :workflow_findings, TamanduaServer.Hunting.WorkflowFinding,
+      foreign_key: :execution_id
 
     timestamps()
   end
@@ -55,7 +70,7 @@ defmodule TamanduaServer.Hunting.WorkflowExecution do
       :completed_at,
       :error_message,
       :final_report,
-      :executed_by_id,
+      :executed_by,
       :organization_id
     ])
     |> validate_required([:workflow_id])
@@ -70,7 +85,7 @@ defmodule TamanduaServer.Hunting.WorkflowExecution do
     %__MODULE__{}
     |> changeset(%{
       workflow_id: workflow.id,
-      executed_by_id: user_id,
+      executed_by: user_id,
       organization_id: organization_id,
       status: "pending",
       step_states: initialize_step_states(workflow.steps)
@@ -78,7 +93,7 @@ defmodule TamanduaServer.Hunting.WorkflowExecution do
   end
 
   defp initialize_step_states(steps) do
-    Enum.with_index(steps, fn step, idx ->
+    Enum.with_index(steps, fn _step, idx ->
       %{
         step_index: idx,
         status: "pending",

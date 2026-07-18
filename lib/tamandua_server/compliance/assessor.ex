@@ -8,7 +8,7 @@ defmodule TamanduaServer.Compliance.Assessor do
 
   require Logger
   alias TamanduaServer.Compliance.Framework
-  alias TamanduaServer.{Agents, Telemetry, Detection, Alerts}
+  alias TamanduaServer.{Agents}
 
   @doc """
   Assess all controls for a framework

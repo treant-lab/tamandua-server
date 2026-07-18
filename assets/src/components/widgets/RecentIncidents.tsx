@@ -526,7 +526,7 @@ export function useRecentIncidents(timeRange: string = '7d') {
     setIsLoading(true)
     setError(null)
     try {
-      const response = await fetch(`/api/v1/alerts?status=open&limit=10&range=${timeRange}`)
+      const response = await fetch(`/api/v1/alerts?status=active&per_page=10&range=${timeRange}`)
       if (!response.ok) throw new Error('Failed to fetch recent incidents')
       const result = await response.json()
       setData(result.data)

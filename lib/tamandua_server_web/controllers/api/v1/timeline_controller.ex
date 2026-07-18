@@ -81,8 +81,8 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
   @max_timeline_limit 250
   @timeline_query_timeout 4_000
   @timeline_correlation_timeout 2_500
-  @default_readiness_limit 1_000
-  @max_readiness_limit 2_500
+  @default_readiness_limit 250
+  @max_readiness_limit 1_000
 
   @doc """
   List timeline events with time range and optional filters.
@@ -781,9 +781,19 @@ defmodule TamanduaServerWeb.API.V1.TimelineController do
       relatedEvents: [],
       mitreTechniques: mobile_mitre_techniques(event, payload),
       correlationEvidence: [],
-      entities: [],
-      telemetryQuality: %{score: 100, missing: []},
-      telemetryContract: %{category: "mobile", status: "ok"}
+      entities: %{},
+      telemetryQuality: %{
+        score: 100,
+        level: "good",
+        present: ["mobile_event"],
+        missing: []
+      },
+      telemetryContract: %{
+        schemaVersion: "tamandua.mobile.event/v1",
+        category: "mobile",
+        requiredFields: [],
+        correlationReady: true
+      }
     }
   end
 

@@ -557,7 +557,7 @@ defmodule TamanduaServer.Integrations.Webhook do
     send_with_retry(destination, body, headers, options, 0)
   end
 
-  defp build_payload(destination, type, data, state) do
+  defp build_payload(_destination, type, data, _state) do
     base_payload = %{
       type: type,
       timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),

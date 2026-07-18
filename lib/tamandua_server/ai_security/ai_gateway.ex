@@ -273,6 +273,8 @@ defmodule TamanduaServer.AISecurity.AIGateway do
        content_inspection: false,
        prompt_capture: false,
        inline_proxy: false,
+       decision_simulation_available: true,
+       dry_run_available: false,
        enforcement: %{
          available: true,
          mode: "endpoint_action_bridge",

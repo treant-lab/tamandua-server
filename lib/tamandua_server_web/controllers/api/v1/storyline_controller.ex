@@ -24,7 +24,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   alias TamanduaServer.Detection.Storyline, as: AutonomousStoryline
   alias TamanduaServer.Investigations.Storyline, as: InvestigationStoryline
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   @doc """
   Get a complete storyline for an alert.
@@ -65,11 +65,12 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   ```
   """
   def show(conn, %{"alert_id" => alert_id} = params) do
-    opts = build_opts(params)
+    organization_id = get_organization_id(conn)
+    opts = Keyword.put(build_opts(params), :organization_id, organization_id)
 
-    with {:ok, storyline} <- Engine.generate_for_alert(alert_id, opts),
+    with :ok <- require_organization_id(organization_id),
+         {:ok, storyline} <- Engine.generate_for_alert(alert_id, opts),
          {:ok, analysis} <- Engine.analyze_storyline(storyline, opts) do
-
       json(conn, %{
         data: %{
           id: storyline.id,
@@ -91,6 +92,9 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
           analysis: analysis
         }
       })
+    else
+      {:error, :alert_not_found} -> {:error, :not_found}
+      error -> error
     end
   end
 
@@ -107,11 +111,13 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   """
   def from_process(conn, %{"agent_id" => agent_id, "pid" => pid_str} = params) do
     pid = parse_integer(pid_str, 0, 0, 10_000_000)
-    opts = build_opts(params)
+    organization_id = get_organization_id(conn)
+    opts = Keyword.put(build_opts(params), :organization_id, organization_id)
 
-    with {:ok, storyline} <- Engine.generate_from_process(agent_id, pid, opts),
+    with :ok <- require_organization_id(organization_id),
+         {:ok, _agent} <- TamanduaServer.Agents.get_agent_for_org(organization_id, agent_id),
+         {:ok, storyline} <- Engine.generate_from_process(agent_id, pid, opts),
          {:ok, analysis} <- Engine.analyze_storyline(storyline, opts) do
-
       json(conn, %{
         data: %{
           id: storyline.id,
@@ -157,11 +163,12 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   ```
   """
   def build(conn, %{"event_ids" => event_ids} = params) when is_list(event_ids) do
-    opts = build_opts(params)
+    organization_id = get_organization_id(conn)
+    opts = Keyword.put(build_opts(params), :organization_id, organization_id)
 
-    with {:ok, storyline} <- Engine.generate_from_events(event_ids, opts),
+    with :ok <- require_organization_id(organization_id),
+         {:ok, storyline} <- Engine.generate_from_events(event_ids, opts),
          {:ok, analysis} <- Engine.analyze_storyline(storyline, opts) do
-
       json(conn, %{
         data: %{
           id: storyline.id,
@@ -211,13 +218,24 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   ```
   """
   def analyze(conn, %{"storyline" => storyline_data} = params) do
-    use_ai = Map.get(params, "use_ai", false)
+    use_ai = parse_boolean(Map.get(params, "use_ai", false))
+    organization_id = get_organization_id(conn)
 
-    # Convert string keys to atoms for the storyline
-    storyline = atomize_keys(storyline_data)
+    # Never trust tenant identity supplied by the request body.
+    storyline = storyline_data |> atomize_keys() |> Map.put(:organization_id, organization_id)
 
-    opts = [use_ai: use_ai]
+    opts = [use_ai: use_ai, organization_id: organization_id]
 
+    case require_organization_id(organization_id) do
+      {:error, :unauthorized} ->
+        {:error, :unauthorized}
+
+      :ok ->
+        analyze_scoped_storyline(conn, storyline, opts)
+    end
+  end
+
+  defp analyze_scoped_storyline(conn, storyline, opts) do
     case Engine.analyze_storyline(storyline, opts) do
       {:ok, analysis} ->
         json(conn, %{
@@ -257,17 +275,20 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     - `mermaid`: Mermaid diagram format for documentation
   """
   def export(conn, %{"alert_id" => alert_id} = params) do
-    format = params
-    |> Map.get("format", "json")
-    |> String.downcase()
-    |> safe_to_existing_atom(~w(json dot mermaid))
-    |> Kernel.||(:json)
+    format =
+      params
+      |> Map.get("format", "json")
+      |> String.downcase()
+      |> safe_to_existing_atom(~w(json dot mermaid))
+      |> Kernel.||(:json)
 
-    opts = build_opts(params)
+    organization_id = get_organization_id(conn)
+    opts = Keyword.put(build_opts(params), :organization_id, organization_id)
 
-    with {:ok, storyline} <- Engine.generate_for_alert(alert_id, opts),
-         {:ok, export_data} <- Renderer.export(%{nodes: storyline.nodes, edges: storyline.edges}, format) do
-
+    with :ok <- require_organization_id(organization_id),
+         {:ok, storyline} <- Engine.generate_for_alert(alert_id, opts),
+         {:ok, export_data} <-
+           Renderer.export(%{nodes: storyline.nodes, edges: storyline.edges}, format) do
       case format do
         :json ->
           json(conn, %{
@@ -292,6 +313,9 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
           |> put_status(:bad_request)
           |> json(%{error: "Unsupported format. Use: json, dot, or mermaid"})
       end
+    else
+      {:error, :alert_not_found} -> {:error, :not_found}
+      error -> error
     end
   end
 
@@ -301,100 +325,115 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Returns aggregate statistics about storylines generated for an agent.
   """
   def stats(conn, %{"agent_id" => agent_id} = params) do
-    time_range = Map.get(params, "time_range", "24h")
+    organization_id = get_organization_id(conn)
 
-    hours = case time_range do
-      "1h" -> 1
-      "6h" -> 6
-      "24h" -> 24
-      "7d" -> 24 * 7
-      "30d" -> 24 * 30
-      _ -> 24
-    end
+    with :ok <- require_organization_id(organization_id),
+         {:ok, _agent} <-
+           TamanduaServer.Agents.get_agent_for_org(organization_id, agent_id) do
+      time_range = Map.get(params, "time_range", "24h")
 
-    cutoff = DateTime.utc_now() |> DateTime.add(-hours * 3600, :second)
+      hours =
+        case time_range do
+          "1h" -> 1
+          "6h" -> 6
+          "24h" -> 24
+          "7d" -> 24 * 7
+          "30d" -> 24 * 30
+          _ -> 24
+        end
 
-    import Ecto.Query
-    alias TamanduaServer.Detection.StorylineRecord
-    alias TamanduaServer.Repo
+      cutoff = DateTime.utc_now() |> DateTime.add(-hours * 3600, :second)
 
-    base =
-      from(s in StorylineRecord,
-        where: s.agent_id == ^agent_id and s.inserted_at >= ^cutoff
-      )
+      import Ecto.Query
+      alias TamanduaServer.Detection.StorylineRecord
+      alias TamanduaServer.Repo
 
-    total = Repo.aggregate(base, :count, :id)
+      base =
+        from(s in StorylineRecord,
+          where:
+            s.organization_id == ^organization_id and s.agent_id == ^agent_id and
+              s.inserted_at >= ^cutoff
+        )
 
-    avg_processes =
-      case Repo.aggregate(base, :avg, :process_count) do
-        nil -> 0
-        val -> Float.round(val, 1)
-      end
+      total = Repo.aggregate(base, :count, :id)
 
-    avg_detections =
-      case Repo.aggregate(base, :avg, :detection_count) do
-        nil -> 0
-        val -> Float.round(val, 1)
-      end
+      avg_processes =
+        case Repo.aggregate(base, :avg, :process_count) do
+          nil -> 0
+          val -> Float.round(val, 1)
+        end
 
-    # Most common MITRE techniques across storylines
-    common_techniques =
-      from(s in StorylineRecord,
-        where: s.agent_id == ^agent_id and s.inserted_at >= ^cutoff,
-        select: s.mitre_techniques
-      )
-      |> Repo.all()
-      |> List.flatten()
-      |> Enum.frequencies()
-      |> Enum.sort_by(fn {_k, v} -> v end, :desc)
-      |> Enum.take(10)
-      |> Enum.map(fn {technique, count} -> %{technique: technique, count: count} end)
+      avg_detections =
+        case Repo.aggregate(base, :avg, :detection_count) do
+          nil -> 0
+          val -> Float.round(val, 1)
+        end
 
-    # Recent storylines (top 5 by score)
-    recent =
-      from(s in StorylineRecord,
-        where: s.agent_id == ^agent_id and s.inserted_at >= ^cutoff,
-        order_by: [desc: s.total_score],
-        limit: 5,
-        select: %{
-          id: s.id,
-          severity: s.severity,
-          total_score: s.total_score,
-          detection_count: s.detection_count,
-          process_count: s.process_count,
-          status: s.status,
-          inserted_at: s.inserted_at
+      # Most common MITRE techniques across storylines
+      common_techniques =
+        from(s in StorylineRecord,
+          where:
+            s.organization_id == ^organization_id and s.agent_id == ^agent_id and
+              s.inserted_at >= ^cutoff,
+          select: s.mitre_techniques
+        )
+        |> Repo.all()
+        |> List.flatten()
+        |> Enum.frequencies()
+        |> Enum.sort_by(fn {_k, v} -> v end, :desc)
+        |> Enum.take(10)
+        |> Enum.map(fn {technique, count} -> %{technique: technique, count: count} end)
+
+      # Recent storylines (top 5 by score)
+      recent =
+        from(s in StorylineRecord,
+          where:
+            s.organization_id == ^organization_id and s.agent_id == ^agent_id and
+              s.inserted_at >= ^cutoff,
+          order_by: [desc: s.total_score],
+          limit: 5,
+          select: %{
+            id: s.id,
+            severity: s.severity,
+            total_score: s.total_score,
+            detection_count: s.detection_count,
+            process_count: s.process_count,
+            status: s.status,
+            inserted_at: s.inserted_at
+          }
+        )
+        |> Repo.all()
+
+      # Severity breakdown
+      severity_counts =
+        from(s in StorylineRecord,
+          where:
+            s.organization_id == ^organization_id and s.agent_id == ^agent_id and
+              s.inserted_at >= ^cutoff,
+          group_by: s.severity,
+          select: {s.severity, count(s.id)}
+        )
+        |> Repo.all()
+        |> Map.new()
+
+      json(conn, %{
+        data: %{
+          agent_id: agent_id,
+          time_range: time_range,
+          total_storylines: total,
+          average_processes: avg_processes,
+          average_detections: avg_detections,
+          severity_breakdown: %{
+            critical: Map.get(severity_counts, "critical", 0),
+            high: Map.get(severity_counts, "high", 0),
+            medium: Map.get(severity_counts, "medium", 0),
+            low: Map.get(severity_counts, "low", 0)
+          },
+          common_techniques: common_techniques,
+          recent_storylines: recent
         }
-      )
-      |> Repo.all()
-
-    # Severity breakdown
-    severity_counts =
-      from(s in StorylineRecord,
-        where: s.agent_id == ^agent_id and s.inserted_at >= ^cutoff,
-        group_by: s.severity,
-        select: {s.severity, count(s.id)}
-      )
-      |> Repo.all()
-      |> Map.new()
-
-    json(conn, %{
-      data: %{
-        agent_id: agent_id,
-        time_range: time_range,
-        total_storylines: total,
-        average_processes: avg_processes,
-        average_detections: avg_detections,
-        severity_breakdown: %{
-          critical: Map.get(severity_counts, "critical", 0),
-          high: Map.get(severity_counts, "high", 0),
-          medium: Map.get(severity_counts, "medium", 0),
-          low: Map.get(severity_counts, "low", 0)
-        },
-        common_techniques: common_techniques,
-        recent_storylines: recent
-      }
-    })
+      })
+    end
   rescue
     e ->
       Logger.warning("[StorylineController] stats failed: #{Exception.message(e)}")
@@ -426,22 +465,19 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     - `limit` (optional): Maximum results (default: 50)
   """
   def list_active(conn, params) do
-    # Return all storylines across all agents by iterating ETS directly
+    organization_id = get_organization_id(conn)
     limit = parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
     status_filter = parse_status(Map.get(params, "status"))
     min_severity = parse_severity_atom(Map.get(params, "min_severity"))
 
-    # Get all agent IDs that have storylines
-    storylines =
-      :ets.tab2list(:tamandua_storylines)
-      |> Enum.map(fn {_id, s} -> s end)
-      |> maybe_filter_by_status(status_filter)
-      |> maybe_filter_by_severity(min_severity)
-      |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
-      |> Enum.take(limit)
-      |> Enum.map(&serialize_autonomous_storyline/1)
+    opts =
+      [limit: limit, status: status_filter, min_severity: min_severity]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    json(conn, %{data: storylines, total: length(storylines)})
+    with :ok <- require_organization_id(organization_id),
+         {:ok, storylines} <- AutonomousStoryline.list_storylines(organization_id, opts) do
+      json(conn, %{data: storylines, total: length(storylines)})
+    end
   rescue
     e ->
       Logger.warning("[StorylineController] list_active failed: #{Exception.message(e)}")
@@ -456,14 +492,18 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   MITRE coverage, and severity.
   """
   def show_autonomous(conn, %{"id" => storyline_id}) do
-    case AutonomousStoryline.get_storyline(storyline_id) do
-      {:ok, storyline} ->
-        json(conn, %{data: storyline})
+    organization_id = get_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Storyline not found"})
+    with :ok <- require_organization_id(organization_id) do
+      case AutonomousStoryline.get_storyline(organization_id, storyline_id) do
+        {:ok, storyline} ->
+          json(conn, %{data: storyline})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Storyline not found"})
+      end
     end
   end
 
@@ -476,16 +516,23 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     - `limit` (optional): Maximum results (default: 50)
   """
   def agent_storylines(conn, %{"agent_id" => agent_id} = params) do
-    opts = [
-      status: parse_status(Map.get(params, "status")),
-      min_severity: parse_severity_atom(Map.get(params, "min_severity")),
-      limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
-    ]
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    organization_id = get_organization_id(conn)
 
-    case AutonomousStoryline.get_agent_storylines(agent_id, opts) do
-      {:ok, storylines} ->
-        json(conn, %{data: storylines, total: length(storylines)})
+    opts =
+      [
+        status: parse_status(Map.get(params, "status")),
+        min_severity: parse_severity_atom(Map.get(params, "min_severity")),
+        limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    with :ok <- require_organization_id(organization_id),
+         {:ok, _agent} <-
+           TamanduaServer.Agents.get_agent_for_org(organization_id, agent_id) do
+      case AutonomousStoryline.get_agent_storylines(organization_id, agent_id, opts) do
+        {:ok, storylines} ->
+          json(conn, %{data: storylines, total: length(storylines)})
+      end
     end
   end
 
@@ -496,29 +543,34 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   detections, and scores are combined.
   """
   def merge(conn, %{"id1" => id1, "id2" => id2}) do
-    case AutonomousStoryline.merge_storylines(id1, id2) do
-      :ok ->
-        case AutonomousStoryline.get_storyline(id1) do
-          {:ok, merged} ->
-            json(conn, %{data: merged, message: "Storylines merged successfully"})
-          {:error, :not_found} ->
-            json(conn, %{data: nil, message: "Merged but could not retrieve result"})
-        end
+    organization_id = get_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "One or both storylines not found"})
+    with :ok <- require_organization_id(organization_id) do
+      case AutonomousStoryline.merge_storylines(organization_id, id1, id2) do
+        :ok ->
+          case AutonomousStoryline.get_storyline(organization_id, id1) do
+            {:ok, merged} ->
+              json(conn, %{data: merged, message: "Storylines merged successfully"})
 
-      {:error, :same_storyline} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Cannot merge a storyline with itself"})
+            {:error, :not_found} ->
+              json(conn, %{data: nil, message: "Merged but could not retrieve result"})
+          end
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "One or both storylines not found"})
+
+        {:error, :same_storyline} ->
+          conn
+          |> put_status(:bad_request)
+          |> json(%{error: "Cannot merge a storyline with itself"})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
@@ -526,15 +578,20 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Get Storyline engine statistics (ETS table sizes, counters).
   """
   def engine_stats(conn, _params) do
-    stats = AutonomousStoryline.stats()
-    json(conn, %{data: stats})
+    organization_id = get_organization_id(conn)
+
+    with :ok <- require_organization_id(organization_id) do
+      stats = AutonomousStoryline.stats(organization_id)
+      json(conn, %{data: stats})
+    end
   end
 
   # Private helpers
 
   defp build_opts(params) do
     [
-      time_window_minutes: parse_integer(Map.get(params, "time_window_minutes", "30"), 30, 1, 24 * 60),
+      time_window_minutes:
+        parse_integer(Map.get(params, "time_window_minutes", "30"), 30, 1, 24 * 60),
       layout: parse_layout(Map.get(params, "layout", "timeline")),
       highlight_malicious: parse_boolean(Map.get(params, "highlight_malicious", "true")),
       highlight_suspicious: parse_boolean(Map.get(params, "highlight_suspicious", "true")),
@@ -544,12 +601,14 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   end
 
   defp parse_integer(val, _default, min, max) when is_integer(val), do: clamp(val, min, max)
+
   defp parse_integer(val, default, min, max) when is_binary(val) do
     case Integer.parse(val) do
       {int, _} -> clamp(int, min, max)
       :error -> default
     end
   end
+
   defp parse_integer(_val, default, _min, _max), do: default
 
   defp clamp(value, min, _max) when value < min, do: min
@@ -575,9 +634,11 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     end)
     |> Map.new()
   end
+
   defp atomize_keys(list) when is_list(list) do
     Enum.map(list, &atomize_keys/1)
   end
+
   defp atomize_keys(value), do: value
 
   defp safe_existing_atom(key) do
@@ -597,38 +658,6 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   defp parse_severity_atom("high"), do: :high
   defp parse_severity_atom("critical"), do: :critical
   defp parse_severity_atom(_), do: nil
-
-  defp maybe_filter_by_status(storylines, nil), do: storylines
-  defp maybe_filter_by_status(storylines, status) do
-    Enum.filter(storylines, &(&1.status == status))
-  end
-
-  defp maybe_filter_by_severity(storylines, nil), do: storylines
-  defp maybe_filter_by_severity(storylines, min_severity) do
-    severity_order = %{low: 0, medium: 1, high: 2, critical: 3}
-    min_ord = Map.get(severity_order, min_severity, 0)
-    Enum.filter(storylines, fn s ->
-      Map.get(severity_order, s.severity, 0) >= min_ord
-    end)
-  end
-
-  defp serialize_autonomous_storyline(s) do
-    %{
-      id: s.id,
-      agent_id: s.agent_id,
-      root_pid: s.root_pid,
-      processes: MapSet.to_list(s.processes),
-      detections: s.detections,
-      total_score: s.total_score,
-      severity: s.severity,
-      status: s.status,
-      alert_id: s.alert_id,
-      mitre_tactics: MapSet.to_list(s.mitre_tactics),
-      mitre_techniques: MapSet.to_list(s.mitre_techniques),
-      created_at: s.created_at,
-      updated_at: s.updated_at
-    }
-  end
 
   # ====================================================================
   # Investigation Storyline Engine endpoints
@@ -653,21 +682,22 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
       |> json(%{error: "Organization context required"})
     else
       # Fetch alert data for each alert ID, scoped to organization
-      alerts = Enum.flat_map(alert_ids, fn id ->
-        case TamanduaServer.Alerts.get_alert_for_org(organization_id, id) do
-          {:ok, alert} -> [alert_to_map(alert)]
-          {:error, :not_found} -> []
-        end
-      end)
+      alerts =
+        Enum.flat_map(alert_ids, fn id ->
+          case TamanduaServer.Alerts.get_alert_for_org(organization_id, id) do
+            {:ok, alert} -> [alert_to_map(alert)]
+            {:error, :not_found} -> []
+          end
+        end)
 
       if alerts == [] do
         conn
         |> put_status(:bad_request)
         |> json(%{error: "No valid alerts found for the provided IDs"})
       else
-        case InvestigationStoryline.create_story(alerts) do
+        case InvestigationStoryline.create_story(organization_id, alerts) do
           {:ok, story_id} ->
-            case InvestigationStoryline.get_story(story_id) do
+            case InvestigationStoryline.get_story(organization_id, story_id) do
               {:ok, story} ->
                 conn
                 |> put_status(:created)
@@ -698,14 +728,18 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Get the causal graph for an investigation story (nodes + edges for visualization).
   """
   def investigation_story_graph(conn, %{"id" => story_id}) do
-    case InvestigationStoryline.get_story_graph(story_id) do
-      {:ok, graph} ->
-        json(conn, %{data: graph})
+    organization_id = get_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Story not found"})
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.get_story_graph(organization_id, story_id) do
+        {:ok, graph} ->
+          json(conn, %{data: graph})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Story not found"})
+      end
     end
   end
 
@@ -713,14 +747,18 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Get the chronological event timeline for an investigation story.
   """
   def investigation_story_timeline(conn, %{"id" => story_id}) do
-    case InvestigationStoryline.get_story_timeline(story_id) do
-      {:ok, timeline} ->
-        json(conn, %{data: timeline, total: length(timeline)})
+    organization_id = get_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Story not found"})
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.get_story_timeline(organization_id, story_id) do
+        {:ok, timeline} ->
+          json(conn, %{data: timeline, total: length(timeline)})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Story not found"})
+      end
     end
   end
 
@@ -736,30 +774,34 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   ```
   """
   def merge_investigation_stories(conn, %{"story_id_1" => id1, "story_id_2" => id2}) do
-    case InvestigationStoryline.merge_stories(id1, id2) do
-      {:ok, merged_id} ->
-        case InvestigationStoryline.get_story(merged_id) do
-          {:ok, story} ->
-            json(conn, %{data: story, message: "Stories merged successfully"})
+    organization_id = get_organization_id(conn)
 
-          _ ->
-            json(conn, %{data: %{id: merged_id}, message: "Stories merged"})
-        end
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.merge_stories(organization_id, id1, id2) do
+        {:ok, merged_id} ->
+          case InvestigationStoryline.get_story(organization_id, merged_id) do
+            {:ok, story} ->
+              json(conn, %{data: story, message: "Stories merged successfully"})
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "One or both stories not found"})
+            _ ->
+              json(conn, %{data: %{id: merged_id}, message: "Stories merged"})
+          end
 
-      {:error, :same_story} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Cannot merge a story with itself"})
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "One or both stories not found"})
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+        {:error, :same_story} ->
+          conn
+          |> put_status(:bad_request)
+          |> json(%{error: "Cannot merge a story with itself"})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
@@ -781,30 +823,34 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   ```
   """
   def resolve_investigation_story(conn, %{"id" => story_id} = params) do
+    organization_id = get_organization_id(conn)
+
     resolution = %{
       state: params["state"] || "resolved",
       notes: params["notes"]
     }
 
-    case InvestigationStoryline.resolve_story(story_id, resolution) do
-      :ok ->
-        case InvestigationStoryline.get_story(story_id) do
-          {:ok, story} ->
-            json(conn, %{data: story, message: "Story resolved"})
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.resolve_story(organization_id, story_id, resolution) do
+        :ok ->
+          case InvestigationStoryline.get_story(organization_id, story_id) do
+            {:ok, story} ->
+              json(conn, %{data: story, message: "Story resolved"})
 
-          _ ->
-            json(conn, %{message: "Story resolved"})
-        end
+            _ ->
+              json(conn, %{message: "Story resolved"})
+          end
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Story not found"})
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Story not found"})
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
@@ -812,14 +858,18 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Get MITRE ATT&CK kill chain coverage for an investigation story.
   """
   def investigation_kill_chain(conn, %{"id" => story_id}) do
-    case InvestigationStoryline.get_kill_chain_coverage(story_id) do
-      {:ok, coverage} ->
-        json(conn, %{data: coverage})
+    organization_id = get_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Story not found"})
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.get_kill_chain_coverage(organization_id, story_id) do
+        {:ok, coverage} ->
+          json(conn, %{data: coverage})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Story not found"})
+      end
     end
   end
 
@@ -833,17 +883,22 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
     - `limit` (optional): Maximum results (default: 50)
   """
   def list_investigation_stories(conn, params) do
-    filters = [
-      agent_id: params["agent_id"],
-      state: parse_investigation_state(params["state"]),
-      min_severity: params["min_severity"],
-      limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
-    ]
-    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    organization_id = get_organization_id(conn)
 
-    case InvestigationStoryline.get_active_stories(filters) do
-      {:ok, stories} ->
-        json(conn, %{data: stories, total: length(stories)})
+    filters =
+      [
+        agent_id: params["agent_id"],
+        state: parse_investigation_state(params["state"]),
+        min_severity: params["min_severity"],
+        limit: parse_integer(Map.get(params, "limit", "50"), 50, 1, 500)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    with :ok <- require_organization_id(organization_id) do
+      case InvestigationStoryline.get_active_stories(organization_id, filters) do
+        {:ok, stories} ->
+          json(conn, %{data: stories, total: length(stories)})
+      end
     end
   end
 
@@ -851,8 +906,12 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
   Get Investigation Storyline engine statistics.
   """
   def investigation_stats(conn, _params) do
-    stats = InvestigationStoryline.stats()
-    json(conn, %{data: stats})
+    organization_id = get_organization_id(conn)
+
+    with :ok <- require_organization_id(organization_id) do
+      stats = InvestigationStoryline.stats(organization_id)
+      json(conn, %{data: stats})
+    end
   end
 
   # Multi-tenant helpers
@@ -863,6 +922,9 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
       _ -> conn.assigns[:organization_id]
     end
   end
+
+  defp require_organization_id(nil), do: {:error, :unauthorized}
+  defp require_organization_id(_organization_id), do: :ok
 
   # Investigation story helpers
 
@@ -880,6 +942,7 @@ defmodule TamanduaServerWeb.API.V1.StorylineController do
       severity: Map.get(alert, :severity),
       status: Map.get(alert, :status),
       agent_id: Map.get(alert, :agent_id),
+      organization_id: Map.get(alert, :organization_id),
       mitre_tactics: Map.get(alert, :mitre_tactics, []),
       mitre_techniques: Map.get(alert, :mitre_techniques, []),
       threat_score: Map.get(alert, :threat_score),

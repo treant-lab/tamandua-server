@@ -154,7 +154,7 @@ defmodule TamanduaServer.Audit.MerkleTree do
   """
   def verify_tree(nil), do: {:ok, 0}
 
-  def verify_tree(%Node{left: nil, right: nil} = node) do
+  def verify_tree(%Node{left: nil, right: nil} = _node) do
     # Leaf node - always valid
     {:ok, 1}
   end

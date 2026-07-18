@@ -185,6 +185,57 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidenceTest do
     assert "process.pid" in summary["quality"].missing
   end
 
+  test "windows identity events expose identity entities and are correlation ready" do
+    summary =
+      event("auth_login", %{
+        category: "identity",
+        action: "logon_success",
+        outcome: "success",
+        identity: %{
+          provider: "windows_security_event_log",
+          source_event_id: 4624,
+          subject: "CORP\\alice",
+          baseline_key: "CORP\\alice",
+          logon_type: 3,
+          auth_package: "Kerberos"
+        },
+        network: %{remote_ip: "10.0.0.25"}
+      })
+      |> EventContract.summarize()
+
+    assert summary["category"] == "identity"
+    assert summary["correlation_ready"] == true
+    assert summary["entity_counts"]["identity"] >= 1
+    assert summary["quality"].missing == []
+  end
+
+  test "same identity baseline key is strong correlation evidence" do
+    left =
+      event("auth_login", %{
+        identity: %{
+          baseline_key: "CORP\\alice",
+          source_event_id: 4624,
+          logon_type: 3
+        }
+      })
+
+    right =
+      event("auth_failed", %{
+        identity: %{
+          baseline_key: "corp\\ALICE",
+          source_event_id: 4625,
+          logon_type: 3
+        }
+      })
+
+    assert %{score: score, sharedEntities: entities, relationTypes: relation_types} =
+             CorrelationEvidence.score_pair(left, right)
+
+    assert score >= 40
+    assert "identity" in entities
+    assert "identity" in relation_types
+  end
+
   defp event(event_type, payload, agent_id \\ "agent-a") do
     %{
       id: Ecto.UUID.generate(),

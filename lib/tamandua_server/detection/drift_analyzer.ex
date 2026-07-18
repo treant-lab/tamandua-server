@@ -32,9 +32,7 @@ defmodule TamanduaServer.Detection.DriftAnalyzer do
   require Logger
   alias Phoenix.PubSub
   alias TamanduaServer.Detection.ML.DriftClient
-  alias TamanduaServer.Repo
 
-  import Ecto.Query
 
   @ets_table :drift_analysis_cache
   @trend_check_interval_ms 15 * 60 * 1000  # 15 minutes

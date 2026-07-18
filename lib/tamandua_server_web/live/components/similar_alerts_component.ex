@@ -11,7 +11,6 @@ defmodule TamanduaServerWeb.Components.SimilarAlertsComponent do
 
   use TamanduaServerWeb, :live_component
 
-  alias TamanduaServer.Alerts.SimilarityDetector
 
   require Logger
 

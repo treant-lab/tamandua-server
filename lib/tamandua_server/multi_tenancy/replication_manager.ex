@@ -46,7 +46,7 @@ defmodule TamanduaServer.MultiTenancy.ReplicationManager do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.MultiTenancy.{DataResidency, RegionRouter}
+  alias TamanduaServer.MultiTenancy.{DataResidency}
   alias TamanduaServer.Audit
 
   require Logger
@@ -454,7 +454,7 @@ defmodule TamanduaServer.MultiTenancy.ReplicationManager do
     {:ok, 0}
   end
 
-  defp get_secondary_config(%Organization{region: primary_region, settings: settings}) do
+  defp get_secondary_config(%Organization{region: _primary_region, settings: settings}) do
     case Map.get(settings, "secondary_region") do
       nil ->
         {:error, :no_secondary_region}
@@ -515,7 +515,7 @@ defmodule TamanduaServer.MultiTenancy.ReplicationManager do
 
   defp perform_failback(tenant_id, opts) do
     with {:ok, org} <- get_organization(tenant_id),
-         {:ok, original_primary} <- get_secondary_region(org) do
+         {:ok, _original_primary} <- get_secondary_region(org) do
 
       # Fail back to original primary (which is now the secondary)
       perform_failover(tenant_id, Keyword.put(opts, :reason, "Failback to original primary"))

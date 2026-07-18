@@ -253,7 +253,7 @@ defmodule TamanduaServer.Backup.Encryptor do
   end
 
   defp compress_data(data, opts) do
-    level = Keyword.get(opts, :compression, 6)
+    _level = Keyword.get(opts, :compression, 6)
 
     try do
       compressed = :zlib.compress(data)

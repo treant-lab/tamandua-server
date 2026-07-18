@@ -39,7 +39,6 @@ defmodule TamanduaServer.Integrations.TeamsBot do
   alias TamanduaServer.Integrations.BotCommands
   alias TamanduaServer.Alerts
 
-  @graph_api_base "https://graph.microsoft.com/v1.0"
   @bot_framework_api "https://smba.trafficmanager.net/api"
 
   defmodule State do
@@ -113,7 +112,7 @@ defmodule TamanduaServer.Integrations.TeamsBot do
   # ==========================================================================
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     config = Application.get_env(:tamandua_server, __MODULE__, [])
 
     state = %State{
@@ -337,10 +336,15 @@ defmodule TamanduaServer.Integrations.TeamsBot do
     end
   end
 
-  defp approve_remediation(_org_id, action_id, user_id, activity, state) do
+  defp approve_remediation(org_id, action_id, user_id, activity, state) do
     alias TamanduaServer.Remediation.ApprovalManager
 
-    case ApprovalManager.approve(action_id, user_id, "Approved via Teams") do
+    case ApprovalManager.approve(
+           action_id,
+           user_id,
+           "Approved via Teams",
+           {:organization, org_id}
+         ) do
       {:ok, _execution} ->
         confirmation_card = build_remediation_confirmation_card(action_id, "approved", user_id)
         # Try to update the original card, fall back to reply
@@ -361,6 +365,11 @@ defmodule TamanduaServer.Integrations.TeamsBot do
         reply = build_card_reply(activity, error_card)
         send_activity(reply, state)
 
+      {:error, reason} when reason in [:user_not_found, :user_lookup_failed] ->
+        error_card = build_error_card("Approval unavailable: link this Teams identity to Tamandua")
+        reply = build_card_reply(activity, error_card)
+        send_activity(reply, state)
+
       {:error, reason} ->
         Logger.error("Teams approval failed: #{inspect(reason)}")
         error_card = build_error_card("Approval failed: #{inspect(reason)}")
@@ -369,10 +378,15 @@ defmodule TamanduaServer.Integrations.TeamsBot do
     end
   end
 
-  defp deny_remediation(_org_id, action_id, user_id, activity, state) do
+  defp deny_remediation(org_id, action_id, user_id, activity, state) do
     alias TamanduaServer.Remediation.ApprovalManager
 
-    case ApprovalManager.reject(action_id, user_id, "Denied via Teams") do
+    case ApprovalManager.reject(
+           action_id,
+           user_id,
+           "Denied via Teams",
+           {:organization, org_id}
+         ) do
       {:ok, _execution} ->
         confirmation_card = build_remediation_confirmation_card(action_id, "denied", user_id)
         case update_activity(activity["replyToId"], confirmation_card, activity, state) do
@@ -384,6 +398,11 @@ defmodule TamanduaServer.Integrations.TeamsBot do
 
       {:error, :not_found} ->
         error_card = build_error_card("Denial request not found or already processed")
+        reply = build_card_reply(activity, error_card)
+        send_activity(reply, state)
+
+      {:error, reason} when reason in [:user_not_found, :user_lookup_failed] ->
+        error_card = build_error_card("Denial unavailable: link this Teams identity to Tamandua")
         reply = build_card_reply(activity, error_card)
         send_activity(reply, state)
 
@@ -436,7 +455,7 @@ defmodule TamanduaServer.Integrations.TeamsBot do
         end
 
       {:error, :not_found} ->
-        Logger.warn("No Teams configuration found for organization: #{org_id}")
+        Logger.warning("No Teams configuration found for organization: #{org_id}")
     end
   end
 
@@ -782,7 +801,7 @@ defmodule TamanduaServer.Integrations.TeamsBot do
         "weekly" -> 168
       end
 
-    start_time = DateTime.utc_now() |> DateTime.add(-hours * 3600, :second)
+    _start_time = DateTime.utc_now() |> DateTime.add(-hours * 3600, :second)
 
     %{
       new_alerts: 0,
@@ -791,8 +810,8 @@ defmodule TamanduaServer.Integrations.TeamsBot do
       high: Alerts.count_by_severity_for_org(org_id, "high"),
       medium: Alerts.count_by_severity_for_org(org_id, "medium"),
       low: Alerts.count_by_severity_for_org(org_id, "low"),
-      agents_total: TamanduaServer.Agents.Registry.count_total(org_id),
-      agents_online: TamanduaServer.Agents.Registry.count_online(org_id),
+      agents_total: TamanduaServer.Agents.count_agents_for_org(org_id),
+      agents_online: TamanduaServer.Agents.count_online_for_org(org_id),
       period: period
     }
   end

@@ -94,7 +94,7 @@ defmodule TamanduaServer.Backup.ConfigBackup do
   """
   @spec validate_configs(Path.t()) :: {:ok, []} | {:ok, [map()]} | {:error, term()}
   def validate_configs(config_dir) do
-    errors = []
+    _errors = []
 
     # Validate YAML files
     yaml_errors = validate_yaml_files(Path.join(config_dir, "config"))

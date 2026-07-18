@@ -33,7 +33,7 @@ defmodule TamanduaServer.Response.ConditionEvaluator do
   """
   @spec evaluate(map() | nil, map()) :: boolean()
   def evaluate(nil, _context), do: true
-  def evaluate(%{} = condition, context) when map_size(condition) == 0, do: true
+  def evaluate(%{} = condition, _context) when map_size(condition) == 0, do: true
 
   def evaluate(%{"type" => "severity_gte", "value" => min_severity}, context) do
     context_severity = get_context_value(context, :severity)

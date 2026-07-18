@@ -145,9 +145,9 @@ defmodule TamanduaServer.Detection.TestValidator do
 
   defp validate_severity(_actual, nil), do: :ok
 
-  defp validate_severity(actual, expected_severity) do
+  defp validate_severity(actual, _expected_severity) do
     case actual do
-      {:match, rule_name} ->
+      {:match, _rule_name} ->
         # In real implementation, we'd load the rule and check its severity
         # For now, we'll extract from rule name or skip validation
         # TODO: Load rule and extract actual severity
@@ -162,7 +162,7 @@ defmodule TamanduaServer.Detection.TestValidator do
 
   defp validate_mitre(actual, expected_mitre) when is_list(expected_mitre) do
     case actual do
-      {:match, rule_name} ->
+      {:match, _rule_name} ->
         # In real implementation, we'd load the rule and check MITRE tags
         # For now, skip validation
         # TODO: Load rule and extract actual MITRE techniques

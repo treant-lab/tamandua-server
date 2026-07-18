@@ -16,10 +16,9 @@ defmodule TamanduaServer.Storyline.Engine do
   - Cross-entity correlation: Connects processes, files, network, registry changes
   """
 
-  alias TamanduaServer.{Repo, Alerts, Telemetry}
+  alias TamanduaServer.{Repo, Alerts}
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Telemetry.Event
-  alias TamanduaServer.Detection.Correlator
   alias TamanduaServer.Storyline.{Builder, Renderer}
 
   import Ecto.Query
@@ -27,23 +26,23 @@ defmodule TamanduaServer.Storyline.Engine do
   require Logger
 
   @type storyline :: %{
-    id: String.t(),
-    alert_id: String.t() | nil,
-    agent_id: String.t(),
-    title: String.t(),
-    summary: String.t(),
-    severity: atom(),
-    root_cause: map() | nil,
-    nodes: list(map()),
-    edges: list(map()),
-    timeline: list(map()),
-    threat_indicators: list(map()),
-    mitre_techniques: list(String.t()),
-    attack_phase: String.t(),
-    confidence_score: float(),
-    generated_at: DateTime.t(),
-    time_range: map()
-  }
+          id: String.t(),
+          alert_id: String.t() | nil,
+          agent_id: String.t(),
+          title: String.t(),
+          summary: String.t(),
+          severity: atom(),
+          root_cause: map() | nil,
+          nodes: list(map()),
+          edges: list(map()),
+          timeline: list(map()),
+          threat_indicators: list(map()),
+          mitre_techniques: list(String.t()),
+          attack_phase: String.t(),
+          confidence_score: float(),
+          generated_at: DateTime.t(),
+          time_range: map()
+        }
 
   @doc """
   Generate a complete storyline for an alert.
@@ -57,7 +56,8 @@ defmodule TamanduaServer.Storyline.Engine do
   """
   @spec generate_for_alert(String.t(), keyword()) :: {:ok, storyline()} | {:error, term()}
   def generate_for_alert(alert_id, opts \\ []) do
-    with {:ok, alert} <- fetch_alert(alert_id),
+    with {:ok, organization_id} <- require_organization_id(opts),
+         {:ok, alert} <- fetch_alert(alert_id, organization_id),
          {:ok, events} <- fetch_alert_events(alert, opts) do
       events = enrich_events_from_alert_metadata(events, alert)
       events = normalize_storyline_events(events)
@@ -68,11 +68,13 @@ defmodule TamanduaServer.Storyline.Engine do
   @doc """
   Generate a storyline starting from a specific process.
   """
-  @spec generate_from_process(String.t(), integer(), keyword()) :: {:ok, storyline()} | {:error, term()}
+  @spec generate_from_process(String.t(), integer(), keyword()) ::
+          {:ok, storyline()} | {:error, term()}
   def generate_from_process(agent_id, pid, opts \\ []) do
     time_window = Keyword.get(opts, :time_window_minutes, 60)
 
-    with {:ok, events} <- fetch_process_events(agent_id, pid, time_window),
+    with {:ok, organization_id} <- require_organization_id(opts),
+         {:ok, events} <- fetch_process_events(agent_id, pid, time_window, organization_id),
          {:ok, storyline} <- build_storyline_from_events(agent_id, events, opts) do
       {:ok, storyline}
     end
@@ -83,7 +85,8 @@ defmodule TamanduaServer.Storyline.Engine do
   """
   @spec generate_from_events(list(String.t()), keyword()) :: {:ok, storyline()} | {:error, term()}
   def generate_from_events(event_ids, opts \\ []) when is_list(event_ids) do
-    with {:ok, events} <- fetch_events_by_ids(event_ids),
+    with {:ok, organization_id} <- require_organization_id(opts),
+         {:ok, events} <- fetch_events_by_ids(event_ids, organization_id),
          {:ok, agent_id} <- extract_agent_id(events),
          {:ok, storyline} <- build_storyline_from_events(agent_id, events, opts) do
       {:ok, storyline}
@@ -101,23 +104,26 @@ defmodule TamanduaServer.Storyline.Engine do
   """
   @spec analyze_storyline(storyline(), keyword()) :: {:ok, map()} | {:error, term()}
   def analyze_storyline(storyline, opts \\ []) do
-    analysis = %{
-      threat_assessment: assess_threat(storyline),
-      attack_techniques: identify_techniques(storyline),
-      recommended_actions: recommend_actions(storyline),
-      confidence: calculate_confidence(storyline),
-      similar_incidents: find_similar_incidents(storyline),
-      attack_narrative: generate_narrative(storyline)
-    }
+    with {:ok, organization_id} <- require_organization_id(opts),
+         {:ok, storyline} <- normalize_analysis_storyline(storyline, organization_id) do
+      analysis = %{
+        threat_assessment: assess_threat(storyline),
+        attack_techniques: identify_techniques(storyline),
+        recommended_actions: recommend_actions(storyline),
+        confidence: calculate_confidence(storyline),
+        similar_incidents: find_similar_incidents(storyline),
+        attack_narrative: generate_narrative(storyline)
+      }
 
-    # Optionally use AI for enhanced analysis
-    analysis = if Keyword.get(opts, :use_ai, false) do
-      enhance_with_ai(analysis, storyline)
-    else
-      analysis
+      analysis =
+        if Keyword.get(opts, :use_ai, false) do
+          enhance_with_ai(analysis, storyline)
+        else
+          analysis
+        end
+
+      {:ok, analysis}
     end
-
-    {:ok, analysis}
   end
 
   @doc """
@@ -143,39 +149,65 @@ defmodule TamanduaServer.Storyline.Engine do
 
     # Map techniques to phases
     phase_mapping = %{
-      "T1566" => "initial_access",      # Phishing
-      "T1190" => "initial_access",      # Exploit Public-Facing Application
-      "T1059" => "execution",           # Command and Scripting Interpreter
-      "T1053" => "persistence",         # Scheduled Task/Job
-      "T1547" => "persistence",         # Boot or Logon Autostart Execution
-      "T1548" => "privilege_escalation", # Abuse Elevation Control Mechanism
-      "T1134" => "privilege_escalation", # Access Token Manipulation
-      "T1070" => "defense_evasion",     # Indicator Removal
-      "T1036" => "defense_evasion",     # Masquerading
-      "T1003" => "credential_access",   # OS Credential Dumping
-      "T1082" => "discovery",           # System Information Discovery
-      "T1021" => "lateral_movement",    # Remote Services
-      "T1560" => "collection",          # Archive Collected Data
-      "T1071" => "command_and_control", # Application Layer Protocol
-      "T1041" => "exfiltration",        # Exfiltration Over C2 Channel
-      "T1486" => "impact"               # Data Encrypted for Impact
+      # Phishing
+      "T1566" => "initial_access",
+      # Exploit Public-Facing Application
+      "T1190" => "initial_access",
+      # Command and Scripting Interpreter
+      "T1059" => "execution",
+      # Scheduled Task/Job
+      "T1053" => "persistence",
+      # Boot or Logon Autostart Execution
+      "T1547" => "persistence",
+      # Abuse Elevation Control Mechanism
+      "T1548" => "privilege_escalation",
+      # Access Token Manipulation
+      "T1134" => "privilege_escalation",
+      # Indicator Removal
+      "T1070" => "defense_evasion",
+      # Masquerading
+      "T1036" => "defense_evasion",
+      # OS Credential Dumping
+      "T1003" => "credential_access",
+      # System Information Discovery
+      "T1082" => "discovery",
+      # Remote Services
+      "T1021" => "lateral_movement",
+      # Archive Collected Data
+      "T1560" => "collection",
+      # Application Layer Protocol
+      "T1071" => "command_and_control",
+      # Exfiltration Over C2 Channel
+      "T1041" => "exfiltration",
+      # Data Encrypted for Impact
+      "T1486" => "impact"
     }
 
     # Find the most advanced phase
     phases_order = [
-      "initial_access", "execution", "persistence", "privilege_escalation",
-      "defense_evasion", "credential_access", "discovery", "lateral_movement",
-      "collection", "command_and_control", "exfiltration", "impact"
+      "initial_access",
+      "execution",
+      "persistence",
+      "privilege_escalation",
+      "defense_evasion",
+      "credential_access",
+      "discovery",
+      "lateral_movement",
+      "collection",
+      "command_and_control",
+      "exfiltration",
+      "impact"
     ]
 
-    detected_phases = techniques
-    |> Enum.map(fn tech ->
-      # Extract base technique ID (e.g., T1059 from T1059.001)
-      base = String.split(tech, ".") |> hd()
-      Map.get(phase_mapping, base)
-    end)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
+    detected_phases =
+      techniques
+      |> Enum.map(fn tech ->
+        # Extract base technique ID (e.g., T1059 from T1059.001)
+        base = String.split(tech, ".") |> hd()
+        Map.get(phase_mapping, base)
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
     # Return the most advanced phase detected
     phases_order
@@ -185,8 +217,95 @@ defmodule TamanduaServer.Storyline.Engine do
 
   # Private functions
 
-  defp fetch_alert(alert_id) do
-    case Alerts.get_alert(alert_id) do
+  defp require_organization_id(opts) do
+    case Keyword.get(opts, :organization_id) do
+      organization_id when is_binary(organization_id) and organization_id != "" ->
+        {:ok, organization_id}
+
+      _ ->
+        {:error, :organization_required}
+    end
+  end
+
+  defp normalize_analysis_storyline(storyline, organization_id) when is_map(storyline) do
+    required_lists = [:nodes, :edges, :timeline, :threat_indicators, :mitre_techniques]
+    severity = normalize_storyline_severity(Map.get(storyline, :severity))
+    confidence_score = Map.get(storyline, :confidence_score)
+
+    if Enum.all?(required_lists, &is_list(Map.get(storyline, &1))) and
+         Enum.all?(Map.get(storyline, :nodes), &valid_analysis_node?/1) and
+         Enum.all?(Map.get(storyline, :timeline), &is_map/1) and
+         Enum.all?(Map.get(storyline, :mitre_techniques), &is_binary/1) and
+         severity != :unknown and is_number(confidence_score) and confidence_score >= 0.0 and
+         confidence_score <= 1.0 and is_binary(Map.get(storyline, :attack_phase)) do
+      normalized =
+        storyline
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put(:severity, severity)
+        |> Map.put(:root_cause, Map.get(storyline, :root_cause))
+        |> Map.put(:alert_id, Map.get(storyline, :alert_id))
+        |> Map.put(:events, normalize_analysis_maps(Map.get(storyline, :events, [])))
+        |> Map.put(:detections, normalize_analysis_maps(Map.get(storyline, :detections, [])))
+        |> Map.put(:nodes, normalize_analysis_nodes(Map.get(storyline, :nodes)))
+        |> Map.put(:timeline, normalize_analysis_timeline(Map.get(storyline, :timeline)))
+
+      {:ok, normalized}
+    else
+      {:error, :invalid_storyline}
+    end
+  end
+
+  defp normalize_analysis_storyline(_storyline, _organization_id),
+    do: {:error, :invalid_storyline}
+
+  defp normalize_storyline_severity(value) when value in [:critical, "critical"], do: :critical
+  defp normalize_storyline_severity(value) when value in [:high, "high"], do: :high
+  defp normalize_storyline_severity(value) when value in [:medium, "medium"], do: :medium
+  defp normalize_storyline_severity(value) when value in [:low, "low"], do: :low
+  defp normalize_storyline_severity(_value), do: :unknown
+
+  defp normalize_analysis_nodes(nodes) do
+    Enum.map(nodes, fn
+      node when is_map(node) -> Map.update(node, :type, nil, &normalize_storyline_node_type/1)
+      node -> node
+    end)
+  end
+
+  defp valid_analysis_node?(node) when is_map(node) do
+    [:process_name, :name, :entity_name, :path, :remote_addr, :destination]
+    |> Enum.all?(fn field ->
+      case Map.get(node, field) do
+        nil -> true
+        value -> is_binary(value)
+      end
+    end)
+  end
+
+  defp valid_analysis_node?(_node), do: false
+
+  defp normalize_storyline_node_type(value) when value in [:process, "process"], do: :process
+  defp normalize_storyline_node_type(value) when value in [:file, "file"], do: :file
+  defp normalize_storyline_node_type(value) when value in [:network, "network"], do: :network
+  defp normalize_storyline_node_type(value) when value in [:registry, "registry"], do: :registry
+  defp normalize_storyline_node_type(value), do: value
+
+  defp normalize_analysis_timeline(timeline) do
+    Enum.map(timeline, fn
+      event when is_map(event) ->
+        Map.update(event, :severity, nil, fn severity ->
+          severity |> normalize_storyline_severity() |> to_string()
+        end)
+
+      event ->
+        event
+    end)
+  end
+
+  defp normalize_analysis_maps(value) when is_list(value), do: Enum.filter(value, &is_map/1)
+  defp normalize_analysis_maps(_value), do: []
+
+  defp fetch_alert(alert_id, organization_id) do
+    case Alerts.get_alert_for_org(organization_id, alert_id) do
       {:ok, alert} -> {:ok, alert}
       {:error, _} -> {:error, :alert_not_found}
     end
@@ -204,6 +323,7 @@ defmodule TamanduaServer.Storyline.Engine do
     events =
       if direct_ids != [] do
         Event
+        |> where([e], e.organization_id == ^alert.organization_id)
         |> where([e], e.id in ^direct_ids)
         |> order_by([e], asc: e.timestamp)
         |> Repo.all()
@@ -226,6 +346,7 @@ defmodule TamanduaServer.Storyline.Engine do
           pid_strings = Enum.map(pids, &to_string/1)
 
           Event
+          |> where([e], e.organization_id == ^alert.organization_id)
           |> where([e], e.agent_id == ^alert.agent_id)
           |> where([e], e.timestamp >= ^start_time and e.timestamp <= ^end_time)
           |> where(
@@ -255,6 +376,7 @@ defmodule TamanduaServer.Storyline.Engine do
         {start_time, end_time} = alert_time_range(alert, time_window)
 
         Event
+        |> where([e], e.organization_id == ^alert.organization_id)
         |> where([e], e.agent_id == ^alert.agent_id)
         |> where([e], e.timestamp >= ^start_time and e.timestamp <= ^end_time)
         |> order_by([e], asc: e.timestamp)
@@ -274,26 +396,39 @@ defmodule TamanduaServer.Storyline.Engine do
     {start_time, end_time}
   end
 
-  defp fetch_process_events(agent_id, pid, time_window_minutes) do
+  defp fetch_process_events(agent_id, pid, time_window_minutes, organization_id) do
     end_time = DateTime.utc_now()
     start_time = DateTime.add(end_time, -time_window_minutes * 60, :second)
 
-    events = Event
-    |> where([e], e.agent_id == ^agent_id)
-    |> where([e], e.timestamp >= ^start_time and e.timestamp <= ^end_time)
-    |> where([e], fragment("(?->>'pid')::int = ? OR (?->>'ppid')::int = ?", e.payload, ^pid, e.payload, ^pid))
-    |> order_by([e], asc: e.timestamp)
-    |> limit(500)
-    |> Repo.all()
+    events =
+      Event
+      |> maybe_scope_events(organization_id)
+      |> where([e], e.agent_id == ^agent_id)
+      |> where([e], e.timestamp >= ^start_time and e.timestamp <= ^end_time)
+      |> where(
+        [e],
+        fragment(
+          "(?->>'pid')::int = ? OR (?->>'ppid')::int = ?",
+          e.payload,
+          ^pid,
+          e.payload,
+          ^pid
+        )
+      )
+      |> order_by([e], asc: e.timestamp)
+      |> limit(500)
+      |> Repo.all()
 
     {:ok, events}
   end
 
-  defp fetch_events_by_ids(event_ids) do
-    events = Event
-    |> where([e], e.id in ^event_ids)
-    |> order_by([e], asc: e.timestamp)
-    |> Repo.all()
+  defp fetch_events_by_ids(event_ids, organization_id) do
+    events =
+      Event
+      |> maybe_scope_events(organization_id)
+      |> where([e], e.id in ^event_ids)
+      |> order_by([e], asc: e.timestamp)
+      |> Repo.all()
 
     if Enum.empty?(events) do
       {:error, :no_events_found}
@@ -301,6 +436,11 @@ defmodule TamanduaServer.Storyline.Engine do
       {:ok, events}
     end
   end
+
+  defp maybe_scope_events(query, nil), do: query
+
+  defp maybe_scope_events(query, organization_id),
+    do: where(query, [e], e.organization_id == ^organization_id)
 
   defp enrich_events_from_alert_metadata(events, alert) do
     synthetic_events = synthesize_events_from_alert(alert)
@@ -384,11 +524,20 @@ defmodule TamanduaServer.Storyline.Engine do
               event_type: "process_create",
               severity: to_string(alert.severity),
               payload: %{
-                "pid" => process["pid"] || process[:pid] || process["process_id"] || process[:process_id],
-                "ppid" => process["ppid"] || process[:ppid] || process["parent_pid"] || process[:parent_pid],
-                "name" => process["name"] || process[:name] || process["process_name"] || process[:process_name],
-                "path" => process["path"] || process[:path] || process["image_path"] || process[:image_path],
-                "cmdline" => process["cmdline"] || process[:cmdline] || process["command_line"] || process[:command_line],
+                "pid" =>
+                  process["pid"] || process[:pid] || process["process_id"] || process[:process_id],
+                "ppid" =>
+                  process["ppid"] || process[:ppid] || process["parent_pid"] ||
+                    process[:parent_pid],
+                "name" =>
+                  process["name"] || process[:name] || process["process_name"] ||
+                    process[:process_name],
+                "path" =>
+                  process["path"] || process[:path] || process["image_path"] ||
+                    process[:image_path],
+                "cmdline" =>
+                  process["cmdline"] || process[:cmdline] || process["command_line"] ||
+                    process[:command_line],
                 "user" => process["user"] || process[:user],
                 "sha256" => process["sha256"] || process[:sha256],
                 "is_elevated" => process["is_elevated"] || process[:is_elevated],
@@ -411,18 +560,20 @@ defmodule TamanduaServer.Storyline.Engine do
           event_type =
             get_in(alert.detection_metadata || %{}, ["event_type"]) || "process_create"
 
-          [%{
-            id: "synth_raw_#{alert.id}",
-            agent_id: agent_id,
-            timestamp: base_timestamp,
-            event_type: event_type,
-            severity: to_string(alert.severity),
-            payload: raw,
-            detections:
-              Enum.map(techniques, fn tech ->
-                detection_from_alert(alert, tech, "detection")
-              end)
-          }]
+          [
+            %{
+              id: "synth_raw_#{alert.id}",
+              agent_id: agent_id,
+              timestamp: base_timestamp,
+              event_type: event_type,
+              severity: to_string(alert.severity),
+              payload: raw,
+              detections:
+                Enum.map(techniques, fn tech ->
+                  detection_from_alert(alert, tech, "detection")
+                end)
+            }
+          ]
 
         _ ->
           []
@@ -448,7 +599,10 @@ defmodule TamanduaServer.Storyline.Engine do
 
   defp detection_from_alert(alert, technique, fallback_type) do
     metadata = alert.detection_metadata || %{}
-    evidence_detection = get_in(alert.evidence || %{}, ["detection"]) || get_in(alert.evidence || %{}, [:detection]) || %{}
+
+    evidence_detection =
+      get_in(alert.evidence || %{}, ["detection"]) || get_in(alert.evidence || %{}, [:detection]) ||
+        %{}
 
     %{
       "name" =>
@@ -461,8 +615,22 @@ defmodule TamanduaServer.Storyline.Engine do
           get_any(metadata, ["rule_name", :rule_name]) ||
           alert.title,
       "type" =>
-        get_any(evidence_detection, ["detection_type", :detection_type, "rule_type", :rule_type, "type", :type]) ||
-          get_any(metadata, ["detection_type", :detection_type, "rule_type", :rule_type, "type", :type]) ||
+        get_any(evidence_detection, [
+          "detection_type",
+          :detection_type,
+          "rule_type",
+          :rule_type,
+          "type",
+          :type
+        ]) ||
+          get_any(metadata, [
+            "detection_type",
+            :detection_type,
+            "rule_type",
+            :rule_type,
+            "type",
+            :type
+          ]) ||
           fallback_type,
       "severity" => to_string(alert.severity || "info"),
       "confidence" =>
@@ -568,11 +736,11 @@ defmodule TamanduaServer.Storyline.Engine do
     with {:ok, causal_chain} <- Builder.build_causal_chain(events),
          {:ok, root_cause} <- Builder.identify_root_cause(causal_chain),
          {:ok, graph_data} <- Renderer.render(causal_chain, alert, opts) do
-
       storyline = %{
         id: generate_storyline_id(),
         alert_id: alert.id,
         agent_id: alert.agent_id,
+        organization_id: alert.organization_id,
         title: generate_title(alert, root_cause),
         summary: generate_summary(alert, causal_chain),
         severity: alert.severity,
@@ -604,11 +772,11 @@ defmodule TamanduaServer.Storyline.Engine do
     with {:ok, causal_chain} <- Builder.build_causal_chain(events),
          {:ok, root_cause} <- Builder.identify_root_cause(causal_chain),
          {:ok, graph_data} <- Renderer.render_from_events(causal_chain, agent_id, opts) do
-
       storyline = %{
         id: generate_storyline_id(),
         alert_id: nil,
         agent_id: agent_id,
+        organization_id: Keyword.get(opts, :organization_id),
         title: "Process Activity Investigation",
         summary: generate_events_summary(events),
         severity: determine_severity(events),
@@ -638,11 +806,12 @@ defmodule TamanduaServer.Storyline.Engine do
   end
 
   defp generate_title(alert, root_cause) do
-    root_name = case root_cause do
-      %{process_name: name} when is_binary(name) -> name
-      %{entity_name: name} when is_binary(name) -> name
-      _ -> "Unknown Process"
-    end
+    root_name =
+      case root_cause do
+        %{process_name: name} when is_binary(name) -> name
+        %{entity_name: name} when is_binary(name) -> name
+        _ -> "Unknown Process"
+      end
 
     "#{alert.title} - Originating from #{root_name}"
   end
@@ -677,7 +846,7 @@ defmodule TamanduaServer.Storyline.Engine do
         event_type: event.event_type,
         summary: summarize_event(event),
         severity: event.severity || "info",
-        payload: sanitize_payload(event.payload),
+        payload: storyline_payload(event),
         detections: event_detections(event)
       }
     end)
@@ -728,7 +897,52 @@ defmodule TamanduaServer.Storyline.Engine do
     payload
     |> Map.drop(["password", "secret", "token", "key", "credential"])
   end
+
   defp sanitize_payload(_), do: %{}
+
+  @consumer_visibility_fields ~w(
+    ai_network_risk ai_evidence_limit network_visibility_state
+    tls_fingerprints_available certificate_visibility risk_indicators
+    matched_patterns artifact_type redacted_preview
+  )
+
+  defp storyline_payload(event) do
+    payload = event |> event_payload() |> sanitize_payload()
+    enrichment = Map.get(event, :enrichment) || Map.get(event, "enrichment") || %{}
+    metadata = get_any(enrichment, ["metadata", :metadata]) || %{}
+
+    visible_metadata =
+      Enum.reduce(@consumer_visibility_fields, %{}, fn key, acc ->
+        case visibility_metadata_value(metadata, key) do
+          value when value in [nil, "", []] -> acc
+          :missing -> acc
+          value -> Map.put(acc, key, value)
+        end
+      end)
+
+    if map_size(visible_metadata) == 0 do
+      payload
+    else
+      Map.update(payload, "metadata", visible_metadata, fn existing ->
+        if is_map(existing), do: Map.merge(visible_metadata, existing), else: visible_metadata
+      end)
+    end
+  end
+
+  defp visibility_metadata_value(metadata, key) when is_map(metadata) do
+    case Map.fetch(metadata, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        case Map.fetch(metadata, String.to_atom(key)) do
+          {:ok, value} -> value
+          :error -> :missing
+        end
+    end
+  end
+
+  defp visibility_metadata_value(_, _), do: :missing
 
   defp event_detections(event) when is_map(event) do
     payload = Map.get(event, :payload) || Map.get(event, "payload") || %{}
@@ -746,17 +960,19 @@ defmodule TamanduaServer.Storyline.Engine do
     indicators = []
 
     # Extract from events
-    event_indicators = events
-    |> Enum.flat_map(fn event ->
-      extract_event_indicators(event)
-    end)
+    event_indicators =
+      events
+      |> Enum.flat_map(fn event ->
+        extract_event_indicators(event)
+      end)
 
     # Extract from alert evidence if available
-    alert_indicators = if alert && alert.evidence do
-      extract_alert_indicators(alert.evidence)
-    else
-      []
-    end
+    alert_indicators =
+      if alert && alert.evidence do
+        extract_alert_indicators(alert.evidence)
+      else
+        []
+      end
 
     (indicators ++ event_indicators ++ alert_indicators)
     |> Enum.uniq_by(& &1.value)
@@ -767,12 +983,33 @@ defmodule TamanduaServer.Storyline.Engine do
 
     [
       indicator("hash_sha256", get_any(payload, ["sha256", :sha256, "hash", :hash])),
-      indicator("domain", get_any(payload, ["query", :query, "domain", :domain, "hostname", :hostname, "sni", :sni])),
-      indicator("ip", get_any(payload, ["remote_addr", :remote_addr, "remote_ip", :remote_ip, "dst_ip", :dst_ip, "ip", :ip])),
+      indicator(
+        "domain",
+        get_any(payload, ["query", :query, "domain", :domain, "hostname", :hostname, "sni", :sni])
+      ),
+      indicator(
+        "ip",
+        get_any(payload, [
+          "remote_addr",
+          :remote_addr,
+          "remote_ip",
+          :remote_ip,
+          "dst_ip",
+          :dst_ip,
+          "ip",
+          :ip
+        ])
+      ),
       indicator("url", get_any(payload, ["url", :url, "uri", :uri])),
-      suspicious_file_indicator(get_any(payload, ["path", :path, "image_path", :image_path, "file_path", :file_path]))
+      suspicious_file_indicator(
+        get_any(payload, ["path", :path, "image_path", :image_path, "file_path", :file_path])
+      )
     ]
-    |> Enum.concat(command_line_indicators(get_any(payload, ["cmdline", :cmdline, "command_line", :command_line, "command", :command])))
+    |> Enum.concat(
+      command_line_indicators(
+        get_any(payload, ["cmdline", :cmdline, "command_line", :command_line, "command", :command])
+      )
+    )
     |> Enum.reject(&is_nil/1)
   end
 
@@ -844,24 +1081,29 @@ defmodule TamanduaServer.Storyline.Engine do
 
     # Extract file hashes
     file_hashes = Map.get(evidence, "file_hashes", []) ++ Map.get(evidence, :file_hashes, [])
-    hash_indicators = Enum.flat_map(file_hashes, fn hash ->
-      Enum.flat_map(["sha256", "sha1", "md5"], fn algo ->
-        value = Map.get(hash, algo) || Map.get(hash, String.to_atom(algo))
-        if value, do: [%{type: "hash_#{algo}", value: value, source: "alert"}], else: []
+
+    hash_indicators =
+      Enum.flat_map(file_hashes, fn hash ->
+        Enum.flat_map(["sha256", "sha1", "md5"], fn algo ->
+          value = Map.get(hash, algo) || Map.get(hash, String.to_atom(algo))
+          if value, do: [%{type: "hash_#{algo}", value: value, source: "alert"}], else: []
+        end)
       end)
-    end)
 
     # Extract network indicators
     network = Map.get(evidence, "network", []) ++ Map.get(evidence, :network, [])
-    network_indicators = Enum.map(network, fn n ->
-      type = Map.get(n, "type") || Map.get(n, :type) || "network"
-      value = Map.get(n, "value") || Map.get(n, :value)
-      %{type: type, value: value, source: "alert"}
-    end)
-    |> Enum.reject(& is_nil(&1.value))
+
+    network_indicators =
+      Enum.map(network, fn n ->
+        type = Map.get(n, "type") || Map.get(n, :type) || "network"
+        value = Map.get(n, "value") || Map.get(n, :value)
+        %{type: type, value: value, source: "alert"}
+      end)
+      |> Enum.reject(&is_nil(&1.value))
 
     indicators ++ hash_indicators ++ network_indicators
   end
+
   defp extract_alert_indicators(_), do: []
 
   defp suspicious_path?(path) do
@@ -915,7 +1157,8 @@ defmodule TamanduaServer.Storyline.Engine do
     structure_bonus = min((length(nodes) + length(edges)) / 40, 0.1)
 
     # Higher confidence with critical/high severity detections
-    severity_bonus = if Enum.any?(detections, &(&1[:severity] in ["critical", "high"])), do: 0.1, else: 0.0
+    severity_bonus =
+      if Enum.any?(detections, &(&1[:severity] in ["critical", "high"])), do: 0.1, else: 0.0
 
     min(base_score + event_bonus + detection_bonus + structure_bonus + severity_bonus, 1.0)
     |> Float.round(2)
@@ -938,9 +1181,10 @@ defmodule TamanduaServer.Storyline.Engine do
   end
 
   defp determine_severity(events) do
-    severities = events
-    |> Enum.map(& &1.severity)
-    |> Enum.reject(&is_nil/1)
+    severities =
+      events
+      |> Enum.map(& &1.severity)
+      |> Enum.reject(&is_nil/1)
 
     cond do
       "critical" in severities -> :critical
@@ -1025,9 +1269,16 @@ defmodule TamanduaServer.Storyline.Engine do
   defp safe_datetime(_), do: DateTime.utc_now()
 
   defp enrich_payload_for_storyline(payload) when is_map(payload) do
-    cmdline = get_any(payload, ["cmdline", :cmdline, "command_line", :command_line, "command", :command])
+    cmdline =
+      get_any(payload, ["cmdline", :cmdline, "command_line", :command_line, "command", :command])
+
     decoded = decode_powershell_encoded_command(cmdline)
-    urls = command_line_indicators(cmdline) |> Enum.filter(&(&1.type == "url")) |> Enum.map(& &1.value) |> Enum.uniq()
+
+    urls =
+      command_line_indicators(cmdline)
+      |> Enum.filter(&(&1.type == "url"))
+      |> Enum.map(& &1.value)
+      |> Enum.uniq()
 
     payload
     |> maybe_put_payload("decoded_command", decoded)
@@ -1064,13 +1315,14 @@ defmodule TamanduaServer.Storyline.Engine do
   end
 
   defp calculate_risk_level(storyline) do
-    severity_score = case storyline.severity do
-      :critical -> 100
-      :high -> 75
-      :medium -> 50
-      :low -> 25
-      _ -> 10
-    end
+    severity_score =
+      case storyline.severity do
+        :critical -> 100
+        :high -> 75
+        :medium -> 50
+        :low -> 25
+        _ -> 10
+      end
 
     technique_score = min(length(storyline.mitre_techniques) * 10, 50)
     indicator_score = min(length(storyline.threat_indicators) * 5, 30)
@@ -1145,60 +1397,123 @@ defmodule TamanduaServer.Storyline.Engine do
       "T1059" => "Adversaries may abuse command and script interpreters to execute commands.",
       "T1059.001" => "Adversaries may abuse PowerShell commands and scripts for execution.",
       "T1059.003" => "Adversaries may abuse the Windows command shell (cmd.exe) for execution.",
-      "T1547" => "Adversaries may configure system settings to automatically execute a program during system boot.",
-      "T1003" => "Adversaries may attempt to dump credentials to obtain account login and credential material.",
-      "T1071" => "Adversaries may communicate using application layer protocols to avoid detection.",
+      "T1547" =>
+        "Adversaries may configure system settings to automatically execute a program during system boot.",
+      "T1003" =>
+        "Adversaries may attempt to dump credentials to obtain account login and credential material.",
+      "T1071" =>
+        "Adversaries may communicate using application layer protocols to avoid detection.",
       "T1566" => "Adversaries may send phishing messages to gain access to victim systems.",
       "T1486" => "Adversaries may encrypt data on target systems to interrupt availability.",
       "T1055" => "Adversaries may inject code into processes to evade process-based defenses."
     }
 
     base_id = technique_id |> String.split(".") |> hd()
-    Map.get(descriptions, technique_id) || Map.get(descriptions, base_id, "No description available.")
+
+    Map.get(descriptions, technique_id) ||
+      Map.get(descriptions, base_id, "No description available.")
   end
 
   defp recommend_actions(storyline) do
     actions = []
 
     # Based on severity
-    actions = case storyline.severity do
-      :critical -> [
-        %{priority: "immediate", action: "Isolate affected endpoint", reason: "Critical severity detected"},
-        %{priority: "immediate", action: "Collect forensic artifacts", reason: "Preserve evidence before remediation"}
-        | actions
-      ]
-      :high -> [
-        %{priority: "high", action: "Investigate process chain", reason: "High severity requires immediate attention"},
-        %{priority: "high", action: "Check for lateral movement", reason: "Prevent spread to other systems"}
-        | actions
-      ]
-      _ -> actions
-    end
+    actions =
+      case storyline.severity do
+        :critical ->
+          [
+            %{
+              priority: "immediate",
+              action: "Isolate affected endpoint",
+              reason: "Critical severity detected"
+            },
+            %{
+              priority: "immediate",
+              action: "Collect forensic artifacts",
+              reason: "Preserve evidence before remediation"
+            }
+            | actions
+          ]
+
+        :high ->
+          [
+            %{
+              priority: "high",
+              action: "Investigate process chain",
+              reason: "High severity requires immediate attention"
+            },
+            %{
+              priority: "high",
+              action: "Check for lateral movement",
+              reason: "Prevent spread to other systems"
+            }
+            | actions
+          ]
+
+        _ ->
+          actions
+      end
 
     # Based on attack phase
-    actions = case storyline.attack_phase do
-      "credential_access" -> [
-        %{priority: "immediate", action: "Reset compromised credentials", reason: "Credential theft detected"},
-        %{priority: "high", action: "Review access logs", reason: "Check for credential misuse"}
-        | actions
-      ]
-      "exfiltration" -> [
-        %{priority: "immediate", action: "Block outbound connections", reason: "Data exfiltration in progress"},
-        %{priority: "high", action: "Identify exfiltrated data", reason: "Assess data breach impact"}
-        | actions
-      ]
-      "lateral_movement" -> [
-        %{priority: "immediate", action: "Isolate affected systems", reason: "Prevent further spread"},
-        %{priority: "high", action: "Scan adjacent systems", reason: "Identify compromised hosts"}
-        | actions
-      ]
-      _ -> actions
-    end
+    actions =
+      case storyline.attack_phase do
+        "credential_access" ->
+          [
+            %{
+              priority: "immediate",
+              action: "Reset compromised credentials",
+              reason: "Credential theft detected"
+            },
+            %{
+              priority: "high",
+              action: "Review access logs",
+              reason: "Check for credential misuse"
+            }
+            | actions
+          ]
+
+        "exfiltration" ->
+          [
+            %{
+              priority: "immediate",
+              action: "Block outbound connections",
+              reason: "Data exfiltration in progress"
+            },
+            %{
+              priority: "high",
+              action: "Identify exfiltrated data",
+              reason: "Assess data breach impact"
+            }
+            | actions
+          ]
+
+        "lateral_movement" ->
+          [
+            %{
+              priority: "immediate",
+              action: "Isolate affected systems",
+              reason: "Prevent further spread"
+            },
+            %{
+              priority: "high",
+              action: "Scan adjacent systems",
+              reason: "Identify compromised hosts"
+            }
+            | actions
+          ]
+
+        _ ->
+          actions
+      end
 
     # Based on indicators
     if length(storyline.threat_indicators) > 5 do
-      actions = [
-        %{priority: "medium", action: "Export IOCs to threat intel", reason: "Multiple indicators detected"}
+      _actions = [
+        %{
+          priority: "medium",
+          action: "Export IOCs to threat intel",
+          reason: "Multiple indicators detected"
+        }
         | actions
       ]
     end
@@ -1220,22 +1535,29 @@ defmodule TamanduaServer.Storyline.Engine do
 
     # Nothing to compare if we have no identifying features
     if MapSet.size(techniques) == 0 and
-       Enum.empty?(extract_process_names(storyline)) and
-       Enum.empty?(extract_file_paths(storyline)) and
-       Enum.empty?(extract_network_destinations(storyline)) do
+         Enum.empty?(extract_process_names(storyline)) and
+         Enum.empty?(extract_file_paths(storyline)) and
+         Enum.empty?(extract_network_destinations(storyline)) do
       []
     else
       # Query recent alerts from the last 30 days that have MITRE techniques
       cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(), -30 * 24 * 3600, :second)
 
+      organization_id = storyline[:organization_id]
+
       candidate_alerts =
-        Alert
-        |> where([a], a.inserted_at >= ^cutoff)
-        |> where([a], a.id != ^(storyline[:alert_id] || ""))
-        |> where([a], fragment("array_length(?, 1) > 0", a.mitre_techniques))
-        |> order_by([a], desc: a.inserted_at)
-        |> limit(100)
-        |> Repo.all()
+        if organization_id do
+          Alert
+          |> where([a], a.organization_id == ^organization_id)
+          |> where([a], a.inserted_at >= ^cutoff)
+          |> where([a], a.id != ^(storyline[:alert_id] || ""))
+          |> where([a], fragment("array_length(?, 1) > 0", a.mitre_techniques))
+          |> order_by([a], desc: a.inserted_at)
+          |> limit(100)
+          |> Repo.all()
+        else
+          []
+        end
 
       # Extract feature sets from the current storyline for comparison
       storyline_process_names = extract_process_names(storyline) |> MapSet.new()
@@ -1259,17 +1581,19 @@ defmodule TamanduaServer.Storyline.Engine do
         # then file paths and network destinations
         weighted_score =
           technique_sim * 0.40 +
-          process_sim * 0.25 +
-          file_sim * 0.20 +
-          network_sim * 0.15
+            process_sim * 0.25 +
+            file_sim * 0.20 +
+            network_sim * 0.15
 
         %{
           alert_id: alert.id,
           title: alert.title,
           severity: alert.severity,
           similarity_score: Float.round(weighted_score, 3),
-          matching_techniques: MapSet.intersection(techniques, alert_techniques) |> MapSet.to_list(),
-          matching_processes: MapSet.intersection(storyline_process_names, alert_process_names) |> MapSet.to_list(),
+          matching_techniques:
+            MapSet.intersection(techniques, alert_techniques) |> MapSet.to_list(),
+          matching_processes:
+            MapSet.intersection(storyline_process_names, alert_process_names) |> MapSet.to_list(),
           occurred_at: alert.inserted_at
         }
       end)
@@ -1346,6 +1670,7 @@ defmodule TamanduaServer.Storyline.Engine do
       case alert.evidence do
         %{"processes" => procs} when is_list(procs) ->
           Enum.map(procs, fn p -> (p["name"] || "") |> String.downcase() end)
+
         _ ->
           []
       end
@@ -1360,6 +1685,7 @@ defmodule TamanduaServer.Storyline.Engine do
       %{"files" => files} when is_list(files) ->
         Enum.map(files, fn f -> (f["path"] || "") |> String.downcase() end)
         |> Enum.reject(&(&1 == ""))
+
       _ ->
         []
     end
@@ -1368,40 +1694,49 @@ defmodule TamanduaServer.Storyline.Engine do
   defp extract_network_dests_from_alert(alert) do
     case alert.evidence do
       %{"network" => conns} when is_list(conns) ->
-        Enum.map(conns, fn n -> (n["remote_addr"] || n["destination"] || n["value"] || "") |> String.downcase() end)
+        Enum.map(conns, fn n ->
+          (n["remote_addr"] || n["destination"] || n["value"] || "") |> String.downcase()
+        end)
         |> Enum.reject(&(&1 == ""))
+
       _ ->
         []
     end
   end
 
   defp generate_narrative(storyline) do
-    root_cause_text = case storyline.root_cause do
-      %{process_name: name, cmdline: cmdline} when is_binary(name) ->
-        "The attack originated from the process '#{name}'#{if cmdline, do: " with command line: #{String.slice(cmdline, 0, 100)}", else: ""}."
-      %{entity_name: name, type: type} ->
-        "The activity started with a #{type} entity: #{name}."
-      _ ->
-        "The root cause could not be definitively determined."
-    end
+    root_cause_text =
+      case storyline.root_cause do
+        %{process_name: name, cmdline: cmdline} when is_binary(name) ->
+          "The attack originated from the process '#{name}'#{if cmdline, do: " with command line: #{String.slice(cmdline, 0, 100)}", else: ""}."
 
-    phase_text = case storyline.attack_phase do
-      "unknown" -> ""
-      phase -> " The attack has progressed to the '#{String.replace(phase, "_", " ")}' phase."
-    end
+        %{entity_name: name, type: type} ->
+          "The activity started with a #{type} entity: #{name}."
 
-    technique_text = if length(storyline.mitre_techniques) > 0 do
-      techniques = storyline.mitre_techniques |> Enum.take(3) |> Enum.join(", ")
-      " Detected MITRE ATT&CK techniques include: #{techniques}."
-    else
-      ""
-    end
+        _ ->
+          "The root cause could not be definitively determined."
+      end
 
-    indicator_text = if length(storyline.threat_indicators) > 0 do
-      " #{length(storyline.threat_indicators)} threat indicators were identified."
-    else
-      ""
-    end
+    phase_text =
+      case storyline.attack_phase do
+        "unknown" -> ""
+        phase -> " The attack has progressed to the '#{String.replace(phase, "_", " ")}' phase."
+      end
+
+    technique_text =
+      if length(storyline.mitre_techniques) > 0 do
+        techniques = storyline.mitre_techniques |> Enum.take(3) |> Enum.join(", ")
+        " Detected MITRE ATT&CK techniques include: #{techniques}."
+      else
+        ""
+      end
+
+    indicator_text =
+      if length(storyline.threat_indicators) > 0 do
+        " #{length(storyline.threat_indicators)} threat indicators were identified."
+      else
+        ""
+      end
 
     """
     #{root_cause_text}#{phase_text}#{technique_text}#{indicator_text}
@@ -1414,16 +1749,17 @@ defmodule TamanduaServer.Storyline.Engine do
 
   defp enhance_with_ai(analysis, storyline) do
     try do
-      ai_module = cond do
-        Process.whereis(TamanduaServer.AISecurity.AgenticAnalyst) ->
-          :agentic_analyst
+      ai_module =
+        cond do
+          Process.whereis(TamanduaServer.AISecurity.AgenticAnalyst) ->
+            :agentic_analyst
 
-        Code.ensure_loaded?(TamanduaServer.AI.QueryInterface) ->
-          :query_interface
+          Code.ensure_loaded?(TamanduaServer.AI.QueryInterface) ->
+            :query_interface
 
-        true ->
-          nil
-      end
+          true ->
+            nil
+        end
 
       case ai_module do
         nil ->
@@ -1459,7 +1795,9 @@ defmodule TamanduaServer.Storyline.Engine do
           timestamp: event[:timestamp],
           type: event[:event_type],
           summary: event[:summary],
-          severity: event[:severity]
+          severity: event[:severity],
+          alert_id: event[:alert_id] || storyline[:alert_id],
+          organization_id: event[:organization_id] || storyline[:organization_id]
         }
       end)
 
@@ -1489,6 +1827,8 @@ defmodule TamanduaServer.Storyline.Engine do
 
     %{
       type: :storyline_enhancement,
+      alert_id: storyline[:alert_id],
+      organization_id: storyline[:organization_id],
       events: events_summary,
       techniques: technique_ids,
       technique_details: technique_details,
@@ -1514,28 +1854,38 @@ defmodule TamanduaServer.Storyline.Engine do
   defp call_ai_module(:agentic_analyst, prompt_data) do
     # The AgenticAnalyst is a GenServer; construct an alert-like triage
     # request containing the storyline context for analysis
-    case TamanduaServer.AISecurity.AgenticAnalyst.triage_alert(
-           prompt_data[:events] |> List.first() |> get_in([:alert_id]) || "storyline"
-         ) do
-      {:ok, investigation_id} ->
-        # Retrieve the investigation result with a brief wait for async processing
-        Process.sleep(500)
-        case TamanduaServer.AISecurity.AgenticAnalyst.get_investigation(investigation_id) do
-          {:ok, investigation} ->
-            {:ok, %{
-              ai_narrative: investigation[:explanation] || investigation[:summary] || "",
-              ai_remediation: investigation[:recommended_actions] || [],
-              ai_risk_assessment: investigation[:risk_level] || "unknown",
-              ai_techniques: investigation[:techniques] || [],
-              ai_confidence: investigation[:confidence] || 0.0
-            }}
+    first_event = prompt_data[:events] |> List.first() || %{}
+    alert_id = get_in(first_event, [:alert_id]) || prompt_data[:alert_id] || "storyline"
+    organization_id = Map.get(first_event, :organization_id) || prompt_data[:organization_id]
 
-          {:error, reason} ->
-            {:error, reason}
-        end
+    if is_nil(organization_id) do
+      {:error, :organization_required}
+    else
+      case TamanduaServer.AISecurity.AgenticAnalyst.triage_alert(alert_id, organization_id) do
+        {:ok, investigation_id} ->
+          # Retrieve the investigation result with a brief wait for async processing
+          Process.sleep(500)
 
-      {:error, reason} ->
-        {:error, reason}
+          case TamanduaServer.AISecurity.AgenticAnalyst.get_investigation(investigation_id,
+                 organization_id: organization_id
+               ) do
+            {:ok, investigation} ->
+              {:ok,
+               %{
+                 ai_narrative: investigation[:explanation] || investigation[:summary] || "",
+                 ai_remediation: investigation[:recommended_actions] || [],
+                 ai_risk_assessment: investigation[:risk_level] || "unknown",
+                 ai_techniques: investigation[:techniques] || [],
+                 ai_confidence: investigation[:confidence] || 0.0
+               }}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1552,13 +1902,14 @@ defmodule TamanduaServer.Storyline.Engine do
 
         remediation_steps = generate_ai_remediation(prompt_data)
 
-        {:ok, %{
-          ai_narrative: build_ai_narrative(prompt_data, summary, results),
-          ai_remediation: remediation_steps,
-          ai_risk_assessment: assess_risk_from_prompt(prompt_data),
-          ai_techniques: technique_descriptions,
-          ai_confidence: 0.7
-        }}
+        {:ok,
+         %{
+           ai_narrative: build_ai_narrative(prompt_data, summary, results),
+           ai_remediation: remediation_steps,
+           ai_risk_assessment: assess_risk_from_prompt(prompt_data),
+           ai_techniques: technique_descriptions,
+           ai_confidence: 0.7
+         }}
 
       _ ->
         {:error, :unexpected_ai_response}
@@ -1566,50 +1917,62 @@ defmodule TamanduaServer.Storyline.Engine do
   end
 
   defp build_nl_query(prompt_data) do
-    process_part = case prompt_data[:process_names] do
-      [_ | _] = names -> "processes #{Enum.take(names, 5) |> Enum.join(", ")}"
-      _ -> "processes"
-    end
+    process_part =
+      case prompt_data[:process_names] do
+        [_ | _] = names -> "processes #{Enum.take(names, 5) |> Enum.join(", ")}"
+        _ -> "processes"
+      end
 
-    network_part = case prompt_data[:network_connections] do
-      [_ | _] = conns -> " with network connections to #{Enum.take(conns, 3) |> Enum.join(", ")}"
-      _ -> ""
-    end
+    network_part =
+      case prompt_data[:network_connections] do
+        [_ | _] = conns ->
+          " with network connections to #{Enum.take(conns, 3) |> Enum.join(", ")}"
 
-    technique_part = case prompt_data[:techniques] do
-      [_ | _] = techs -> " involving techniques #{Enum.take(techs, 5) |> Enum.join(", ")}"
-      _ -> ""
-    end
+        _ ->
+          ""
+      end
+
+    technique_part =
+      case prompt_data[:techniques] do
+        [_ | _] = techs -> " involving techniques #{Enum.take(techs, 5) |> Enum.join(", ")}"
+        _ -> ""
+      end
 
     "Analyze attack chain involving #{process_part}#{network_part}#{technique_part}"
   end
 
   defp build_ai_narrative(prompt_data, summary, _results) do
-    root_info = case prompt_data[:root_cause] do
-      %{process_name: name} when is_binary(name) -> "originating from '#{name}'"
-      %{entity_name: name} when is_binary(name) -> "starting with '#{name}'"
-      _ -> "with an undetermined origin"
-    end
+    root_info =
+      case prompt_data[:root_cause] do
+        %{process_name: name} when is_binary(name) -> "originating from '#{name}'"
+        %{entity_name: name} when is_binary(name) -> "starting with '#{name}'"
+        _ -> "with an undetermined origin"
+      end
 
-    phase_info = case prompt_data[:attack_phase] do
-      nil -> ""
-      "unknown" -> ""
-      phase -> " The attack progressed to the #{String.replace(phase, "_", " ")} phase."
-    end
+    phase_info =
+      case prompt_data[:attack_phase] do
+        nil -> ""
+        "unknown" -> ""
+        phase -> " The attack progressed to the #{String.replace(phase, "_", " ")} phase."
+      end
 
-    process_info = case prompt_data[:process_names] do
-      [_ | _] = names ->
-        " Key processes involved: #{Enum.take(names, 5) |> Enum.join(", ")}."
-      _ ->
-        ""
-    end
+    process_info =
+      case prompt_data[:process_names] do
+        [_ | _] = names ->
+          " Key processes involved: #{Enum.take(names, 5) |> Enum.join(", ")}."
 
-    network_info = case prompt_data[:network_connections] do
-      [_ | _] = conns ->
-        " External connections observed to: #{Enum.take(conns, 3) |> Enum.join(", ")}."
-      _ ->
-        ""
-    end
+        _ ->
+          ""
+      end
+
+    network_info =
+      case prompt_data[:network_connections] do
+        [_ | _] = conns ->
+          " External connections observed to: #{Enum.take(conns, 3) |> Enum.join(", ")}."
+
+        _ ->
+          ""
+      end
 
     """
     AI-Enhanced Analysis: Attack chain #{root_info} involving \
@@ -1624,74 +1987,109 @@ defmodule TamanduaServer.Storyline.Engine do
     base_steps = []
 
     # Severity-based remediation
-    base_steps = case prompt_data[:severity] do
-      sev when sev in [:critical, "critical"] ->
-        [
-          %{priority: "immediate", step: "Isolate affected endpoint from network immediately"},
-          %{priority: "immediate", step: "Initiate incident response procedures"},
-          %{priority: "immediate", step: "Collect volatile forensic artifacts (memory dump, active connections)"}
-          | base_steps
-        ]
-      sev when sev in [:high, "high"] ->
-        [
-          %{priority: "high", step: "Investigate process chain and determine scope of compromise"},
-          %{priority: "high", step: "Check for lateral movement indicators on adjacent systems"}
-          | base_steps
-        ]
-      _ ->
-        base_steps
-    end
+    base_steps =
+      case prompt_data[:severity] do
+        sev when sev in [:critical, "critical"] ->
+          [
+            %{priority: "immediate", step: "Isolate affected endpoint from network immediately"},
+            %{priority: "immediate", step: "Initiate incident response procedures"},
+            %{
+              priority: "immediate",
+              step: "Collect volatile forensic artifacts (memory dump, active connections)"
+            }
+            | base_steps
+          ]
+
+        sev when sev in [:high, "high"] ->
+          [
+            %{
+              priority: "high",
+              step: "Investigate process chain and determine scope of compromise"
+            },
+            %{priority: "high", step: "Check for lateral movement indicators on adjacent systems"}
+            | base_steps
+          ]
+
+        _ ->
+          base_steps
+      end
 
     # Phase-based remediation
-    base_steps = case prompt_data[:attack_phase] do
-      "credential_access" ->
-        [
-          %{priority: "immediate", step: "Force password reset for all potentially compromised accounts"},
-          %{priority: "high", step: "Review Active Directory for unauthorized changes"}
-          | base_steps
-        ]
-      "exfiltration" ->
-        [
-          %{priority: "immediate", step: "Block identified external destinations at firewall"},
-          %{priority: "high", step: "Determine scope and classification of exfiltrated data"}
-          | base_steps
-        ]
-      "lateral_movement" ->
-        [
-          %{priority: "immediate", step: "Segment network to contain affected systems"},
-          %{priority: "high", step: "Scan peer systems for identical IOCs"}
-          | base_steps
-        ]
-      "command_and_control" ->
-        [
-          %{priority: "immediate", step: "Block C2 communication channels"},
-          %{priority: "high", step: "Identify all endpoints communicating with C2 infrastructure"}
-          | base_steps
-        ]
-      _ ->
-        base_steps
-    end
+    base_steps =
+      case prompt_data[:attack_phase] do
+        "credential_access" ->
+          [
+            %{
+              priority: "immediate",
+              step: "Force password reset for all potentially compromised accounts"
+            },
+            %{priority: "high", step: "Review Active Directory for unauthorized changes"}
+            | base_steps
+          ]
+
+        "exfiltration" ->
+          [
+            %{priority: "immediate", step: "Block identified external destinations at firewall"},
+            %{priority: "high", step: "Determine scope and classification of exfiltrated data"}
+            | base_steps
+          ]
+
+        "lateral_movement" ->
+          [
+            %{priority: "immediate", step: "Segment network to contain affected systems"},
+            %{priority: "high", step: "Scan peer systems for identical IOCs"}
+            | base_steps
+          ]
+
+        "command_and_control" ->
+          [
+            %{priority: "immediate", step: "Block C2 communication channels"},
+            %{
+              priority: "high",
+              step: "Identify all endpoints communicating with C2 infrastructure"
+            }
+            | base_steps
+          ]
+
+        _ ->
+          base_steps
+      end
 
     # Technique-based remediation
     techniques = prompt_data[:techniques] || []
 
-    base_steps = if Enum.any?(techniques, &String.starts_with?(&1, "T1059")) do
-      [%{priority: "high", step: "Enable constrained language mode for PowerShell and audit script execution"} | base_steps]
-    else
-      base_steps
-    end
+    base_steps =
+      if Enum.any?(techniques, &String.starts_with?(&1, "T1059")) do
+        [
+          %{
+            priority: "high",
+            step: "Enable constrained language mode for PowerShell and audit script execution"
+          }
+          | base_steps
+        ]
+      else
+        base_steps
+      end
 
-    base_steps = if Enum.any?(techniques, &String.starts_with?(&1, "T1003")) do
-      [%{priority: "immediate", step: "Enable Credential Guard and audit LSASS access"} | base_steps]
-    else
-      base_steps
-    end
+    base_steps =
+      if Enum.any?(techniques, &String.starts_with?(&1, "T1003")) do
+        [
+          %{priority: "immediate", step: "Enable Credential Guard and audit LSASS access"}
+          | base_steps
+        ]
+      else
+        base_steps
+      end
 
-    base_steps = if Enum.any?(techniques, &String.starts_with?(&1, "T1486")) do
-      [%{priority: "immediate", step: "Verify backup integrity and isolate backup systems"} | base_steps]
-    else
-      base_steps
-    end
+    base_steps =
+      if Enum.any?(techniques, &String.starts_with?(&1, "T1486")) do
+        [
+          %{priority: "immediate", step: "Verify backup integrity and isolate backup systems"}
+          | base_steps
+        ]
+      else
+        base_steps
+      end
 
     base_steps
     |> Enum.uniq_by(& &1.step)
@@ -1706,25 +2104,27 @@ defmodule TamanduaServer.Storyline.Engine do
   end
 
   defp assess_risk_from_prompt(prompt_data) do
-    severity_score = case prompt_data[:severity] do
-      sev when sev in [:critical, "critical"] -> 40
-      sev when sev in [:high, "high"] -> 30
-      sev when sev in [:medium, "medium"] -> 20
-      _ -> 10
-    end
+    severity_score =
+      case prompt_data[:severity] do
+        sev when sev in [:critical, "critical"] -> 40
+        sev when sev in [:high, "high"] -> 30
+        sev when sev in [:medium, "medium"] -> 20
+        _ -> 10
+      end
 
     technique_score = min(length(prompt_data[:techniques] || []) * 8, 30)
 
     network_score = if length(prompt_data[:network_connections] || []) > 0, do: 15, else: 0
 
-    phase_score = case prompt_data[:attack_phase] do
-      "exfiltration" -> 20
-      "impact" -> 20
-      "command_and_control" -> 15
-      "lateral_movement" -> 15
-      "credential_access" -> 10
-      _ -> 0
-    end
+    phase_score =
+      case prompt_data[:attack_phase] do
+        "exfiltration" -> 20
+        "impact" -> 20
+        "command_and_control" -> 15
+        "lateral_movement" -> 15
+        "credential_access" -> 10
+        _ -> 0
+      end
 
     total = severity_score + technique_score + network_score + phase_score
 

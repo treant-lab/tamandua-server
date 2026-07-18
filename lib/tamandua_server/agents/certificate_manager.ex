@@ -29,7 +29,7 @@ defmodule TamanduaServer.Agents.CertificateManager do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Agents.{Agent, AgentCertificate, RevokedCertificate}
+  alias TamanduaServer.Agents.{AgentCertificate, RevokedCertificate}
 
   @type cert_info :: %{
     fingerprint: String.t(),

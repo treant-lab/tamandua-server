@@ -861,14 +861,20 @@ defmodule TamanduaServer.Response.AutonomousEngine do
   defp execute_pipeline(actions, mode, alert) do
     case mode do
       :auto_execute ->
-        Enum.map(actions, fn action ->
-          execute_action(action, alert)
-        end)
+        if autonomous_execution_enabled?() do
+          Enum.map(actions, fn action -> execute_action(action, alert, mode) end)
+        else
+          automatic_execution_blocked(actions, mode)
+        end
 
       :auto_with_notify ->
-        results = Enum.map(actions, fn action ->
-          execute_action(action, alert)
-        end)
+        results =
+          if autonomous_execution_enabled?() do
+            Enum.map(actions, fn action -> execute_action(action, alert, mode) end)
+          else
+            automatic_execution_blocked(actions, mode)
+          end
+
         notify_analysts(alert, actions, results)
         results
 
@@ -885,7 +891,7 @@ defmodule TamanduaServer.Response.AutonomousEngine do
     end
   end
 
-  defp execute_action(action, alert) do
+  defp execute_action(action, alert, mode) do
     agent_id = get_in(action, [:target, :agent_id]) || extract_agent_id(alert)
 
     if agent_id == nil do
@@ -895,10 +901,7 @@ defmodule TamanduaServer.Response.AutonomousEngine do
         "kill_process" ->
           pid = extract_process_pid(alert)
           if pid do
-            case Executor.kill_process(agent_id, pid) do
-              {:ok, resp} -> %{action: "kill_process", status: "executed", result: resp}
-              {:error, err} -> %{action: "kill_process", status: "failed", error: inspect(err)}
-            end
+            execute_if_enabled("kill_process", mode, fn -> Executor.kill_process(agent_id, pid) end)
           else
             %{action: "kill_process", status: "skipped", reason: "no pid available"}
           end
@@ -919,31 +922,63 @@ defmodule TamanduaServer.Response.AutonomousEngine do
                   Logger.warning("[ResponseSafety] would-block response on protected target: #{path} (report-only)")
                 end
 
-                case Executor.quarantine_file(agent_id, path) do
-                  {:ok, resp} -> %{action: "quarantine_file", status: "executed", result: resp}
-                  {:error, err} -> %{action: "quarantine_file", status: "failed", error: inspect(err)}
-                end
+                execute_if_enabled("quarantine_file", mode, fn ->
+                  Executor.quarantine_file(agent_id, path)
+                end)
             end
           else
             %{action: "quarantine_file", status: "skipped", reason: "no file path"}
           end
 
         "isolate_network" ->
-          case Executor.isolate_network(agent_id) do
-            {:ok, resp} -> %{action: "isolate_network", status: "executed", result: resp}
-            {:error, err} -> %{action: "isolate_network", status: "failed", error: inspect(err)}
-          end
+          execute_if_enabled("isolate_network", mode, fn -> Executor.isolate_network(agent_id) end)
 
         "collect_forensics" ->
-          case Executor.collect_forensics(agent_id) do
-            {:ok, resp} -> %{action: "collect_forensics", status: "executed", result: resp}
-            {:error, err} -> %{action: "collect_forensics", status: "failed", error: inspect(err)}
-          end
+          execute_if_enabled("collect_forensics", mode, fn ->
+            Executor.collect_forensics(agent_id)
+          end)
 
         other ->
           %{action: other, status: "unsupported"}
       end
     end
+  end
+
+  defp automatic_execution_blocked(actions, mode) do
+    Enum.map(actions, fn action ->
+      %{
+        action: action.action_type,
+        status: "blocked",
+        reason: "autonomous_execution_disabled",
+        mode: mode
+      }
+    end)
+  end
+
+  defp execute_if_enabled(action_type, mode, executor) do
+    if mode in [:auto_execute, :auto_with_notify] and autonomous_execution_enabled?() do
+      case executor.() do
+        {:ok, response} -> %{action: action_type, status: "executed", result: response}
+        {:error, error} -> %{action: action_type, status: "failed", error: inspect(error)}
+      end
+    else
+      %{
+        action: action_type,
+        status: "cancelled",
+        reason: "autonomous_execution_disabled",
+        mode: mode
+      }
+    end
+  end
+
+  # Product-level emergency stop. Only literal true enables autonomous response;
+  # missing or unreadable configuration remains fail-closed.
+  defp autonomous_execution_enabled? do
+    Application.get_env(:tamandua_server, :autonomous_execution_enabled, false) === true
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
   end
 
   defp notify_analysts(alert, actions, results) do

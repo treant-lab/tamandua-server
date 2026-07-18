@@ -32,6 +32,7 @@ defmodule TamanduaServer.Agents.TokenManager do
   alias TamanduaServer.Repo
   alias TamanduaServer.Repo.MultiTenant
   alias TamanduaServer.Audit
+  alias TamanduaServer.Agents.AgentCredential
   alias TamanduaServer.Agents.Credentials
   import Ecto.Query
 
@@ -45,10 +46,13 @@ defmodule TamanduaServer.Agents.TokenManager do
   # stolen expired token remains usable (previously 30 days, which kept
   # exfiltrated tokens refreshable for a full month past expiry).
   @default_refresh_grace_seconds 7 * 24 * 3600
+  @maximum_refresh_grace_seconds 30 * 24 * 3600
   # Refresh counts above this threshold are anomalous for a normally
   # behaving agent (with a 720h TTL and 60% refresh window this represents
   # years of continuous refreshes) and may indicate token abuse.
   @default_refresh_count_warning_threshold 100
+  @maximum_jti_reference_input_bytes 255
+  @jti_reference_hex_chars 12
 
   defmodule AgentToken do
     use Ecto.Schema
@@ -102,12 +106,64 @@ defmodule TamanduaServer.Agents.TokenManager do
   @doc """
   Generate a new JWT token for an agent.
 
+  The caller must provide the authoritative organization from its already
+  validated tenant boundary. Legacy calls without that scope fail closed.
+
   Returns {:ok, jwt, token_record} or {:error, reason}.
   Automatically revokes previous tokens and increments generation.
   """
-  def issue_token(agent_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:issue_token, agent_id, opts})
+  @spec issue_token(String.t()) :: {:error, :organization_scope_required}
+  def issue_token(_agent_id), do: {:error, :organization_scope_required}
+
+  @spec issue_token(String.t(), keyword()) :: {:error, :organization_scope_required}
+  def issue_token(_agent_id, opts) when is_list(opts),
+    do: {:error, :organization_scope_required}
+
+  @spec issue_token(String.t(), String.t()) ::
+          {:ok, String.t(), struct()} | {:error, atom()}
+  def issue_token(agent_id, organization_id) when is_binary(organization_id),
+    do: issue_token(agent_id, organization_id, [])
+
+  def issue_token(_agent_id, _organization_id),
+    do: {:error, :organization_scope_required}
+
+  @spec issue_token(String.t(), String.t(), keyword()) ::
+          {:ok, String.t(), struct()} | {:error, atom()}
+  def issue_token(agent_id, organization_id, opts) when is_list(opts) do
+    with {:ok, canonical_agent_id} <- canonical_uuid(agent_id, :invalid_agent_id),
+         {:ok, canonical_organization_id} <-
+           canonical_uuid(organization_id, :organization_scope_required) do
+      GenServer.call(
+        __MODULE__,
+        {:issue_token, canonical_agent_id, canonical_organization_id, opts}
+      )
+    end
   end
+
+  @doc false
+  def issue_token_in_current_tenant(%TamanduaServer.Agents.Agent{} = agent, opts \\ [])
+      when is_list(opts) do
+    organization_id = agent.organization_id
+
+    case {Repo.get_organization_id(), Repo.in_transaction?()} do
+      {^organization_id, true} ->
+        with {:ok, canonical_agent_id} <- canonical_uuid(agent.id, :invalid_agent_id),
+             {:ok, canonical_organization_id} <-
+               canonical_uuid(organization_id, :organization_scope_required),
+             %TamanduaServer.Agents.Agent{} = locked_agent <-
+               get_agent_for_issuance(canonical_agent_id, canonical_organization_id) do
+          do_issue_locked_agent(locked_agent, opts)
+        else
+          nil -> {:error, :agent_not_found}
+          {:error, _reason} = error -> error
+        end
+
+      _other ->
+        {:error, :tenant_context_required}
+    end
+  end
+
+  def issue_token_in_current_tenant(_agent, _opts), do: {:error, :tenant_context_required}
 
   @doc """
   Refresh an existing token if it's within the refresh window.
@@ -126,8 +182,61 @@ defmodule TamanduaServer.Agents.TokenManager do
   def validate_token(token) do
     do_validate_token(token)
   rescue
-    e ->
-      Logger.error("Token validation failed: #{Exception.message(e)}")
+    _error ->
+      Logger.error("Token validation failed")
+      {:error, :database_error}
+  end
+
+  @doc """
+  Revalidates an exact agent JWT while the caller already owns the matching
+  tenant transaction.
+
+  This helper deliberately does not open a tenant transaction. It locks the
+  current agent, token record, and active credential before checking the
+  generation, presented-token hash, revocation, and expiry. Callers must keep
+  the protected state transition in the same transaction after this returns.
+  """
+  def validate_token_in_current_tenant(
+        token,
+        expected_organization_id,
+        expected_agent_id,
+        expected_generation
+      ) do
+    with true <- is_binary(token) and byte_size(token) > 0,
+         {:ok, expected_organization_id} <-
+           canonical_uuid(expected_organization_id, :invalid_claims),
+         {:ok, expected_agent_id} <- canonical_uuid(expected_agent_id, :invalid_claims),
+         true <- is_integer(expected_generation) and expected_generation > 0,
+         ^expected_organization_id <- Repo.get_organization_id(),
+         {:ok, claims} <- decode_token(token),
+         {:ok, token_agent_id, token_generation, token_organization_id, credential_jti} <-
+           extract_token_identity(claims),
+         true <- token_agent_id == expected_agent_id,
+         true <- token_generation == expected_generation,
+         true <- token_organization_id == expected_organization_id,
+         {:ok, agent} <-
+           get_agent_for_token(expected_agent_id, expected_organization_id, lock: true),
+         :ok <- validate_current_generation(agent, expected_generation),
+         :ok <- check_revocation_cache(expected_agent_id, expected_generation),
+         {:ok, token_record} <-
+           get_token_record_for_update(expected_agent_id, expected_generation),
+         :ok <- validate_presented_token_hash(token_record, token),
+         :ok <- validate_not_revoked(token_record),
+         :ok <- validate_not_expired(token_record),
+         {:ok, _credential} <-
+           get_active_credential(
+             credential_jti,
+             expected_agent_id,
+             expected_organization_id,
+             lock: true
+           ) do
+      {:ok, claims}
+    else
+      _ -> {:error, :invalid_token}
+    end
+  rescue
+    _error ->
+      Logger.error("Locked agent token validation failed")
       {:error, :database_error}
   end
 
@@ -138,15 +247,42 @@ defmodule TamanduaServer.Agents.TokenManager do
   - :reason - Reason for revocation (string)
   - :all_generations - Revoke all tokens for the agent (boolean)
   """
-  def revoke_token(agent_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:revoke_token, agent_id, opts})
+  def revoke_token(_agent_id), do: {:error, :organization_scope_required}
+
+  def revoke_token(_agent_id, opts) when is_list(opts),
+    do: {:error, :organization_scope_required}
+
+  def revoke_token(agent_id, organization_id) when is_binary(organization_id),
+    do: revoke_token(agent_id, organization_id, [])
+
+  def revoke_token(_agent_id, _organization_id),
+    do: {:error, :organization_scope_required}
+
+  def revoke_token(agent_id, organization_id, opts) when is_list(opts) do
+    with {:ok, canonical_agent_id} <- canonical_uuid(agent_id, :invalid_agent_id),
+         {:ok, canonical_organization_id} <-
+           canonical_uuid(organization_id, :organization_scope_required) do
+      GenServer.call(
+        __MODULE__,
+        {:revoke_token, canonical_agent_id, canonical_organization_id, opts}
+      )
+    end
   end
 
   @doc """
   Get token statistics for an agent.
   """
-  def get_token_stats(agent_id) do
-    GenServer.call(__MODULE__, {:get_token_stats, agent_id})
+  def get_token_stats(_agent_id), do: {:error, :organization_scope_required}
+
+  def get_token_stats(agent_id, organization_id) do
+    with {:ok, canonical_agent_id} <- canonical_uuid(agent_id, :invalid_agent_id),
+         {:ok, canonical_organization_id} <-
+           canonical_uuid(organization_id, :organization_scope_required) do
+      GenServer.call(
+        __MODULE__,
+        {:get_token_stats, canonical_agent_id, canonical_organization_id}
+      )
+    end
   end
 
   # Server Callbacks
@@ -164,21 +300,37 @@ defmodule TamanduaServer.Agents.TokenManager do
     # Schedule periodic cleanup
     schedule_cleanup()
 
-    # Preload revocation list from database
-    load_revocations()
+    # Preload revocation list from database. Test harnesses can disable this
+    # when the SQL sandbox owns connections before endpoint/controller tests.
+    unless skip_revocation_preload?() do
+      load_revocations()
+    end
 
     Logger.info("TokenManager started")
     {:ok, %{}}
   end
 
   @impl true
-  def handle_call({:issue_token, agent_id, opts}, _from, state) do
-    result = MultiTenant.with_bypass(fn -> do_issue_token(agent_id, opts) end)
+  def handle_call({:issue_token, agent_id, organization_id, opts}, _from, state) do
+    result =
+      try do
+        MultiTenant.with_organization(organization_id, fn ->
+          case do_issue_token(agent_id, organization_id, opts) do
+            {:ok, _jwt, _token_record} = success -> success
+            # MultiTenant owns the transaction. A throw makes Ecto roll it
+            # back while preserving the typed domain error for the caller.
+            {:error, reason} -> throw({:token_issuance_failed, reason})
+          end
+        end)
+      catch
+        {:token_issuance_failed, reason} -> {:error, reason}
+      end
+
     {:reply, result, state}
   rescue
-    e ->
-      Logger.error("Token issuance bypass failed: #{Exception.message(e)}")
-      {:reply, {:error, :internal_error}, state}
+    _error ->
+      Logger.error("Token issuance transaction failed")
+      {:reply, {:error, :database_error}, state}
   end
 
   @impl true
@@ -194,15 +346,49 @@ defmodule TamanduaServer.Agents.TokenManager do
   end
 
   @impl true
-  def handle_call({:revoke_token, agent_id, opts}, _from, state) do
-    result = do_revoke_token(agent_id, opts)
+  def handle_call({:revoke_token, agent_id, organization_id, opts}, _from, state) do
+    result =
+      run_tenant_operation(organization_id, :revoke, fn ->
+        do_revoke_token(agent_id, organization_id, opts)
+      end)
+
+    result =
+      case result do
+        {:ok, %{revoked_tokens: revoked_tokens} = details} ->
+          Enum.each(revoked_tokens, fn token ->
+            add_to_revocation_cache(
+              agent_id,
+              token.token_generation,
+              token.revoked_at,
+              token.revocation_reason
+            )
+          end)
+
+          {:ok, Map.delete(details, :revoked_tokens)}
+
+        other ->
+          other
+      end
+
     {:reply, result, state}
+  rescue
+    _error ->
+      Logger.error("Token revocation transaction failed")
+      {:reply, {:error, :database_error}, state}
   end
 
   @impl true
-  def handle_call({:get_token_stats, agent_id}, _from, state) do
-    result = do_get_token_stats(agent_id)
+  def handle_call({:get_token_stats, agent_id, organization_id}, _from, state) do
+    result =
+      run_tenant_operation(organization_id, :stats, fn ->
+        do_get_token_stats(agent_id, organization_id)
+      end)
+
     {:reply, result, state}
+  rescue
+    _error ->
+      Logger.error("Token statistics transaction failed")
+      {:reply, {:error, :database_error}, state}
   end
 
   @impl true
@@ -217,36 +403,46 @@ defmodule TamanduaServer.Agents.TokenManager do
 
   # Private Functions
 
-  defp do_issue_token(agent_id, opts) do
-    agent = get_agent(agent_id)
+  defp do_issue_token(agent_id, organization_id, opts) do
+    case get_agent_for_issuance(agent_id, organization_id) do
+      nil ->
+        {:error, :agent_not_found}
 
-    if agent && agent.token_rotation_enabled != false do
-      # Increment generation
-      new_generation = (agent.current_token_generation || 1) + 1
+      agent ->
+        do_issue_locked_agent(agent, opts)
+    end
+  end
 
-      # Update agent's current generation
-      update_agent_generation(agent_id, new_generation)
+  defp do_issue_locked_agent(%{token_rotation_enabled: false}, _opts),
+    do: {:error, :token_rotation_disabled}
 
-      # Revoke all previous tokens for this agent
-      revoke_previous_generations(agent_id, new_generation)
+  defp do_issue_locked_agent(agent, opts) do
+    new_generation = next_generation(agent.current_token_generation)
 
-      # Calculate expiry
-      ttl_hours = token_ttl_hours(agent)
-      now = DateTime.utc_now()
-      expires_at = DateTime.add(now, ttl_hours * 3600, :second)
-      organization_id = agent.organization_id
-      jti = generate_jti()
+    with :ok <- update_agent_generation(agent, new_generation),
+         :ok <- revoke_previous_generations(agent.id, new_generation),
+         :ok <- revoke_active_credentials(agent.id, agent.organization_id, "token_rotated") do
+      issue_credential_and_token(agent, new_generation, opts)
+    end
+  end
 
-      with {:ok, ^jti, _credential} <-
-             Credentials.issue_credential(agent_id, organization_id,
-               jti: jti,
-               ttl_hours: ttl_hours,
-               ip_address: opts[:ip_address],
-               issued_by_user_id: opts[:issued_by_user_id]
-             ) do
+  defp issue_credential_and_token(agent, new_generation, opts) do
+    ttl_hours = token_ttl_hours(agent)
+    now = DateTime.utc_now()
+    expires_at = DateTime.add(now, ttl_hours * 3600, :second)
+    jti = generate_jti()
+
+    case Credentials.issue_credential_in_current_tenant(agent,
+           jti: jti,
+           issued_at: now,
+           expires_at: credential_expires_at(expires_at),
+           ip_address: opts[:ip_address],
+           issued_by_user_id: opts[:issued_by_user_id]
+         ) do
+      {:ok, ^jti, _credential} ->
         do_encode_and_store_token(
-          agent_id,
-          organization_id,
+          agent.id,
+          agent.organization_id,
           new_generation,
           jti,
           ttl_hours,
@@ -254,21 +450,12 @@ defmodule TamanduaServer.Agents.TokenManager do
           expires_at,
           opts
         )
-      else
-        {:error, reason} ->
-          Logger.error(
-            "Failed to issue DB-backed credential for agent #{agent_id}: #{inspect(reason)}"
-          )
 
-          {:error, :credential_storage_failed}
-      end
-    else
-      {:error, :token_rotation_disabled}
+      {:error, _reason} ->
+        Logger.error("Failed to issue DB-backed credential for agent #{agent.id}")
+
+        {:error, :credential_storage_failed}
     end
-  rescue
-    e ->
-      Logger.error("Token issuance failed: #{Exception.message(e)}")
-      {:error, :internal_error}
   end
 
   defp do_encode_and_store_token(
@@ -315,110 +502,42 @@ defmodule TamanduaServer.Agents.TokenManager do
              |> AgentToken.changeset(token_attrs)
              |> Repo.insert() do
           {:ok, token_record} ->
-            audit_token_operation(:issue, agent_id, generation, opts)
+            audit_token_operation(:issue, agent_id, organization_id, generation, opts)
 
             Logger.info(
-              "Issued token for agent #{agent_id}, generation #{generation}, jti #{jti}, expires #{expires_at}"
+              "Issued token for agent #{agent_id}, generation #{generation}, " <>
+                "jti_ref #{jti_reference(jti)}, expires #{expires_at}"
             )
 
             {:ok, jwt, token_record}
 
-          {:error, changeset} ->
-            Logger.error("Failed to store token record: #{inspect(changeset.errors)}")
+          {:error, _changeset} ->
+            Logger.error("Failed to store token record")
             {:error, :token_storage_failed}
         end
 
-      {:error, reason} ->
-        Logger.error("Failed to encode JWT: #{inspect(reason)}")
+      {:error, _reason} ->
+        Logger.error("Failed to encode JWT")
         {:error, :jwt_encoding_failed}
     end
   end
 
   defp do_refresh_token(current_token, opts) do
     with {:ok, claims} <- decode_token_for_refresh(current_token),
-         {:ok, agent_id, generation} <- extract_token_info(claims),
-         {:ok, token_record} <- get_token_record(agent_id, generation),
-         :ok <- maybe_validate_refresh_window(token_record, claims),
-         :ok <- validate_not_revoked(token_record),
-         :ok <- validate_refresh_grace(token_record),
-         :ok <- validate_current_generation(agent_id, generation) do
-      # Issue new token with same generation (refresh doesn't increment)
-      agent = get_agent(agent_id)
-
-      if agent do
-        ttl_hours = token_ttl_hours(agent)
-        now = DateTime.utc_now()
-        expires_at = DateTime.add(now, ttl_hours * 3600, :second)
-        org_id = claims["org_id"] || claims["organization_id"] || agent.organization_id
-        token_jti = claims["jti"]
-        credential_jti = claims["credential_jti"] || token_jti
-
-        new_claims = %{
-          agent_id: agent_id,
-          org_id: org_id,
-          organization_id: org_id,
-          generation: generation,
-          credential_jti: credential_jti,
-          jti: token_jti,
-          type: "agent",
-          iat: DateTime.to_unix(now),
-          exp: DateTime.to_unix(expires_at)
-        }
-
-        case TamanduaServer.Guardian.encode_and_sign(
-               %{id: agent_id},
-               new_claims,
-               ttl: {ttl_hours, :hours}
-             ) do
-          {:ok, new_jwt, _} ->
-            # Update token record
-            token_hash = hash_token(new_jwt)
-
-            case token_record
-                 |> Ecto.Changeset.change(%{
-                   token_hash: token_hash,
-                   last_refreshed_at: now,
-                   expires_at: expires_at,
-                   refresh_count: token_record.refresh_count + 1,
-                   ip_address: opts[:ip_address] || token_record.ip_address,
-                   user_agent: opts[:user_agent] || token_record.user_agent
-                 })
-                 |> Repo.update() do
-              {:ok, updated_token_record} ->
-                if is_binary(credential_jti) do
-                  case Credentials.extend_expiry(credential_jti, expires_at) do
-                    {:ok, _credential} ->
-                      :ok
-
-                    {:error, reason} ->
-                      Logger.warning(
-                        "Failed to extend DB-backed credential #{credential_jti}: #{inspect(reason)}"
-                      )
-                  end
-                end
-
-                audit_token_operation(:refresh, agent_id, generation, opts)
-
-                Logger.info(
-                  "Refreshed token for agent #{agent_id}, generation #{generation}, refresh count #{updated_token_record.refresh_count}"
-                )
-
-                maybe_warn_refresh_count_anomaly(updated_token_record, agent_id, generation)
-
-                {:ok, new_jwt, updated_token_record}
-
-              {:error, changeset} ->
-                Logger.error("Failed to persist refreshed token: #{inspect(changeset.errors)}")
-                {:error, :token_storage_failed}
-            end
-
-          {:error, reason} ->
-            Logger.error("Failed to encode refreshed JWT: #{inspect(reason)}")
-            {:error, :jwt_encoding_failed}
-        end
-      else
-        {:error, :agent_not_found}
-      end
+         {:ok, agent_id, generation, organization_id, credential_jti} <-
+           extract_token_identity(claims) do
+      run_tenant_operation(organization_id, :refresh, fn ->
+        do_refresh_token_in_tenant(
+          current_token,
+          claims,
+          agent_id,
+          generation,
+          organization_id,
+          credential_jti,
+          opts
+        )
+      end)
+      |> normalize_refresh_result()
     else
       {:error, :outside_refresh_window} ->
         {:error, :too_early_to_refresh}
@@ -427,121 +546,304 @@ defmodule TamanduaServer.Agents.TokenManager do
         {:error, :token_revoked}
 
       {:error, reason} ->
-        Logger.warning("Token refresh failed: #{inspect(reason)}")
+        Logger.warning("Token refresh rejected")
         {:error, reason}
     end
   rescue
-    e ->
-      Logger.error("Token refresh failed: #{Exception.message(e)}")
-      {:error, :internal_error}
+    _error ->
+      Logger.error("Token refresh failed")
+      {:error, :database_error}
   end
 
-  defp do_validate_token(token) do
-    with {:ok, claims} <- decode_token(token),
-         {:ok, agent_id, generation} <- extract_token_info(claims),
-         :ok <- check_revocation_cache(agent_id, generation),
-         {:ok, token_record} <- get_token_record(agent_id, generation),
+  defp normalize_refresh_result({:error, :outside_refresh_window}),
+    do: {:error, :too_early_to_refresh}
+
+  defp normalize_refresh_result({:error, :revoked}), do: {:error, :token_revoked}
+  defp normalize_refresh_result(result), do: result
+
+  defp do_refresh_token_in_tenant(
+         current_token,
+         claims,
+         agent_id,
+         generation,
+         organization_id,
+         credential_jti,
+         opts
+       ) do
+    with {:ok, agent} <- get_agent_for_token(agent_id, organization_id, lock: true),
+         :ok <- validate_token_rotation_enabled(agent),
+         :ok <- validate_current_generation(agent, generation),
+         {:ok, token_record} <- get_token_record_for_update(agent_id, generation),
+         :ok <- validate_presented_token_hash(token_record, current_token),
+         :ok <- maybe_validate_refresh_window(token_record, claims, agent),
          :ok <- validate_not_revoked(token_record),
-         :ok <- validate_not_expired(token_record),
-         :ok <- validate_current_generation(agent_id, generation) do
-      {:ok, claims}
+         :ok <- validate_refresh_grace(token_record),
+         {:ok, old_credential} <-
+           get_active_credential(credential_jti, agent_id, organization_id, lock: true) do
+      rotate_refreshed_token(agent, token_record, old_credential, generation, opts)
+    end
+  end
+
+  defp rotate_refreshed_token(agent, token_record, old_credential, generation, opts) do
+    ttl_hours = token_ttl_hours(agent)
+    now = DateTime.utc_now()
+    expires_at = DateTime.add(now, ttl_hours * 3600, :second)
+    new_jti = generate_jti()
+
+    with {:ok, ^new_jti, _credential} <-
+           Credentials.issue_credential_in_current_tenant(agent,
+             jti: new_jti,
+             issued_at: now,
+             expires_at: credential_expires_at(expires_at),
+             ip_address: opts[:ip_address],
+             issued_by_user_id: opts[:issued_by_user_id]
+           ),
+         {:ok, new_jwt} <-
+           encode_refreshed_token(agent, generation, new_jti, ttl_hours, now, expires_at),
+         {:ok, updated_token_record} <-
+           persist_refreshed_token(token_record, new_jwt, now, expires_at, opts),
+         {:ok, _revoked_credential} <-
+           old_credential
+           |> AgentCredential.revoke_changeset("token_refreshed")
+           |> Repo.update() do
+      audit_token_operation(
+        :refresh,
+        agent.id,
+        agent.organization_id,
+        generation,
+        Keyword.put(opts, :credential_jti, new_jti)
+      )
+
+      maybe_warn_refresh_count_anomaly(updated_token_record, agent.id, generation)
+      {:ok, new_jwt, updated_token_record}
     else
+      {:error, %Ecto.Changeset{}} ->
+        Logger.error("Failed to persist atomic token refresh")
+        {:error, :credential_storage_failed}
+
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp do_revoke_token(agent_id, opts) do
-    reason = opts[:reason] || "manual_revocation"
+  defp encode_refreshed_token(agent, generation, jti, ttl_hours, now, expires_at) do
+    claims = %{
+      agent_id: agent.id,
+      org_id: agent.organization_id,
+      organization_id: agent.organization_id,
+      generation: generation,
+      credential_jti: jti,
+      jti: jti,
+      type: "agent",
+      iat: DateTime.to_unix(now),
+      exp: DateTime.to_unix(expires_at)
+    }
 
-    tokens_to_revoke =
-      if opts[:all_generations] do
-        # Revoke all tokens for this agent
-        from(t in AgentToken,
-          where: t.agent_id == ^agent_id and is_nil(t.revoked_at)
-        )
-        |> Repo.all()
-      else
-        # Revoke only current generation
-        case get_agent(agent_id) do
-          nil ->
-            # Unknown agent: nothing to revoke for the current generation.
-            []
+    case TamanduaServer.Guardian.encode_and_sign(
+           %{id: agent.id},
+           claims,
+           ttl: {ttl_hours, :hours}
+         ) do
+      {:ok, jwt, _claims} ->
+        {:ok, jwt}
 
-          agent ->
-            generation = agent.current_token_generation || 1
-
-            from(t in AgentToken,
-              where:
-                t.agent_id == ^agent_id and t.token_generation == ^generation and
-                  is_nil(t.revoked_at)
-            )
-            |> Repo.all()
-        end
-      end
-
-    now = DateTime.utc_now()
-
-    Enum.each(tokens_to_revoke, fn token ->
-      token
-      |> Ecto.Changeset.change(%{
-        revoked_at: now,
-        revocation_reason: reason
-      })
-      |> Repo.update()
-
-      # Add to revocation cache
-      add_to_revocation_cache(agent_id, token.token_generation, now, reason)
-
-      # Audit log
-      audit_token_operation(:revoke, agent_id, token.token_generation, %{reason: reason})
-    end)
-
-    count = length(tokens_to_revoke)
-    Logger.info("Revoked #{count} token(s) for agent #{agent_id}, reason: #{reason}")
-
-    {:ok, %{revoked_count: count}}
+      {:error, _reason} ->
+        Logger.error("Failed to encode refreshed JWT")
+        {:error, :jwt_encoding_failed}
+    end
   end
 
-  defp do_get_token_stats(agent_id) do
-    stats =
-      from(t in AgentToken,
-        where: t.agent_id == ^agent_id,
-        select: %{
-          total_tokens: count(t.id),
-          active_tokens: fragment("COUNT(CASE WHEN ? IS NULL THEN 1 END)", t.revoked_at),
-          revoked_tokens: fragment("COUNT(CASE WHEN ? IS NOT NULL THEN 1 END)", t.revoked_at),
-          total_refreshes: sum(t.refresh_count)
-        }
-      )
-      |> Repo.one()
+  defp persist_refreshed_token(token_record, new_jwt, now, expires_at, opts) do
+    token_record
+    |> Ecto.Changeset.change(%{
+      token_hash: hash_token(new_jwt),
+      issued_at: now,
+      last_refreshed_at: now,
+      expires_at: expires_at,
+      refresh_count: (token_record.refresh_count || 0) + 1,
+      ip_address: opts[:ip_address] || token_record.ip_address,
+      user_agent: opts[:user_agent] || token_record.user_agent
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> {:ok, updated}
+      {:error, _changeset} -> {:error, :token_storage_failed}
+    end
+  end
 
-    case get_agent(agent_id) do
-      nil ->
-        {:error, :agent_not_found}
+  defp do_validate_token(token) do
+    with {:ok, claims} <- decode_token(token),
+         {:ok, agent_id, generation, organization_id, credential_jti} <-
+           extract_token_identity(claims) do
+      run_tenant_operation(organization_id, :validate, fn ->
+        with :ok <- check_revocation_cache(agent_id, generation),
+             {:ok, agent} <- get_agent_for_token(agent_id, organization_id),
+             :ok <- validate_current_generation(agent, generation),
+             {:ok, token_record} <- get_token_record(agent_id, generation),
+             :ok <- validate_presented_token_hash(token_record, token),
+             :ok <- validate_not_revoked(token_record),
+             :ok <- validate_not_expired(token_record),
+             {:ok, _credential} <-
+               get_active_credential(credential_jti, agent_id, organization_id) do
+          {:ok, claims}
+        end
+      end)
+    end
+  end
 
-      agent ->
-        {:ok,
-         Map.merge(stats || %{}, %{
-           current_generation: agent.current_token_generation || 1,
-           rotation_enabled: agent.token_rotation_enabled,
-           token_ttl_hours: token_ttl_hours(agent)
-         })}
+  defp do_revoke_token(agent_id, organization_id, opts) do
+    reason = opts[:reason] || "manual_revocation"
+
+    with {:ok, agent} <- get_agent_for_token(agent_id, organization_id, lock: true) do
+      tokens_to_revoke = tokens_to_revoke(agent, opts)
+      now = DateTime.utc_now()
+
+      revoked_tokens =
+        Enum.map(tokens_to_revoke, fn token ->
+          token
+          |> Ecto.Changeset.change(revoked_at: now, revocation_reason: reason)
+          |> Repo.update!()
+        end)
+
+      :ok = revoke_active_credentials(agent_id, organization_id, reason)
+
+      Enum.each(revoked_tokens, fn token ->
+        audit_token_operation(
+          :revoke,
+          agent_id,
+          organization_id,
+          token.token_generation,
+          reason: reason
+        )
+      end)
+
+      {:ok, %{revoked_count: length(revoked_tokens), revoked_tokens: revoked_tokens}}
+    end
+  end
+
+  defp do_get_token_stats(agent_id, organization_id) do
+    with {:ok, agent} <- get_agent_for_token(agent_id, organization_id) do
+      stats =
+        from(t in AgentToken,
+          where: t.agent_id == ^agent.id,
+          select: %{
+            total_tokens: count(t.id),
+            active_tokens: fragment("COUNT(CASE WHEN ? IS NULL THEN 1 END)", t.revoked_at),
+            revoked_tokens: fragment("COUNT(CASE WHEN ? IS NOT NULL THEN 1 END)", t.revoked_at),
+            total_refreshes: sum(t.refresh_count)
+          }
+        )
+        |> Repo.one()
+
+      {:ok,
+       Map.merge(stats || %{}, %{
+         current_generation: current_generation(agent.current_token_generation),
+         rotation_enabled: agent.token_rotation_enabled,
+         token_ttl_hours: token_ttl_hours(agent)
+       })}
     end
   end
 
   # Helper Functions
 
-  defp get_agent(agent_id) do
-    Repo.get_by(TamanduaServer.Agents.Agent, id: agent_id)
+  defp get_agent_for_issuance(agent_id, organization_id) do
+    from(a in TamanduaServer.Agents.Agent,
+      where: a.id == ^agent_id and a.organization_id == ^organization_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
   end
 
-  defp update_agent_generation(agent_id, new_generation) do
-    from(a in TamanduaServer.Agents.Agent,
-      where: a.id == ^agent_id,
-      update: [set: [current_token_generation: ^new_generation]]
-    )
-    |> Repo.update_all([])
+  defp get_agent_for_token(agent_id, organization_id, opts \\ []) do
+    query =
+      from(a in TamanduaServer.Agents.Agent,
+        where: a.id == ^agent_id and a.organization_id == ^organization_id
+      )
+
+    query = if opts[:lock], do: from(a in query, lock: "FOR UPDATE"), else: query
+
+    case Repo.one(query) do
+      nil -> {:error, :agent_not_found}
+      agent -> {:ok, agent}
+    end
+  end
+
+  defp get_active_credential(jti, agent_id, organization_id, opts \\ []) do
+    query =
+      from(c in AgentCredential,
+        where:
+          c.jti == ^jti and c.agent_id == ^agent_id and
+            c.organization_id == ^organization_id
+      )
+
+    query = if opts[:lock], do: from(c in query, lock: "FOR UPDATE"), else: query
+
+    case Repo.one(query) do
+      nil ->
+        {:error, :credential_not_found}
+
+      credential ->
+        case AgentCredential.validate(credential) do
+          :ok -> {:ok, credential}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp tokens_to_revoke(agent, opts) do
+    query =
+      from(t in AgentToken,
+        where: t.agent_id == ^agent.id and is_nil(t.revoked_at),
+        lock: "FOR UPDATE"
+      )
+
+    query =
+      if opts[:all_generations] do
+        query
+      else
+        generation = current_generation(agent.current_token_generation)
+        from(t in query, where: t.token_generation == ^generation)
+      end
+
+    Repo.all(query)
+  end
+
+  defp validate_presented_token_hash(token_record, token) do
+    if Plug.Crypto.secure_compare(token_record.token_hash, hash_token(token)) do
+      :ok
+    else
+      {:error, :stale_token}
+    end
+  end
+
+  defp run_tenant_operation(organization_id, operation, fun) do
+    try do
+      MultiTenant.with_organization(organization_id, fn ->
+        case fun.() do
+          success
+          when is_tuple(success) and tuple_size(success) >= 2 and elem(success, 0) == :ok ->
+            success
+
+          {:error, reason} ->
+            throw({:token_operation_failed, operation, reason})
+        end
+      end)
+    catch
+      {:token_operation_failed, ^operation, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_agent_generation(agent, new_generation) do
+    case agent
+         |> Ecto.Changeset.change(current_token_generation: new_generation)
+         |> Repo.update() do
+      {:ok, _agent} ->
+        :ok
+
+      {:error, _changeset} ->
+        Logger.error("Failed to update agent token generation")
+        {:error, :generation_update_failed}
+    end
   end
 
   defp generate_jti do
@@ -549,6 +851,17 @@ defmodule TamanduaServer.Agents.TokenManager do
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
   end
+
+  defp jti_reference(jti)
+       when is_binary(jti) and byte_size(jti) > 0 and
+              byte_size(jti) <= @maximum_jti_reference_input_bytes do
+    jti
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, @jti_reference_hex_chars)
+  end
+
+  defp jti_reference(_jti), do: "unavailable"
 
   defp revoke_previous_generations(agent_id, new_generation) do
     now = DateTime.utc_now()
@@ -565,7 +878,37 @@ defmodule TamanduaServer.Agents.TokenManager do
         revocation_reason: "superseded_by_generation_#{new_generation}"
       ]
     )
+
+    :ok
   end
+
+  defp revoke_active_credentials(agent_id, organization_id, reason) do
+    now = DateTime.utc_now()
+
+    from(c in AgentCredential,
+      where:
+        c.agent_id == ^agent_id and c.organization_id == ^organization_id and
+          is_nil(c.revoked_at)
+    )
+    |> Repo.update_all(set: [revoked_at: now, revocation_reason: reason])
+
+    :ok
+  end
+
+  defp next_generation(value) when value in [nil, 0], do: 1
+  defp next_generation(value) when is_integer(value) and value > 0, do: value + 1
+
+  defp current_generation(value) when value in [nil, 0], do: 0
+  defp current_generation(value) when is_integer(value) and value > 0, do: value
+
+  defp canonical_uuid(value, error_reason) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, canonical} -> {:ok, canonical}
+      :error -> {:error, error_reason}
+    end
+  end
+
+  defp canonical_uuid(_value, error_reason), do: {:error, error_reason}
 
   defp hash_token(token) do
     :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
@@ -595,38 +938,19 @@ defmodule TamanduaServer.Agents.TokenManager do
   defp expired_token_error?(reason) when reason in [:token_expired, "token_expired", :expired],
     do: true
 
-  defp expired_token_error?(reason) do
-    reason
-    |> inspect()
-    |> String.downcase()
-    |> then(&(String.contains?(&1, "exp") or String.contains?(&1, "expired")))
-  end
+  defp expired_token_error?({reason, _details}) when reason in [:token_expired, :expired],
+    do: true
+
+  defp expired_token_error?(_reason), do: false
 
   defp recover_expired_refresh_claims(token) do
-    token_hash = hash_token(token)
-
-    case get_token_record_by_hash(token_hash) do
-      {:ok, token_record} ->
-        with :ok <- validate_not_revoked(token_record),
-             :ok <- validate_refresh_grace(token_record),
-             :ok <-
-               validate_current_generation(token_record.agent_id, token_record.token_generation),
-             {:ok, claims} <- decode_unverified_claims(token),
-             {:ok, agent_id, generation} <- extract_token_info(claims),
-             true <-
-               agent_id == token_record.agent_id and generation == token_record.token_generation do
-          Logger.info(
-            "Recovered expired refresh token for agent #{agent_id}, generation #{generation} via DB hash match"
-          )
-
-          {:ok, Map.put(claims, "_tamandua_expired_refresh_recovered", true)}
-        else
-          false -> {:error, :generation_mismatch}
-          {:error, reason} -> {:error, reason}
-        end
-
-      error ->
-        error
+    # Guardian.Token.Jwt.decode_token verifies the JWT signature but deliberately
+    # does not apply temporal claim checks. The tenant transaction below then
+    # requires an exact hash match with the locked DB row and enforces the
+    # bounded refresh grace period.
+    case Guardian.Token.Jwt.decode_token(TamanduaServer.Guardian, token) do
+      {:ok, claims} -> {:ok, Map.put(claims, "_tamandua_expired_refresh_recovered", true)}
+      {:error, _reason} -> {:error, :invalid_token}
     end
   end
 
@@ -641,6 +965,24 @@ defmodule TamanduaServer.Agents.TokenManager do
     end
   end
 
+  defp extract_token_identity(claims) do
+    organization_id = claims["org_id"]
+    duplicate_organization_id = claims["organization_id"]
+    credential_jti = claims["credential_jti"] || claims["jti"]
+
+    with true <- organization_id == duplicate_organization_id,
+         {:ok, agent_id, generation} <- extract_token_info(claims),
+         {:ok, canonical_agent_id} <- canonical_uuid(agent_id, :invalid_claims),
+         {:ok, canonical_organization_id} <-
+           canonical_uuid(organization_id, :invalid_claims),
+         true <- is_integer(generation) and generation > 0,
+         true <- is_binary(credential_jti) and byte_size(credential_jti) > 0 do
+      {:ok, canonical_agent_id, generation, canonical_organization_id, credential_jti}
+    else
+      _ -> {:error, :invalid_claims}
+    end
+  end
+
   defp get_token_record(agent_id, generation) do
     case Repo.get_by(AgentToken, agent_id: agent_id, token_generation: generation) do
       nil -> {:error, :token_not_found}
@@ -648,44 +990,47 @@ defmodule TamanduaServer.Agents.TokenManager do
     end
   end
 
-  defp get_token_record_by_hash(token_hash) do
-    case Repo.get_by(AgentToken, token_hash: token_hash) do
+  defp get_token_record_for_update(agent_id, generation) do
+    from(t in AgentToken,
+      where: t.agent_id == ^agent_id and t.token_generation == ^generation,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+    |> case do
       nil -> {:error, :token_not_found}
       token -> {:ok, token}
     end
   end
 
-  defp maybe_validate_refresh_window(_token_record, %{
-         "_tamandua_expired_refresh_recovered" => true
-       }) do
+  defp maybe_validate_refresh_window(
+         _token_record,
+         %{
+           "_tamandua_expired_refresh_recovered" => true
+         },
+         _agent
+       ) do
     :ok
   end
 
-  defp maybe_validate_refresh_window(token_record, _claims),
-    do: validate_refresh_window(token_record)
+  defp maybe_validate_refresh_window(token_record, _claims, agent),
+    do: validate_refresh_window(token_record, agent)
 
-  defp validate_refresh_window(token_record) do
-    agent = get_agent(token_record.agent_id)
+  defp validate_refresh_window(token_record, agent) do
+    refresh_window =
+      min(
+        agent.token_refresh_window_percent || @default_refresh_window_percent,
+        @default_refresh_window_percent
+      )
 
-    if agent do
-      refresh_window =
-        min(
-          agent.token_refresh_window_percent || @default_refresh_window_percent,
-          @default_refresh_window_percent
-        )
+    now = DateTime.utc_now()
+    ttl = DateTime.diff(token_record.expires_at, token_record.issued_at, :second)
+    elapsed = DateTime.diff(now, token_record.issued_at, :second)
+    percent_elapsed = elapsed / ttl * 100
 
-      now = DateTime.utc_now()
-      ttl = DateTime.diff(token_record.expires_at, token_record.issued_at, :second)
-      elapsed = DateTime.diff(now, token_record.issued_at, :second)
-      percent_elapsed = elapsed / ttl * 100
-
-      if percent_elapsed >= refresh_window do
-        :ok
-      else
-        {:error, :outside_refresh_window}
-      end
+    if percent_elapsed >= refresh_window do
+      :ok
     else
-      {:error, :agent_not_found}
+      {:error, :outside_refresh_window}
     end
   end
 
@@ -707,11 +1052,18 @@ defmodule TamanduaServer.Agents.TokenManager do
   Defaults to 7 days.
   """
   def refresh_grace_seconds do
-    Application.get_env(
-      :tamandua_server,
-      :agent_token_refresh_grace_seconds,
-      @default_refresh_grace_seconds
-    )
+    case Application.get_env(
+           :tamandua_server,
+           :agent_token_refresh_grace_seconds,
+           @default_refresh_grace_seconds
+         ) do
+      seconds when is_integer(seconds) and seconds >= 0 ->
+        min(seconds, @maximum_refresh_grace_seconds)
+
+      _invalid ->
+        # Invalid configuration must not silently enlarge the recovery window.
+        0
+    end
   end
 
   @doc """
@@ -761,19 +1113,20 @@ defmodule TamanduaServer.Agents.TokenManager do
     end
   end
 
-  defp validate_current_generation(agent_id, generation) do
-    case get_agent(agent_id) do
-      nil ->
-        {:error, :agent_not_found}
+  defp credential_expires_at(token_expires_at) do
+    DateTime.add(token_expires_at, refresh_grace_seconds(), :second)
+  end
 
-      agent ->
-        if (agent.current_token_generation || 1) == generation do
-          :ok
-        else
-          {:error, :generation_mismatch}
-        end
+  defp validate_current_generation(agent, generation) do
+    if current_generation(agent.current_token_generation) == generation do
+      :ok
+    else
+      {:error, :generation_mismatch}
     end
   end
+
+  defp validate_token_rotation_enabled(%{token_rotation_enabled: true}), do: :ok
+  defp validate_token_rotation_enabled(_agent), do: {:error, :token_rotation_disabled}
 
   defp token_ttl_hours(agent) do
     configured = agent.token_ttl_hours || @default_token_ttl_hours
@@ -814,6 +1167,10 @@ defmodule TamanduaServer.Agents.TokenManager do
     Logger.info("Loaded #{length(revoked_tokens)} revoked tokens into cache")
   end
 
+  defp skip_revocation_preload? do
+    System.get_env("TAMANDUA_SKIP_TOKEN_REVOCATION_PRELOAD", "false") == "true"
+  end
+
   defp cleanup_expired_tokens do
     cutoff =
       DateTime.utc_now()
@@ -850,7 +1207,7 @@ defmodule TamanduaServer.Agents.TokenManager do
     Process.send_after(self(), :cleanup, @cleanup_interval)
   end
 
-  defp audit_token_operation(operation, agent_id, generation, opts) do
+  defp audit_token_operation(operation, agent_id, organization_id, generation, opts) do
     # Log to audit system
     Audit.log_event(%{
       event_type: "token_#{operation}",
@@ -859,6 +1216,7 @@ defmodule TamanduaServer.Agents.TokenManager do
       resource_id: "#{agent_id}:gen#{generation}",
       metadata: %{
         agent_id: agent_id,
+        organization_id: organization_id,
         token_generation: generation,
         ip_address: opts[:ip_address],
         user_agent: opts[:user_agent],
@@ -866,24 +1224,7 @@ defmodule TamanduaServer.Agents.TokenManager do
       }
     })
   rescue
-    e ->
-      Logger.warning("Failed to audit token operation: #{Exception.message(e)}")
-  end
-
-  defp decode_unverified_claims(token) when is_binary(token) do
-    with [_header, payload, _signature] <- String.split(token, "."),
-         {:ok, json} <- base64url_decode(payload),
-         {:ok, claims} <- Jason.decode(json) do
-      {:ok, claims}
-    else
-      _ -> {:error, :invalid_token}
-    end
-  end
-
-  defp decode_unverified_claims(_), do: {:error, :invalid_token}
-
-  defp base64url_decode(value) when is_binary(value) do
-    padded = value <> String.duplicate("=", rem(4 - rem(byte_size(value), 4), 4))
-    Base.url_decode64(padded)
+    _error ->
+      Logger.warning("Failed to audit token operation")
   end
 end

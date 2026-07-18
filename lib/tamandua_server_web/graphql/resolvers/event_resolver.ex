@@ -102,28 +102,36 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.EventResolver do
       # Use tenant-scoped lookup to prevent BOLA/IDOR
       case Agents.get_agent_for_org(org_id, event.agent_id) do
         {:ok, agent} -> {:ok, agent}
-        {:error, :not_found} -> {:ok, nil}
+        _ -> {:ok, nil}
       end
     else
       {:ok, nil}
     end
   end
 
-  def related_alerts(event, _args, _resolution) do
-    # Find alerts that include this event
-    alerts = from(a in Alert,
-      where: ^event.id in a.event_ids,
-      order_by: [desc: a.inserted_at],
-      limit: 10
-    )
-    |> Repo.all()
+  def related_alerts(event, _args, %{context: context}) do
+    case context[:organization_id] do
+      nil ->
+        {:ok, []}
 
-    {:ok, alerts}
+      organization_id ->
+        alerts =
+          from(a in Alert,
+            where: a.organization_id == ^organization_id,
+            where: ^event.id in a.event_ids,
+            order_by: [desc: a.inserted_at],
+            limit: 10
+          )
+          |> Repo.all()
+
+        {:ok, alerts}
+    end
   end
 
   # Private helpers
 
-  defp maybe_scope_org(query, nil), do: query
+  defp maybe_scope_org(query, nil), do: where(query, [e], false)
+
   defp maybe_scope_org(query, org_id) do
     # Join with agents to filter by organization
     from(e in query,

@@ -341,7 +341,7 @@ defmodule TamanduaServer.Solana.Client do
 
     # Fleet-specific metrics
     total_agents = Map.get(params, :active_alerts, 0)  # Reusing field for total
-    healthy_agents = Map.get(params, :window_hours, 0) # Reusing field placeholder
+    _healthy_agents = Map.get(params, :window_hours, 0) # Reusing field placeholder
 
     memo =
       %{
@@ -583,8 +583,9 @@ defmodule TamanduaServer.Solana.Client do
 
   defp get_recent_blockhash(state) do
     case rpc_call("getLatestBlockhash", [%{commitment: "finalized"}], state) do
-      {:ok, %{"value" => %{"blockhash" => blockhash}}} ->
-        {:ok, base58_decode!(blockhash)}
+      # Keep the is_binary/1 guard so a malformed (non-string) blockhash falls
+      # through to the unexpected-response clause instead of raising inside
+      # base58_decode!/1.
       {:ok, %{"value" => %{"blockhash" => blockhash}}} when is_binary(blockhash) ->
         {:ok, base58_decode!(blockhash)}
       {:error, _} = error ->

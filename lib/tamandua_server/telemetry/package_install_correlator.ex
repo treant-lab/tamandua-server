@@ -18,15 +18,17 @@ defmodule TamanduaServer.Telemetry.PackageInstallCorrelator do
   @session_ttl_seconds 600
   @sweep_interval_ms :timer.minutes(5)
 
-  @package_manager_patterns [
-    {~r/npm(\.cmd|\.exe)?$/i, :npm},
-    {~r/pip[3]?(\.exe)?$/i, :pip},
-    {~r/python[3]?(\.exe)?$/i, :pip},
-    {~r/cargo(\.exe)?$/i, :cargo},
-    {~r/gem(\.cmd)?$/i, :gem},
-    {~r/ruby(\.exe)?$/i, :gem},
-    {~r/go(\.exe)?$/i, :go}
-  ]
+  defp package_manager_patterns do
+    [
+      {~r/npm(\.cmd|\.exe)?$/i, :npm},
+      {~r/pip[3]?(\.exe)?$/i, :pip},
+      {~r/python[3]?(\.exe)?$/i, :pip},
+      {~r/cargo(\.exe)?$/i, :cargo},
+      {~r/gem(\.cmd)?$/i, :gem},
+      {~r/ruby(\.exe)?$/i, :gem},
+      {~r/go(\.exe)?$/i, :go}
+    ]
+  end
 
   # Client API
 
@@ -227,7 +229,7 @@ defmodule TamanduaServer.Telemetry.PackageInstallCorrelator do
 
   defp detect_package_manager(image_path) when is_binary(image_path) do
     basename = Path.basename(image_path)
-    Enum.find_value(@package_manager_patterns, fn {pattern, ecosystem} ->
+    Enum.find_value(package_manager_patterns(), fn {pattern, ecosystem} ->
       if Regex.match?(pattern, basename), do: ecosystem
     end)
   end
@@ -261,7 +263,7 @@ defmodule TamanduaServer.Telemetry.PackageInstallCorrelator do
     if parent_pid do
       # Find all sessions where this parent_pid is tracked
       :ets.foldl(fn {key, session}, acc ->
-        {session_agent_id, root_pid} = key
+        {session_agent_id, _root_pid} = key
 
         if session_agent_id == agent_id and MapSet.member?(session.tracked_pids, parent_pid) do
           # Check time window

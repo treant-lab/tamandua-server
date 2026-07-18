@@ -186,7 +186,7 @@ defmodule TamanduaServer.Alerts.SeverityManager do
   returns the list of adjustments pending approval.
   """
   def bulk_adjust_severity(alert_ids, new_severity, reason, user, opts \\ []) do
-    organization_id = Keyword.get(opts, :organization_id)
+    _organization_id = Keyword.get(opts, :organization_id)
 
     results =
       Enum.map(alert_ids, fn alert_id ->

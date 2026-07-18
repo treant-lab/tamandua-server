@@ -63,7 +63,6 @@ defmodule TamanduaServer.Solana.FleetHealthAttestation do
   alias TamanduaServer.Solana.Client, as: SolanaClient
 
   # Default interval: 1 hour
-  @default_interval_ms :timer.hours(1)
   @default_min_agents 1
 
   defstruct [

@@ -10,12 +10,29 @@ defmodule TamanduaServer.Response.ProcessManager do
   - Handle inspection
   - Memory dumping
 
-  Integrates with the agent command infrastructure to execute
-  process operations on remote endpoints.
+  ## Delivery contract (asynchronous)
+
+  Every function queues a persisted command through
+  `TamanduaServer.Agents.CommandManager.queue_command/4` and returns
+  `{:ok, %{command_id: id, status: :queued}}` immediately. The command is
+  pushed to the agent over its live channel by `Agents.Worker`
+  (`dispatch_persisted_command/2`), and the agent's `command_response` is
+  persisted back onto the `AgentCommand` row by the worker
+  (`handle_persisted_command_response/6`). Poll the outcome with
+  `CommandManager.get_command(command_id)`: `command.result` holds the
+  agent's `result_data` once `command.status` is `"completed"`.
+
+  There is deliberately NO synchronous wait here: the previous
+  implementation broadcast `{:command, ...}` on the `"agent:<id>"` PubSub
+  topic (no handler existed anywhere, the message died in the agent
+  channel's catch-all `handle_info/2`) and then blocked in a `receive` for
+  a `{:command_result, ...}` message that could never arrive - a
+  guaranteed 30s timeout. It also called the nonexistent module
+  `TamanduaServer.Agents.AgentRegistry`, so it crashed before even
+  reaching the dead broadcast.
   """
 
-  alias TamanduaServer.{Agents, Response}
-  alias TamanduaServer.Agents.AgentRegistry
+  alias TamanduaServer.Agents.CommandManager
   require Logger
 
   @doc """
@@ -26,7 +43,8 @@ defmodule TamanduaServer.Response.ProcessManager do
   - `filter_elevated` - Only return elevated processes (default: false)
 
   Returns:
-  - `{:ok, %{processes: [...], tree: [...], count: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}` - command queued for the agent;
+    the tree arrives asynchronously in `AgentCommand.result`
   - `{:error, reason}`
   """
   def get_process_tree(agent_id, opts \\ []) do
@@ -39,11 +57,11 @@ defmodule TamanduaServer.Response.ProcessManager do
     }
 
     case execute_command(agent_id, :process_tree_list, payload) do
-      {:ok, result} ->
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to get process tree from agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue process tree request for agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -55,7 +73,7 @@ defmodule TamanduaServer.Response.ProcessManager do
   - `force` - Use SIGKILL/TerminateProcess instead of graceful termination (default: false)
 
   Returns:
-  - `{:ok, %{pid: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def kill_process(agent_id, pid, opts \\ []) do
@@ -67,12 +85,12 @@ defmodule TamanduaServer.Response.ProcessManager do
     }
 
     case execute_command(agent_id, :process_kill, payload) do
-      {:ok, result} ->
-        Logger.info("Process #{pid} killed on agent #{agent_id}")
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        Logger.info("Process kill for pid #{pid} queued for agent #{agent_id} (command #{queued.command_id})")
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to kill process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue kill for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -81,19 +99,19 @@ defmodule TamanduaServer.Response.ProcessManager do
   Suspend all threads of a process.
 
   Returns:
-  - `{:ok, %{pid: integer, status: "suspended", threads_suspended: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def suspend_process(agent_id, pid) do
     payload = %{pid: pid}
 
     case execute_command(agent_id, :process_suspend, payload) do
-      {:ok, result} ->
-        Logger.info("Process #{pid} suspended on agent #{agent_id}")
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        Logger.info("Process suspend for pid #{pid} queued for agent #{agent_id} (command #{queued.command_id})")
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to suspend process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue suspend for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -102,19 +120,19 @@ defmodule TamanduaServer.Response.ProcessManager do
   Resume all threads of a process.
 
   Returns:
-  - `{:ok, %{pid: integer, status: "resumed", threads_resumed: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def resume_process(agent_id, pid) do
     payload = %{pid: pid}
 
     case execute_command(agent_id, :process_resume, payload) do
-      {:ok, result} ->
-        Logger.info("Process #{pid} resumed on agent #{agent_id}")
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        Logger.info("Process resume for pid #{pid} queued for agent #{agent_id} (command #{queued.command_id})")
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to resume process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue resume for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -131,7 +149,7 @@ defmodule TamanduaServer.Response.ProcessManager do
   - "idle" / "low" - Idle priority
 
   Returns:
-  - `{:ok, %{pid: integer, priority: string}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def set_process_priority(agent_id, pid, priority) when priority in [
@@ -143,12 +161,12 @@ defmodule TamanduaServer.Response.ProcessManager do
     }
 
     case execute_command(agent_id, :process_set_priority, payload) do
-      {:ok, result} ->
-        Logger.info("Process #{pid} priority set to #{priority} on agent #{agent_id}")
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        Logger.info("Priority #{priority} for pid #{pid} queued for agent #{agent_id} (command #{queued.command_id})")
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to set priority for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue priority change for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -164,7 +182,7 @@ defmodule TamanduaServer.Response.ProcessManager do
   - `type` - Filter by handle type: "file", "socket", "registry", etc. (default: all)
 
   Returns:
-  - `{:ok, %{pid: integer, handles: [...], count: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def list_handles(agent_id, pid, opts \\ []) do
@@ -176,11 +194,11 @@ defmodule TamanduaServer.Response.ProcessManager do
     }
 
     case execute_command(agent_id, :process_list_handles, payload) do
-      {:ok, result} ->
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to list handles for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue handle listing for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
@@ -192,7 +210,7 @@ defmodule TamanduaServer.Response.ProcessManager do
   - `include_strings` - Also extract strings from memory (default: false)
 
   Returns:
-  - `{:ok, %{pid: integer, path: string, size: integer}}`
+  - `{:ok, %{command_id: id, status: :queued}}`
   - `{:error, reason}`
   """
   def create_process_dump(agent_id, pid, opts \\ []) do
@@ -204,21 +222,23 @@ defmodule TamanduaServer.Response.ProcessManager do
     }
 
     case execute_command(agent_id, :process_create_dump, payload) do
-      {:ok, result} ->
-        Logger.info("Memory dump created for process #{pid} on agent #{agent_id}")
-        {:ok, result.result_data}
+      {:ok, queued} ->
+        Logger.info("Memory dump for pid #{pid} queued for agent #{agent_id} (command #{queued.command_id})")
+        {:ok, queued}
 
       {:error, reason} = error ->
-        Logger.error("Failed to create dump for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
+        Logger.error("Failed to queue dump for process #{pid} on agent #{agent_id}: #{inspect(reason)}")
         error
     end
   end
 
   @doc """
-  Batch operation: Kill multiple processes.
+  Batch operation: Queue kill commands for multiple processes.
 
   Returns:
-  - `{:ok, %{succeeded: [...], failed: [...]}}`
+  - `{:ok, %{succeeded: [%{pid: pid, result: %{command_id: id, status: :queued}}],
+     failed: [%{pid: pid, reason: reason}]}}` - `succeeded` means the command
+    was queued, not that the process has been killed
   """
   def kill_processes(agent_id, pids, opts \\ []) when is_list(pids) do
     results =
@@ -245,64 +265,27 @@ defmodule TamanduaServer.Response.ProcessManager do
 
   # Private functions
 
+  # Queue the command through the persisted AgentCommand pipeline (the only
+  # dispatch path with a live consumer: CommandManager.queue_command/4 ->
+  # Worker.dispatch_persisted_command/2 -> push(socket, "command", ...)).
+  # All command types used here are implemented by the Rust agent
+  # (transport/mod.rs `CommandType`, handlers in live_response/process_manager.rs)
+  # and whitelisted in `AgentCommand.@valid_command_types`.
   defp execute_command(agent_id, command_type, payload) do
-    # Check if agent is online
-    case AgentRegistry.get_agent(agent_id) do
-      {:ok, agent_info} when agent_info.status == :online ->
-        # Create response action
-        attrs = %{
-          agent_id: agent_id,
-          command_type: command_type,
-          payload: payload,
-          status: "pending",
-          initiated_by: "system"  # TODO: Get from current user context
-        }
+    case CommandManager.queue_command(agent_id, command_type, payload) do
+      {:ok, command} ->
+        {:ok, %{command_id: command.id, status: :queued}}
 
-        case Response.create_action(attrs) do
-          {:ok, action} ->
-            # Send command to agent via channel
-            command_id = action.id
+      {:error, :agent_not_found} ->
+        # The in-memory Agents.Registry only tracks connected agents, so a
+        # miss means the agent is offline or was never enrolled.
+        {:error, "Agent not found or offline"}
 
-            # This would integrate with your channel infrastructure
-            # to actually send the command to the agent
-            send_command_to_agent(agent_id, command_type, payload, command_id)
-
-            # Wait for result (with timeout)
-            wait_for_result(command_id, 30_000)
-
-          {:error, reason} ->
-            {:error, "Failed to create action: #{inspect(reason)}"}
-        end
-
-      {:ok, _agent_info} ->
-        {:error, "Agent is offline"}
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, "Failed to queue command: #{inspect(changeset.errors)}"}
 
       {:error, reason} ->
-        {:error, "Agent not found: #{inspect(reason)}"}
-    end
-  end
-
-  defp send_command_to_agent(agent_id, command_type, payload, command_id) do
-    # This would use Phoenix.PubSub or Phoenix.Channel to send
-    # the command to the agent
-    Phoenix.PubSub.broadcast(
-      TamanduaServer.PubSub,
-      "agent:#{agent_id}",
-      {:command, command_type, payload, command_id}
-    )
-  end
-
-  defp wait_for_result(command_id, timeout) do
-    # In a real implementation, this would use a GenServer or Task
-    # to wait for the command result with a timeout
-    #
-    # For now, return a placeholder
-    receive do
-      {:command_result, ^command_id, result} ->
-        {:ok, result}
-    after
-      timeout ->
-        {:error, :timeout}
+        {:error, "Failed to queue command: #{inspect(reason)}"}
     end
   end
 end

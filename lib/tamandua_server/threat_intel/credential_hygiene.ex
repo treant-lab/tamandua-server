@@ -262,7 +262,7 @@ defmodule TamanduaServer.ThreatIntel.CredentialHygiene do
   # -- Password reuse detection --------------------------------------------
 
   @impl true
-  def handle_call({:detect_reuse, org_id, entries}, _from, state) do
+  def handle_call({:detect_reuse, _org_id, entries}, _from, state) do
     # Group by password hash (SHA-256)
     by_hash = Enum.group_by(entries, fn e ->
       e[:password_sha256] || e["password_sha256"]
@@ -273,7 +273,7 @@ defmodule TamanduaServer.ThreatIntel.CredentialHygiene do
       |> Enum.filter(fn {_hash, group} -> length(group) > 1 end)
       |> Enum.flat_map(fn {_hash, group} ->
         user_ids = group |> Enum.map(&(&1[:user_id] || &1["user_id"])) |> Enum.uniq()
-        services = group |> Enum.map(&(&1[:service] || &1["service"])) |> Enum.uniq()
+        _services = group |> Enum.map(&(&1[:service] || &1["service"])) |> Enum.uniq()
 
         Enum.map(user_ids, fn user_id ->
           user_services = group
@@ -385,20 +385,6 @@ defmodule TamanduaServer.ThreatIntel.CredentialHygiene do
     {:reply, :ok, %{state | stats: new_stats}}
   end
 
-  @impl true
-  def handle_cast({:service_account_activity, org_id, account_id}, state) do
-    case :ets.lookup(@ets_service_accounts, {org_id, account_id}) do
-      [{{^org_id, ^account_id}, entry}] ->
-        updated = %{entry | last_activity: DateTime.utc_now()}
-        :ets.insert(@ets_service_accounts, {{org_id, account_id}, updated})
-
-      [] ->
-        :ok
-    end
-
-    {:noreply, state}
-  end
-
   # -- Reports and scores --------------------------------------------------
 
   @impl true
@@ -416,6 +402,20 @@ defmodule TamanduaServer.ThreatIntel.CredentialHygiene do
   @impl true
   def handle_call(:get_stats, _from, state) do
     {:reply, state.stats, state}
+  end
+
+  @impl true
+  def handle_cast({:service_account_activity, org_id, account_id}, state) do
+    case :ets.lookup(@ets_service_accounts, {org_id, account_id}) do
+      [{{^org_id, ^account_id}, entry}] ->
+        updated = %{entry | last_activity: DateTime.utc_now()}
+        :ets.insert(@ets_service_accounts, {{org_id, account_id}, updated})
+
+      [] ->
+        :ok
+    end
+
+    {:noreply, state}
   end
 
   # -- Periodic checks -----------------------------------------------------
@@ -458,7 +458,7 @@ defmodule TamanduaServer.ThreatIntel.CredentialHygiene do
   # Private - Certificate Checks
   # ============================================================================
 
-  defp check_certificate_expirations(state) do
+  defp check_certificate_expirations(_state) do
     now = DateTime.utc_now()
 
     :ets.tab2list(@ets_cert_watch)

@@ -99,9 +99,6 @@ config :tamandua_server, TamanduaServer.Telemetry.ClickHouse,
   circuit_open_duration_ms: 60_000,
   query_timeout: 30_000
 
-# Disable Oban in tests
-config :tamandua_server, Oban, testing: :inline
-
 # Cache configuration for development
 config :tamandua_server, :cache,
   redis: [

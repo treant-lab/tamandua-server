@@ -17,9 +17,38 @@ defmodule TamanduaServer.Plugins.Marketplace do
   use Ecto.Schema
   import Ecto.Changeset
   import Ecto.Query
+  alias TamanduaServer.Plugins.Manifest
   alias TamanduaServer.Repo
 
   @type t :: %__MODULE__{}
+  @cast_fields [
+    :plugin_id,
+    :name,
+    :description,
+    :author,
+    :version,
+    :plugin_type,
+    :api_version,
+    :homepage_url,
+    :repository_url,
+    :documentation_url,
+    :license,
+    :tags,
+    :wasm_url,
+    :signature_url,
+    :public_key,
+    :checksum_sha256,
+    :dependencies,
+    :required_capabilities,
+    :download_count,
+    :rating_average,
+    :rating_count,
+    :security_scan_status,
+    :security_scan_results,
+    :verified,
+    :published,
+    :deprecated
+  ]
 
   schema "plugin_marketplace" do
     field :plugin_id, :string
@@ -68,35 +97,17 @@ defmodule TamanduaServer.Plugins.Marketplace do
   Changeset for creating/updating marketplace entries
   """
   def changeset(marketplace, attrs) do
+    alias_errors = Manifest.field_alias_errors(attrs)
+
+    normalized_attrs =
+      attrs
+      |> Manifest.normalize_attrs()
+      |> canonical_cast_attrs()
+
     marketplace
-    |> cast(attrs, [
-      :plugin_id,
-      :name,
-      :description,
-      :author,
-      :version,
-      :plugin_type,
-      :api_version,
-      :homepage_url,
-      :repository_url,
-      :documentation_url,
-      :license,
-      :tags,
-      :wasm_url,
-      :signature_url,
-      :public_key,
-      :checksum_sha256,
-      :dependencies,
-      :required_capabilities,
-      :download_count,
-      :rating_average,
-      :rating_count,
-      :security_scan_status,
-      :security_scan_results,
-      :verified,
-      :published,
-      :deprecated
-    ])
+    |> cast(normalized_attrs, @cast_fields)
+    |> add_manifest_alias_errors(alias_errors)
+    |> validate_manifest_contract()
     |> validate_required([
       :plugin_id,
       :name,
@@ -110,8 +121,57 @@ defmodule TamanduaServer.Plugins.Marketplace do
       :public_key,
       :checksum_sha256
     ])
-    |> validate_inclusion(:plugin_type, ["collector", "analyzer", "response"])
     |> unique_constraint([:plugin_id, :version])
+  end
+
+  defp canonical_cast_attrs(attrs) do
+    Enum.reduce(@cast_fields, %{}, fn field, cast_attrs ->
+      string_field = Atom.to_string(field)
+
+      cond do
+        Map.has_key?(attrs, field) -> Map.put(cast_attrs, field, Map.fetch!(attrs, field))
+        Map.has_key?(attrs, string_field) -> Map.put(cast_attrs, field, Map.fetch!(attrs, string_field))
+        true -> cast_attrs
+      end
+    end)
+  end
+
+  defp add_manifest_alias_errors(changeset, alias_errors) do
+    Enum.reduce(alias_errors, changeset, fn {field, message}, changeset ->
+      add_error(changeset, field, message)
+    end)
+  end
+
+  defp validate_manifest_contract(changeset) do
+    fields = [
+      :plugin_type,
+      :api_version,
+      :version,
+      :homepage_url,
+      :repository_url,
+      :documentation_url,
+      :wasm_url,
+      :signature_url,
+      :public_key,
+      :license,
+      :checksum_sha256,
+      :required_capabilities
+    ]
+
+    attrs =
+      fields
+      |> Map.new(fn field -> {field, get_field(changeset, field)} end)
+      |> Map.new()
+
+    case Manifest.validate_attrs(attrs) do
+      :ok ->
+        changeset
+
+      {:error, errors} ->
+        Enum.reduce(errors, changeset, fn {field, message}, changeset ->
+          add_error(changeset, field, message)
+        end)
+    end
   end
 
   @doc """

@@ -4,22 +4,27 @@ defmodule TamanduaServerWeb.WebhookController do
   require Logger
 
   alias TamanduaServer.Integrations
+  alias TamanduaServerWeb.WebhookSignature
   alias TamanduaServer.Registries.{DownloadHook, MLflow, WandB, HuggingFace}
 
   @doc """
   Handle incoming threat intelligence feeds from various providers.
   """
   def threat_intel(conn, %{"provider" => provider} = params) do
-    Logger.info("Received threat intel from #{provider}")
+    with :ok <- WebhookSignature.verify(conn, :threat_intel, provider) do
+      Logger.info("Received authenticated threat intel from #{provider}")
 
-    case process_threat_intel(provider, params) do
-      {:ok, result} ->
-        json(conn, %{status: "accepted", result: result})
+      case process_threat_intel(provider, params) do
+        {:ok, result} ->
+          json(conn, %{status: "accepted", result: result})
 
-      {:error, reason} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: reason})
+        {:error, reason} ->
+          conn
+          |> put_status(400)
+          |> json(%{error: reason})
+      end
+    else
+      {:error, reason} -> reject_unsigned_webhook(conn, reason)
     end
   end
 
@@ -27,16 +32,20 @@ defmodule TamanduaServerWeb.WebhookController do
   Handle alert integration webhooks (Slack, PagerDuty, etc.).
   """
   def alert_integration(conn, %{"integration" => integration} = params) do
-    Logger.info("Received webhook for integration: #{integration}")
+    with :ok <- WebhookSignature.verify(conn, :alerts, integration) do
+      Logger.info("Received authenticated webhook for integration: #{integration}")
 
-    case process_integration_webhook(integration, params) do
-      :ok ->
-        json(conn, %{status: "accepted"})
+      case process_integration_webhook(integration, params) do
+        :ok ->
+          json(conn, %{status: "accepted"})
 
-      {:error, reason} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: reason})
+        {:error, reason} ->
+          conn
+          |> put_status(400)
+          |> json(%{error: reason})
+      end
+    else
+      {:error, reason} -> reject_unsigned_webhook(conn, reason)
     end
   end
 
@@ -67,7 +76,10 @@ defmodule TamanduaServerWeb.WebhookController do
           # Parse the callback payload based on platform
           callback_data = parse_soar_callback(platform, params)
 
-          case TamanduaServer.Integrations.SOAR.Executor.handle_webhook_callback(execution_id, callback_data) do
+          case TamanduaServer.Integrations.SOAR.Executor.handle_webhook_callback(
+                 execution_id,
+                 callback_data
+               ) do
             :ok ->
               json(conn, %{status: "accepted", execution_id: execution_id})
 
@@ -82,62 +94,56 @@ defmodule TamanduaServerWeb.WebhookController do
           |> json(%{error: "Missing execution_id in callback payload"})
         end
 
-      {:error, :invalid_signature} ->
+      {:error, reason} when reason in [:invalid_signature, :no_signing_secret] ->
+        Logger.warning(
+          "[WebhookController] SOAR callback from #{platform} rejected: #{inspect(reason)}"
+        )
+
         conn
         |> put_status(401)
-        |> json(%{error: "Invalid webhook signature"})
-
-      {:error, :no_signing_secret} ->
-        # No signing secret configured - fail closed in production
-        if allow_insecure_webhook?() do
-          Logger.warning("[WebhookController] SOAR callback from #{platform} processed without signature verification (insecure mode)")
-          execution_id = params["execution_id"] || params["tamandua_execution_id"]
-
-          if execution_id do
-            callback_data = parse_soar_callback(platform, params)
-
-            case TamanduaServer.Integrations.SOAR.Executor.handle_webhook_callback(execution_id, callback_data) do
-              :ok ->
-                json(conn, %{status: "accepted", execution_id: execution_id, warning: "Signature not verified"})
-
-              {:error, :not_found} ->
-                conn
-                |> put_status(404)
-                |> json(%{error: "Execution not found", execution_id: execution_id})
-            end
-          else
-            conn
-            |> put_status(400)
-            |> json(%{error: "Missing execution_id in callback payload"})
-          end
-        else
-          Logger.warning("[WebhookController] SOAR callback from #{platform} rejected - no signing secret configured")
-          conn
-          |> put_status(401)
-          |> json(%{error: "Webhook not configured - signing secret required"})
-        end
+        |> json(%{error: "Webhook authentication failed"})
     end
   end
 
-  # Only allow insecure webhooks in dev/test with explicit config
-  defp allow_insecure_webhook? do
-    Application.get_env(:tamandua_server, :webhook_insecure_mode, false) and
-      Application.get_env(:tamandua_server, :env) in [:dev, :test]
+  defp reject_unsigned_webhook(conn, reason) do
+    Logger.warning("[WebhookController] Public webhook rejected: #{inspect(reason)}")
+
+    conn
+    |> put_status(401)
+    |> json(%{error: "Webhook authentication failed"})
   end
 
   defp verify_soar_signature(conn, "tines") do
     case Plug.Conn.get_req_header(conn, "x-tines-signature") do
       [signature | _] ->
         # Read cached raw body (requires CacheBodyReader plug or similar)
-        raw_body = conn.assigns[:raw_body] || ""
-        TamanduaServer.Integrations.SOAR.Tines.verify_webhook_signature(raw_body, signature)
+        case webhook_raw_body(conn) do
+          {:ok, raw_body} ->
+            TamanduaServer.Integrations.SOAR.Tines.verify_webhook_signature(raw_body, signature)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       [] ->
-        {:error, :no_signing_secret}
+        {:error, :invalid_signature}
     end
   end
 
-  defp verify_soar_signature(_conn, _platform), do: :ok
+  defp verify_soar_signature(conn, platform), do: WebhookSignature.verify(conn, :soar, platform)
+
+  defp webhook_raw_body(conn) do
+    case conn.assigns[:raw_body] || conn.private[:raw_body] do
+      body when is_binary(body) and byte_size(body) > 0 ->
+        {:ok, body}
+
+      chunks when is_list(chunks) and chunks != [] ->
+        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+
+      _ ->
+        {:error, :invalid_signature}
+    end
+  end
 
   defp parse_soar_callback("tines", params) do
     TamanduaServer.Integrations.SOAR.Tines.parse_webhook_callback(params)
@@ -199,20 +205,22 @@ defmodule TamanduaServerWeb.WebhookController do
   defp import_stix(data) do
     objects = data["objects"] || []
 
-    results = Enum.map(objects, fn obj ->
-      case obj["type"] do
-        "indicator" ->
-          import_stix_indicator(obj)
+    results =
+      Enum.map(objects, fn obj ->
+        case obj["type"] do
+          "indicator" ->
+            import_stix_indicator(obj)
 
-        _ ->
-          {:skipped, obj["type"]}
-      end
-    end)
+          _ ->
+            {:skipped, obj["type"]}
+        end
+      end)
 
-    created = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    created =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
 
     {:ok, %{created: created, total: length(objects)}}
   end
@@ -264,32 +272,34 @@ defmodule TamanduaServerWeb.WebhookController do
       enabled: true
     }
 
-    TamanduaServer.Detection.IOCs.create_ioc(attrs)
+    create_global_ioc(attrs)
   end
 
   # Import CSV format
   defp import_csv(data) when is_binary(data) do
     lines = String.split(data, "\n", trim: true)
 
-    results = Enum.map(lines, fn line ->
-      parts = String.split(line, ",", parts: 3)
+    results =
+      Enum.map(lines, fn line ->
+        parts = String.split(line, ",", parts: 3)
 
-      case parts do
-        [type, value] ->
-          create_ioc_from_csv(type, value, "")
+        case parts do
+          [type, value] ->
+            create_ioc_from_csv(type, value, "")
 
-        [type, value, description] ->
-          create_ioc_from_csv(type, value, description)
+          [type, value, description] ->
+            create_ioc_from_csv(type, value, description)
 
-        _ ->
-          {:skipped, :invalid_format}
-      end
-    end)
+          _ ->
+            {:skipped, :invalid_format}
+        end
+      end)
 
-    created = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    created =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
 
     {:ok, %{created: created, total: length(lines)}}
   end
@@ -306,24 +316,27 @@ defmodule TamanduaServerWeb.WebhookController do
       enabled: true
     }
 
-    TamanduaServer.Detection.IOCs.create_ioc(attrs)
+    create_global_ioc(attrs)
   end
 
   # Import plain text (one IOC per line, auto-detect type)
   defp import_txt(data) when is_binary(data) do
-    lines = String.split(data, "\n", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.filter(&(&1 != ""))
+    lines =
+      String.split(data, "\n", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&(&1 != ""))
 
-    results = Enum.map(lines, fn line ->
-      type = detect_ioc_type(line)
-      create_ioc_from_txt(type, line)
-    end)
+    results =
+      Enum.map(lines, fn line ->
+        type = detect_ioc_type(line)
+        create_ioc_from_txt(type, line)
+      end)
 
-    created = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    created =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
 
     {:ok, %{created: created, total: length(lines)}}
   end
@@ -334,25 +347,18 @@ defmodule TamanduaServerWeb.WebhookController do
     cond do
       # MD5 hash (32 hex chars)
       Regex.match?(~r/^[a-fA-F0-9]{32}$/, value) -> "hash_md5"
-
       # SHA1 hash (40 hex chars)
       Regex.match?(~r/^[a-fA-F0-9]{40}$/, value) -> "hash_sha1"
-
       # SHA256 hash (64 hex chars)
       Regex.match?(~r/^[a-fA-F0-9]{64}$/, value) -> "hash_sha256"
-
       # IPv4 address
       Regex.match?(~r/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, value) -> "ip"
-
       # URL
       String.starts_with?(value, "http://") or String.starts_with?(value, "https://") -> "url"
-
       # Email
       Regex.match?(~r/^[^\s@]+@[^\s@]+\.[^\s@]+$/, value) -> "email"
-
       # Domain (default fallback for non-IP strings with dots)
       Regex.match?(~r/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, value) -> "domain"
-
       # Unknown
       true -> "unknown"
     end
@@ -368,7 +374,7 @@ defmodule TamanduaServerWeb.WebhookController do
       enabled: true
     }
 
-    TamanduaServer.Detection.IOCs.create_ioc(attrs)
+    create_global_ioc(attrs)
   end
 
   # ============================================================================
@@ -396,6 +402,14 @@ defmodule TamanduaServerWeb.WebhookController do
       }
   """
   def mlflow(conn, params) do
+    with :ok <- WebhookSignature.verify(conn, :registries, "mlflow") do
+      process_mlflow_webhook(conn, params)
+    else
+      {:error, reason} -> reject_unsigned_webhook(conn, reason)
+    end
+  end
+
+  defp process_mlflow_webhook(conn, params) do
     Logger.info("[WebhookController] MLflow webhook received: #{inspect(params)}")
 
     case validate_mlflow_event(params) do
@@ -407,7 +421,9 @@ defmodule TamanduaServerWeb.WebhookController do
 
         case DownloadHook.handle_download(model_id, MLflow, %{organization_id: org_id}) do
           {:ok, provenance_id} ->
-            Logger.info("[WebhookController] MLflow scan triggered: provenance_id=#{provenance_id}")
+            Logger.info(
+              "[WebhookController] MLflow scan triggered: provenance_id=#{provenance_id}"
+            )
 
             json(conn, %{
               status: "accepted",
@@ -461,6 +477,14 @@ defmodule TamanduaServerWeb.WebhookController do
       }
   """
   def huggingface(conn, params) do
+    with :ok <- WebhookSignature.verify(conn, :registries, "huggingface") do
+      process_huggingface_webhook(conn, params)
+    else
+      {:error, reason} -> reject_unsigned_webhook(conn, reason)
+    end
+  end
+
+  defp process_huggingface_webhook(conn, params) do
     Logger.info("[WebhookController] HuggingFace webhook received: #{inspect(params)}")
 
     case validate_huggingface_event(params) do
@@ -471,7 +495,9 @@ defmodule TamanduaServerWeb.WebhookController do
 
         case DownloadHook.handle_download(model_id, HuggingFace, %{organization_id: org_id}) do
           {:ok, provenance_id} ->
-            Logger.info("[WebhookController] HuggingFace scan triggered: provenance_id=#{provenance_id}")
+            Logger.info(
+              "[WebhookController] HuggingFace scan triggered: provenance_id=#{provenance_id}"
+            )
 
             json(conn, %{
               status: "accepted",
@@ -521,6 +547,14 @@ defmodule TamanduaServerWeb.WebhookController do
       }
   """
   def wandb(conn, params) do
+    with :ok <- WebhookSignature.verify(conn, :registries, "wandb") do
+      process_wandb_webhook(conn, params)
+    else
+      {:error, reason} -> reject_unsigned_webhook(conn, reason)
+    end
+  end
+
+  defp process_wandb_webhook(conn, params) do
     Logger.info("[WebhookController] W&B webhook received: #{inspect(params)}")
 
     case validate_wandb_event(params) do
@@ -650,17 +684,23 @@ defmodule TamanduaServerWeb.WebhookController do
   - POST /api/webhooks/jira/550e8400-e29b-41d4-a716-446655440000
   - POST /api/webhooks/splunk/550e8400-e29b-41d4-a716-446655440000
   """
-  def receive_webhook(conn, %{"integration_type" => integration_type, "integration_id" => integration_id} = _params) do
+  def receive_webhook(
+        conn,
+        %{"integration_type" => integration_type, "integration_id" => integration_id} = _params
+      ) do
     # Read raw body for signature verification
     {:ok, raw_body, conn} = Plug.Conn.read_body(conn)
 
     # Parse JSON payload
-    payload = case Jason.decode(raw_body) do
-      {:ok, decoded} -> decoded
-      {:error, _} ->
-        # If JSON decode fails, try to use the already-parsed body params
-        conn.body_params || %{}
-    end
+    payload =
+      case Jason.decode(raw_body) do
+        {:ok, decoded} ->
+          decoded
+
+        {:error, _} ->
+          # If JSON decode fails, try to use the already-parsed body params
+          conn.body_params || %{}
+      end
 
     # Extract headers
     headers = extract_headers(conn)
@@ -676,15 +716,23 @@ defmodule TamanduaServerWeb.WebhookController do
     ]
 
     # Convert integration_type to atom
-    integration_type_atom = try do
-      String.to_existing_atom(integration_type)
-    rescue
-      ArgumentError -> :generic
-    end
+    integration_type_atom =
+      try do
+        String.to_existing_atom(integration_type)
+      rescue
+        ArgumentError -> :generic
+      end
 
-    case TamanduaServer.Integrations.WebhookReceiver.process_webhook(integration_type_atom, integration_id, payload, opts) do
+    case TamanduaServer.Integrations.WebhookReceiver.process_webhook(
+           integration_type_atom,
+           integration_id,
+           payload,
+           opts
+         ) do
       {:ok, result} ->
-        Logger.info("[WebhookController] Successfully processed #{integration_type} webhook for integration #{integration_id}")
+        Logger.info(
+          "[WebhookController] Successfully processed #{integration_type} webhook for integration #{integration_id}"
+        )
 
         conn
         |> put_status(:ok)
@@ -695,7 +743,9 @@ defmodule TamanduaServerWeb.WebhookController do
         })
 
       {:error, :duplicate_webhook} ->
-        Logger.debug("[WebhookController] Duplicate webhook rejected for integration #{integration_id}")
+        Logger.debug(
+          "[WebhookController] Duplicate webhook rejected for integration #{integration_id}"
+        )
 
         conn
         |> put_status(:ok)
@@ -705,7 +755,9 @@ defmodule TamanduaServerWeb.WebhookController do
         })
 
       {:error, :rate_limited} ->
-        Logger.warning("[WebhookController] Rate limit exceeded for integration #{integration_id}")
+        Logger.warning(
+          "[WebhookController] Rate limit exceeded for integration #{integration_id}"
+        )
 
         conn
         |> put_status(:too_many_requests)
@@ -792,8 +844,13 @@ defmodule TamanduaServerWeb.WebhookController do
 
   URL: GET /api/webhooks/:integration_type/:integration_id
   """
-  def verify_webhook(conn, %{"integration_type" => integration_type, "integration_id" => integration_id}) do
-    Logger.info("[WebhookController] Webhook verification request for #{integration_type}/#{integration_id}")
+  def verify_webhook(conn, %{
+        "integration_type" => integration_type,
+        "integration_id" => integration_id
+      }) do
+    Logger.info(
+      "[WebhookController] Webhook verification request for #{integration_type}/#{integration_id}"
+    )
 
     # Some services (like Slack) send a challenge parameter for verification
     challenge = conn.params["challenge"]
@@ -818,6 +875,17 @@ defmodule TamanduaServerWeb.WebhookController do
   # Private Helpers
   # ============================================================================
 
+  defp create_global_ioc(attrs) do
+    case TamanduaServer.Detection.IOCs.add_global(attrs) do
+      {:ok, _ioc} = success ->
+        TamanduaServer.Detection.IOCReload.schedule()
+        success
+
+      error ->
+        error
+    end
+  end
+
   defp bounded_limit(value, default, max_limit),
     do: value |> parse_int(default) |> max(1) |> min(max_limit)
 
@@ -825,12 +893,14 @@ defmodule TamanduaServerWeb.WebhookController do
 
   defp parse_int(nil, default), do: default
   defp parse_int(value, _default) when is_integer(value), do: value
+
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp parse_int(_, default), do: default
 
   defp extract_headers(conn) do

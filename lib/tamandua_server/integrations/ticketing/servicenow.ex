@@ -29,10 +29,8 @@ defmodule TamanduaServer.Integrations.Ticketing.ServiceNow do
 
   # ServiceNow tables
   @security_incident_table "sn_si_incident"
-  @incident_table "incident"
   @change_request_table "change_request"
   @cmdb_ci_table "cmdb_ci"
-  @kb_article_table "kb_knowledge"
 
   defstruct [
     :config,

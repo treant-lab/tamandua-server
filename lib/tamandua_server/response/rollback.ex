@@ -41,7 +41,6 @@ defmodule TamanduaServer.Response.Rollback do
 
   require Logger
 
-  alias TamanduaServer.Agents.{Registry, Worker}
   alias TamanduaServer.Response.Executor
 
   @rollback_timeout 120_000  # 2 minutes - rollback can take time for many files

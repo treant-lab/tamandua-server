@@ -1060,12 +1060,12 @@ defmodule TamanduaServerWeb.API.V1.IntegrationsController do
     end)
   end
 
+  defp format_errors(error), do: error
+
   defp changeset_error_opt(opts, "count"), do: Keyword.get(opts, :count, "count")
   defp changeset_error_opt(opts, "validation"), do: Keyword.get(opts, :validation, "validation")
   defp changeset_error_opt(opts, "kind"), do: Keyword.get(opts, :kind, "kind")
   defp changeset_error_opt(opts, "type"), do: Keyword.get(opts, :type, "type")
   defp changeset_error_opt(_opts, key), do: key
-
-  defp format_errors(error), do: error
 
 end

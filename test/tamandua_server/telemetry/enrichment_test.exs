@@ -276,7 +276,7 @@ defmodule TamanduaServer.Telemetry.EnrichmentTest do
     end
 
     test "provides cache statistics" do
-      stats = Cache.stats()
+      stats = Cache.entry_stats()
 
       assert is_map(stats)
       assert Map.has_key?(stats, :total_entries)
@@ -292,7 +292,7 @@ defmodule TamanduaServer.Telemetry.EnrichmentTest do
       :ok = Cache.clear_all()
 
       # Stats should show 0 entries
-      stats = Cache.stats()
+      stats = Cache.entry_stats()
       assert stats.total_entries == 0
     end
   end

@@ -27,13 +27,9 @@ defmodule TamanduaServerWeb.AgentSocket do
   use Phoenix.Socket, log: false
   require Logger
 
+  alias TamanduaServer.Agents
   alias TamanduaServer.Agents.{Registry, Worker, CertificateManager, Credentials}
-  alias TamanduaServer.Agents.TokenManager.AgentToken
-  alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.Repo
   alias TamanduaServer.Repo.MultiTenant
-
-  import Ecto.Query, only: [from: 2]
 
   # Maximum legacy token lifetime in seconds (30 days default, configurable).
   # This replaces the legacy max_age: :infinity
@@ -48,8 +44,9 @@ defmodule TamanduaServerWeb.AgentSocket do
 
     # SECURITY: Enforce mTLS in production before proceeding
     with :ok <- check_mtls_enforcement(env),
-         {:ok, agent_id, cert_info, credential_jti} <- authenticate_agent(params, connect_info),
-         {:ok, agent_info} <- extract_agent_info(params) do
+         {:ok, agent_id, organization_id, cert_info, credential_jti} <-
+           authenticate_agent(params, connect_info),
+         {:ok, agent_info} <- extract_agent_info(params, organization_id) do
       # Extract peer IP from connection info
       peer_ip = extract_peer_ip(connect_info)
 
@@ -66,7 +63,10 @@ defmodule TamanduaServerWeb.AgentSocket do
         |> assign(:credential_jti, credential_jti)
         |> assign(:connected_at, System.system_time(:millisecond))
 
-      Logger.info("Agent connected: #{agent_id}, credential_jti: #{credential_jti || "legacy"}")
+      Logger.info(
+        "Agent connected: #{agent_id}, credential_ref: #{credential_reference(credential_jti)}"
+      )
+
       {:ok, socket}
     else
       {:error, reason} ->
@@ -120,9 +120,13 @@ defmodule TamanduaServerWeb.AgentSocket do
     env = Application.get_env(:tamandua_server, :env, :prod)
     peer_ip = extract_peer_ip(connect_info)
 
-    with {:ok, claims, jti} <- validate_credentials(token, agent_id, peer_ip),
-         {:ok, ^agent_id, cert_info} <- verify_mtls(connect_info, agent_id, env) do
-      {:ok, agent_id, cert_info, jti}
+    with {:ok, canonical_agent_id} <- canonical_uuid(agent_id, :invalid_agent_id),
+         {:ok, claims, jti} <- validate_credentials(token, canonical_agent_id, peer_ip),
+         {:ok, canonical_organization_id} <-
+           authenticated_organization_id(claims, canonical_agent_id, jti),
+         {:ok, ^canonical_agent_id, cert_info} <-
+           verify_mtls(connect_info, canonical_agent_id, env) do
+      {:ok, canonical_agent_id, canonical_organization_id, cert_info, jti}
     else
       {:error, reason} ->
         Logger.warning(
@@ -157,169 +161,65 @@ defmodule TamanduaServerWeb.AgentSocket do
       {:error, :missing_credentials}
     end
   rescue
-    e ->
-      Logger.error("JWT verification error: #{inspect(e)}")
+    _ ->
+      Logger.error("JWT verification raised while authenticating agent socket")
       {:error, :jwt_error}
   end
 
   defp validate_socket_token(token, agent_id, env, peer_ip) do
     case TamanduaServer.Guardian.decode_and_verify(token) do
       {:ok, claims} ->
-        # Validate agent_id match first
-        case validate_claims_agent_id(claims, agent_id) do
-          {:ok, _} ->
-            # Check for jti claim for DB-backed validation
-            jti = claims["credential_jti"] || claims["jti"]
-            org_id = claims["org_id"] || claims["organization_id"]
-
-            if jti && org_id do
-              # DB-backed credential validation
-              validate_credential_db(jti, agent_id, org_id, peer_ip, claims, token)
-            else
-              # Legacy token without jti - allowed in dev/test, blocked in prod
-              validate_legacy_claims(claims, agent_id, env)
-            end
-
-          error ->
-            error
+        if managed_credential_claims?(claims) do
+          with {:ok, identity} <- validate_managed_identity(claims, agent_id),
+               :ok <- validate_exact_tenant_agent(identity.agent_id, identity.organization_id) do
+            validate_credential_db(
+              identity.jti,
+              identity.agent_id,
+              identity.organization_id,
+              peer_ip,
+              claims
+            )
+          end
+        else
+          with {:ok, _} <- validate_claims_agent_id(claims, agent_id) do
+            validate_legacy_claims(claims, agent_id, env)
+          end
         end
 
       {:error, reason} ->
         Logger.debug("JWT verification failed: #{inspect(reason)}")
 
-        case validate_active_token_hash_fallback(token, agent_id) do
-          {:ok, _claims, _jti} = ok ->
-            ok
-
-          {:error, _fallback_reason} ->
-            validate_legacy_socket_token(token, agent_id, env)
+        if compact_jwt?(token) do
+          {:error, :invalid_token}
+        else
+          validate_legacy_socket_token(token, agent_id, env)
         end
-    end
-  end
-
-  defp validate_active_token_hash_fallback(token, agent_id) do
-    token_hash = :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
-    now = DateTime.utc_now()
-
-    query =
-      from(t in AgentToken,
-        where:
-          t.agent_id == ^agent_id and
-            t.token_hash == ^token_hash and
-            is_nil(t.revoked_at) and
-            t.expires_at > ^now,
-        limit: 1
-      )
-
-    case Repo.one(query) do
-      %AgentToken{} = token_record ->
-        case Repo.get(TamanduaServer.Agents.Agent, agent_id) do
-          nil ->
-            {:error, :agent_not_found}
-
-          agent ->
-            Logger.warning(
-              "JWT decode failed for agent #{agent_id}, but active token hash matched; accepting DB-backed token fallback"
-            )
-
-            claims = %{
-              "agent_id" => agent_id,
-              "org_id" => agent.organization_id,
-              "organization_id" => agent.organization_id,
-              "generation" => token_record.token_generation,
-              "type" => "agent"
-            }
-
-            {:ok, claims, nil}
-        end
-
-      _ ->
-        {:error, :token_hash_not_found}
     end
   end
 
   # DB-backed credential validation
-  defp validate_credential_db(jti, agent_id, org_id, peer_ip, claims, token) do
-    case MultiTenant.with_organization(org_id, fn ->
-           Credentials.validate_and_record_use(jti, agent_id, org_id, peer_ip)
-         end) do
+  defp validate_credential_db(jti, agent_id, org_id, peer_ip, claims) do
+    case Credentials.validate_and_record_use(jti, agent_id, org_id, peer_ip) do
       {:ok, _credential} ->
-        Logger.debug("DB credential validated for agent #{agent_id}, jti: #{jti}")
+        Logger.debug(
+          "DB credential validated for agent #{agent_id}, credential_ref: #{credential_reference(jti)}"
+        )
+
         {:ok, claims, jti}
-
-      {:error, :credential_not_found} ->
-        validate_agent_token_record(token, agent_id, org_id, claims, jti)
-
-      {:error, :credential_revoked} ->
-        # Revocation is authoritative. A revoked credential must NOT be able to
-        # reconnect via the transitional AgentToken hash fallback, otherwise an
-        # operator's revocation can be bypassed by a stale-but-active token row.
-        Logger.warning(
-          "Rejecting agent #{agent_id}: credential revoked (jti=#{jti}); " <>
-            "no token-hash fallback for revoked credentials"
-        )
-
-        {:error, :credential_revoked}
-
-      {:error, :credential_expired} ->
-        # Expiry is authoritative as well; do not resurrect an expired credential
-        # through the transitional fallback path.
-        Logger.warning(
-          "Rejecting agent #{agent_id}: credential expired (jti=#{jti}); " <>
-            "no token-hash fallback for expired credentials"
-        )
-
-        {:error, :credential_expired}
-
-      {:error, :agent_mismatch} ->
-        validate_agent_token_record(token, agent_id, org_id, claims, jti, :credential_agent_mismatch)
-
-      {:error, :org_mismatch} ->
-        validate_agent_token_record(token, agent_id, org_id, claims, jti, :credential_org_mismatch)
 
       {:error, reason} ->
-        validate_agent_token_record(token, agent_id, org_id, claims, jti, reason)
+        Logger.warning(
+          "Rejecting managed credential for agent #{agent_id}: #{inspect(reason)} " <>
+            "credential_ref=#{credential_reference(jti)}"
+        )
+
+        {:error, reason}
     end
   rescue
-    e ->
-      Logger.error(
-        "Credential validation failed in organization context: #{Exception.message(e)}"
-      )
+    _ ->
+      Logger.error("Credential validation raised in organization context")
 
       {:error, :credential_validation_failed}
-  end
-
-  defp validate_agent_token_record(token, agent_id, org_id, claims, jti, credential_reason \\ :credential_not_found) do
-    token_hash = :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
-    now = DateTime.utc_now()
-
-    query =
-      from(t in AgentToken,
-        where:
-          t.agent_id == ^agent_id and
-            t.token_hash == ^token_hash and
-            is_nil(t.revoked_at) and
-            t.expires_at > ^now,
-        limit: 1
-      )
-
-    case MultiTenant.with_organization(org_id, fn -> Repo.one(query) end) do
-      %AgentToken{} ->
-        Logger.warning(
-          "Credential validation #{inspect(credential_reason)} for agent #{agent_id}, jti=#{jti}; " <>
-            "active token hash matched, accepting DB-backed transitional token"
-        )
-
-        {:ok, claims, jti}
-
-      _ ->
-        Logger.warning(
-          "Credential validation #{inspect(credential_reason)} for agent #{agent_id}, " <>
-            "jti=#{jti}; active token hash not found"
-        )
-
-        {:error, credential_reason}
-    end
   end
 
   defp redacted_token_hash(token) when is_binary(token) and byte_size(token) > 0 do
@@ -330,6 +230,15 @@ defmodule TamanduaServerWeb.AgentSocket do
   end
 
   defp redacted_token_hash(_), do: "none"
+
+  defp credential_reference(jti) when is_binary(jti) and byte_size(jti) > 0 do
+    jti
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 12)
+  end
+
+  defp credential_reference(_), do: "legacy"
 
   # Legacy tokens without jti - restricted to dev/test
   defp validate_legacy_claims(claims, agent_id, env) do
@@ -346,12 +255,7 @@ defmodule TamanduaServerWeb.AgentSocket do
   defp validate_legacy_socket_token(token, agent_id, env) do
     if env in [:dev, :test] or lab_light_enabled?() do
       # Use configurable max_age, default 30 days - NO MORE INFINITY
-      max_age =
-        Application.get_env(
-          :tamandua_server,
-          :legacy_token_max_age_seconds,
-          @max_legacy_token_age_seconds
-        )
+      max_age = legacy_token_max_age_seconds()
 
       case Phoenix.Token.verify(TamanduaServerWeb.Endpoint, "agent_auth", token, max_age: max_age) do
         {:ok, claims} ->
@@ -382,12 +286,176 @@ defmodule TamanduaServerWeb.AgentSocket do
 
   defp validate_claims_agent_id(claims, agent_id) do
     claims_agent_id = claims["agent_id"] || claims[:agent_id]
+    subject = claims["sub"] || claims[:sub]
 
-    if claims_agent_id == agent_id do
+    with {:ok, expected_agent_id} <- canonical_uuid(agent_id, :invalid_token),
+         {:ok, claims_agent_id} <- canonical_uuid(claims_agent_id, :invalid_token),
+         true <- claims_agent_id === expected_agent_id,
+         :ok <- validate_optional_subject(subject, expected_agent_id) do
       {:ok, true}
     else
-      Logger.warning("Socket token validation failed: agent_id mismatch")
-      {:error, :invalid_token}
+      _ ->
+        Logger.warning("Socket token validation failed: agent identity mismatch")
+        {:error, :invalid_token}
+    end
+  end
+
+  defp managed_credential_claims?(claims) do
+    present_claim?(claims, "type", :type) or
+      present_claim?(claims, "credential_jti", :credential_jti) or
+      present_claim?(claims, "jti", :jti) or
+      present_claim?(claims, "org_id", :org_id) or
+      present_claim?(claims, "organization_id", :organization_id) or
+      present_claim?(claims, "generation", :generation)
+  end
+
+  defp validate_managed_identity(claims, requested_agent_id) do
+    subject = claims["sub"]
+    claims_agent_id = claims["agent_id"]
+    org_id = claims["org_id"]
+    organization_id = claims["organization_id"]
+    credential_jti = claims["credential_jti"]
+    jti = claims["jti"]
+
+    with "agent" <- claims["type"],
+         {:ok, requested_agent_id} <- canonical_uuid(requested_agent_id, :invalid_token),
+         {:ok, subject} <- canonical_uuid(subject, :invalid_token),
+         {:ok, claims_agent_id} <- canonical_uuid(claims_agent_id, :invalid_token),
+         true <- requested_agent_id === subject and subject === claims_agent_id,
+         {:ok, org_id} <- canonical_uuid(org_id, :invalid_token),
+         {:ok, organization_id} <- canonical_uuid(organization_id, :invalid_token),
+         true <- org_id === organization_id,
+         true <- bounded_jti?(credential_jti),
+         true <- credential_jti === jti do
+      {:ok, %{agent_id: claims_agent_id, organization_id: org_id, jti: credential_jti}}
+    else
+      _ ->
+        Logger.warning(
+          "Socket managed token validation failed: ambiguous or missing identity claims"
+        )
+
+        {:error, :invalid_token}
+    end
+  end
+
+  defp validate_exact_tenant_agent(agent_id, organization_id) do
+    case MultiTenant.with_organization(organization_id, fn ->
+           Agents.get_agent_for_org(organization_id, agent_id)
+         end) do
+      {:ok, %{id: ^agent_id, organization_id: ^organization_id}} -> :ok
+      _ -> {:error, :invalid_token}
+    end
+  rescue
+    _ -> {:error, :invalid_token}
+  end
+
+  defp validate_optional_subject(nil, _expected_agent_id), do: :ok
+
+  defp validate_optional_subject(subject, expected_agent_id) do
+    case canonical_uuid(subject, :invalid_token) do
+      {:ok, ^expected_agent_id} -> :ok
+      _ -> {:error, :invalid_token}
+    end
+  end
+
+  defp present_claim?(claims, string_key, atom_key) do
+    Map.has_key?(claims, string_key) or Map.has_key?(claims, atom_key)
+  end
+
+  defp bounded_jti?(value), do: is_binary(value) and byte_size(value) in 1..255
+
+  defp canonical_uuid(value, error_reason) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, canonical} when canonical === value -> {:ok, canonical}
+      {:ok, _normalized} -> {:error, error_reason}
+      :error -> {:error, error_reason}
+    end
+  end
+
+  defp canonical_uuid(_value, error_reason), do: {:error, error_reason}
+
+  defp authenticated_organization_id(claims, agent_id, credential_jti) when is_map(claims) do
+    authenticated_organization_id_for_mode(claims, agent_id, credential_jti)
+  end
+
+  defp authenticated_organization_id(_claims, _agent_id, _credential_jti),
+    do: {:error, :invalid_token}
+
+  defp authenticated_organization_id_for_mode(claims, _agent_id, credential_jti)
+       when is_binary(credential_jti) do
+    claims
+    |> claimed_organization_id()
+    |> canonical_uuid(:invalid_token)
+  end
+
+  defp authenticated_organization_id_for_mode(claims, agent_id, nil) do
+    reconcile_authenticated_organization(
+      canonical_claimed_organization_id(claims),
+      exact_agent_organization_id(agent_id)
+    )
+  end
+
+  defp authenticated_organization_id_for_mode(_claims, _agent_id, _credential_jti),
+    do: {:error, :invalid_token}
+
+  defp exact_agent_organization_id(agent_id) do
+    case Agents.get_agent(agent_id) do
+      {:ok, %{id: stored_agent_id, organization_id: organization_id}}
+      when stored_agent_id === agent_id ->
+        canonical_uuid(organization_id, :invalid_token)
+
+      _ ->
+        {:error, :invalid_token}
+    end
+  rescue
+    _ -> {:error, :invalid_token}
+  end
+
+  defp canonical_claimed_organization_id(claims) do
+    case claimed_organization_id(claims) do
+      nil -> :absent
+      claimed -> canonical_uuid(claimed, :invalid_token)
+    end
+  end
+
+  defp reconcile_authenticated_organization({:ok, claimed}, {:ok, stored})
+       when claimed === stored,
+       do: {:ok, claimed}
+
+  defp reconcile_authenticated_organization({:ok, claimed}, {:error, :invalid_token}),
+    do: {:ok, claimed}
+
+  defp reconcile_authenticated_organization(:absent, {:ok, stored}), do: {:ok, stored}
+  defp reconcile_authenticated_organization(_, _), do: {:error, :invalid_token}
+
+  defp claimed_organization_id(claims) do
+    claims["org_id"] || claims[:org_id] || claims["organization_id"] ||
+      claims[:organization_id]
+  end
+
+  defp compact_jwt?(token) when is_binary(token) do
+    case String.split(token, ".", parts: 4) do
+      [header, payload, signature] ->
+        Enum.all?([header, payload, signature], &(byte_size(&1) > 0))
+
+      _ ->
+        false
+    end
+  end
+
+  defp compact_jwt?(_), do: false
+
+  defp legacy_token_max_age_seconds do
+    case Application.get_env(
+           :tamandua_server,
+           :legacy_token_max_age_seconds,
+           @max_legacy_token_age_seconds
+         ) do
+      configured when is_integer(configured) and configured > 0 ->
+        min(configured, @max_legacy_token_age_seconds)
+
+      _ ->
+        @max_legacy_token_age_seconds
     end
   end
 
@@ -404,7 +472,7 @@ defmodule TamanduaServerWeb.AgentSocket do
     # Expected: agent_id:timestamp:signature
     case String.split(token, ":") do
       [token_agent_id, timestamp_str, signature] ->
-        with true <- token_agent_id == agent_id,
+        with true <- token_agent_id === agent_id,
              {timestamp, ""} <- Integer.parse(timestamp_str),
              true <- token_not_expired?(timestamp),
              true <- verify_signature(agent_id, timestamp_str, signature, secret) do
@@ -602,6 +670,7 @@ defmodule TamanduaServerWeb.AgentSocket do
       _ -> {:error, :issuer_cert_not_found}
     end
   end
+
   defp certificate_valid_time?({:Validity, not_before, not_after}) do
     now = :calendar.universal_time()
     nb = parse_asn1_time(not_before)
@@ -833,22 +902,25 @@ defmodule TamanduaServerWeb.AgentSocket do
     end
   end
 
-  defp extract_agent_info(params) do
-    info = %{
-      hostname: params["hostname"],
-      os_type: params["os_type"],
-      os_version: params["os_version"],
-      agent_version: params["agent_version"],
-      machine_id: params["machine_id"],
-      capabilities: params["capabilities"] || [],
-      collectors: params["collectors"] || %{},
-      organization_id: extract_org_id_from_token(params["token"])
-    }
-
-    if info.hostname && info.os_type do
-      {:ok, info}
+  defp extract_agent_info(params, organization_id) do
+    with true <- is_binary(params["hostname"]) and is_binary(params["os_type"]),
+         true <- Registry.canonical_organization_id?(organization_id),
+         {:ok, capabilities} <-
+           Registry.normalize_runtime_capabilities(params["capabilities"] || []) do
+      {:ok,
+       %{
+         hostname: params["hostname"],
+         os_type: params["os_type"],
+         os_version: params["os_version"],
+         agent_version: params["agent_version"],
+         machine_id: params["machine_id"],
+         capabilities: capabilities,
+         collectors: params["collectors"] || %{},
+         organization_id: organization_id
+       }}
     else
-      {:error, :incomplete_agent_info}
+      false -> {:error, :incomplete_agent_info}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -859,68 +931,6 @@ defmodule TamanduaServerWeb.AgentSocket do
     |> Map.put(:certificate_fingerprint, cert_info.fingerprint)
     |> Map.put(:certificate_subject, cert_info.subject_dn)
     |> Map.put(:certificate_valid_until, cert_info.valid_until)
-  end
-
-  defp extract_org_id_from_token(nil), do: nil
-
-  defp extract_org_id_from_token(token) do
-    if lab_light_enabled?() do
-      resolve_lab_org_id()
-    else
-      do_extract_org_id_from_token(token)
-    end
-  end
-
-  defp do_extract_org_id_from_token(token) do
-    env = Application.get_env(:tamandua_server, :env, :prod)
-
-    case TamanduaServer.Guardian.decode_and_verify(token) do
-      {:ok, claims} ->
-        claims["org_id"] || claims[:org_id] || claims["organization_id"] ||
-          claims[:organization_id]
-
-      {:error, _reason} ->
-        extract_legacy_org_id(token, env)
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp resolve_lab_org_id do
-    slug = System.get_env("LAB_LIGHT_ORG_SLUG", "tamandua-lab")
-
-    Repo.one(
-      from(o in Organization,
-        where: o.slug == ^slug,
-        select: o.id,
-        limit: 1
-      )
-    )
-  rescue
-    _ -> nil
-  end
-
-  defp extract_legacy_org_id(token, env) do
-    if env in [:dev, :test] or lab_light_enabled?() do
-      # SECURITY: Use finite max_age instead of :infinity
-      max_age =
-        Application.get_env(
-          :tamandua_server,
-          :legacy_token_max_age_seconds,
-          @max_legacy_token_age_seconds
-        )
-
-      case Phoenix.Token.verify(TamanduaServerWeb.Endpoint, "agent_auth", token, max_age: max_age) do
-        {:ok, claims} ->
-          claims["org_id"] || claims[:org_id] || claims["organization_id"] ||
-            claims[:organization_id]
-
-        {:error, _reason} ->
-          nil
-      end
-    else
-      nil
-    end
   end
 end
 
@@ -936,9 +946,11 @@ defmodule TamanduaServerWeb.AgentChannel do
 
   @impl true
   def join("agent:" <> agent_id, payload, socket) do
-    if socket.assigns.agent_id == agent_id do
+    if socket.assigns.agent_id === agent_id do
       # Extract agent config from join payload (sent by agent)
       agent_config = Map.get(payload, "config", %{})
+      connection_epoch = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+      socket = assign(socket, :connection_epoch, connection_epoch)
 
       # Start worker for this agent
       case start_agent_worker(socket, agent_config) do
@@ -1044,7 +1056,9 @@ defmodule TamanduaServerWeb.AgentChannel do
 
   @impl true
   def handle_in("heartbeat", payload, socket) do
-    with {:ok, socket} <- ensure_worker(socket) do
+    with {:ok, socket} <- ensure_worker(socket),
+         {:ok, runtime} <- normalize_runtime_heartbeat(payload, socket.assigns.agent_id),
+         :ok <- publish_runtime_heartbeat(socket, runtime) do
       Worker.heartbeat(socket.assigns.worker_pid)
 
       # Process isolation status from heartbeat payload if present
@@ -1054,19 +1068,6 @@ defmodule TamanduaServerWeb.AgentChannel do
             socket.assigns.agent_id,
             isolation_data
           )
-        end)
-      end
-
-      if payload["capabilities"] || payload["collectors"] do
-        Task.start(fn ->
-          TamanduaServer.Agents.update_runtime_capabilities(socket.assigns.agent_id, %{
-            "reported_capabilities" => payload["capabilities"],
-            "reported_collectors" => payload["collectors"],
-            "reported_runtime" => %{
-              "reported_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-              "source" => "heartbeat"
-            }
-          })
         end)
       end
 
@@ -1080,12 +1081,107 @@ defmodule TamanduaServerWeb.AgentChannel do
     else
       {:error, reason} ->
         Logger.warning(
-          "AgentChannel: heartbeat rejected for #{socket.assigns.agent_id}; worker unavailable: #{inspect(reason)}"
+          "AgentChannel: heartbeat rejected for #{socket.assigns.agent_id}: #{inspect(reason)}"
         )
 
-        {:reply, {:error, %{reason: "worker_unavailable"}}, socket}
+        {:reply, {:error, %{reason: heartbeat_error(reason)}}, socket}
     end
   end
+
+  defp normalize_runtime_heartbeat(payload, agent_id) when is_map(payload) do
+    with {:ok, capabilities} <- heartbeat_capabilities(payload, agent_id),
+         {:ok, broker} <- normalize_screen_session_broker_health(payload["screen_session_broker"]) do
+      {:ok, %{capabilities: capabilities, screen_session_broker: broker}}
+    end
+  end
+
+  defp normalize_runtime_heartbeat(_, _), do: {:error, :invalid_runtime_snapshot}
+
+  defp heartbeat_capabilities(payload, agent_id) do
+    if Map.has_key?(payload, "capabilities") do
+      Registry.normalize_runtime_capabilities(payload["capabilities"])
+    else
+      case Registry.get(agent_id) do
+        {:ok, runtime} -> Registry.normalize_runtime_capabilities(runtime[:capabilities] || [])
+        _ -> {:error, :not_found}
+      end
+    end
+  end
+
+  defp normalize_screen_session_broker_health(nil), do: {:ok, nil}
+
+  defp normalize_screen_session_broker_health(report) when is_map(report) do
+    with {:ok, capabilities} <-
+           Registry.normalize_runtime_capabilities(report["capabilities"] || []),
+         {:ok, algorithms} <-
+           Registry.normalize_policy_hash_algorithms(report["policy_hash_algorithms"]) do
+      normalized =
+        report
+        |> Map.take(
+          ~w(schema_version platform state ready observed_at transport consent_model detail detail_code degraded_reason unsupported_reason silent_supported session_capture_supported session_id)
+        )
+        |> Map.put("capabilities", capabilities)
+        |> Map.put("policy_hash_algorithms", algorithms)
+        |> Map.put("displays", normalize_screen_session_broker_displays(report["displays"]))
+
+      {:ok, normalized}
+    end
+  end
+
+  defp normalize_screen_session_broker_health(_report),
+    do: {:error, :invalid_screen_session_broker}
+
+  defp publish_runtime_heartbeat(socket, runtime) do
+    organization_id = socket.assigns.agent_info[:organization_id]
+
+    Registry.update_runtime_snapshot(
+      socket.assigns.agent_id,
+      organization_id,
+      self(),
+      socket.assigns.worker_pid,
+      socket.assigns.connection_epoch,
+      runtime
+    )
+  end
+
+  defp heartbeat_error(reason)
+       when reason in [
+              :invalid_runtime_capabilities,
+              :invalid_policy_hash_algorithm,
+              :invalid_screen_session_broker,
+              :invalid_runtime_snapshot
+            ],
+       do: "invalid_runtime_evidence"
+
+  defp heartbeat_error(:runtime_tenant_mismatch), do: "runtime_tenant_mismatch"
+  defp heartbeat_error(:stale_runtime_connection), do: "stale_runtime_connection"
+  defp heartbeat_error(_), do: "worker_unavailable"
+
+  defp normalize_screen_session_broker_displays(displays) when is_list(displays) do
+    displays
+    |> Enum.reduce([], fn display, acc ->
+      if is_map(display) do
+        normalized = Map.take(display, ~w(id x y width height primary))
+        id = normalized["id"]
+        width = normalized["width"]
+        height = normalized["height"]
+
+        if is_binary(id) and byte_size(id) in 1..128 and is_integer(normalized["x"]) and
+             is_integer(normalized["y"]) and is_integer(width) and width in 1..32_768 and
+             is_integer(height) and height in 1..32_768 and is_boolean(normalized["primary"]) do
+          [normalized | acc]
+        else
+          acc
+        end
+      else
+        acc
+      end
+    end)
+    |> Enum.reverse()
+    |> Enum.take(16)
+  end
+
+  defp normalize_screen_session_broker_displays(_displays), do: []
 
   # Upper bound on events accepted in a single telemetry frame. Protects the
   # ingestion pipeline from an authenticated-but-misbehaving (or compromised)
@@ -1109,6 +1205,7 @@ defmodule TamanduaServerWeb.AgentChannel do
       Logger.info(
         "AgentChannel: Received telemetry batch with #{length(events)} events from #{socket.assigns.agent_id}"
       )
+
       log_telemetry_batch_summary(socket.assigns.agent_id, events)
 
       telemetry_batch = %{
@@ -1155,57 +1252,6 @@ defmodule TamanduaServerWeb.AgentChannel do
     {:reply, {:error, %{reason: "invalid_payload"}}, socket}
   end
 
-  defp log_telemetry_batch_summary(agent_id, events) when is_list(events) do
-    source_counts =
-      events
-      |> Enum.map(fn event ->
-        metadata = event["metadata"] || event[:metadata] || %{}
-        metadata["source"] || metadata[:source] || "unknown"
-      end)
-      |> Enum.frequencies()
-
-    type_counts =
-      events
-      |> Enum.map(fn event -> event["event_type"] || event[:event_type] || "unknown" end)
-      |> Enum.frequencies()
-      |> Enum.sort_by(fn {_type, count} -> -count end)
-      |> Enum.take(8)
-
-    sample_ids =
-      events
-      |> Enum.map(fn event -> event["event_id"] || event[:event_id] || event["id"] || event[:id] end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.take(5)
-
-    if Map.has_key?(source_counts, "kernel_driver") or should_log_agent_summary?(agent_id) do
-      Logger.info(
-        "AgentChannel: telemetry summary agent=#{agent_id} sources=#{inspect(source_counts)} types=#{inspect(type_counts)} sample_ids=#{inspect(sample_ids)}"
-      )
-    end
-  end
-
-  defp log_telemetry_batch_summary(_agent_id, _events), do: :ok
-
-  defp should_log_agent_summary?(agent_id) do
-    case debug_agent_id() do
-      nil -> false
-      debug_id -> to_string(agent_id) == debug_id
-    end
-  end
-
-  # Resolves the agent id used to scope verbose lab/debug logging. Reads the
-  # TAMANDUA_DEBUG_AGENT_ID env var first, then the :debug_agent_id app config.
-  # Returns nil when unset (debug logging disabled); there is deliberately no
-  # baked-in fallback id. Public (@doc false) so tests can exercise it.
-  @doc false
-  def debug_agent_id do
-    normalize_debug_agent_id(System.get_env("TAMANDUA_DEBUG_AGENT_ID")) ||
-      normalize_debug_agent_id(Application.get_env(:tamandua_server, :debug_agent_id))
-  end
-
-  defp normalize_debug_agent_id(value) when is_binary(value) and value != "", do: value
-  defp normalize_debug_agent_id(_), do: nil
-
   # Upper bound on a single binary sample: 50MB decoded. Base64 inflates by
   # ~4/3, so the encoded payload is size-checked before decoding to avoid
   # allocating for oversized agent-controlled input.
@@ -1227,40 +1273,6 @@ defmodule TamanduaServerWeb.AgentChannel do
         )
 
         {:reply, {:error, %{reason: reason}}, socket}
-    end
-  end
-
-  # Validates and decodes an agent-submitted binary sample. Agent input is
-  # untrusted even post-auth: malformed base64 must not crash the channel
-  # (Base.decode64!/1 raises) and oversized content must be rejected before
-  # decoding.
-  defp build_binary_sample(payload, agent_id) do
-    encoded_sha256 = payload["sha256"]
-    encoded_content = payload["content"]
-
-    cond do
-      not is_binary(encoded_sha256) or not is_binary(encoded_content) ->
-        {:error, "invalid_payload"}
-
-      byte_size(encoded_content) > @max_binary_sample_encoded_bytes ->
-        {:error, "sample_too_large"}
-
-      true ->
-        with {:ok, sha256} <- Base.decode64(encoded_sha256),
-             {:ok, content} <- Base.decode64(encoded_content) do
-          {:ok,
-           %{
-             agent_id: agent_id,
-             file_path: payload["file_path"],
-             sha256: sha256,
-             content: content,
-             total_size: payload["total_size"],
-             entropy: payload["entropy"],
-             file_type: payload["file_type"]
-           }}
-        else
-          :error -> {:error, "invalid_payload"}
-        end
     end
   end
 
@@ -1435,6 +1447,93 @@ defmodule TamanduaServerWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  defp log_telemetry_batch_summary(agent_id, events) when is_list(events) do
+    source_counts =
+      events
+      |> Enum.map(fn event ->
+        metadata = event["metadata"] || event[:metadata] || %{}
+        metadata["source"] || metadata[:source] || "unknown"
+      end)
+      |> Enum.frequencies()
+
+    type_counts =
+      events
+      |> Enum.map(fn event -> event["event_type"] || event[:event_type] || "unknown" end)
+      |> Enum.frequencies()
+      |> Enum.sort_by(fn {_type, count} -> -count end)
+      |> Enum.take(8)
+
+    sample_ids =
+      events
+      |> Enum.map(fn event ->
+        event["event_id"] || event[:event_id] || event["id"] || event[:id]
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.take(5)
+
+    if Map.has_key?(source_counts, "kernel_driver") or should_log_agent_summary?(agent_id) do
+      Logger.info(
+        "AgentChannel: telemetry summary agent=#{agent_id} sources=#{inspect(source_counts)} types=#{inspect(type_counts)} sample_ids=#{inspect(sample_ids)}"
+      )
+    end
+  end
+
+  defp log_telemetry_batch_summary(_agent_id, _events), do: :ok
+
+  defp should_log_agent_summary?(agent_id) do
+    case debug_agent_id() do
+      nil -> false
+      debug_id -> to_string(agent_id) == debug_id
+    end
+  end
+
+  # Resolves the agent id used to scope verbose lab/debug logging. Reads the
+  # TAMANDUA_DEBUG_AGENT_ID env var first, then the :debug_agent_id app config.
+  # Returns nil when unset (debug logging disabled); there is deliberately no
+  # baked-in fallback id. Public (@doc false) so tests can exercise it.
+  @doc false
+  def debug_agent_id do
+    normalize_debug_agent_id(System.get_env("TAMANDUA_DEBUG_AGENT_ID")) ||
+      normalize_debug_agent_id(Application.get_env(:tamandua_server, :debug_agent_id))
+  end
+
+  defp normalize_debug_agent_id(value) when is_binary(value) and value != "", do: value
+  defp normalize_debug_agent_id(_), do: nil
+
+  # Validates and decodes an agent-submitted binary sample. Agent input is
+  # untrusted even post-auth: malformed base64 must not crash the channel
+  # (Base.decode64!/1 raises) and oversized content must be rejected before
+  # decoding.
+  defp build_binary_sample(payload, agent_id) do
+    encoded_sha256 = payload["sha256"]
+    encoded_content = payload["content"]
+
+    cond do
+      not is_binary(encoded_sha256) or not is_binary(encoded_content) ->
+        {:error, "invalid_payload"}
+
+      byte_size(encoded_content) > @max_binary_sample_encoded_bytes ->
+        {:error, "sample_too_large"}
+
+      true ->
+        with {:ok, sha256} <- Base.decode64(encoded_sha256),
+             {:ok, content} <- Base.decode64(encoded_content) do
+          {:ok,
+           %{
+             agent_id: agent_id,
+             file_path: payload["file_path"],
+             sha256: sha256,
+             content: content,
+             total_size: payload["total_size"],
+             entropy: payload["entropy"],
+             file_type: payload["file_type"]
+           }}
+        else
+          :error -> {:error, "invalid_payload"}
+        end
+    end
+  end
+
   @impl true
   def terminate(reason, socket) do
     Logger.warning(
@@ -1464,6 +1563,8 @@ defmodule TamanduaServerWeb.AgentChannel do
     agent_info =
       socket.assigns.agent_info
       |> Map.put(:worker_pid, nil)
+      |> Map.put(:socket_pid, socket_pid)
+      |> Map.put(:connection_epoch, socket.assigns.connection_epoch)
       |> Map.put(:config, agent_config)
 
     # Clean up any existing worker for this agent (reconnection scenario).

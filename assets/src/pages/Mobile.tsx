@@ -1,35 +1,26 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type CSSProperties } from 'react'
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import { logger } from '@/lib/logger'
 import {
   Smartphone,
-  Tablet,
   Shield,
   AlertTriangle,
-  Clock,
   RefreshCw,
   Apple,
   Lock,
-  Unlock,
   MapPin,
   Trash2,
-  Volume2,
-  Send,
   Settings,
-  Download,
   QrCode,
   ChevronRight,
   AlertCircle,
   CheckCircle,
   XCircle,
   Wifi,
-  WifiOff,
   Server,
   Package,
   Activity,
-  TrendingUp,
-  Eye,
   FileWarning,
   Loader2,
 } from 'lucide-react'
@@ -37,9 +28,9 @@ import { cn } from '@/lib/utils'
 import { Select, SelectItem } from '@/components/ui/baseui'
 
 // Android icon component since lucide doesn't have one
-function AndroidIcon({ className }: { className?: string }) {
+function AndroidIcon({ className, style }: { className?: string; style?: CSSProperties }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+    <svg viewBox="0 0 24 24" className={className} style={style} fill="currentColor">
       <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zM3.5 8C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84l1.3-1.3c.2-.2.2-.51 0-.71-.2-.2-.51-.2-.71 0l-1.48 1.48C13.85 1.23 12.95 1 12 1c-.96 0-1.86.23-2.66.63L7.85.15c-.2-.2-.51-.2-.71 0-.2.2-.2.51 0 .71l1.31 1.31C6.97 3.26 6 5.01 6 7h12c0-1.99-.97-3.75-2.47-4.84zM10 5H9V4h1v1zm5 0h-1V4h1v1z"/>
     </svg>
   )
@@ -60,6 +51,130 @@ async function apiFetch<T>(url: string): Promise<T> {
   return json.data ?? json
 }
 
+async function apiFetchOptional<T>(url: string): Promise<T | null> {
+  try {
+    return await apiFetch<T>(url)
+  } catch (error) {
+    logger.warn(`Optional mobile API failed: ${url}`, error)
+    return null
+  }
+}
+
+async function apiFetchEnvelopeOptional<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' },
+    })
+    if (!res.ok) {
+      throw new Error(`API error: ${res.status} ${res.statusText}`)
+    }
+    return await res.json()
+  } catch (error) {
+    logger.warn(`Optional mobile API failed: ${url}`, error)
+    return null
+  }
+}
+
+const EMPTY_MOBILE_STATS: MobileStats = {
+  total: 0,
+  ios: 0,
+  android: 0,
+  active: 0,
+  compromised: 0,
+  high_risk: 0,
+  mdm_enrolled: 0,
+  stale_24h: 0,
+}
+
+function normalizeV2Stats(stats: MobileV2Stats | null): MobileStats | null {
+  if (!stats) return null
+  const byPlatform = stats.by_platform || {}
+  const byCompliance = stats.by_compliance || {}
+
+  return {
+    total: stats.total || 0,
+    ios: byPlatform.ios || 0,
+    android: byPlatform.android || 0,
+    active: stats.total || 0,
+    compromised: stats.jailbroken || 0,
+    high_risk: byCompliance.non_compliant || 0,
+    mdm_enrolled: stats.mdm_enrolled || 0,
+    stale_24h: stats.stale_24h || 0,
+  }
+}
+
+function normalizeV2Posture(posture: MobileV2Posture | null, stats: MobileStats): SecurityPosture | null {
+  if (!posture) return null
+
+  const risks = []
+  if ((posture.pct_jailbroken || 0) > 0) {
+    risks.push({
+      level: 'critical',
+      type: 'compromised_device',
+      count: posture.jailbroken || 0,
+      message: `${posture.jailbroken || 0} mobile devices report jailbreak/root indicators.`,
+    })
+  }
+  if ((posture.pct_mdm_enrolled || 0) < 100 && stats.total > 0) {
+    risks.push({
+      level: 'medium',
+      type: 'mdm_not_enrolled',
+      count: stats.total - stats.mdm_enrolled,
+      message: `${stats.total - stats.mdm_enrolled} mobile devices are not MDM enrolled.`,
+    })
+  }
+
+  return {
+    score: posture.score ?? 100,
+    devices: stats,
+    events_24h: {
+      total: 0,
+      critical: 0,
+      high: 0,
+      by_severity: {},
+      by_type: [],
+    },
+    risks,
+    recommendations: [],
+  }
+}
+
+function normalizeV2Device(device: MobileV2Device): MobileDevice {
+  const compliance = device.compliance_status || 'unknown'
+  const stableDeviceId =
+    device.device_id ||
+    device.id ||
+    device.agent_id ||
+    [device.platform, device.device_name || device.model, device.last_seen_at || device.enrolled_at || device.inserted_at]
+      .filter(Boolean)
+      .join(':')
+
+  return {
+    id: device.id || stableDeviceId,
+    device_id: stableDeviceId,
+    platform: device.platform,
+    model: device.model || device.device_name || null,
+    os_version: device.os_version || null,
+    status: device.last_seen_at ? 'active' : 'unknown',
+    risk_score: compliance === 'compliant' ? 0 : compliance === 'non_compliant' ? 75 : 50,
+    is_compromised: Boolean(device.jailbroken),
+    mdm_enrolled: Boolean(device.mdm_enrolled),
+    mdm_provider: device.mdm_provider || null,
+    last_seen_at: device.last_seen_at || null,
+    enrolled_at: device.enrolled_at || device.inserted_at || null,
+  }
+}
+
+function mergeDevices(primary: MobileDevice[], secondary: MobileDevice[]): MobileDevice[] {
+  const byKey = new Map<string, MobileDevice>()
+  for (const [index, device] of [...primary, ...secondary].entries()) {
+    const key = device.device_id || device.id || `${device.platform || 'mobile'}:${device.model || 'device'}:${index}`
+    byKey.set(key, device)
+  }
+  return Array.from(byKey.values())
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -72,6 +187,16 @@ interface MobileStats {
   high_risk: number
   mdm_enrolled: number
   stale_24h: number
+}
+
+interface MobileV2Stats {
+  total?: number
+  by_platform?: Record<string, number>
+  by_compliance?: Record<string, number>
+  mdm_enrolled?: number
+  not_enrolled?: number
+  jailbroken?: number
+  stale_24h?: number
 }
 
 interface SecurityPosture {
@@ -95,6 +220,21 @@ interface SecurityPosture {
     action: string
     message: string
   }>
+}
+
+interface MobileV2Posture {
+  total?: number
+  pct_compliant?: number
+  pct_encrypted?: number
+  pct_jailbroken?: number
+  pct_passcode_set?: number
+  pct_mdm_enrolled?: number
+  compliant?: number
+  encrypted?: number
+  jailbroken?: number
+  passcode_set?: number
+  mdm_enrolled?: number
+  score?: number
 }
 
 interface MDMIntegration {
@@ -121,9 +261,26 @@ interface MobileDevice {
   enrolled_at: string | null
 }
 
+interface MobileV2Device {
+  id?: string | null
+  device_id?: string | null
+  agent_id?: string | null
+  device_name?: string | null
+  platform: string
+  os_version?: string | null
+  model?: string | null
+  mdm_enrolled?: boolean
+  mdm_provider?: string | null
+  compliance_status?: string | null
+  jailbroken?: boolean | null
+  last_seen_at?: string | null
+  enrolled_at?: string | null
+  inserted_at?: string | null
+}
+
 interface MobileDevicesResponse {
-  data?: MobileDevice[]
-  devices?: MobileDevice[]
+  data?: Array<MobileDevice | MobileV2Device>
+  devices?: Array<MobileDevice | MobileV2Device>
   meta?: {
     total?: number
   }
@@ -185,15 +342,23 @@ export default function Mobile() {
     setLoading(true)
     setError(null)
     try {
-      // Fetch all three endpoints in parallel
-      const [statsData, postureData, mdmData] = await Promise.all([
-        apiFetch<MobileStats>('/api/v1/mobile/stats'),
-        apiFetch<SecurityPosture>('/api/v1/mobile/posture'),
-        apiFetch<{ integrations: MDMIntegration[] }>('/api/v1/mobile/mdm/status').catch(() => null),
+      // Query legacy and v2 mobile stores in parallel; enrolled mobile-app devices live in v2.
+      const [legacyStats, v2Stats, legacyPosture, v2Posture, mdmData] = await Promise.all([
+        apiFetchOptional<MobileStats>('/api/v1/mobile/stats'),
+        apiFetchOptional<MobileV2Stats>('/api/v1/mobile/v2/stats'),
+        apiFetchOptional<SecurityPosture>('/api/v1/mobile/posture'),
+        apiFetchOptional<MobileV2Posture>('/api/v1/mobile/v2/posture'),
+        apiFetchOptional<{ integrations: MDMIntegration[] }>('/api/v1/mobile/mdm/status'),
       ])
 
+      const normalizedV2Stats = normalizeV2Stats(v2Stats)
+      const statsData =
+        normalizedV2Stats && normalizedV2Stats.total >= (legacyStats?.total || 0)
+          ? normalizedV2Stats
+          : legacyStats || normalizedV2Stats || EMPTY_MOBILE_STATS
+
       setStats(statsData)
-      setPosture(postureData)
+      setPosture(legacyPosture || normalizeV2Posture(v2Posture, statsData))
 
       if (mdmData && mdmData.integrations) {
         setMdmStatus(mdmData.integrations)
@@ -569,20 +734,29 @@ function DevicesTab() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/v1/mobile/devices?limit=200', {
-        credentials: 'include',
-        headers: { 'Accept': 'application/json' },
-      })
-      if (!res.ok) throw new Error(`Failed to load devices (${res.status})`)
-      const json: MobileDevicesResponse = await res.json()
-      const nextDevices = Array.isArray(json.data)
-        ? json.data
-        : Array.isArray(json.devices)
-          ? json.devices
+      const [legacyJson, v2Json] = await Promise.all([
+        apiFetchEnvelopeOptional<MobileDevicesResponse>('/api/v1/mobile/devices?limit=200'),
+        apiFetchEnvelopeOptional<MobileDevicesResponse>('/api/v1/mobile/v2/devices?limit=200'),
+      ])
+
+      const legacyDevices = (Array.isArray(legacyJson?.data)
+        ? legacyJson.data
+        : Array.isArray(legacyJson?.devices)
+          ? legacyJson.devices
+          : []) as MobileDevice[]
+      const v2Devices = Array.isArray(v2Json?.data)
+        ? v2Json.data.map((device) => normalizeV2Device(device as unknown as MobileV2Device))
+        : Array.isArray(v2Json?.devices)
+          ? v2Json.devices.map((device) => normalizeV2Device(device as unknown as MobileV2Device))
           : []
+      const nextDevices = mergeDevices(v2Devices, legacyDevices)
+
+      if (!legacyJson && !v2Json) {
+        throw new Error('Failed to load devices from legacy and v2 mobile APIs')
+      }
 
       setDevices(nextDevices)
-      setTotal(json.meta?.total ?? json.total ?? nextDevices.length)
+      setTotal(v2Json?.meta?.total ?? legacyJson?.meta?.total ?? v2Json?.total ?? legacyJson?.total ?? nextDevices.length)
     } catch (err) {
       logger.error('Failed to fetch devices:', err)
       setError(err instanceof Error ? err.message : 'Failed to load devices')
@@ -1057,10 +1231,16 @@ function EventsTab() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/v1/mobile/events?limit=100&hours=72', {
+      let res = await fetch('/api/v1/mobile/v2/events?limit=100&hours=72', {
         credentials: 'include',
         headers: { 'Accept': 'application/json' },
       })
+      if (res.status === 404 || res.status === 501) {
+        res = await fetch('/api/v1/mobile/events?limit=100&hours=72', {
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' },
+        })
+      }
       if (!res.ok) throw new Error(`Failed to load events (${res.status})`)
       const json = await res.json()
       setEvents(json.data || [])

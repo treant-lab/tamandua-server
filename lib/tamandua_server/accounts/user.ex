@@ -25,6 +25,7 @@ defmodule TamanduaServer.Accounts.User do
     field :last_login_at, :utc_datetime_usec
     field :locale, :string, default: "en"
     field :timezone, :string, default: "UTC"
+    field :auth_epoch, :integer, default: 0, read_after_writes: true
 
     belongs_to :organization, TamanduaServer.Accounts.Organization
 

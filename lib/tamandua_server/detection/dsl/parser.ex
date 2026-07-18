@@ -77,7 +77,7 @@ defmodule TamanduaServer.Detection.DSL.Parser do
   # ─────────────────────────────────────────────────────────────────────
 
   defp parse_detection([{:keyword, "detection"}, {:identifier, name} | rest]) do
-    {body, remaining} = expect_symbol(rest, "{")
+    {body, _remaining} = expect_symbol(rest, "{")
     {metadata, remaining} = parse_metadata(body, %{})
     {sequence, remaining} = parse_optional_sequence(remaining)
     {aggregation, remaining} = parse_optional_aggregation(remaining)

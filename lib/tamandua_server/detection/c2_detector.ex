@@ -56,7 +56,7 @@ defmodule TamanduaServer.Detection.C2Detector do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.{Config, Evidence, TemporalScorer}
+  alias TamanduaServer.Detection.{Config, TemporalScorer}
   alias TamanduaServer.Alerts
   alias TamanduaServer.Agents.OrgLookup
 
@@ -147,20 +147,24 @@ defmodule TamanduaServer.Detection.C2Detector do
 
   # Suspicious certificate issuers (commonly used for quick C2 setup)
   # Note: Legitimate services also use these, so combine with other signals
-  @suspicious_issuers_patterns [
-    ~r/Let's Encrypt/i,
-    ~r/ZeroSSL/i,
-    ~r/Buypass/i,
-    ~r/SSL\.com/i
-  ]
+  defp suspicious_issuers_patterns do
+    [
+      ~r/Let's Encrypt/i,
+      ~r/ZeroSSL/i,
+      ~r/Buypass/i,
+      ~r/SSL\.com/i
+    ]
+  end
 
   # Domain patterns that when combined with quick issuers are suspicious
-  @suspicious_domain_patterns [
-    ~r/^[a-z0-9]{16,}\./, # Random alphanumeric subdomains
-    ~r/\d{2,}\./,         # Multiple digits in subdomain
-    ~r/^[bcdfghjklmnpqrstvwxz]{6,}\./, # Consonant-heavy subdomains
-    ~r/\.(xyz|top|buzz|club|gq|cf|ga|ml|tk)$/i # Suspicious TLDs
-  ]
+  defp suspicious_domain_patterns do
+    [
+      ~r/^[a-z0-9]{16,}\./, # Random alphanumeric subdomains
+      ~r/\d{2,}\./,         # Multiple digits in subdomain
+      ~r/^[bcdfghjklmnpqrstvwxz]{6,}\./, # Consonant-heavy subdomains
+      ~r/\.(xyz|top|buzz|club|gq|cf|ga|ml|tk)$/i # Suspicious TLDs
+    ]
+  end
 
   # Trusted infrastructure IP ranges — skip C2 analysis for connections to
   # well-known cloud providers, CDNs, and service infrastructure.
@@ -768,7 +772,7 @@ defmodule TamanduaServer.Detection.C2Detector do
     domain = String.downcase(String.trim(domain))
 
     domain != "" and
-      (Enum.any?(@suspicious_domain_patterns, &Regex.match?(&1, domain)) or
+      (Enum.any?(suspicious_domain_patterns(), &Regex.match?(&1, domain)) or
          String.contains?(domain, ["c2", "beacon", "payload", "stage", "callback"]))
   end
 
@@ -1226,11 +1230,11 @@ defmodule TamanduaServer.Detection.C2Detector do
 
     # 6. Suspicious issuer + domain combination
     issues = if issuer && subject do
-      is_suspicious_issuer = Enum.any?(@suspicious_issuers_patterns, fn pattern ->
+      is_suspicious_issuer = Enum.any?(suspicious_issuers_patterns(), fn pattern ->
         Regex.match?(pattern, to_string(issuer))
       end)
 
-      is_suspicious_domain = Enum.any?(@suspicious_domain_patterns, fn pattern ->
+      is_suspicious_domain = Enum.any?(suspicious_domain_patterns(), fn pattern ->
         Regex.match?(pattern, to_string(subject))
       end)
 
@@ -1799,7 +1803,7 @@ defmodule TamanduaServer.Detection.C2Detector do
     detections = if cdn_match and detections == [] do
       {_match_type, cdn_name} = cdn_match
 
-      sni_suspicious = Enum.any?(@suspicious_domain_patterns, fn pattern ->
+      sni_suspicious = Enum.any?(suspicious_domain_patterns(), fn pattern ->
         Regex.match?(pattern, sni_hostname)
       end)
 
@@ -2214,7 +2218,7 @@ defmodule TamanduaServer.Detection.C2Detector do
   """
   defp apply_temporal_c2_analysis(nil, _event, _detections), do: []
   defp apply_temporal_c2_analysis(_agent_id, _event, []), do: []
-  defp apply_temporal_c2_analysis(agent_id, event, existing_detections) do
+  defp apply_temporal_c2_analysis(agent_id, _event, existing_detections) do
     try do
       # Check if temporal scorer detects anomalies for this agent
       anomalies = TemporalScorer.detect_temporal_anomalies(agent_id, window_ms: :timer.minutes(10))
@@ -2269,7 +2273,7 @@ defmodule TamanduaServer.Detection.C2Detector do
   When the combined score exceeds 0.6, a composite detection is emitted
   that can be used for alert creation with a holistic confidence value.
   """
-  defp apply_composite_scoring(event, detections, state) do
+  defp apply_composite_scoring(_event, detections, state) do
     if detections == [] do
       {detections, state}
     else

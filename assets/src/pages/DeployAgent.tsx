@@ -180,17 +180,17 @@ export default function DeployAgent({
 
     return {
       windows: `# PowerShell (Admin)
-$Token = "${newToken || '<enrollment-token>'}"
 $AgentUrl = "${windowsExe}"
 $AgentPath = "$env:TEMP\\tamandua-agent.exe"
 
 Invoke-WebRequest -Uri $AgentUrl -OutFile $AgentPath
-Start-Process -FilePath $AgentPath -Wait -Verb RunAs -ArgumentList @(
+$InstallArgs = @(
   "install",
   "--enrollment-url", "${enrollmentUrl}",
-  "--server", "${agentServerUrl}",
-  "--token", $Token
+  "--server", "${agentServerUrl}"
 )
+& $AgentPath @InstallArgs
+# Paste the enrollment token into the hidden prompt.
 # Installs the service and the embedded Windows driver when supported.`,
       macos: `# macOS product installer is not published on this server yet.
 # Product readiness requires the signed and notarized Tamandua EDR DMG/Cask.
@@ -202,11 +202,10 @@ chmod +x /tmp/tamandua-agent
 sudo /tmp/tamandua-agent install \\
   --enrollment-url "${enrollmentUrl}" \\
   --server "${agentServerUrl}" \\
-  --token "${newToken || '<enrollment-token>'}" \\
   --no-driver` : `# Linux installer is not published on this server yet.
 # Publish tamandua-agent-linux-x64 to /downloads/agents first.`,
     }
-  }, [agentServerUrl, downloadUrls.linuxX64, downloadUrls.windowsExe, enrollmentUrl, newToken])
+  }, [agentServerUrl, downloadUrls.linuxX64, downloadUrls.windowsExe, enrollmentUrl])
 
   // Load existing tokens
   const loadTokens = async () => {
@@ -528,7 +527,7 @@ sudo /tmp/tamandua-agent install \\
                 {/* Instructions */}
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
                   {activeOsTab === 'windows' && 'Run from an elevated PowerShell on the target host:'}
-                  {activeOsTab === 'macos' && 'macOS requires the signed/notarized Tamandua EDR DMG or Cask with System Extension approval.'}
+                  {activeOsTab === 'macos' && 'macOS requires the signed and notarized Tamandua EDR DMG/Cask release with System Extension and Full Disk Access approvals.'}
                   {activeOsTab === 'linux' && (downloadUrls.linuxX64 ? 'Run as root on the target Linux host:' : 'Linux binary is not published on this server yet.')}
                 </p>
 

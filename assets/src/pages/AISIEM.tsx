@@ -347,7 +347,7 @@ export default function AISIEM({
                       </button>
                       <button
                         type="button"
-                        onClick={() => router.visit('/app/detection-analytics')}
+                        onClick={() => router.visit('/app/detection-rules')}
                         className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm flex-1 flex items-center justify-center gap-2"
                       >
                         <BarChart3 className="h-4 w-4" />

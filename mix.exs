@@ -48,7 +48,7 @@ defmodule TamanduaServer.MixProject do
   defp deps do
     [
       # Phoenix
-      {:phoenix, "~> 1.7.10"},
+      {:phoenix, "~> 1.7.24"},
       {:phoenix_ecto, "~> 4.4"},
       {:phoenix_html, "~> 4.0"},
       {:phoenix_live_reload, "~> 1.4", only: :dev},
@@ -61,7 +61,7 @@ defmodule TamanduaServer.MixProject do
 
       # Database
       {:ecto_sql, "~> 3.11"},
-      {:postgrex, ">= 0.0.0"},
+      {:postgrex, "~> 0.22.3"},
 
       # Authentication & Authorization
       {:guardian, "~> 2.3"},
@@ -70,8 +70,9 @@ defmodule TamanduaServer.MixProject do
       {:bodyguard, "~> 2.4"},
 
       # HTTP Client
-      {:req, "~> 0.4"},
+      {:req, "~> 0.6.2"},
       {:finch, "~> 0.17"},
+      {:httpoison, "~> 3.0"},
 
       # JSON / YAML
       {:jason, "~> 1.4"},
@@ -81,7 +82,7 @@ defmodule TamanduaServer.MixProject do
       {:inertia, "~> 2.5"},
 
       # Protocol Buffers
-      {:protobuf, "~> 0.12"},
+      {:protobuf, "~> 0.16.1"},
 
       # Message Queue
       {:broadway, "~> 1.0"},
@@ -101,16 +102,15 @@ defmodule TamanduaServer.MixProject do
 
       # OpenTelemetry
       {:opentelemetry, "~> 1.3"},
-      {:opentelemetry_exporter, "~> 1.6"},
+      {:opentelemetry_exporter, "~> 1.6", only: [:dev, :test]},
       {:opentelemetry_api, "~> 1.2"},
-      {:opentelemetry_phoenix, "~> 1.1"},
+      {:opentelemetry_phoenix, "~> 2.0"},
       {:opentelemetry_ecto, "~> 1.1"},
 
       # Background Jobs
       {:oban, "~> 2.16"},
 
       # Utilities
-      {:timex, "~> 3.7"},
       {:uuid, "~> 1.1"},
       {:slugify, "~> 1.3"},
       {:libgraph, "~> 0.16"},
@@ -122,15 +122,14 @@ defmodule TamanduaServer.MixProject do
       {:fuse, "~> 2.5"},
 
       # Secrets Management
-      {:libvault, "~> 0.2"},
-      {:ex_aws, "~> 2.5"},
+      {:ex_aws, "~> 2.7"},
       {:ex_aws_s3, "~> 2.5"},
       {:ex_aws_secretsmanager, "~> 2.0"},
-      {:hackney, "~> 1.18"},
+      {:hackney, "~> 4.0.1"},
       {:sweet_xml, "~> 0.7"},
 
       # Email
-      {:swoosh, "~> 1.14"},
+      {:swoosh, "~> 1.26.3"},
 
       # PDF Generation
       {:chromic_pdf, "~> 1.15"},
@@ -141,9 +140,6 @@ defmodule TamanduaServer.MixProject do
       # CSV Generation
       {:nimble_csv, "~> 1.2"},
 
-      # Markdown Processing
-      {:earmark, "~> 1.4"},
-
       # Development & Testing
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -152,7 +148,7 @@ defmodule TamanduaServer.MixProject do
       {:faker, "~> 0.17", only: [:dev, :test]},
       {:mox, "~> 1.1", only: :test},
       {:mix_test_watch, "~> 1.1", only: [:dev, :test], runtime: false},
-      {:wallaby, "~> 0.30", only: :test, runtime: false},
+      {:wallaby, "~> 0.31", only: :test, runtime: false},
       {:ex_machina, "~> 2.7", only: :test},
       {:stream_data, "~> 1.0", only: :test},
       {:benchee, "~> 1.1", only: [:dev, :test]},
@@ -164,12 +160,12 @@ defmodule TamanduaServer.MixProject do
 
       # GraphQL
       {:absinthe, "~> 1.7"},
-      {:absinthe_plug, "~> 1.5"},
+      {:absinthe_plug, "~> 1.5.10"},
       {:absinthe_phoenix, "~> 2.0"},
       {:dataloader, "~> 2.0"},
 
       # Billing / Payments
-      {:stripity_stripe, "~> 3.2"},
+      {:stripity_stripe, "~> 3.3"},
 
       # Native performance (Rust NIFs) - disabled for Docker builds
       # {:tamandua_nif, in_umbrella: true, optional: true}

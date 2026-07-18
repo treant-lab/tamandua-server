@@ -18,7 +18,6 @@ defmodule Mix.Tasks.ThreatIntel.ImportActors do
   use Mix.Task
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.ThreatIntel.ThreatActor
 
   @shortdoc "Import threat actor profiles from JSON files"

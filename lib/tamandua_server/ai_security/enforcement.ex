@@ -10,7 +10,10 @@ defmodule TamanduaServer.AISecurity.Enforcement do
 
   require Logger
 
-  alias TamanduaServer.Agents.CommandManager
+  import Ecto.Query
+
+  alias TamanduaServer.Agents.{AgentCommand, CommandManager}
+  alias TamanduaServer.Repo
 
   @dedup_table :ai_gateway_endpoint_enforcement
   @dedup_ttl_ms :timer.minutes(30)
@@ -90,9 +93,66 @@ defmodule TamanduaServer.AISecurity.Enforcement do
 
   def enforce_event(_, _), do: {:skipped, :invalid_event, "Invalid AI Gateway event"}
 
+  @doc """
+  Returns the operator-facing enforcement state for an AI Gateway event.
+
+  The AI Gateway itself is not an inline proxy. This summary only reports the
+  endpoint action bridge plan and, when available, the persisted AgentCommand
+  lifecycle for the deterministic action key.
+  """
+  @spec summarize_event(map()) :: map()
+  def summarize_event(event) when is_map(event) do
+    base = %{
+      requested: field(event, :policy_enforced) == true,
+      mode: "endpoint_action_bridge",
+      target_agent_id: field(event, :agent_id),
+      inline_proxy: false,
+      result_tracked: false,
+      rollback_available: false
+    }
+
+    case plan_action(event) do
+      {:block_domain, domain, _payload} ->
+        summarize_planned_action(event, base, "block_domain", domain)
+
+      {:block_ip, ip, _payload} ->
+        summarize_planned_action(event, base, "block_ip", ip)
+
+      {:skip, :not_enforced, message} ->
+        Map.merge(base, %{
+          status: "decision_only",
+          reason: message
+        })
+
+      {:skip, reason, message} ->
+        Map.merge(base, %{
+          status: if(field(event, :policy_enforced) == true, do: "failed", else: "decision_only"),
+          reason: message,
+          failure_code: reason
+        })
+    end
+  rescue
+    e ->
+      %{
+        requested: field(event, :policy_enforced) == true,
+        mode: "endpoint_action_bridge",
+        target_agent_id: field(event, :agent_id),
+        inline_proxy: false,
+        result_tracked: false,
+        rollback_available: false,
+        status: "failed",
+        reason: Exception.message(e),
+        failure_code: :summary_failed
+      }
+  end
+
+  def summarize_event(_), do: summarize_event(%{})
+
   defp queue_once(event, command_type, target, payload, opts) do
     agent_id = field(event, :agent_id)
     dedup_key = {agent_id, command_type, target}
+    idempotency_key = action_idempotency_key(agent_id, command_type, target)
+    payload = Map.put(payload, "idempotency_key", idempotency_key)
 
     case remember_once(dedup_key, Keyword.get(opts, :now_ms, now_ms())) do
       :duplicate ->
@@ -130,7 +190,85 @@ defmodule TamanduaServer.AISecurity.Enforcement do
   end
 
   defp default_command_sender(agent_id, command_type, payload) do
-    CommandManager.queue_command(agent_id, command_type, payload, priority: 8, timeout: 3600)
+    CommandManager.queue_command(agent_id, command_type, payload,
+      priority: 8,
+      timeout: 3600,
+      idempotency_key: Map.get(payload, "idempotency_key")
+    )
+  end
+
+  defp summarize_planned_action(event, base, command_type, target) do
+    key = action_idempotency_key(field(event, :agent_id), command_type, target)
+
+    base
+    |> Map.merge(%{
+      action: command_type,
+      target: target,
+      action_id: key,
+      idempotency_key: key,
+      rollback_available: true
+    })
+    |> merge_command_status(latest_command(field(event, :agent_id), key))
+  end
+
+  defp latest_command(agent_id, idempotency_key) when is_binary(agent_id) and is_binary(idempotency_key) do
+    Repo.one(
+      from(c in AgentCommand,
+        where: c.agent_id == ^agent_id and c.idempotency_key == ^idempotency_key,
+        order_by: [desc: c.inserted_at],
+        limit: 1
+      )
+    )
+  rescue
+    _ -> nil
+  end
+
+  defp latest_command(_, _), do: nil
+
+  defp merge_command_status(summary, nil) do
+    Map.merge(summary, %{
+      status: "requested",
+      result_tracked: false,
+      reason: "endpoint_action_requested_async"
+    })
+  end
+
+  defp merge_command_status(summary, %AgentCommand{} = command) do
+    Map.merge(summary, %{
+      status: command_status(command.status),
+      result_tracked: true,
+      command_status: command.status,
+      command_id: command.id,
+      queued_at: command.inserted_at,
+      sent_at: command.sent_at,
+      acknowledged_at: command.acknowledged_at,
+      completed_at: command.completed_at,
+      failed_reason: command.error,
+      result: command.result,
+      reason: command_reason(command)
+    })
+  end
+
+  defp command_status("completed"), do: "succeeded"
+  defp command_status("failed"), do: "failed"
+  defp command_status(status) when status in ["pending", "sent", "acknowledged"], do: "pending"
+  defp command_status(_), do: "requested"
+
+  defp command_reason(%AgentCommand{status: "completed"}), do: "agent_command_completed"
+  defp command_reason(%AgentCommand{status: "failed", error: error}) when not is_nil(error), do: error
+  defp command_reason(%AgentCommand{status: status}), do: "agent_command_#{status}"
+
+  defp action_idempotency_key(agent_id, command_type, target) do
+    material =
+      ["ai_gateway", agent_id, command_type, target]
+      |> Enum.map(&to_string/1)
+      |> Enum.join(":")
+
+    digest =
+      :crypto.hash(:sha256, material)
+      |> Base.encode16(case: :lower)
+
+    "ai_gateway:" <> digest
   end
 
   defp action_payload(event, command_type, target) do

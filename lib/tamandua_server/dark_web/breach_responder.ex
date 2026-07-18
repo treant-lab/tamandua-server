@@ -29,7 +29,6 @@ defmodule TamanduaServer.DarkWeb.BreachResponder do
   alias TamanduaServer.Repo
   alias TamanduaServer.DarkWeb.{Credential, ResponseWorkflow}
   alias TamanduaServer.Accounts
-  alias TamanduaServer.Mailer
   alias TamanduaServer.Notifications
 
   # ============================================================================
@@ -339,32 +338,32 @@ defmodule TamanduaServer.DarkWeb.BreachResponder do
   # Private Functions - Email Notifications
   # ============================================================================
 
-  defp send_password_reset_email(user, breach) do
+  defp send_password_reset_email(user, _breach) do
     # Implementation would use your Mailer
     Logger.info("[BreachResponder] Sending password reset email to #{user.email}")
     # Mailer.send_password_reset_required(user, breach)
     :ok
   end
 
-  defp send_account_disabled_email(user, breach) do
+  defp send_account_disabled_email(user, _breach) do
     Logger.info("[BreachResponder] Sending account disabled email to #{user.email}")
     # Mailer.send_account_disabled(user, breach)
     :ok
   end
 
-  defp send_mfa_enforcement_email(user, breach) do
+  defp send_mfa_enforcement_email(user, _breach) do
     Logger.info("[BreachResponder] Sending MFA enforcement email to #{user.email}")
     # Mailer.send_mfa_required(user, breach)
     :ok
   end
 
-  defp send_breach_notification_email(user, breach) do
+  defp send_breach_notification_email(user, _breach) do
     Logger.info("[BreachResponder] Sending breach notification email to #{user.email}")
     # Mailer.send_breach_notification(user, breach)
     :ok
   end
 
-  defp send_security_team_alert(user, credential) do
+  defp send_security_team_alert(user, _credential) do
     Logger.info("[BreachResponder] Sending security alert to #{user.email}")
     # Mailer.send_security_alert(user, credential)
     :ok

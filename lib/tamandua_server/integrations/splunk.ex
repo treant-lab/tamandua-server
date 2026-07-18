@@ -24,18 +24,15 @@ defmodule TamanduaServer.Integrations.Splunk do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Integrations.IntegrationConfig
 
   @behaviour TamanduaServer.Integrations.SIEMBehaviour
 
   # HEC endpoints
   @hec_event_endpoint "/services/collector/event"
-  @hec_raw_endpoint "/services/collector/raw"
   @hec_health_endpoint "/services/collector/health"
 
   # Splunk REST API endpoints
   @saved_searches_endpoint "/servicesNS/-/-/saved/searches"
-  @alerts_fired_endpoint "/services/alerts/fired_alerts"
 
   # SOAR endpoints
   @phantom_container_endpoint "/rest/container"
@@ -577,52 +574,67 @@ defmodule TamanduaServer.Integrations.Splunk do
     artifacts = []
 
     # Process artifact
-    if process = get_in(alert, [:evidence, :process]) || get_in(alert, ["evidence", "process"]) do
-      artifacts = [%{
-        name: "Process",
-        cef: %{
-          fileName: process[:name] || process["name"],
-          filePath: process[:path] || process["path"],
-          processId: process[:pid] || process["pid"],
-          commandLine: process[:cmdline] || process["cmdline"],
-          fileHash: process[:sha256] || process["sha256"]
-        },
-        label: "process",
-        severity: alert[:severity] || alert["severity"]
-      } | artifacts]
-    end
+    process = get_in(alert, [:evidence, :process]) || get_in(alert, ["evidence", "process"])
+
+    artifacts =
+      if process do
+        [%{
+          name: "Process",
+          cef: %{
+            fileName: process[:name] || process["name"],
+            filePath: process[:path] || process["path"],
+            processId: process[:pid] || process["pid"],
+            commandLine: process[:cmdline] || process["cmdline"],
+            fileHash: process[:sha256] || process["sha256"]
+          },
+          label: "process",
+          severity: alert[:severity] || alert["severity"]
+        } | artifacts]
+      else
+        artifacts
+      end
 
     # Network artifacts
-    if network = get_in(alert, [:evidence, :network]) || get_in(alert, ["evidence", "network"]) do
-      artifacts = Enum.reduce(List.wrap(network), artifacts, fn conn, acc ->
-        [%{
-          name: "Network Connection",
-          cef: %{
-            destinationAddress: conn[:remote_ip] || conn["remote_ip"],
-            destinationPort: conn[:remote_port] || conn["remote_port"],
-            sourceAddress: conn[:local_ip] || conn["local_ip"],
-            sourcePort: conn[:local_port] || conn["local_port"]
-          },
-          label: "network",
-          severity: alert[:severity] || alert["severity"]
-        } | acc]
-      end)
-    end
+    network = get_in(alert, [:evidence, :network]) || get_in(alert, ["evidence", "network"])
+
+    artifacts =
+      if network do
+        Enum.reduce(List.wrap(network), artifacts, fn conn, acc ->
+          [%{
+            name: "Network Connection",
+            cef: %{
+              destinationAddress: conn[:remote_ip] || conn["remote_ip"],
+              destinationPort: conn[:remote_port] || conn["remote_port"],
+              sourceAddress: conn[:local_ip] || conn["local_ip"],
+              sourcePort: conn[:local_port] || conn["local_port"]
+            },
+            label: "network",
+            severity: alert[:severity] || alert["severity"]
+          } | acc]
+        end)
+      else
+        artifacts
+      end
 
     # File hash artifacts
-    if hashes = get_in(alert, [:evidence, :file_hashes]) || get_in(alert, ["evidence", "file_hashes"]) do
-      artifacts = Enum.reduce(List.wrap(hashes), artifacts, fn hash, acc ->
-        [%{
-          name: "File Hash",
-          cef: %{
-            fileHash: hash[:sha256] || hash["sha256"] || hash,
-            fileName: hash[:name] || hash["name"]
-          },
-          label: "hash",
-          severity: alert[:severity] || alert["severity"]
-        } | acc]
-      end)
-    end
+    hashes = get_in(alert, [:evidence, :file_hashes]) || get_in(alert, ["evidence", "file_hashes"])
+
+    artifacts =
+      if hashes do
+        Enum.reduce(List.wrap(hashes), artifacts, fn hash, acc ->
+          [%{
+            name: "File Hash",
+            cef: %{
+              fileHash: hash[:sha256] || hash["sha256"] || hash,
+              fileName: hash[:name] || hash["name"]
+            },
+            label: "hash",
+            severity: alert[:severity] || alert["severity"]
+          } | acc]
+        end)
+      else
+        artifacts
+      end
 
     artifacts
   end

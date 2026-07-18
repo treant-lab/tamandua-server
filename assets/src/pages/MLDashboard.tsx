@@ -394,18 +394,18 @@ export default function MLDashboard({
   }, [])
 
   return (
-    <MainLayout title="ML Dashboard">
-      <Head title="ML Dashboard - Tamandua EDR" />
+    <MainLayout title="ML-Assisted Validation">
+      <Head title="ML-Assisted Validation - Tamandua EDR" />
 
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
-              ML Dashboard
+              ML-Assisted Validation
             </h1>
             <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-              Malware-SMELL model status, statistics, training, and agent-side ONNX signal health
+              Devnet model status, validation statistics, and agent-side ONNX security signals. ML output is a signal, not a safety guarantee.
             </p>
           </div>
           <button
@@ -1087,7 +1087,7 @@ export default function MLDashboard({
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               {[
-                { label: 'AI Models', href: '/live/ai-security/models', icon: Brain },
+                { label: 'AI Models', href: '/app/shadow-ai', icon: Brain },
                 { label: 'ML Processes', href: '/live/ml-processes', icon: Cpu },
                 { label: 'AI Runtime', href: '/live/ai/runtime', icon: Activity },
                 { label: 'Registries', href: '/live/registries', icon: Database },
@@ -1125,10 +1125,10 @@ export default function MLDashboard({
               style={{ color: 'var(--fg)' }}
             >
               <Database className="h-5 w-5" style={{ color: 'var(--primary)' }} />
-              Training
+              Validation Training
             </h2>
             <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-              Train or retrain the Malware-SMELL model
+              Train or retrain validation models for review before promotion
             </p>
           </div>
           <div className="p-6 space-y-6">
@@ -1233,7 +1233,7 @@ export default function MLDashboard({
                 ) : (
                   <Play className="h-4 w-4" />
                 )}
-                {isTraining ? 'Training...' : 'Start Training'}
+                {isTraining ? 'Training...' : 'Start Validation Training'}
               </button>
             </div>
           </div>

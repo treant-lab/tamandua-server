@@ -6,6 +6,10 @@ defmodule TamanduaServer.Hunting.SavedQueries do
   import Ecto.Query, warn: false
   alias TamanduaServer.Repo
   alias TamanduaServer.Hunting.{SavedQuery, QueryHistory, QueryBuilder, QueryCompiler, QueryTemplates}
+  alias TamanduaServer.{Agents.Agent, Alerts.Alert}
+  alias TamanduaServer.Telemetry.Event
+
+  @missing_organization_scope_error "Query organization scope required"
 
   # ============================================================================
   # Saved Queries
@@ -21,7 +25,7 @@ defmodule TamanduaServer.Hunting.SavedQueries do
     |> filter_by_type(opts[:query_type])
     |> filter_by_category(opts[:category])
     |> filter_by_user(opts[:user_id])
-    |> filter_by_organization(opts[:organization_id])
+    |> filter_by_organization(opts[:organization_id], opts[:include_global_templates])
     |> filter_templates(opts[:templates_only])
     |> filter_public(opts[:public_only])
     |> maybe_limit(opts[:limit])
@@ -32,11 +36,31 @@ defmodule TamanduaServer.Hunting.SavedQueries do
   Gets a single saved query.
   """
   def get_saved_query(id) do
-    Repo.get(SavedQuery, id)
+    get_saved_query(id, [])
+  end
+
+  def get_saved_query(id, opts) when is_list(opts) do
+    organization_id = opts[:organization_id]
+    include_global_templates = opts[:include_global_templates]
+
+    SavedQuery
+    |> where([sq], sq.id == ^id)
+    |> filter_by_organization(organization_id, include_global_templates)
+    |> Repo.one()
   end
 
   def get_saved_query!(id) do
-    Repo.get!(SavedQuery, id)
+    get_saved_query!(id, [])
+  end
+
+  def get_saved_query!(id, opts) when is_list(opts) do
+    organization_id = opts[:organization_id]
+    include_global_templates = opts[:include_global_templates]
+
+    SavedQuery
+    |> where([sq], sq.id == ^id)
+    |> filter_by_organization(organization_id, include_global_templates)
+    |> Repo.one!()
   end
 
   @doc """
@@ -86,7 +110,7 @@ defmodule TamanduaServer.Hunting.SavedQueries do
 
     query
     |> filter_by_user(opts[:user_id])
-    |> filter_by_organization(opts[:organization_id])
+    |> filter_by_organization(opts[:organization_id], opts[:include_global_templates])
     |> maybe_limit(opts[:limit] || 20)
     |> Repo.all()
   end
@@ -94,23 +118,25 @@ defmodule TamanduaServer.Hunting.SavedQueries do
   @doc """
   Gets template queries for a specific category (e.g., MITRE tactic).
   """
-  def get_templates_by_category(category) do
+  def get_templates_by_category(category, opts \\ []) do
     from(sq in SavedQuery,
       where: sq.is_template == true and sq.category == ^category,
       order_by: [desc: sq.use_count]
     )
+    |> filter_by_organization(opts[:organization_id], opts[:include_global_templates])
     |> Repo.all()
   end
 
   @doc """
   Gets popular public queries.
   """
-  def get_popular_queries(limit \\ 10) do
+  def get_popular_queries(limit \\ 10, opts \\ []) do
     from(sq in SavedQuery,
       where: sq.is_public == true,
       order_by: [desc: sq.use_count],
       limit: ^limit
     )
+    |> filter_by_organization(opts[:organization_id], opts[:include_global_templates])
     |> Repo.all()
   end
 
@@ -130,7 +156,21 @@ defmodule TamanduaServer.Hunting.SavedQueries do
       {:error, "Query not found"}
   """
   def execute_saved_query(query_id, opts \\ []) do
-    case get_saved_query(query_id) do
+    if missing_organization_scope?(opts) do
+      {:error, @missing_organization_scope_error}
+    else
+      do_execute_saved_query(query_id, opts)
+    end
+  end
+
+  defp do_execute_saved_query(query_id, opts) do
+    query =
+      get_saved_query(query_id,
+        organization_id: opts[:organization_id],
+        include_global_templates: opts[:include_global_templates]
+      )
+
+    case query do
       nil ->
         {:error, "Query not found"}
 
@@ -149,7 +189,7 @@ defmodule TamanduaServer.Hunting.SavedQueries do
         end
 
         # Detect and execute appropriate query type
-        execute_query_by_type(query.query, query.query_type)
+        execute_query_by_type(query.query, query.query_type, opts)
     end
   end
 
@@ -159,6 +199,14 @@ defmodule TamanduaServer.Hunting.SavedQueries do
   Detects SQL-like SELECT queries vs. TQL pipe syntax.
   """
   def execute_query(query_string, opts \\ []) do
+    if missing_organization_scope?(opts) do
+      {:error, @missing_organization_scope_error}
+    else
+      do_execute_query(query_string, opts)
+    end
+  end
+
+  defp do_execute_query(query_string, opts) do
     # Record in history if user_id provided
     if user_id = opts[:user_id] do
       query_type = detect_query_type(query_string)
@@ -171,23 +219,24 @@ defmodule TamanduaServer.Hunting.SavedQueries do
     end
 
     query_type = detect_query_type(query_string)
-    execute_query_by_type(query_string, query_type)
+    execute_query_by_type(query_string, query_type, opts)
   end
 
   # ============================================================================
   # Private Query Execution Helpers
   # ============================================================================
 
-  defp execute_query_by_type(query_string, query_type) do
+  defp execute_query_by_type(query_string, query_type, opts) do
     cond do
       # SQL-like SELECT queries
       String.upcase(String.trim(query_string)) |> String.starts_with?("SELECT") ->
-        QueryBuilder.execute(query_string)
+        execute_sql_query(query_string, opts)
 
       # TQL pipe syntax (events | where ...)
       query_type in ["hunt", "custom"] ->
         with {:ok, compiled} <- QueryCompiler.compile(query_string),
-             {:ok, results} <- execute_compiled_query(compiled) do
+             {:ok, scoped_compiled} <- scope_compiled_query(compiled, opts),
+             {:ok, results} <- execute_compiled_query(scoped_compiled) do
           {:ok, %{
             data: results,
             meta: %{
@@ -201,6 +250,66 @@ defmodule TamanduaServer.Hunting.SavedQueries do
         {:error, "Unsupported query type: #{query_type}"}
     end
   end
+
+  defp execute_sql_query(query_string, opts) do
+    start_time = System.monotonic_time(:millisecond)
+
+    with {:ok, parsed} <- QueryBuilder.parse(query_string),
+         {:ok, ecto_query} <- QueryBuilder.build_query(parsed) do
+      scoped_query = apply_tenant_scope(ecto_query, opts[:organization_id], :sql_events)
+
+      try do
+        results = Repo.all(scoped_query)
+        execution_time = System.monotonic_time(:millisecond) - start_time
+
+        {:ok, %{
+          data: results,
+          meta: %{
+            query_dsl: query_string,
+            sql: inspect_sql(scoped_query),
+            total: length(results),
+            execution_time_ms: execution_time
+          }
+        }}
+      rescue
+        e -> {:error, "Query execution error: #{Exception.message(e)}"}
+      end
+    end
+  end
+
+  defp scope_compiled_query(%{query: ecto_query, source: source} = compiled, opts) do
+    {:ok, %{compiled | query: apply_tenant_scope(ecto_query, opts[:organization_id], source)}}
+  end
+
+  defp apply_tenant_scope(query, organization_id, source \\ Event)
+
+  defp apply_tenant_scope(query, organization_id, Event) do
+    where(
+      query,
+      [event, agent],
+      event.organization_id == ^organization_id or
+        (is_nil(event.organization_id) and agent.organization_id == ^organization_id)
+    )
+  end
+
+  defp apply_tenant_scope(query, organization_id, :sql_events) do
+    where(query, [event], event.organization_id == ^organization_id)
+  end
+
+  defp apply_tenant_scope(query, organization_id, source) when source in [Agent, Alert] do
+    where(query, [resource], resource.organization_id == ^organization_id)
+  end
+
+  defp inspect_sql(query) do
+    try do
+      {sql, _params} = Repo.to_sql(:all, query)
+      sql
+    rescue
+      _ -> "(SQL generation failed)"
+    end
+  end
+
+  defp missing_organization_scope?(opts), do: is_nil(opts[:organization_id])
 
   defp detect_query_type(query_string) do
     trimmed = String.trim(query_string)
@@ -953,8 +1062,14 @@ defmodule TamanduaServer.Hunting.SavedQueries do
   defp filter_by_user(query, nil), do: query
   defp filter_by_user(query, user_id), do: where(query, [sq], sq.created_by == ^user_id)
 
-  defp filter_by_organization(query, nil), do: query
-  defp filter_by_organization(query, org_id), do: where(query, [sq], sq.organization_id == ^org_id)
+  defp filter_by_organization(query, org_id, include_global \\ false)
+  defp filter_by_organization(query, nil, true),
+    do: where(query, [sq], sq.is_template == true and is_nil(sq.organization_id))
+  defp filter_by_organization(query, nil, _include_global), do: where(query, [sq], false)
+  defp filter_by_organization(query, org_id, true),
+    do: where(query, [sq], sq.organization_id == ^org_id or (sq.is_template == true and is_nil(sq.organization_id)))
+  defp filter_by_organization(query, org_id, _include_global),
+    do: where(query, [sq], sq.organization_id == ^org_id)
 
   defp filter_templates(query, true), do: where(query, [sq], sq.is_template == true)
   defp filter_templates(query, _), do: query

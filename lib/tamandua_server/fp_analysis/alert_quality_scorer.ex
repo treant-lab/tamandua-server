@@ -37,7 +37,7 @@ defmodule TamanduaServer.FPAnalysis.AlertQualityScorer do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.FPAnalysis.{RuleQualityMetrics, FPReport, TuningRecommendation}
+  alias TamanduaServer.FPAnalysis.{RuleQualityMetrics, FPReport}
 
   # Score weights
   @precision_weight 0.40
@@ -368,14 +368,20 @@ defmodule TamanduaServer.FPAnalysis.AlertQualityScorer do
     contexts = 0
 
     # Count unique process patterns
-    if metrics.top_fp_processes && length(metrics.top_fp_processes) > 0 do
-      contexts = contexts + min(1.0, length(metrics.top_fp_processes) / 5)
-    end
+    contexts =
+      if metrics.top_fp_processes && length(metrics.top_fp_processes) > 0 do
+        contexts + min(1.0, length(metrics.top_fp_processes) / 5)
+      else
+        contexts
+      end
 
     # Count unique path patterns
-    if metrics.top_fp_paths && length(metrics.top_fp_paths) > 0 do
-      contexts = contexts + min(1.0, length(metrics.top_fp_paths) / 5)
-    end
+    contexts =
+      if metrics.top_fp_paths && length(metrics.top_fp_paths) > 0 do
+        contexts + min(1.0, length(metrics.top_fp_paths) / 5)
+      else
+        contexts
+      end
 
     # Normalize
     min(1.0, contexts / 2)

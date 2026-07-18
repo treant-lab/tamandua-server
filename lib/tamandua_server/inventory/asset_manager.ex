@@ -18,7 +18,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
   require Logger
   import Ecto.Query
 
-  alias TamanduaServer.{Repo, Agents}
+  alias TamanduaServer.{Repo}
   alias TamanduaServer.Inventory.LicenseAnalyzer
 
   # Asset schema
@@ -161,31 +161,33 @@ defmodule TamanduaServer.Inventory.AssetManager do
   }
 
   # Authorized software list (baseline)
-  @authorized_software [
-    # Operating systems and components
-    ~r/^Microsoft Windows/i,
-    ~r/^Microsoft Visual C\+\+/i,
-    ~r/^Microsoft .NET/i,
+  defp authorized_software do
+    [
+      # Operating systems and components
+      ~r/^Microsoft Windows/i,
+      ~r/^Microsoft Visual C\+\+/i,
+      ~r/^Microsoft .NET/i,
 
-    # Browsers
-    ~r/^Google Chrome$/i,
-    ~r/^Mozilla Firefox$/i,
-    ~r/^Microsoft Edge$/i,
+      # Browsers
+      ~r/^Google Chrome$/i,
+      ~r/^Mozilla Firefox$/i,
+      ~r/^Microsoft Edge$/i,
 
-    # Office
-    ~r/^Microsoft Office/i,
-    ~r/^Microsoft 365/i,
+      # Office
+      ~r/^Microsoft Office/i,
+      ~r/^Microsoft 365/i,
 
-    # Development tools
-    ~r/^Visual Studio/i,
-    ~r/^Git for Windows$/i,
-    ~r/^Node\.js$/i,
-    ~r/^Python/i,
+      # Development tools
+      ~r/^Visual Studio/i,
+      ~r/^Git for Windows$/i,
+      ~r/^Node\.js$/i,
+      ~r/^Python/i,
 
-    # Security tools
-    ~r/^Tamandua Agent$/i,
-    ~r/^Windows Defender/i
-  ]
+      # Security tools
+      ~r/^Tamandua Agent$/i,
+      ~r/^Windows Defender/i
+    ]
+  end
 
   # GenServer state
   defstruct [
@@ -302,7 +304,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
       assets: load_assets(),
       vulnerability_db: init_vulnerability_database(),
       risk_calculation_interval: 3600_000,  # 1 hour
-      software_baseline: @authorized_software,
+      software_baseline: authorized_software(),
       last_scan: nil
     }
 
@@ -600,7 +602,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
     }
   end
 
-  defp find_or_create_asset(assets, agent_id, info) do
+  defp find_or_create_asset(assets, agent_id, _info) do
     case find_asset_by_agent(assets, agent_id) do
       nil ->
         %Asset{
@@ -656,7 +658,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
     end
   end
 
-  defp calculate_asset_risk(asset, state) do
+  defp calculate_asset_risk(asset, _state) do
     base_score = 0
 
     # Vulnerability risk
@@ -710,7 +712,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
     score
   end
 
-  defp calculate_behavior_risk(asset) do
+  defp calculate_behavior_risk(_asset) do
     # This would integrate with the alerts system
     # For now, return 0
     0
@@ -899,7 +901,7 @@ defmodule TamanduaServer.Inventory.AssetManager do
     end
   end
 
-  defp generate_risk_report(asset, state) do
+  defp generate_risk_report(asset, _state) do
     %{
       asset_id: asset.id,
       hostname: asset.hostname,

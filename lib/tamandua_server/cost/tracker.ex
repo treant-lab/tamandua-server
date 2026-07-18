@@ -15,7 +15,7 @@ defmodule TamanduaServer.Cost.Tracker do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Cost.{CostEntry, CostAllocationRule}
+  alias TamanduaServer.Cost.{CostEntry}
   alias TamanduaServer.Agents
   import Ecto.Query
 

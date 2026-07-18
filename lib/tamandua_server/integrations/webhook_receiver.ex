@@ -573,7 +573,7 @@ defmodule TamanduaServer.Integrations.WebhookReceiver do
     end
   end
 
-  defp handle_interactive_response(parsed, integration) do
+  defp handle_interactive_response(parsed, _integration) do
     # Handle interactive responses (e.g., Slack button clicks)
     Logger.info("[WebhookReceiver] Interactive response: #{inspect(parsed)}")
     {:ok, %{action: :interactive_handled, response: parsed}}

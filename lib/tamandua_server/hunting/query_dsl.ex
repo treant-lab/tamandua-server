@@ -12,7 +12,6 @@ defmodule TamanduaServer.Hunting.QueryDSL do
   """
 
   alias TamanduaServer.Hunting.{QueryParser, QueryCompiler}
-  alias TamanduaServer.Telemetry.Event
 
   @type query_dsl :: map()
   @type query_format :: :visual | :tql | :sql | :yaml

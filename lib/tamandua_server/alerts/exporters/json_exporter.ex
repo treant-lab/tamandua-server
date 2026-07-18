@@ -5,7 +5,6 @@ defmodule TamanduaServer.Alerts.Exporters.JSONExporter do
   Produces structured JSON with configurable fields and nested data.
   """
 
-  alias TamanduaServer.Alerts.Alert
 
   @doc """
   Generates JSON data from alerts.

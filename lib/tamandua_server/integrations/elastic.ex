@@ -533,7 +533,7 @@ defmodule TamanduaServer.Integrations.Elastic do
   defp execute_bulk(url, body, state) do
     headers = [{"Content-Type", "application/x-ndjson"}]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:post, url, headers, body) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: code, body: resp_body}} when code in 200..299 ->
@@ -573,7 +573,7 @@ defmodule TamanduaServer.Integrations.Elastic do
 
     headers = [{"Content-Type", "application/json"}]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:post, url, headers, Jason.encode!(document)) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: code}} when code in 200..299 ->
@@ -594,7 +594,7 @@ defmodule TamanduaServer.Integrations.Elastic do
 
     headers = [{"Content-Type", "application/json"}]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:post, url, headers, Jason.encode!(query)) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->
@@ -684,7 +684,7 @@ defmodule TamanduaServer.Integrations.Elastic do
 
     headers = [{"Content-Type", "application/json"}]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:put, url, headers, Jason.encode!(template)) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: 200}} -> :ok
@@ -785,7 +785,7 @@ defmodule TamanduaServer.Integrations.Elastic do
 
     headers = [{"Content-Type", "application/json"}]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:put, url, headers, Jason.encode!(policy)) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: 200}} -> :ok
@@ -822,7 +822,7 @@ defmodule TamanduaServer.Integrations.Elastic do
       {"kbn-xsrf", "true"}
     ]
     headers = add_auth_header(headers, state.auth_header)
-    options = http_options(state.config)
+    _options = http_options(state.config)
 
     case Finch.build(:post, url, headers, Jason.encode!(siem_rule)) |> Finch.request(TamanduaServer.Finch, receive_timeout: state.config.timeout_ms) do
       {:ok, %Finch.Response{status: 200, body: resp_body}} ->

@@ -10,7 +10,7 @@ defmodule TamanduaServer.Integrations do
 
   require Logger
 
-  alias TamanduaServer.Detection.IOCs
+  alias TamanduaServer.Detection.{IOCReload, IOCs}
   alias TamanduaServer.Alerts.Alert
 
   # ======================= Threat Intelligence Feeds =======================
@@ -39,31 +39,35 @@ defmodule TamanduaServer.Integrations do
 
     attributes = event["Attribute"] || event["attributes"] || []
 
-    results = Enum.map(attributes, fn attr ->
-      if attr["to_ids"] == true or attr["to_ids"] == "true" do
-        ioc_attrs = %{
-          type: misp_type_to_ioc_type(attr["type"]),
-          value: attr["value"],
-          description: attr["comment"] || event["info"],
-          source: "misp",
-          severity: misp_threat_level_to_severity(event["threat_level_id"]),
-          tags: extract_misp_tags(event),
-          enabled: true
-        }
+    results =
+      Enum.map(attributes, fn attr ->
+        if attr["to_ids"] == true or attr["to_ids"] == "true" do
+          ioc_attrs = %{
+            type: misp_type_to_ioc_type(attr["type"]),
+            value: attr["value"],
+            description: attr["comment"] || event["info"],
+            source: "misp",
+            severity: misp_threat_level_to_severity(event["threat_level_id"]),
+            tags: extract_misp_tags(event),
+            enabled: true
+          }
 
-        case IOCs.create_ioc(ioc_attrs) do
-          {:ok, ioc} -> {:ok, ioc.id}
-          {:error, _} -> {:error, :duplicate}
+          case IOCs.add_global(ioc_attrs) do
+            {:ok, ioc} -> {:ok, ioc.id}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          {:skipped, :not_to_ids}
         end
-      else
-        {:skipped, :not_to_ids}
-      end
-    end)
+      end)
 
-    created = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    created =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
+
+    if created > 0, do: schedule_ioc_reload()
 
     Logger.info("MISP feed processed: #{created} IOCs created")
     {:ok, %{created: created, total: length(attributes)}}
@@ -90,27 +94,31 @@ defmodule TamanduaServer.Integrations do
     indicators = params["indicators"] || []
     pulse_name = params["name"] || "OTX Pulse"
 
-    results = Enum.map(indicators, fn indicator ->
-      ioc_attrs = %{
-        type: otx_type_to_ioc_type(indicator["type"]),
-        value: indicator["indicator"],
-        description: pulse_name,
-        source: "otx",
-        severity: "medium",
-        tags: params["tags"] || [],
-        enabled: true
-      }
+    results =
+      Enum.map(indicators, fn indicator ->
+        ioc_attrs = %{
+          type: otx_type_to_ioc_type(indicator["type"]),
+          value: indicator["indicator"],
+          description: pulse_name,
+          source: "otx",
+          severity: "medium",
+          tags: params["tags"] || [],
+          enabled: true
+        }
 
-      case IOCs.create_ioc(ioc_attrs) do
-        {:ok, ioc} -> {:ok, ioc.id}
-        {:error, _} -> {:error, :duplicate}
-      end
-    end)
+        case IOCs.add_global(ioc_attrs) do
+          {:ok, ioc} -> {:ok, ioc.id}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
 
-    created = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    created =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
+
+    if created > 0, do: schedule_ioc_reload()
 
     Logger.info("OTX feed processed: #{created} IOCs created")
     {:ok, %{created: created, total: length(indicators)}}
@@ -149,46 +157,58 @@ defmodule TamanduaServer.Integrations do
         iocs = []
 
         # SHA256
-        iocs = if attrs["sha256"] do
-          [%{
-            type: "hash_sha256",
-            value: attrs["sha256"],
-            description: "VirusTotal detection: #{malicious_count} engines",
-            source: "virustotal",
-            severity: vt_malicious_to_severity(malicious_count),
-            tags: ["malware"],
-            enabled: true
-          } | iocs]
-        else
-          iocs
-        end
+        iocs =
+          if attrs["sha256"] do
+            [
+              %{
+                type: "hash_sha256",
+                value: attrs["sha256"],
+                description: "VirusTotal detection: #{malicious_count} engines",
+                source: "virustotal",
+                severity: vt_malicious_to_severity(malicious_count),
+                tags: ["malware"],
+                enabled: true
+              }
+              | iocs
+            ]
+          else
+            iocs
+          end
 
         # MD5
-        iocs = if attrs["md5"] do
-          [%{
-            type: "hash_md5",
-            value: attrs["md5"],
-            description: "VirusTotal detection: #{malicious_count} engines",
-            source: "virustotal",
-            severity: vt_malicious_to_severity(malicious_count),
-            tags: ["malware"],
-            enabled: true
-          } | iocs]
-        else
-          iocs
-        end
-
-        results = Enum.map(iocs, fn ioc_attrs ->
-          case IOCs.create_ioc(ioc_attrs) do
-            {:ok, ioc} -> {:ok, ioc.id}
-            {:error, _} -> {:error, :duplicate}
+        iocs =
+          if attrs["md5"] do
+            [
+              %{
+                type: "hash_md5",
+                value: attrs["md5"],
+                description: "VirusTotal detection: #{malicious_count} engines",
+                source: "virustotal",
+                severity: vt_malicious_to_severity(malicious_count),
+                tags: ["malware"],
+                enabled: true
+              }
+              | iocs
+            ]
+          else
+            iocs
           end
-        end)
 
-        created = Enum.count(results, fn
-          {:ok, _} -> true
-          _ -> false
-        end)
+        results =
+          Enum.map(iocs, fn ioc_attrs ->
+            case IOCs.add_global(ioc_attrs) do
+              {:ok, ioc} -> {:ok, ioc.id}
+              {:error, reason} -> {:error, reason}
+            end
+          end)
+
+        created =
+          Enum.count(results, fn
+            {:ok, _} -> true
+            _ -> false
+          end)
+
+        if created > 0, do: schedule_ioc_reload()
 
         {:ok, %{created: created, total: length(iocs)}}
       else
@@ -200,6 +220,10 @@ defmodule TamanduaServer.Integrations do
   end
 
   # ======================= Notification Services =======================
+
+  defp schedule_ioc_reload do
+    IOCReload.schedule()
+  end
 
   @doc """
   Send alert notification to Slack.
@@ -285,11 +309,13 @@ defmodule TamanduaServer.Integrations do
       case event_type do
         "incident.acknowledge" ->
           Logger.info("PagerDuty incident acknowledged: #{incident["id"]}")
-          # Could update alert status here
+
+        # Could update alert status here
 
         "incident.resolve" ->
           Logger.info("PagerDuty incident resolved: #{incident["id"]}")
-          # Could close alert here
+
+        # Could close alert here
 
         _ ->
           Logger.debug("PagerDuty event: #{event_type}")
@@ -368,6 +394,7 @@ defmodule TamanduaServer.Integrations do
 
   defp extract_misp_tags(event) do
     tags = event["Tag"] || event["tags"] || []
+
     Enum.map(tags, fn
       %{"name" => name} -> name
       name when is_binary(name) -> name
@@ -447,12 +474,13 @@ defmodule TamanduaServer.Integrations do
   # PagerDuty payload builder
 
   defp build_pagerduty_payload(%Alert{} = alert, routing_key) do
-    severity = case alert.severity do
-      :critical -> "critical"
-      :high -> "error"
-      :medium -> "warning"
-      _ -> "info"
-    end
+    severity =
+      case alert.severity do
+        :critical -> "critical"
+        :high -> "error"
+        :medium -> "warning"
+        _ -> "info"
+      end
 
     %{
       "routing_key" => routing_key,
@@ -527,7 +555,8 @@ defmodule TamanduaServer.Integrations do
         "acknowledge_alert" ->
           alert_id = action["value"]
           Logger.info("Slack: acknowledging alert #{alert_id}")
-          # TamanduaServer.Alerts.update_status(alert_id, :acknowledged)
+
+        # TamanduaServer.Alerts.update_status(alert_id, :acknowledged)
 
         _ ->
           Logger.debug("Unknown Slack action: #{action["action_id"]}")

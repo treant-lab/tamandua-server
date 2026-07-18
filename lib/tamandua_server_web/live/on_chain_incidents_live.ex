@@ -15,7 +15,7 @@ defmodule TamanduaServerWeb.OnChainIncidentsLive do
   use TamanduaServerWeb, :live_view
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Solana.{Attestation, Bounty, Client}
+  alias TamanduaServer.Solana.{Client}
 
   @impl true
   def mount(_params, session, socket) do
@@ -57,7 +57,7 @@ defmodule TamanduaServerWeb.OnChainIncidentsLive do
   end
 
   @impl true
-  def handle_info({:alert_attested, alert}, socket) do
+  def handle_info({:alert_attested, _alert}, socket) do
     # Reload incidents when a new attestation is created
     {:noreply, load_incidents(socket)}
   end

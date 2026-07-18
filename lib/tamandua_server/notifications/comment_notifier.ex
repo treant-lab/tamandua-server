@@ -7,7 +7,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.User
-  alias TamanduaServer.Alerts.{Alert, Comment, CommentNotification}
+  alias TamanduaServer.Alerts.{CommentNotification}
   alias TamanduaServer.Notifications.NotificationPreference
   alias TamanduaServer.Mailer
 
@@ -82,7 +82,10 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
   Gets notification preference for a user and notification type.
   """
   def get_preference(%{id: user_id}, notification_type) do
-    case Repo.get_by(NotificationPreference, user_id: user_id, notification_type: notification_type) do
+    case Repo.get_by(NotificationPreference,
+           user_id: user_id,
+           notification_type: notification_type
+         ) do
       nil -> get_default_preference(notification_type)
       preference -> preference
     end
@@ -91,7 +94,8 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
   @doc """
   Updates notification preference for a user.
   """
-  def update_preference(user, notification_type, enabled, delivery_method \\ "email") when is_map(user) do
+  def update_preference(user, notification_type, enabled, delivery_method \\ "email")
+      when is_map(user) do
     attrs = %{
       user_id: user.id,
       notification_type: notification_type,
@@ -99,7 +103,10 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
       delivery_method: delivery_method
     }
 
-    case Repo.get_by(NotificationPreference, user_id: user.id, notification_type: notification_type) do
+    case Repo.get_by(NotificationPreference,
+           user_id: user.id,
+           notification_type: notification_type
+         ) do
       nil ->
         %NotificationPreference{}
         |> NotificationPreference.changeset(attrs)
@@ -133,8 +140,8 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         <h2 style="color: #4F46E5;">You were mentioned in a comment</h2>
 
         <p>
-          <strong>#{author.name || author.email}</strong> mentioned you in a comment on alert:
-          <strong>#{comment.alert.title}</strong>
+          <strong>#{escape_html(display_name(author))}</strong> mentioned you in a comment on alert:
+          <strong>#{escape_html(comment.alert.title)}</strong>
         </p>
 
         <div style="background: #F3F4F6; padding: 15px; border-left: 4px solid #4F46E5; margin: 20px 0;">
@@ -142,7 +149,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         </div>
 
         <p>
-          <a href="#{alert_url(comment.alert)}"
+          <a href="#{escape_html(alert_url(comment.alert))}"
              style="display: inline-block; padding: 10px 20px; background: #4F46E5; color: white; text-decoration: none; border-radius: 5px;">
             View Alert &rarr;
           </a>
@@ -163,7 +170,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
     #{author.name || author.email} mentioned you in a comment on alert: #{comment.alert.title}
 
     Comment:
-    #{comment.content}
+    #{comment_text(comment.content)}
 
     View alert: #{alert_url(comment.alert)}
 
@@ -186,8 +193,8 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         <h2 style="color: #4F46E5;">New reply to your comment</h2>
 
         <p>
-          <strong>#{reply_author.name || reply_author.email}</strong> replied to your comment on alert:
-          <strong>#{reply.alert.title}</strong>
+          <strong>#{escape_html(display_name(reply_author))}</strong> replied to your comment on alert:
+          <strong>#{escape_html(reply.alert.title)}</strong>
         </p>
 
         <div style="background: #F9FAFB; padding: 15px; border-left: 2px solid #D1D5DB; margin: 20px 0;">
@@ -201,7 +208,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         </div>
 
         <p>
-          <a href="#{alert_url(reply.alert)}"
+          <a href="#{escape_html(alert_url(reply.alert))}"
              style="display: inline-block; padding: 10px 20px; background: #4F46E5; color: white; text-decoration: none; border-radius: 5px;">
             View Conversation &rarr;
           </a>
@@ -222,10 +229,10 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
     #{reply_author.name || reply_author.email} replied to your comment on alert: #{reply.alert.title}
 
     Your comment:
-    #{reply.parent.content}
+    #{comment_text(reply.parent.content)}
 
     Reply:
-    #{reply.content}
+    #{comment_text(reply.content)}
 
     View conversation: #{alert_url(reply.alert)}
 
@@ -254,8 +261,8 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         <h2 style="color: #4F46E5;">#{emoji} New reaction to your comment</h2>
 
         <p>
-          <strong>#{reactor.name || reactor.email}</strong> reacted with #{emoji} to your comment on alert:
-          <strong>#{comment.alert.title}</strong>
+          <strong>#{escape_html(display_name(reactor))}</strong> reacted with #{emoji} to your comment on alert:
+          <strong>#{escape_html(comment.alert.title)}</strong>
         </p>
 
         <div style="background: #F3F4F6; padding: 15px; border-left: 4px solid #4F46E5; margin: 20px 0;">
@@ -263,7 +270,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
         </div>
 
         <p>
-          <a href="#{alert_url(comment.alert)}"
+          <a href="#{escape_html(alert_url(comment.alert))}"
              style="display: inline-block; padding: 10px 20px; background: #4F46E5; color: white; text-decoration: none; border-radius: 5px;">
             View Alert &rarr;
           </a>
@@ -284,7 +291,7 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
     #{reactor.name || reactor.email} reacted with #{emoji} to your comment on alert: #{comment.alert.title}
 
     Comment:
-    #{comment.content}
+    #{comment_text(comment.content)}
 
     View alert: #{alert_url(comment.alert)}
 
@@ -387,10 +394,14 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
   end
 
   defp render_comment_html(content) do
-    case Earmark.as_html(String.slice(content, 0..500), compact_output: true) do
-      {:ok, html, _} -> html
-      _ -> Phoenix.HTML.html_escape(content) |> Phoenix.HTML.safe_to_string()
-    end
+    content =
+      if is_binary(content) and String.valid?(content) do
+        String.slice(content, 0, 501)
+      else
+        "[comment unavailable]"
+      end
+
+    ~s(<div style="white-space: pre-wrap; overflow-wrap: anywhere;">#{escape_html(content)}</div>)
   end
 
   defp render_digest_alerts(grouped) do
@@ -402,8 +413,8 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
       """
       <div style="margin: 20px 0; padding: 15px; background: #F9FAFB; border-left: 3px solid #4F46E5;">
         <h3 style="margin: 0 0 10px 0; font-size: 16px;">
-          <a href="#{alert_url(alert)}" style="color: #1F2937; text-decoration: none;">
-            #{alert.title}
+          <a href="#{escape_html(alert_url(alert))}" style="color: #1F2937; text-decoration: none;">
+            #{escape_html(alert.title)}
           </a>
         </h3>
         <p style="margin: 0; color: #6B7280; font-size: 14px;">
@@ -445,8 +456,37 @@ defmodule TamanduaServer.Notifications.CommentNotifier do
   defp reaction_emoji("confused"), do: "😕"
   defp reaction_emoji(_), do: "❓"
 
+  defp display_name(user), do: user.name || user.email
+
+  defp comment_text(content) when is_binary(content) do
+    if String.valid?(content), do: content, else: "[comment unavailable]"
+  end
+
+  defp comment_text(_content), do: "[comment unavailable]"
+
+  defp escape_html(value) when is_binary(value) do
+    if String.valid?(value) do
+      value
+      |> Phoenix.HTML.html_escape()
+      |> Phoenix.HTML.safe_to_string()
+    else
+      escape_html("[unavailable]")
+    end
+  end
+
+  defp escape_html(_value), do: escape_html("[unavailable]")
+
   # URL helpers - in production these would use proper router helpers
-  defp alert_url(%{id: id}), do: "https://treantlab.org/alerts/#{id}"
+  defp alert_url(%{id: id}) do
+    normalized_id =
+      case Ecto.UUID.cast(id) do
+        {:ok, uuid} -> uuid
+        :error -> "unavailable"
+      end
+
+    "https://treantlab.org/alerts/#{normalized_id}"
+  end
+
   defp preferences_url, do: "https://treantlab.org/settings/notifications"
   defp dashboard_url, do: "https://treantlab.org/dashboard"
 end

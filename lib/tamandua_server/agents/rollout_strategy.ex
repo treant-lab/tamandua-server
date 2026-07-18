@@ -10,7 +10,6 @@ defmodule TamanduaServer.Agents.RolloutStrategy do
   """
 
   alias TamanduaServer.Agents.Agent
-  import Ecto.Query
 
   @doc """
   Calculate which agents should receive an update in the current stage.
@@ -312,7 +311,7 @@ defmodule TamanduaServer.Agents.RolloutStrategy do
     end
   end
 
-  defp get_stage_start_time(rollout, current_stage) do
+  defp get_stage_start_time(rollout, _current_stage) do
     # In production, this would come from a stage_history field
     # For now, use rollout started_at as approximation
     rollout.started_at || DateTime.utc_now()

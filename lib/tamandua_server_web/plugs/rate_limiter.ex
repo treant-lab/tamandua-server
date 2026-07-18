@@ -11,7 +11,7 @@ defmodule TamanduaServerWeb.Plugs.RateLimiter do
   def init(opts), do: opts
 
   def call(conn, opts) do
-    ensure_table()
+    TamanduaServerWeb.Plugs.RateLimiterStore.ensure_table()
     limit = Keyword.get(opts, :limit, @default_limit)
     window_ms = Keyword.get(opts, :window_ms, @default_window_ms)
 
@@ -44,36 +44,28 @@ defmodule TamanduaServerWeb.Plugs.RateLimiter do
     now = System.system_time(:millisecond)
     window_start = now - window_ms
 
-    case :ets.lookup(:rate_limiter, key) do
-      [] ->
-        :ets.insert(:rate_limiter, {key, [{now, 1}]})
-        {:allow, 1}
+    try do
+      case :ets.lookup(:rate_limiter, key) do
+        [] ->
+          :ets.insert(:rate_limiter, {key, [{now, 1}]})
+          {:allow, 1}
 
-      [{^key, requests}] ->
-        # Filter requests within window
-        valid_requests = Enum.filter(requests, fn {ts, _} -> ts > window_start end)
-        count = length(valid_requests) + 1
+        [{^key, requests}] ->
+          # Filter requests within window
+          valid_requests = Enum.filter(requests, fn {ts, _} -> ts > window_start end)
+          count = length(valid_requests) + 1
 
-        if count <= limit do
-          :ets.insert(:rate_limiter, {key, [{now, count} | valid_requests]})
-          {:allow, count}
-        else
-          {:deny, count}
-        end
-    end
-  end
-
-  defp ensure_table do
-    case :ets.whereis(:rate_limiter) do
-      :undefined ->
-        try do
-          :ets.new(:rate_limiter, [:set, :public, :named_table])
-        rescue
-          ArgumentError -> :ok
-        end
-
-      _ ->
-        :ok
+          if count <= limit do
+            :ets.insert(:rate_limiter, {key, [{now, count} | valid_requests]})
+            {:allow, count}
+          else
+            {:deny, count}
+          end
+      end
+    rescue
+      ArgumentError ->
+        TamanduaServerWeb.Plugs.RateLimiterStore.ensure_table()
+        check_rate(key, limit, window_ms)
     end
   end
 end

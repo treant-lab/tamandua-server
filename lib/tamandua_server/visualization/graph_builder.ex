@@ -1,4 +1,4 @@
-defmodule TamandUAServer.Visualization.GraphBuilder do
+defmodule TamanduaServer.Visualization.GraphBuilder do
   @moduledoc """
   Builds 3D network graphs from telemetry data for visualization
 
@@ -11,9 +11,9 @@ defmodule TamandUAServer.Visualization.GraphBuilder do
 
   require Logger
 
-  alias TamandUAServer.{Repo, Agents, Telemetry, Detection, Alerts}
-  alias TamandUAServer.Telemetry.Event
-  alias TamandUAServer.Alerts.Alert
+  alias TamanduaServer.{Repo, Agents}
+  alias TamanduaServer.Telemetry.Event
+  alias TamanduaServer.Alerts.Alert
 
   import Ecto.Query
 
@@ -142,7 +142,7 @@ defmodule TamandUAServer.Visualization.GraphBuilder do
         distinct: true
 
     Repo.all(query)
-    |> Enum.map(fn {username, success, agent_id} ->
+    |> Enum.map(fn {username, _success, agent_id} ->
       type =
         cond do
           is_privileged_user?(username) -> "privileged_user"
@@ -525,7 +525,7 @@ defmodule TamandUAServer.Visualization.GraphBuilder do
   @doc """
   Get edges connected to a node
   """
-  def get_node_edges(node_id) do
+  def get_node_edges(_node_id) do
     # This would query the actual edges
     # Simplified implementation
     []
@@ -534,7 +534,7 @@ defmodule TamandUAServer.Visualization.GraphBuilder do
   @doc """
   Get incremental graph updates since a timestamp
   """
-  def get_graph_updates(since_time) do
+  def get_graph_updates(_since_time) do
     # Query new events since timestamp
     # Return incremental updates
     {:ok, []}
@@ -691,7 +691,7 @@ defmodule TamandUAServer.Visualization.GraphBuilder do
     !String.starts_with?(ip, ["10.", "172.", "192.168.", "127."])
   end
 
-  defp get_threat_attribution(actor) do
+  defp get_threat_attribution(_actor) do
     # This would query a threat intelligence database
     %{
       country: "Unknown",

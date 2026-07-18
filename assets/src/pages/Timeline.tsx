@@ -22,6 +22,7 @@ import {
   CheckSquare,
   Square,
   ArrowRight,
+  Shield,
 } from 'lucide-react'
 import { cn, formatDate, safeCapitalize, severityColor } from '@/lib/utils'
 import { logger } from '@/lib/logger'
@@ -605,7 +606,7 @@ export default function Timeline({ events = [], filters, incidentId }: TimelineP
       setTimelineError(timelinePartialMessage(response.data?.correlationMeta))
 
       const [readinessResponse, candidatesResponse] = await Promise.allSettled([
-        axios.get('/api/v1/timeline/readiness', { params: { hours: timeRange === '7d' ? '168' : '24' } }),
+        axios.get('/api/v1/timeline/readiness', { params: { hours: timeRange === '7d' ? '168' : '24', limit: '250' } }),
         axios.get('/api/v1/timeline/incident-candidates', { params: { limit: '10' } }),
       ])
 

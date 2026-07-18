@@ -87,7 +87,7 @@ defmodule TamanduaServer.Jobs.MLTrainingJob do
     {:error, {:unknown_dataset, dataset_id}}
   end
 
-  defp export_labeled_samples(malware_dir, goodware_dir) do
+  defp export_labeled_samples(malware_dir, _goodware_dir) do
     import Ecto.Query
 
     # Get samples that were flagged as malicious

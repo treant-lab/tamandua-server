@@ -304,7 +304,6 @@ defmodule TamanduaServer.Cache.Examples do
     """
 
     alias TamanduaServer.Cache.{ETSCache, RedisCache}
-    alias TamanduaServer.Repo
 
     @doc """
     Fetches data with multi-tier cache strategy:

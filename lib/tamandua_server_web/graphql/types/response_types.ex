@@ -36,7 +36,9 @@ defmodule TamanduaServerWeb.GraphQL.Types.ResponseTypes do
     field :parameters, :json
     field :result, :json
     field :error_message, :string
-    field :requested_by_id, :id
+    field :requested_by_id, :id do
+      resolve(fn action, _, _ -> {:ok, action.executed_by_id} end)
+    end
     field :alert_id, :id
     field :playbook_execution_id, :id
     field :started_at, :datetime
@@ -64,6 +66,7 @@ defmodule TamanduaServerWeb.GraphQL.Types.ResponseTypes do
     field :process_name, :string
     field :message, :string
     field :action_id, :id
+    field :audit_status, :string
   end
 
   @desc "Result of a quarantine file action"
@@ -75,6 +78,7 @@ defmodule TamanduaServerWeb.GraphQL.Types.ResponseTypes do
     field :quarantine_path, :string
     field :message, :string
     field :action_id, :id
+    field :audit_status, :string
   end
 
   @desc "Result of an isolate host action"

@@ -17,13 +17,17 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
             %{"action" => "isolate_host", "params" => %{}}
           ],
           enabled: true
-        })
+        }, :system)
 
       {:ok, execution} =
-        PlaybookEngine.execute_playbook(playbook.id, %{
-          agent_id: "test-agent-123",
-          severity: "high"
-        })
+        PlaybookEngine.execute_playbook(
+          playbook.id,
+          %{
+            agent_id: "test-agent-123",
+            severity: "high"
+          },
+          scope: :system
+        )
 
       %{playbook: playbook, execution: execution}
     end
@@ -68,12 +72,14 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
             %{"action" => "isolate_host", "params" => %{}}
           ],
           enabled: true
-        })
+        }, :system)
 
       {:ok, execution} =
-        PlaybookEngine.execute_playbook(playbook.id, %{
-          agent_id: "test-agent-123"
-        })
+        PlaybookEngine.execute_playbook(
+          playbook.id,
+          %{agent_id: "test-agent-123"},
+          scope: :system
+        )
 
       %{playbook: playbook, execution: execution}
     end
@@ -99,7 +105,7 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
       |> element("button[phx-click='cancel_execution']")
       |> render_click()
 
-      {:ok, status} = PlaybookEngine.get_execution_status(exec.id)
+      {:ok, status} = PlaybookEngine.get_execution_status(exec.id, :system)
       assert status.execution.status in ["cancelled", "running"]
     end
   end
@@ -116,10 +122,10 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
             %{"action" => "isolate_host", "params" => %{}}
           ],
           enabled: true
-        })
+        }, :system)
 
       {:ok, execution} =
-        Playbook.execute_playbook(playbook.id, %{agent_id: "test-agent"})
+        Playbook.execute_playbook(playbook.id, %{agent_id: "test-agent"}, :system)
 
       %{playbook: playbook, execution: execution}
     end
@@ -143,7 +149,7 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
 
         # Execution should transition to running
         Process.sleep(100)
-        {:ok, status} = PlaybookEngine.get_execution_status(exec.id)
+        {:ok, status} = PlaybookEngine.get_execution_status(exec.id, :system)
         assert status.execution.status in ["running", "completed"]
       end
     end
@@ -156,7 +162,7 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
         |> element("button[phx-click='reject_execution']")
         |> render_click()
 
-        {:ok, status} = PlaybookEngine.get_execution_status(exec.id)
+        {:ok, status} = PlaybookEngine.get_execution_status(exec.id, :system)
         assert status.execution.status == "cancelled"
       end
     end
@@ -173,14 +179,14 @@ defmodule TamanduaServerWeb.PlaybookExecutionLiveTest do
             %{"action" => "wait", "params" => %{"duration_seconds" => 1}}
           ],
           enabled: true
-        })
+        }, :system)
 
       %{playbook: playbook}
     end
 
     test "updates progress in real-time", %{conn: conn, playbook: pb} do
       {:ok, execution} =
-        PlaybookEngine.execute_playbook(pb.id, %{agent_id: "test-agent"})
+        PlaybookEngine.execute_playbook(pb.id, %{agent_id: "test-agent"}, scope: :system)
 
       {:ok, view, _html} = live(conn, ~p"/playbooks/executions/#{execution.id}")
 

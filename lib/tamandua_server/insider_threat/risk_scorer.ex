@@ -75,7 +75,7 @@ defmodule TamanduaServer.InsiderThreat.RiskScorer do
   Calculate peer group outlier contribution to risk score.
   """
   @spec calculate_peer_group_score(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: float()
-  def calculate_peer_group_score(user_id, peer_group_id, opts) do
+  def calculate_peer_group_score(_user_id, peer_group_id, opts) do
     case PeerGroup.get(peer_group_id) do
       nil ->
         0.0

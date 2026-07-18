@@ -204,7 +204,7 @@ defmodule TamanduaServer.Alerts.Enrichers.KubernetesEnricher do
     Process.send_after(self(), :cleanup_cache, @cache_cleanup_interval)
   end
 
-  defp fetch_pod_metadata(container_id, nil) do
+  defp fetch_pod_metadata(_container_id, nil) do
     # K8s connection not available
     {:error, :no_k8s_connection}
   end

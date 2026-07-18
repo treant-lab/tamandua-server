@@ -31,12 +31,13 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
 
   Returns cached result if available, otherwise performs lookup and caches it.
   """
-  def get_or_lookup_threat_intel(ioc_type, ioc_value) do
-    cache_key = {:threat_intel, ioc_type, ioc_value}
+  def get_or_lookup_threat_intel(ioc_type, ioc_value, organization_id \\ nil) do
+    organization_id = valid_organization_id(organization_id)
+    cache_key = {:threat_intel, organization_id, ioc_type, ioc_value}
 
     case get(cache_key) do
       nil ->
-        result = lookup_threat_intel(ioc_type, ioc_value)
+        result = lookup_threat_intel(ioc_type, ioc_value, organization_id)
         put(cache_key, result, ttl: @threat_intel_ttl)
         result
 
@@ -45,12 +46,12 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
     end
   end
 
-  defp lookup_threat_intel(ioc_type, ioc_value) do
+  defp lookup_threat_intel(ioc_type, ioc_value, organization_id) do
     alias TamanduaServer.Detection.IOCs
     alias TamanduaServer.ThreatIntel
 
     # Try IOC database first
-    case IOCs.lookup(to_string(ioc_type), ioc_value) do
+    case IOCs.lookup_for_organization(to_string(ioc_type), ioc_value, organization_id) do
       {:ok, ioc} ->
         {:ok, ioc}
 
@@ -63,6 +64,12 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
       Logger.debug("Threat intel lookup failed for #{ioc_type}/#{ioc_value}: #{Exception.message(e)}")
       {:error, :lookup_failed}
   end
+
+  defp valid_organization_id(organization_id)
+       when is_binary(organization_id) and organization_id != "",
+       do: organization_id
+
+  defp valid_organization_id(_organization_id), do: nil
 
   # ──────────────────────────────────────────────────────────────────
   # GeoIP Cache
@@ -169,7 +176,7 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
 
   def get_or_lookup_user(_), do: {:error, :invalid_username}
 
-  defp lookup_user(username) do
+  defp lookup_user(_username) do
     # This would integrate with your user management system
     # For now, return a placeholder
     {:error, :not_implemented}
@@ -195,7 +202,7 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
     all()
     |> Stream.filter(fn {key, _} ->
       case key do
-        {:threat_intel, _, _} -> true
+        {:threat_intel, _, _, _} -> true
         _ -> false
       end
     end)
@@ -223,9 +230,13 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
   end
 
   @doc """
-  Get cache statistics.
+  Get a per-type breakdown of cache entries.
+
+  Named `entry_stats/0` because `use Nebulex.Cache` already generates a
+  `stats/0` (adapter-level hit/miss counters), which would shadow a local
+  `stats/0` clause and make it unreachable.
   """
-  def stats do
+  def entry_stats do
     entries = all() |> Enum.to_list()
 
     %{
@@ -242,6 +253,7 @@ defmodule TamanduaServer.Telemetry.Enrichment.Cache do
       case key do
         {^type, _} -> true
         {^type, _, _} -> true
+        {^type, _, _, _} -> true
         _ -> false
       end
     end)

@@ -723,7 +723,7 @@ defmodule TamanduaServer.PKI.CertificateAuthority do
                     {:ok, cert_pem} ->
                       {:ok, cert_pem, agent_id}
 
-                    {:error, reason} ->
+                    {:error, _reason} ->
                       # Fallback: sign CSR directly (less secure but functional)
                       Logger.warning("Could not override CSR subject, using CSR signing fallback")
 

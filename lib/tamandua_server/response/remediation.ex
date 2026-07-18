@@ -13,12 +13,9 @@ defmodule TamanduaServer.Response.Remediation do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Agents
-  alias TamanduaServer.Agents.{Registry, Worker}
   alias TamanduaServer.Response.Executor
   alias TamanduaServer.Solana.RemediationAttestation
 
-  @command_timeout 120_000  # 2 minutes for VSS operations
 
   @jobs_table :tamandua_remediation_jobs
   @policies_table :tamandua_snapshot_policies
@@ -530,7 +527,7 @@ defmodule TamanduaServer.Response.Remediation do
     - {:error, reason} on failure
   """
   @spec get_snapshots_with_recovery_status(String.t(), [String.t()]) :: {:ok, list()} | {:error, any()}
-  def get_snapshots_with_recovery_status(agent_id, sample_paths \\ []) do
+  def get_snapshots_with_recovery_status(agent_id, _sample_paths \\ []) do
     with {:ok, %{"snapshots" => snapshots}} <- list_snapshots(agent_id) do
       # For now, just return snapshots with basic info
       # A full implementation would check each snapshot for file availability

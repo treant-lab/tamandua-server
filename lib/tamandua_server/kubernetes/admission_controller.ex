@@ -35,10 +35,9 @@ defmodule TamanduaServer.Kubernetes.AdmissionController do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Kubernetes.{Policy, AdmissionLog}
+  alias TamanduaServer.Kubernetes.{Policy}
 
   @policy_ets :k8s_admission_policies
-  @evaluation_timeout 8_000
 
   # Default resource limits injected by the mutating webhook
   @default_resource_limits %{

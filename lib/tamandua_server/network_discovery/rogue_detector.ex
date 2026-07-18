@@ -16,6 +16,7 @@ defmodule TamanduaServer.NetworkDiscovery.RogueDetector do
   use GenServer
   require Logger
 
+  alias TamanduaServer.Agents.CommandManager
   alias TamanduaServer.NetworkDiscovery.DeviceInventory
 
   # ============================================================================
@@ -513,28 +514,43 @@ defmodule TamanduaServer.NetworkDiscovery.RogueDetector do
           |> Enum.filter(fn {_aid, nets} -> detection.subnet in nets end)
           |> Enum.map(fn {aid, _} -> aid end)
 
-        # Send isolation commands to agents
+        # Queue block_ip commands through the persisted AgentCommand pipeline
+        # (CommandManager.queue_command/4 -> Worker.dispatch_persisted_command/2
+        # -> push(socket, "command", ...)). The previous implementation
+        # broadcast {:network_isolation, command} on the
+        # "agent:<id>:commands" PubSub topic, which has no subscriber
+        # anywhere in the server - the command never reached any agent.
+        #
+        # Payload follows the Rust agent's block_ip contract
+        # (apps/tamandua_agent/src/response/mod.rs `block_ip`): keys "ip",
+        # "direction", "reason". The agent does NOT implement MAC-level
+        # blocking or timed expiry, so the old target_mac/duration_minutes/
+        # isolation_level fields are not sent (they were never honored).
         Enum.each(agents_on_subnet, fn agent_id ->
           Enum.each(detection.ip_addresses, fn ip ->
-            command = %{
-              type: "block_ip",
-              target_ip: ip,
-              target_mac: detection.mac_address,
-              reason: "Rogue device: #{detection.violation_type}",
-              duration_minutes: 60,
-              isolation_level: policy.isolation_level
+            payload = %{
+              ip: ip,
+              direction: "both",
+              reason:
+                "Rogue device: #{detection.violation_type} " <>
+                  "(isolation_level=#{policy.isolation_level})"
             }
 
-            Phoenix.PubSub.broadcast(
-              TamanduaServer.PubSub,
-              "agent:#{agent_id}:commands",
-              {:network_isolation, command}
-            )
+            case CommandManager.queue_command(agent_id, :block_ip, payload, priority: 8) do
+              {:ok, _command} ->
+                :ok
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[RogueDetector] Failed to queue block_ip for agent #{agent_id} " <>
+                    "(ip #{ip}): #{inspect(reason)}"
+                )
+            end
           end)
         end)
 
         Logger.warning(
-          "[RogueDetector] Isolation command sent to #{length(agents_on_subnet)} agents " <>
+          "[RogueDetector] block_ip commands queued for #{length(agents_on_subnet)} agents " <>
           "for rogue device #{detection.mac_address || List.first(detection.ip_addresses)}"
         )
 

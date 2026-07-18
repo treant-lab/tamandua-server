@@ -91,14 +91,6 @@ defmodule TamanduaServer.ThreatIntel.ReputationScorer do
   alias TamanduaServer.Repo
   alias TamanduaServer.Detection.IOC
   alias TamanduaServer.Detection.ThreatIntel.{VirusTotal, Shodan, AbuseCh}
-  alias TamanduaServer.ThreatIntel.Feeds.{
-    AbuseIPDB,
-    AlienVault,
-    GreyNoise,
-    OpenPhish,
-    Phishtank,
-    Spamhaus
-  }
 
   import Ecto.Query
 
@@ -482,7 +474,7 @@ defmodule TamanduaServer.ThreatIntel.ReputationScorer do
     end
   end
 
-  defp query_source("abuseipdb", :ip, value, _timeout) do
+  defp query_source("abuseipdb", :ip, _value, _timeout) do
     # Will be implemented with AbuseIPDB module
     {:error, "abuseipdb", :not_implemented}
   end
@@ -898,7 +890,7 @@ defmodule TamanduaServer.ThreatIntel.ReputationScorer do
   end
 
   defp do_rescore_all(opts, state) do
-    days = Keyword.get(opts, :days, 30)
+    _days = Keyword.get(opts, :days, 30)
     parallel = Keyword.get(opts, :parallel, 10)
 
     # Get all unique indicators from history

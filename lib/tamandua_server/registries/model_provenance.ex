@@ -63,7 +63,7 @@ defmodule TamanduaServer.Registries.ModelProvenance do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias TamanduaServer.Organizations.Organization
+  alias TamanduaServer.Accounts.Organization
   alias TamanduaServer.Registries.ProvenanceEntry
 
   @primary_key {:id, :binary_id, autogenerate: true}

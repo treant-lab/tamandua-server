@@ -31,7 +31,6 @@ defmodule TamanduaServer.Detection.TemporalScorer do
   @loose_seconds 300
 
   # Behavioral unit: events from same process within this many ms = one unit
-  @behavioral_unit_ms 1_000
 
   # Time decay reference points (seconds ago -> weight)
   @decay_points [

@@ -45,6 +45,11 @@ defmodule TamanduaServerWeb.ErrorJSON do
     %{error: "internal_server_error", message: "An unexpected error occurred"}
   end
 
+  # Catch-all for template rendering
+  def render(template, _assigns) do
+    %{error: Phoenix.Controller.status_message_from_template(template)}
+  end
+
   @doc """
   Renders custom error with details.
   """
@@ -60,10 +65,5 @@ defmodule TamanduaServerWeb.ErrorJSON do
 
   def error(%{error: error}) do
     %{error: error}
-  end
-
-  # Catch-all for template rendering
-  def render(template, _assigns) do
-    %{error: Phoenix.Controller.status_message_from_template(template)}
   end
 end

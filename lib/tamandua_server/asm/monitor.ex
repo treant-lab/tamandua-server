@@ -18,7 +18,7 @@ defmodule TamanduaServer.ASM.Monitor do
   require Logger
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.ASM.{Discovery, Exposure, RiskScoring}
+  alias TamanduaServer.ASM.{Discovery}
 
   # Change event types
   @change_types [

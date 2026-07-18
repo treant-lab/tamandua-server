@@ -12,6 +12,8 @@ import {
   Target,
   Zap,
   AlertCircle,
+  Database,
+  Server,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
@@ -41,21 +43,40 @@ interface CVE {
   kev_due_date: string | null
   published_at: string
   weaknesses: string[]
+  asset_evidence?: {
+    source: 'agent_software_inventory'
+    affected_asset_count: number | null
+    status: 'matched' | 'not_observed' | 'unscoped'
+  }
 }
 
 interface SyncStatus {
   nvd: {
     last_sync: string | null
-    sync_in_progress: boolean
+    sync_in_progress?: boolean
+    inProgress?: boolean
     total_cves: number
   }
   epss: {
     last_sync: string | null
-    sync_in_progress: boolean
+    sync_in_progress?: boolean
+    inProgress?: boolean
   }
   kev: {
     last_sync: string | null
     total_entries: number
+    sync_in_progress?: boolean
+    inProgress?: boolean
+  }
+}
+
+interface VulnerabilityApiResponse<T> {
+  data?: T
+  error?: string
+  message?: string
+  meta?: {
+    degraded?: boolean
+    operation?: string
   }
 }
 
@@ -71,15 +92,21 @@ export default function Vulnerabilities() {
   const [severityFilter, setSeverityFilter] = useState<string>('')
   const [kevFilter, setKevFilter] = useState(false)
   const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
-  const [error, setError] = useState<string | null>(null)
+const [totalPages, setTotalPages] = useState(1)
+const [error, setError] = useState<string | null>(null)
+ const [catalogError, setCatalogError] = useState<string | null>(null)
+ const [auxiliaryError, setAuxiliaryError] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     try {
-      setError(null)
+setLoading(true)
+setError(null)
+ setCatalogError(null)
+ setAuxiliaryError(null)
       // Fetch stats
-      const statsData = await tenantGet<{ data: VulnerabilityStats }>('/api/v1/vulnerabilities/stats')
-      setStats(statsData.data)
+      const statsData = await tenantGet<VulnerabilityApiResponse<VulnerabilityStats>>('/api/v1/vulnerabilities/stats')
+      assertNotDegraded(statsData)
+      setStats(statsData.data ?? null)
 
       // Fetch vulnerabilities
       const params = new URLSearchParams({
@@ -90,24 +117,41 @@ export default function Vulnerabilities() {
         ...(searchQuery && { search: searchQuery }),
       })
 
-      const cvesData = await tenantGet<{ data: CVE[]; pagination?: { total_pages?: number } }>(`/api/v1/vulnerabilities?${params}`)
+      const cvesData = await tenantGet<VulnerabilityApiResponse<CVE[]> & { pagination?: { total_pages?: number } }>(`/api/v1/vulnerabilities?${params}`)
+      assertNotDegraded(cvesData)
       setCves(cvesData.data || [])
       setTotalPages(cvesData.pagination?.total_pages || 1)
 
-      // Fetch KEV entries
-      const kevData = await tenantGet<{ data: CVE[] }>('/api/v1/vulnerabilities/kev?limit=10')
-      setKevEntries(kevData.data || [])
+ // Auxiliary context is independent from the catalog. One unavailable
+ // feed must not hide CVEs that were loaded successfully.
+ const auxiliary = await Promise.allSettled([
+ fetchHealthy(tenantGet<VulnerabilityApiResponse<CVE[]>>('/api/v1/vulnerabilities/kev?limit=10')),
+ fetchHealthy(tenantGet<VulnerabilityApiResponse<CVE[]>>('/api/v1/vulnerabilities/epss/top?limit=10')),
+ fetchHealthy(tenantGet<VulnerabilityApiResponse<SyncStatus>>('/api/v1/vulnerabilities/sync/status')),
+ ])
 
-      // Fetch top EPSS
-      const epssData = await tenantGet<{ data: CVE[] }>('/api/v1/vulnerabilities/epss/top?limit=10')
-      setTopEpss(epssData.data || [])
+ const unavailable: string[] = []
+ const [kevResult, epssResult, syncResult] = auxiliary
 
-      // Fetch sync status
-      const syncData = await tenantGet<{ data: SyncStatus }>('/api/v1/vulnerabilities/sync/status')
-      setSyncStatus(syncData.data)
-    } catch (error) {
-      logger.error('Failed to fetch vulnerability data:', error)
-      setError(error instanceof Error ? error.message : 'Failed to load vulnerability data')
+ if (kevResult.status === 'fulfilled') setKevEntries(kevResult.value.data || [])
+ else unavailable.push('KEV')
+
+ if (epssResult.status === 'fulfilled') setTopEpss(epssResult.value.data || [])
+ else unavailable.push('EPSS')
+
+ if (syncResult.status === 'fulfilled') setSyncStatus(syncResult.value.data ?? null)
+ else unavailable.push('sync status')
+
+ if (unavailable.length > 0) {
+ const message = `Catalog loaded; auxiliary context unavailable: ${unavailable.join(', ')}`
+ logger.error(message, auxiliary)
+ setAuxiliaryError(message)
+ }
+} catch (error) {
+logger.error('Failed to fetch vulnerability data:', error)
+ const message = error instanceof Error ? error.message : 'Failed to load vulnerability data'
+ setError(message)
+ setCatalogError(message)
     } finally {
       setLoading(false)
     }
@@ -136,35 +180,27 @@ export default function Vulnerabilities() {
     }
   }
 
-  const getSeverityBadgeClass = (severity: string) => {
-    switch (severity?.toLowerCase()) {
-      case 'critical':
-        return 'badge-sentinel badge-sentinel-critical'
-      case 'high':
-        return 'badge-sentinel badge-sentinel-high'
-      case 'medium':
-        return 'badge-sentinel badge-sentinel-medium'
-      case 'low':
-        return 'badge-sentinel badge-sentinel-low'
-      default:
-        return 'badge-sentinel badge-sentinel-default'
-    }
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value)
+    setPage(1)
+  }
+
+  const handleSeverityChange = (value: string) => {
+    setSeverityFilter(value)
+    setPage(1)
+  }
+
+  const handleKevFilterToggle = () => {
+    setKevFilter(current => !current)
+    setPage(1)
   }
 
   const getEpssColor = (score: number | null) => {
-    if (!score) return 'var(--muted)'
+    if (score === null) return 'var(--muted)'
     if (score >= 0.7) return 'var(--crit)'
     if (score >= 0.4) return 'var(--high)'
     if (score >= 0.1) return 'var(--med)'
     return 'var(--low)'
-  }
-
-  const getEpssBadgeClass = (score: number | null) => {
-    if (!score) return 'badge-sentinel badge-sentinel-default'
-    if (score >= 0.7) return 'badge-sentinel badge-sentinel-critical'
-    if (score >= 0.4) return 'badge-sentinel badge-sentinel-high'
-    if (score >= 0.1) return 'badge-sentinel badge-sentinel-medium'
-    return 'badge-sentinel badge-sentinel-low'
   }
 
   return (
@@ -197,7 +233,7 @@ export default function Vulnerabilities() {
         </div>
 
         {/* Stats Cards */}
-        {error && (
+{error && (
           <div
             className="rounded-lg px-4 py-3 text-sm"
             style={{
@@ -208,7 +244,20 @@ export default function Vulnerabilities() {
           >
             {error}
           </div>
-        )}
+)}
+
+ {auxiliaryError && !catalogError && (
+ <div
+ className={'rounded-lg px-4 py-3 text-sm'}
+ style={{
+ background: 'var(--warn-bg)',
+ border: '1px solid var(--warn)',
+ color: 'var(--warn)'
+ }}
+ >
+ {auxiliaryError}
+ </div>
+ )}
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-4">
@@ -266,20 +315,24 @@ export default function Vulnerabilities() {
             <SyncStatusCard
               name="NVD"
               lastSync={syncStatus?.nvd?.last_sync}
-              inProgress={syncStatus?.nvd?.sync_in_progress}
+              inProgress={isSyncInProgress(syncStatus?.nvd)}
               count={syncStatus?.nvd?.total_cves}
+              staleAfterHours={48}
               onSync={() => triggerSync('nvd')}
             />
             <SyncStatusCard
               name="EPSS"
               lastSync={syncStatus?.epss?.last_sync}
-              inProgress={syncStatus?.epss?.sync_in_progress}
+              inProgress={isSyncInProgress(syncStatus?.epss)}
+              staleAfterHours={48}
               onSync={() => triggerSync('epss')}
             />
             <SyncStatusCard
               name="KEV"
               lastSync={syncStatus?.kev?.last_sync}
+              inProgress={isSyncInProgress(syncStatus?.kev)}
               count={syncStatus?.kev?.total_entries}
+              staleAfterHours={24}
               onSync={() => triggerSync('kev')}
             />
           </div>
@@ -299,7 +352,7 @@ export default function Vulnerabilities() {
                 <div>
                   <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Vulnerabilities</h2>
                   <p className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
-                    Open a CVE to see inventory-backed affected assets for your environment.
+                    Catalog and exploit-intel signals are separate from endpoint inventory evidence.
                   </p>
                 </div>
               </div>
@@ -312,7 +365,7 @@ export default function Vulnerabilities() {
                     type="text"
                     placeholder="Search CVEs..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => handleSearchChange(e.target.value)}
                     className="w-full pl-10 pr-4 py-2 rounded-lg focus:outline-none focus:ring-2"
                     style={{
                       background: 'var(--surface-2)',
@@ -324,7 +377,7 @@ export default function Vulnerabilities() {
                 </div>
                 <Select
                   value={severityFilter}
-                  onValueChange={setSeverityFilter}
+                  onValueChange={handleSeverityChange}
                   placeholder="All Severities"
                   className="px-3 py-2 rounded-lg focus:outline-none focus:ring-2"
                 >
@@ -335,7 +388,7 @@ export default function Vulnerabilities() {
                   <SelectItem value="low">Low</SelectItem>
                 </Select>
                 <button
-                  onClick={() => setKevFilter(!kevFilter)}
+                  onClick={handleKevFilterToggle}
                   className="px-3 py-2 rounded-lg transition-colors flex items-center gap-2"
                   style={{
                     background: kevFilter ? 'var(--crit-bg)' : 'var(--surface-2)',
@@ -355,6 +408,14 @@ export default function Vulnerabilities() {
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                   <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-2" />
                   Loading vulnerabilities...
+                </div>
+ ) : catalogError ? (
+                <div className="p-8 text-center" style={{ color: 'var(--crit)' }}>
+                  <AlertTriangle className="h-12 w-12 mx-auto mb-4 opacity-80" />
+                  <p>Vulnerability catalog unavailable</p>
+                  <p className="text-sm mt-2" style={{ color: 'var(--muted)' }}>
+ {catalogError}
+                  </p>
                 </div>
               ) : cves.length === 0 ? (
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
@@ -486,7 +547,7 @@ export default function Vulnerabilities() {
                         className="text-sm font-medium"
                         style={{ color: getEpssColor(cve.epss_score) }}
                       >
-                        {cve.epss_score ? `${(cve.epss_score * 100).toFixed(1)}%` : 'N/A'}
+                        {cve.epss_score !== null ? `${(cve.epss_score * 100).toFixed(1)}%` : 'N/A'}
                       </span>
                     </div>
                     <div
@@ -510,6 +571,23 @@ export default function Vulnerabilities() {
       </div>
     </MainLayout>
   )
+}
+
+function assertNotDegraded<T extends { error?: string; message?: string; meta?: { degraded?: boolean; operation?: string } }>(payload: T) {
+  if (payload.meta?.degraded || payload.error) {
+    const operation = payload.meta?.operation ? ` (${payload.meta.operation})` : ''
+    throw new Error(payload.message || `Vulnerability backend returned degraded data${operation}`)
+  }
+}
+
+async function fetchHealthy<T extends { error?: string; message?: string; meta?: { degraded?: boolean; operation?: string } }>(request: Promise<T>) {
+ const payload = await request
+ assertNotDegraded(payload)
+ return payload
+}
+
+function isSyncInProgress(source: { sync_in_progress?: boolean; inProgress?: boolean } | null | undefined) {
+  return Boolean(source?.sync_in_progress || source?.inProgress)
 }
 
 interface StatCardProps {
@@ -570,14 +648,20 @@ interface SyncStatusCardProps {
   lastSync: string | null | undefined
   inProgress?: boolean
   count?: number
+  staleAfterHours: number
   onSync: () => void
 }
 
-function SyncStatusCard({ name, lastSync, inProgress, count, onSync }: SyncStatusCardProps) {
+function SyncStatusCard({ name, lastSync, inProgress, count, staleAfterHours, onSync }: SyncStatusCardProps) {
+  const freshness = getSyncFreshness(lastSync, staleAfterHours)
+
   return (
     <div
       className="flex items-center gap-3 px-4 py-2 rounded-lg"
-      style={{ background: 'var(--surface-2)' }}
+      style={{
+        background: 'var(--surface-2)',
+        border: freshness.state === 'fresh' ? '1px solid transparent' : '1px solid var(--high)'
+      }}
     >
       <div>
         <div className="flex items-center gap-2">
@@ -588,6 +672,12 @@ function SyncStatusCard({ name, lastSync, inProgress, count, onSync }: SyncStatu
         </div>
         <div className="text-xs" style={{ color: 'var(--muted)' }}>
           {lastSync ? `Last sync: ${formatDate(lastSync)}` : 'Never synced'}
+        </div>
+        <div
+          className="text-xs"
+          style={{ color: freshness.state === 'fresh' ? 'var(--low)' : 'var(--high)' }}
+        >
+          {inProgress ? 'Sync in progress' : freshness.label}
         </div>
       </div>
       <button
@@ -600,6 +690,43 @@ function SyncStatusCard({ name, lastSync, inProgress, count, onSync }: SyncStatu
       </button>
     </div>
   )
+}
+
+function getSyncFreshness(lastSync: string | null | undefined, staleAfterHours: number) {
+  if (!lastSync) {
+    return { state: 'missing' as const, label: 'Freshness unknown' }
+  }
+
+  const syncedAt = new Date(lastSync).getTime()
+  if (Number.isNaN(syncedAt)) {
+    return { state: 'missing' as const, label: 'Freshness unknown' }
+  }
+
+  const ageMs = Date.now() - syncedAt
+  if (ageMs < 0) {
+    return { state: 'missing' as const, label: 'Freshness clock skew' }
+  }
+
+  const ageHours = ageMs / (1000 * 60 * 60)
+  const relativeAge = formatSyncAge(ageMs)
+
+  if (ageHours > staleAfterHours) {
+    return { state: 'stale' as const, label: `Stale: ${relativeAge} old` }
+  }
+
+  return { state: 'fresh' as const, label: `Fresh: ${relativeAge} old` }
+}
+
+function formatSyncAge(ageMs: number) {
+  const ageMinutes = Math.floor(ageMs / (1000 * 60))
+  if (ageMinutes < 1) return 'under 1m'
+  if (ageMinutes < 60) return `${ageMinutes}m`
+
+  const ageHours = Math.floor(ageMinutes / 60)
+  if (ageHours < 48) return `${ageHours}h`
+
+  const ageDays = Math.floor(ageHours / 24)
+  return `${ageDays}d`
 }
 
 function CVERow({ cve, isLast }: { cve: CVE; isLast?: boolean }) {
@@ -619,7 +746,7 @@ function CVERow({ cve, isLast }: { cve: CVE; isLast?: boolean }) {
   }
 
   const getCvssBadgeClass = (score: number | null) => {
-    if (!score) return 'badge-sentinel badge-sentinel-default'
+    if (score === null) return 'badge-sentinel badge-sentinel-default'
     if (score >= 9.0) return 'badge-sentinel badge-sentinel-critical'
     if (score >= 7.0) return 'badge-sentinel badge-sentinel-high'
     if (score >= 4.0) return 'badge-sentinel badge-sentinel-medium'
@@ -650,16 +777,21 @@ function CVERow({ cve, isLast }: { cve: CVE; isLast?: boolean }) {
                 KEV
               </span>
             )}
-            {cve.cvss_v3_score && (
+            {cve.cvss_v3_score !== null && (
               <span className={getCvssBadgeClass(cve.cvss_v3_score)}>
                 CVSS: {cve.cvss_v3_score.toFixed(1)}
               </span>
             )}
-            {cve.epss_score && (
+            {cve.epss_score !== null && (
               <span className="badge-sentinel badge-sentinel-default">
                 EPSS: {(cve.epss_score * 100).toFixed(1)}%
               </span>
             )}
+            <span className="badge-sentinel badge-sentinel-default flex items-center gap-1" title="CVE catalog record from synchronized vulnerability feeds">
+              <Database className="h-3 w-3" />
+              Catalog
+            </span>
+            <AssetEvidenceBadge evidence={cve.asset_evidence} />
           </div>
           <p className="text-sm mt-1 line-clamp-2" style={{ color: 'var(--fg-2)' }}>
             {cve.description}
@@ -677,5 +809,41 @@ function CVERow({ cve, isLast }: { cve: CVE; isLast?: boolean }) {
         <ChevronRight className="h-5 w-5 flex-shrink-0" style={{ color: 'var(--subtle)' }} />
       </div>
     </Link>
+  )
+}
+
+function AssetEvidenceBadge({ evidence }: { evidence?: CVE['asset_evidence'] }) {
+  if (!evidence || evidence.status === 'unscoped' || evidence.affected_asset_count === null) {
+    return (
+      <span
+        className="badge-sentinel badge-sentinel-default flex items-center gap-1"
+        title="Asset evidence is unavailable without tenant-scoped inventory context"
+      >
+        <Server className="h-3 w-3" />
+        Inventory unknown
+      </span>
+    )
+  }
+
+  if (evidence.status === 'matched' && evidence.affected_asset_count > 0) {
+    return (
+      <span
+        className="badge-sentinel badge-sentinel-high flex items-center gap-1"
+        title="Persisted match from agent-reported software inventory"
+      >
+        <Server className="h-3 w-3" />
+        Inventory: {evidence.affected_asset_count} asset{evidence.affected_asset_count === 1 ? '' : 's'}
+      </span>
+    )
+  }
+
+  return (
+    <span
+      className="badge-sentinel badge-sentinel-default flex items-center gap-1"
+      title="No active affected asset match is currently persisted for this tenant"
+    >
+      <Server className="h-3 w-3" />
+      No inventory match
+    </span>
   )
 }

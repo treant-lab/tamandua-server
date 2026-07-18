@@ -8,7 +8,6 @@ defmodule TamanduaServer.Hunting.AnomalyHunter do
 
   require Logger
   alias TamanduaServer.ML.Client, as: MLClient
-  alias TamanduaServer.Telemetry
 
   @doc """
   Identify anomalies in telemetry data for an organization.
@@ -450,7 +449,7 @@ defmodule TamanduaServer.Hunting.AnomalyHunter do
 
   defp detect_suspicious_command_lines(_organization_id, _cutoff) do
     # Detect command lines with suspicious patterns
-    suspicious_patterns = [
+    _suspicious_patterns = [
       "IEX",
       "Invoke-Expression",
       "DownloadString",

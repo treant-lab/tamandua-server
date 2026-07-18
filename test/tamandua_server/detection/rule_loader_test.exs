@@ -1,12 +1,20 @@
 defmodule TamanduaServer.Detection.RuleLoaderTest do
   use ExUnit.Case, async: false
 
-  alias TamanduaServer.Detection.RuleLoader
+  alias TamanduaServer.Detection.{IOCGenerationOwner, RuleLoader}
 
   @moduletag :detection
 
+  setup do
+    unless Process.whereis(IOCGenerationOwner) do
+      start_supervised!(IOCGenerationOwner)
+    end
+
+    :ok
+  end
+
   describe "init_tables/0" do
-    test "creates all double-buffered ETS tables" do
+    test "creates double-buffered rule tables and an immutable IOC generation" do
       # Clean up any existing tables from previous test runs
       cleanup_tables()
 
@@ -20,9 +28,10 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       assert :ets.whereis(:detection_sigma_rules_v0) != :undefined
       assert :ets.whereis(:detection_sigma_rules_v1) != :undefined
 
-      # Verify IOC tables
-      assert :ets.whereis(:detection_ioc_rules_v0) != :undefined
-      assert :ets.whereis(:detection_ioc_rules_v1) != :undefined
+      # IOC snapshots use unnamed immutable generations (no atom per epoch).
+      ioc_table = RuleLoader.get_active_table(:ioc)
+      assert is_reference(ioc_table)
+      assert :ets.info(ioc_table) != :undefined
 
       # Verify YARA tables
       assert :ets.whereis(:detection_yara_rules_v0) != :undefined
@@ -30,7 +39,7 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
 
       # Verify initial versions are 0
       assert [{:sigma, 0}] = :ets.lookup(:detection_rule_versions, :sigma)
-      assert [{:ioc, 0}] = :ets.lookup(:detection_rule_versions, :ioc)
+      assert [{:ioc, ^ioc_table, -1}] = :ets.lookup(:detection_rule_versions, :ioc)
       assert [{:yara, 0}] = :ets.lookup(:detection_rule_versions, :yara)
     end
 
@@ -38,8 +47,10 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       cleanup_tables()
 
       assert :ok = RuleLoader.init_tables()
-      assert :ok = RuleLoader.init_tables()  # Should not raise
-      assert :ok = RuleLoader.init_tables()  # Still fine
+      # Should not raise
+      assert :ok = RuleLoader.init_tables()
+      # Still fine
+      assert :ok = RuleLoader.init_tables()
     end
   end
 
@@ -54,8 +65,10 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       assert RuleLoader.get_active_table(:sigma) == :detection_sigma_rules_v0
     end
 
-    test "returns v0 table initially for ioc" do
-      assert RuleLoader.get_active_table(:ioc) == :detection_ioc_rules_v0
+    test "returns an unnamed immutable generation initially for ioc" do
+      table = RuleLoader.get_active_table(:ioc)
+      assert is_reference(table)
+      assert :ets.info(table) != :undefined
     end
 
     test "returns v0 table initially for yara" do
@@ -114,18 +127,20 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       RuleLoader.reload_sigma_rules_atomic(initial_rules)
 
       # Start multiple reader processes
-      readers = for _ <- 1..10 do
-        Task.async(fn ->
-          # Each reader will check rules 1000 times during the reload
-          for _ <- 1..1000 do
-            table = RuleLoader.get_active_table(:sigma)
-            rules = :ets.tab2list(table)
-            # Should never be empty
-            assert length(rules) > 0, "Reader saw empty rules during reload!"
-          end
-          :ok
-        end)
-      end
+      readers =
+        for _ <- 1..10 do
+          Task.async(fn ->
+            # Each reader will check rules 1000 times during the reload
+            for _ <- 1..1000 do
+              table = RuleLoader.get_active_table(:sigma)
+              rules = :ets.tab2list(table)
+              # Should never be empty
+              assert length(rules) > 0, "Reader saw empty rules during reload!"
+            end
+
+            :ok
+          end)
+        end
 
       # Perform reload while readers are active
       new_rules = for i <- 1..200, do: {i, %{id: i, name: "New Rule #{i}"}}
@@ -133,21 +148,27 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
 
       # Wait for all readers to complete
       results = Task.await_many(readers, 5000)
-      assert Enum.all?(results, & &1 == :ok)
+      assert Enum.all?(results, &(&1 == :ok))
     end
 
     test "concurrent reloads are serialized correctly" do
       # Start multiple reload processes concurrently
-      reloaders = for batch <- 1..5 do
-        rules = for i <- 1..(batch * 10), do: {i, %{id: i, batch: batch}}
-        Task.async(fn ->
-          RuleLoader.reload_sigma_rules_atomic(rules)
-        end)
-      end
+      reloaders =
+        for batch <- 1..5 do
+          rules = for i <- 1..(batch * 10), do: {i, %{id: i, batch: batch}}
+
+          Task.async(fn ->
+            RuleLoader.reload_sigma_rules_atomic(rules)
+          end)
+        end
 
       # All should complete without error
       results = Task.await_many(reloaders, 5000)
-      assert Enum.all?(results, fn {:ok, _count} -> true; _ -> false end)
+
+      assert Enum.all?(results, fn
+               {:ok, _count} -> true
+               _ -> false
+             end)
 
       # Final state should be consistent (one of the batches won)
       table = RuleLoader.get_active_table(:sigma)
@@ -156,21 +177,172 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
     end
   end
 
-  describe "reload_ioc_rules_atomic/1" do
+  describe "reload_ioc_rules_atomic/2" do
     setup do
       cleanup_tables()
       RuleLoader.init_tables()
       :ok
     end
 
-    test "loads IOCs and swaps version" do
+    test "loads IOCs and publishes a fresh immutable generation" do
       iocs = [
         {1, %{type: :sha256, value: "abc123", confidence: 90}},
         {2, %{type: :ip, value: "10.0.0.1", confidence: 85}}
       ]
 
-      assert {:ok, 2} = RuleLoader.reload_ioc_rules_atomic(iocs)
-      assert RuleLoader.get_active_table(:ioc) == :detection_ioc_rules_v1
+      previous = RuleLoader.get_active_table(:ioc)
+      assert {:ok, 2} = RuleLoader.reload_ioc_rules_atomic(iocs, 1)
+      current = RuleLoader.get_active_table(:ioc)
+      assert is_reference(current)
+      refute current == previous
+      assert :ets.info(current, :size) == 2
+    end
+
+    test "a pinned reader survives two newer publications without partial reads" do
+      first = for i <- 1..1_000, do: {i, %{id: i, generation: :first}}
+      second = for i <- 1..1_000, do: {i, %{id: i, generation: :second}}
+      third = for i <- 1..1_000, do: {i, %{id: i, generation: :third}}
+
+      assert {:ok, 1_000} = RuleLoader.reload_ioc_rules_atomic(first, 1)
+      parent = self()
+
+      reader =
+        Task.async(fn ->
+          RuleLoader.with_ioc_snapshot(fn table ->
+            send(parent, {:generation_pinned, table})
+            receive do: (:continue_reader -> :ok)
+            :ets.tab2list(table)
+          end)
+        end)
+
+      assert_receive {:generation_pinned, pinned}
+      assert {:ok, 1_000} = RuleLoader.reload_ioc_rules_atomic(second, 2)
+      assert {:ok, 1_000} = RuleLoader.reload_ioc_rules_atomic(third, 3)
+      assert :ets.info(pinned, :size) == 1_000
+
+      send(reader.pid, :continue_reader)
+      result = Task.await(reader)
+      assert length(result) == 1_000
+      assert Enum.all?(result, fn {_id, ioc} -> ioc.generation == :first end)
+
+      assert eventually(fn -> :ets.info(pinned) == :undefined end)
+    end
+
+    test "nested pins by one reader release the retired generation exactly once" do
+      assert {:ok, 1} =
+               RuleLoader.reload_ioc_rules_atomic([old: %{generation: :old}], 1)
+
+      owner = IOCGenerationOwner
+      pinned = RuleLoader.get_active_table(:ioc)
+
+      assert :outer_complete =
+               RuleLoader.with_ioc_snapshot(fn outer ->
+                 assert outer == pinned
+
+                 assert :inner_complete =
+                          RuleLoader.with_ioc_snapshot(fn inner ->
+                            assert inner == outer
+                            state = :sys.get_state(owner)
+                            assert get_in(state, [:readers, self(), :pins, outer]) == 2
+                            assert get_in(state, [:generations, outer, :pin_count]) == 2
+                            :inner_complete
+                          end)
+
+                 state = :sys.get_state(owner)
+                 assert get_in(state, [:readers, self(), :pins, outer]) == 1
+                 assert get_in(state, [:generations, outer, :pin_count]) == 1
+
+                 assert {:ok, 1} =
+                          RuleLoader.reload_ioc_rules_atomic([new: %{generation: :new}], 2)
+
+                 assert :ets.info(outer) != :undefined
+                 :outer_complete
+               end)
+
+      assert eventually(fn -> :ets.info(pinned) == :undefined end)
+    end
+
+    test "killing pinned readers retires their generation without leaking owner state" do
+      assert {:ok, 1} =
+               RuleLoader.reload_ioc_rules_atomic([old: %{generation: :old}], 1)
+
+      owner = TamanduaServer.Detection.IOCGenerationOwner
+      baseline_generation_count = map_size(:sys.get_state(owner).generations)
+      parent = self()
+
+      readers =
+        for _ <- 1..100 do
+          spawn(fn ->
+            RuleLoader.with_ioc_snapshot(fn table ->
+              send(parent, {:kill_reader_pinned, self(), table})
+              receive do: (:hold_killed_reader -> :ok)
+            end)
+          end)
+        end
+
+      pinned_tables =
+        for _ <- readers do
+          assert_receive {:kill_reader_pinned, _reader, table}, 5_000
+          table
+        end
+
+      assert [pinned] = Enum.uniq(pinned_tables)
+      assert {:ok, 1} = RuleLoader.reload_ioc_rules_atomic([new: %{generation: :new}], 2)
+      assert :ets.info(pinned) != :undefined
+
+      Enum.each(readers, &Process.exit(&1, :kill))
+
+      assert eventually(fn -> :ets.info(pinned) == :undefined end)
+
+      assert eventually(fn ->
+               map_size(:sys.get_state(owner).generations) == baseline_generation_count
+             end)
+    end
+
+    test "generation-owner restart cannot deadlock publication or reader release" do
+      assert {:ok, 1} =
+               RuleLoader.reload_ioc_rules_atomic([first: %{generation: :first}], 1)
+
+      parent = self()
+
+      reader =
+        Task.async(fn ->
+          RuleLoader.with_ioc_snapshot(fn _table ->
+            send(parent, :restart_reader_pinned)
+            receive do: (:release_restart_reader -> :released)
+          end)
+        end)
+
+      assert_receive :restart_reader_pinned
+      owner = Process.whereis(TamanduaServer.Detection.IOCGenerationOwner)
+      monitor = Process.monitor(owner)
+      Process.exit(owner, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}
+
+      assert eventually(fn ->
+               case Process.whereis(IOCGenerationOwner) do
+                 pid when is_pid(pid) -> pid != owner
+                 _ -> false
+               end
+             end)
+
+      publisher =
+        Task.async(fn ->
+          RuleLoader.reload_ioc_rules_atomic([second: %{generation: :second}], 2)
+        end)
+
+      assert {:ok, 1} = Task.await(publisher, 5_000)
+      send(reader.pid, :release_restart_reader)
+      assert :released = Task.await(reader, 5_000)
+      assert RuleLoader.published_ioc_epoch() == 2
+    end
+
+    test "generation owner is never self-started outside its supervisor" do
+      source = File.read!("lib/tamandua_server/detection/ioc_generation_owner.ex")
+
+      refute source =~ "GenServer.start(__MODULE__, :ok, name: __MODULE__)"
+      assert :ok = IOCGenerationOwner.ensure_started()
+      assert is_pid(Process.whereis(IOCGenerationOwner))
     end
   end
 
@@ -187,7 +359,7 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       ioc_rules = for i <- 1..5, do: {i, %{id: i}}
 
       RuleLoader.reload_sigma_rules_atomic(sigma_rules)
-      RuleLoader.reload_ioc_rules_atomic(ioc_rules)
+      RuleLoader.reload_ioc_rules_atomic(ioc_rules, 1)
 
       stats = RuleLoader.stats()
 
@@ -236,7 +408,7 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
 
     test "get_iocs/0 returns list of IOCs" do
       iocs = [{1, %{type: :ip, value: "1.2.3.4"}}]
-      RuleLoader.reload_ioc_rules_atomic(iocs)
+      RuleLoader.reload_ioc_rules_atomic(iocs, 1)
 
       result = RuleLoader.get_iocs()
       assert length(result) == 1
@@ -264,6 +436,18 @@ defmodule TamanduaServer.Detection.RuleLoaderTest do
       rescue
         _ -> :ok
       end
+    end
+  end
+
+  defp eventually(fun, attempts \\ 100)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(5)
+      eventually(fun, attempts - 1)
     end
   end
 end

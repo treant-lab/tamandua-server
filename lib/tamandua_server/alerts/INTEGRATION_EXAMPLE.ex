@@ -7,8 +7,7 @@ defmodule TamanduaServer.Alerts.SuppressionIntegrationExample do
   """
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Alerts.{SuppressionEngine, SuppressedAlert}
-  alias TamanduaServer.Repo
+  alias TamanduaServer.Alerts.{SuppressionEngine}
 
   @doc """
   Create an alert with suppression check (recommended approach).
@@ -296,7 +295,7 @@ defmodule TamanduaServer.Alerts.SuppressionIntegrationExample do
   end
 
   # Private helper functions for example
-  defp notify_alert_created(alert), do: :ok
-  defp notify_severity_reduced(alert), do: :ok
-  defp log_suppression(suppressed), do: :ok
+  defp notify_alert_created(_alert), do: :ok
+  defp notify_severity_reduced(_alert), do: :ok
+  defp log_suppression(_suppressed), do: :ok
 end

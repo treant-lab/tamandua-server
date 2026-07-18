@@ -132,7 +132,7 @@ defmodule TamanduaServer.Alerts.TagManager do
         broadcast_tag_event(alert_id, :tag_assigned, tag_id)
         {:ok, assignment}
 
-      {:error, %Ecto.Changeset{errors: [alert_id: {"has already been taken", _}]} = changeset} ->
+      {:error, %Ecto.Changeset{errors: [alert_id: {"has already been taken", _}]} = _changeset} ->
         # Tag already assigned, return ok
         {:ok, :already_assigned}
 

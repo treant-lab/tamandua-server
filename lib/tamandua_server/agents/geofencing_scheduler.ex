@@ -11,7 +11,7 @@ defmodule TamanduaServer.Agents.GeofencingScheduler do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Agents.{TravelManager, LocationTracker}
+  alias TamanduaServer.Agents.{TravelManager}
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)

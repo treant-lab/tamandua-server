@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import { logger } from '@/lib/logger'
 import {
@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useEventStream } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
+import { Select, SelectItem } from '@/components/ui/baseui'
 import type { WebSocketConnectionState } from '@/types'
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,7 @@ interface NDRStats {
 }
 
 type SourceHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'empty' | 'unknown' | 'unavailable'
+type VisibilityLabel = 'full' | 'partial' | 'degraded' | 'unavailable' | 'live only'
 
 interface SourceHealth {
   key: string
@@ -202,6 +204,8 @@ interface SourceHealth {
   first_seen?: string
   last_seen?: string
   detail?: string
+  visibility?: VisibilityLabel
+  degraded_reasons?: string[]
 }
 
 type DataMode = 'combined' | 'live' | 'historical'
@@ -223,8 +227,21 @@ function formatBytes(bytes: number | undefined | null): string {
 
 function formatObservedBytes(bytes: number | undefined | null, observed: boolean): string {
   const n = Number(bytes)
-  if (observed && (!Number.isFinite(n) || n <= 0)) return 'Not reported'
+  if (observed && (!Number.isFinite(n) || n <= 0)) return 'not captured'
   return formatBytes(bytes)
+}
+
+function formatCapturedBytes(bytes: number | undefined | null): string {
+  const n = Number(bytes)
+  if (!Number.isFinite(n) || n <= 0) return 'not captured'
+  return formatBytes(bytes)
+}
+
+function explicitValue(value: unknown, fallback: 'not captured' | 'inferred' | 'unavailable' = 'not captured'): string {
+  if (typeof value === 'string' && value.trim()) return value
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'boolean') return String(value)
+  return fallback
 }
 
 function formatNumber(n: number | undefined | null): string {
@@ -346,6 +363,35 @@ function normalizeHealthStatus(value: unknown): SourceHealthStatus {
   return 'unknown'
 }
 
+function visibilityFromStatus(status: SourceHealthStatus, key?: string): VisibilityLabel {
+  if (status === 'healthy') return 'full'
+  if (status === 'degraded') return 'partial'
+  if (status === 'unhealthy') return 'degraded'
+  if (status === 'empty' && key === 'historical') return 'live only'
+  if (status === 'empty' || status === 'unavailable') return 'unavailable'
+  return 'degraded'
+}
+
+function visibilityStatusClasses(label: VisibilityLabel): string {
+  switch (label) {
+    case 'full': return 'text-[var(--emerald-400)] bg-[var(--emerald-400)]/10 border-[var(--emerald-400)]/20'
+    case 'partial': return 'text-[var(--high)] bg-[var(--high)]/10 border-[var(--high)]/20'
+    case 'degraded': return 'text-[var(--crit)] bg-[var(--crit)]/10 border-[var(--crit)]/20'
+    case 'live only': return 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20'
+    case 'unavailable': return 'text-[var(--subtle)] bg-[var(--surface)]/40 border-[var(--border)]'
+  }
+}
+
+function sourceReasons(source: SourceHealth): string[] {
+  const reasons = source.degraded_reasons || []
+  if (reasons.length > 0) return reasons
+  if (source.detail) return [source.detail]
+  if (source.status === 'empty') return ['no telemetry rows in the current window']
+  if (source.status === 'unavailable') return ['collector or persisted source unavailable']
+  if (source.status === 'unknown') return ['health endpoint did not report coverage']
+  return []
+}
+
 function formatRowCount(value: unknown): string {
   if (value === undefined || value === null) return 'Rows unknown'
   const count = Number(value)
@@ -374,12 +420,17 @@ function normalizeSourceHealth(raw: unknown): SourceHealth[] {
     const liveSources = liveModules
       ? Object.entries(liveModules).map(([key, value]) => {
           const module = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+          const status = normalizeHealthStatus(module.status)
+          const reason = module.reason !== undefined ? String(module.reason) : live?.retention !== undefined ? String(live.retention) : undefined
+
           return {
             key,
             label: key.replace(/_/g, ' '),
-            status: normalizeHealthStatus(module.status),
+            status,
             coverage: key === 'encrypted_traffic' ? 'TLS, JA3 and certificate analyzer' : 'Live runtime analyzer',
-            detail: module.reason !== undefined ? String(module.reason) : live?.retention !== undefined ? String(live.retention) : undefined,
+            detail: reason,
+            visibility: visibilityFromStatus(status, key),
+            degraded_reasons: reason ? [reason] : undefined,
           }
         })
       : []
@@ -395,34 +446,46 @@ function normalizeSourceHealth(raw: unknown): SourceHealth[] {
       const retention = table.retention !== undefined ? String(table.retention) : undefined
       const range = formatCoverageRange(table.first_seen, table.last_seen)
 
+      const status = normalizeHealthStatus(table.status)
+      const reason = table.reason !== undefined ? String(table.reason) : range
+
       return {
         key: `historical-${key}`,
         label: table.label !== undefined ? String(table.label) : key.replace(/_/g, ' '),
-        status: normalizeHealthStatus(table.status),
+        status,
         coverage: [formatRowCount(table.row_count), retention].filter(Boolean).join(' / '),
         row_count: rowCount,
         first_seen: table.first_seen !== undefined ? String(table.first_seen) : undefined,
         last_seen: table.last_seen !== undefined ? String(table.last_seen) : undefined,
-        detail: table.reason !== undefined ? String(table.reason) : range,
+        detail: reason,
+        visibility: visibilityFromStatus(status, `historical-${key}`),
+        degraded_reasons: reason ? [reason] : undefined,
       }
     })
 
     const historicalSource = historical
-      ? [{
+      ? (() => {
+          const status = normalizeHealthStatus(historical.status)
+          const reason = historical.reason !== undefined
+            ? String(historical.reason)
+            : historicalTables.length > 0
+              ? `${historicalTables.filter(source => source.status === 'healthy' || source.status === 'empty').length} Postgres tables checked`
+              : historical.available ? 'Historical store is available' : 'Historical store is not available'
+
+          return [{
           key: 'historical',
           label: 'Historical NDR',
-          status: normalizeHealthStatus(historical.status),
+          status,
           coverage: historical.retention !== undefined
             ? String(historical.retention)
             : historical.source !== undefined
               ? String(historical.source)
               : 'Persisted store',
-          detail: historical.reason !== undefined
-            ? String(historical.reason)
-            : historicalTables.length > 0
-              ? `${historicalTables.filter(source => source.status === 'healthy' || source.status === 'empty').length} Postgres tables checked`
-              : historical.available ? 'Historical store is available' : 'Historical store is not available',
+          detail: reason,
+          visibility: visibilityFromStatus(status, 'historical'),
+          degraded_reasons: status === 'healthy' ? undefined : [reason],
         }]
+        })()
       : []
 
     return [...liveSources, ...historicalSource, ...historicalTables]
@@ -435,28 +498,22 @@ function normalizeSourceHealth(raw: unknown): SourceHealth[] {
     const key = String(source.key || source.id || source.name || source.source || `source-${index}`)
     const rawLabel = String(source.label || source.display_name || key)
 
+    const status = normalizeHealthStatus(source.status || source.health || source.state)
+    const detail = source.detail !== undefined ? String(source.detail) : source.message !== undefined ? String(source.message) : undefined
+
     return {
       key,
       label: rawLabel.replace(/_/g, ' '),
-      status: normalizeHealthStatus(source.status || source.health || source.state),
+      status,
       coverage: source.coverage !== undefined ? String(source.coverage) : undefined,
       row_count: typeof source.row_count === 'number' ? source.row_count : undefined,
       first_seen: source.first_seen !== undefined ? String(source.first_seen) : undefined,
       last_seen: source.last_seen !== undefined ? String(source.last_seen) : undefined,
-      detail: source.detail !== undefined ? String(source.detail) : source.message !== undefined ? String(source.message) : undefined,
+      detail,
+      visibility: visibilityFromStatus(status, key),
+      degraded_reasons: detail ? [detail] : undefined,
     }
   }).filter(source => source.key && source.label)
-}
-
-function sourceStatusClasses(status: SourceHealthStatus): string {
-  switch (status) {
-    case 'healthy': return 'text-[var(--emerald-400)] bg-[var(--emerald-400)]/10 border-[var(--emerald-400)]/20'
-    case 'degraded': return 'text-[var(--high)] bg-[var(--high)]/10 border-[var(--high)]/20'
-    case 'unhealthy': return 'text-[var(--crit)] bg-[var(--crit)]/10 border-[var(--crit)]/20'
-    case 'empty': return 'text-blue-400 bg-blue-500/10 border-blue-500/20'
-    case 'unavailable': return 'text-[var(--subtle)] bg-[var(--surface)]/40 border-[var(--border)]'
-    default: return 'text-[var(--muted)] bg-[var(--surface)]/40 border-[var(--border)]'
-  }
 }
 
 function getLateralMovementIcon(type: string) {
@@ -613,8 +670,9 @@ function SourceCoveragePanel({
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {sources.map(source => {
-            const isHealthy = source.status === 'healthy'
-            const Icon = isHealthy ? CheckCircle2 : source.status === 'unknown' || source.status === 'unavailable' ? HelpCircle : AlertCircle
+            const visibility = source.visibility || visibilityFromStatus(source.status, source.key)
+            const reasons = sourceReasons(source)
+            const Icon = visibility === 'full' ? CheckCircle2 : visibility === 'unavailable' || source.status === 'unknown' ? HelpCircle : AlertCircle
 
             return (
               <div key={source.key} className="rounded-lg border border-[var(--border)] bg-[var(--surface)]/35 p-3">
@@ -624,16 +682,23 @@ function SourceCoveragePanel({
                     <p className="mt-1 text-xs text-[var(--muted)]">{source.coverage || 'Coverage unknown'}</p>
                   </div>
                   <span className={cn(
-                    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize',
-                    sourceStatusClasses(source.status)
+                    'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                    visibilityStatusClasses(visibility)
                   )}>
                     <Icon className="h-3 w-3" />
-                    {source.status.replace(/_/g, ' ')}
+                    {visibility}
                   </span>
                 </div>
                 <p className="mt-3 text-xs text-[var(--subtle)]">
-                  {source.last_seen ? `Last seen ${relativeTime(source.last_seen)}` : source.detail || (lastUpdated ? `Checked ${relativeTime(lastUpdated)}` : 'Waiting for telemetry')}
+                  {source.last_seen ? `Last seen ${relativeTime(source.last_seen)}` : (lastUpdated ? `Checked ${relativeTime(lastUpdated)}` : 'Waiting for telemetry')}
                 </p>
+                {reasons.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {reasons.slice(0, 2).map(reason => (
+                      <p key={reason} className="text-xs text-[var(--muted)]">{reason}</p>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -685,9 +750,11 @@ function ProtocolPieChart({ data }: { data: ProtocolDistribution[] }) {
 function TopTalkersTable({
   talkers,
   onBlockIP,
+  onHuntIP,
 }: {
   talkers: TopTalker[]
   onBlockIP: (talker: TopTalker) => void
+  onHuntIP: (talker: TopTalker) => void
 }) {
   const hasObservedConnectionsWithoutBytes = talkers.some(
     talker => Number(talker.connection_count || 0) > 0 && Number(talker.total_bytes || 0) <= 0
@@ -739,20 +806,35 @@ function TopTalkersTable({
                     <span className="text-xs text-[var(--muted)]">{talker.connection_count}</span>
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <button
-                      onClick={() => onBlockIP(talker)}
-                      disabled={!talker.agent_id}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      style={{
-                        color: 'var(--crit)',
-                        borderColor: 'color-mix(in srgb, var(--crit) 35%, transparent)',
-                        backgroundColor: 'color-mix(in srgb, var(--crit) 8%, transparent)',
-                      }}
-                      title={talker.agent_id ? `Block ${talker.ip}` : 'Agent ID is required to block from endpoint'}
-                    >
-                      <ShieldAlert className="h-3 w-3" />
-                      Block
-                    </button>
+                    <div className="inline-flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => onBlockIP(talker)}
+                        disabled={!talker.agent_id}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                          color: 'var(--crit)',
+                          borderColor: 'color-mix(in srgb, var(--crit) 35%, transparent)',
+                          backgroundColor: 'color-mix(in srgb, var(--crit) 8%, transparent)',
+                        }}
+                        title={talker.agent_id ? `Block ${talker.ip}` : 'Agent ID is required to block from endpoint'}
+                      >
+                        <ShieldAlert className="h-3 w-3" />
+                        Block
+                      </button>
+                      <button
+                        onClick={() => onHuntIP(talker)}
+                        className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs transition-colors"
+                        style={{
+                          color: 'var(--high)',
+                          borderColor: 'color-mix(in srgb, var(--high) 35%, transparent)',
+                          backgroundColor: 'color-mix(in srgb, var(--high) 8%, transparent)',
+                        }}
+                        title={`Hunt related activity for ${talker.ip}`}
+                      >
+                        <Search className="h-3 w-3" />
+                        Hunt
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )
@@ -786,37 +868,45 @@ function RecentFlowsTable({ flows }: { flows: NetworkFlow[] }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--surface)]/30">
-          {flows.map((flow, idx) => (
-            <tr key={flow.id || `${flow.src_ip}-${flow.dst_ip}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
-              <td className="px-3 py-2.5">
-                <div className="font-mono text-xs text-[var(--fg)]">{flow.src_ip}{flow.src_port ? `:${flow.src_port}` : ''}</div>
-                {flow.agent_id && <div className="mt-0.5 truncate text-[11px] text-[var(--subtle)] max-w-[180px]">{flow.agent_id}</div>}
-              </td>
-              <td className="px-3 py-2.5 font-mono text-xs text-[var(--fg)]">
-                {flow.dst_ip}{flow.dst_port ? `:${flow.dst_port}` : ''}
-              </td>
-              <td className="px-3 py-2.5">
-                <span className="inline-flex items-center rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-400">
-                  {flow.protocol || 'UNKNOWN'}
-                </span>
-              </td>
-              <td className="px-3 py-2.5">
-                <span className="font-mono text-xs text-[var(--muted)]">
-                  {flow.process_name || 'unknown'}
-                  {flow.process_pid ? ` (${flow.process_pid})` : ''}
-                </span>
-              </td>
-              <td className="px-3 py-2.5 text-right">
-                <div className="font-mono text-xs font-medium text-[var(--fg)]">{formatBytes(flow.total_bytes)}</div>
-                <div className="text-[11px] text-[var(--subtle)]">
-                  {formatBytes(flow.bytes_sent)} sent / {formatBytes(flow.bytes_received)} recv
-                </div>
-              </td>
-              <td className="px-3 py-2.5 text-xs text-[var(--muted)]">
-                {relativeTime(flow.last_seen)}
-              </td>
-            </tr>
-          ))}
+          {flows.map((flow, idx) => {
+            const hasBytes = Number(flow.total_bytes || flow.bytes_sent || flow.bytes_received || 0) > 0
+
+            return (
+              <tr key={flow.id || `${flow.src_ip}-${flow.dst_ip}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
+                <td className="px-3 py-2.5">
+                  <div className="font-mono text-xs text-[var(--fg)]">{explicitValue(flow.src_ip, 'unavailable')}{flow.src_port ? `:${flow.src_port}` : ''}</div>
+                  {flow.agent_id && <div className="mt-0.5 truncate text-[11px] text-[var(--subtle)] max-w-[180px]">{flow.agent_id}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="font-mono text-xs text-[var(--fg)]">{explicitValue(flow.dst_ip, 'unavailable')}{flow.dst_port ? `:${flow.dst_port}` : ''}</div>
+                  <div className="mt-0.5 text-[11px] text-[var(--subtle)]">domain not captured</div>
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className="inline-flex items-center rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-400">
+                    {flow.protocol || 'unavailable'}
+                  </span>
+                  <div className="mt-1 text-[11px] text-[var(--subtle)]">TLS metadata unavailable</div>
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className="font-mono text-xs text-[var(--muted)]">
+                    {flow.process_name || 'inferred'}
+                    {flow.process_pid ? ` (${flow.process_pid})` : ''}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 text-right">
+                  <div className="font-mono text-xs font-medium text-[var(--fg)]">{formatCapturedBytes(flow.total_bytes)}</div>
+                  <div className="text-[11px] text-[var(--subtle)]">
+                    {hasBytes
+                      ? `${formatCapturedBytes(flow.bytes_sent)} sent / ${formatCapturedBytes(flow.bytes_received)} recv`
+                      : 'byte counters not captured'}
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 text-xs text-[var(--muted)]">
+                  {relativeTime(flow.last_seen)}
+                </td>
+              </tr>
+            )
+          })}
           {flows.length === 0 && (
             <tr>
               <td colSpan={6} className="py-8 text-center text-sm text-[var(--muted)]">
@@ -962,19 +1052,19 @@ function TLSSessionsTable({ sessions }: { sessions: TLSSession[] }) {
             return (
               <tr key={`${session.event_id || session.remote_ip || 'tls'}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
                 <td className="px-3 py-2.5">
-                  <div className="font-mono text-xs text-[var(--fg)]">{session.remote_ip || 'unknown'}</div>
-                  <div className="text-[11px] text-[var(--subtle)]">{session.remote_port || '--'} / {quicVersion ? 'QUIC' : session.protocol || 'tls'}</div>
+                  <div className="font-mono text-xs text-[var(--fg)]">{session.remote_ip || 'unavailable'}</div>
+                  <div className="text-[11px] text-[var(--subtle)]">{session.remote_port || 'not captured'} / {quicVersion ? 'QUIC' : session.protocol || 'TLS inferred'}</div>
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="text-xs text-[var(--fg)] truncate max-w-[220px]" title={session.sni || session.domain}>
-                    {session.sni || session.domain || 'Not reported'}
+                    {session.sni || session.domain || 'not captured'}
                   </div>
                   {session.agent_id && <div className="text-[11px] text-[var(--subtle)] truncate max-w-[220px]">{session.agent_id}</div>}
                 </td>
                 <td className="px-3 py-2.5">
-                  <div className="text-xs text-[var(--fg)]">{session.tls_version || (quicVersion ? `QUIC ${quicVersion}` : 'unknown')}</div>
+                  <div className="text-xs text-[var(--fg)]">{session.tls_version || (quicVersion ? `QUIC ${quicVersion}` : 'not captured')}</div>
                   <div className="text-[11px] text-[var(--subtle)] truncate max-w-[200px]" title={alpnProtocols.join(', ') || alpn || undefined}>
-                    {[alpn || alpnProtocols[0], httpVersion ? `HTTP/${httpVersion}` : null].filter(Boolean).join(' / ') || 'ALPN not reported'}
+                    {[alpn || alpnProtocols[0], httpVersion ? `HTTP/${httpVersion}` : null].filter(Boolean).join(' / ') || 'ALPN not captured'}
                   </div>
                   {cipherSuite && <div className="text-[11px] text-[var(--subtle)] truncate max-w-[200px]" title={cipherSuite}>{cipherSuite}</div>}
                 </td>
@@ -984,7 +1074,7 @@ function TLSSessionsTable({ sessions }: { sessions: TLSSession[] }) {
                       {encryptedDnsTransport.toUpperCase()}
                     </span>
                   ) : (
-                    <span className="text-xs text-[var(--muted)]">Not classified</span>
+                    <span className="text-xs text-[var(--muted)]">unavailable</span>
                   )}
                   {dnsResolver && <div className="mt-1 font-mono text-[11px] text-[var(--subtle)] truncate max-w-[140px]" title={dnsResolver}>{dnsResolver}</div>}
                 </td>
@@ -1029,7 +1119,7 @@ function CertificatesTable({ certificates }: { certificates: CertificateAnalysis
             return (
               <tr key={`${cert.fingerprint || cert.domain || 'cert'}-${idx}`} className="hover:bg-[var(--surface)]/20 transition-colors">
                 <td className="px-3 py-2.5">
-                  <div className="text-xs text-[var(--fg)] truncate max-w-[180px]" title={cert.domain}>{cert.domain || cert.remote_ip || 'unknown'}</div>
+                  <div className="text-xs text-[var(--fg)] truncate max-w-[180px]" title={cert.domain}>{cert.domain || cert.remote_ip || 'not captured'}</div>
                   {cert.remote_port && <div className="text-[11px] text-[var(--subtle)]">{cert.remote_ip}:{cert.remote_port}</div>}
                 </td>
                 <td className="px-3 py-2.5">
@@ -1348,6 +1438,11 @@ export default function NDR() {
     }
   }, [])
 
+  const handleHuntIP = useCallback((talker: TopTalker) => {
+    if (!talker.ip) return
+    router.visit(`/app/hunt?q=remote_ip:${encodeURIComponent(talker.ip)}`)
+  }, [])
+
   const moduleStats = {
     total_flows_processed: ndrStats?.flow_analyzer?.flows_processed || 0,
     total_events_analyzed:
@@ -1392,41 +1487,78 @@ export default function NDR() {
     const protocolEvents = ndrStats?.protocol_analyzer?.events_analyzed || 0
     const lateralEvents = ndrStats?.lateral_detector?.events_analyzed || lateralMovements.length
     const encryptedEvents = ndrStats?.encrypted_traffic?.events_analyzed || ja3Stats.length + tlsSessions.length + certificates.length
+    const bytesCaptured = (flowStats?.total_bytes || 0) > 0 || flows.some(flow => Number(flow.total_bytes || 0) > 0) || topTalkers.some(talker => Number(talker.total_bytes || 0) > 0)
+    const dnsEvents = protocols.some(item => String(item.protocol || '').toUpperCase() === 'DNS' && Number(item.flow_count || item.total_bytes || 0) > 0)
+    const packetOrDpiEvents = protocolEvents > 0 || protocols.some(item => ['HTTP', 'SMB', 'RDP', 'SSH'].includes(String(item.protocol || '').toUpperCase()))
+    const persistenceRows = 0
 
     return [
       {
         key: 'flow_analyzer',
-        label: 'Flow analyzer',
+        label: 'Flow visibility',
         status: flowEvents > 0 ? 'healthy' : 'empty',
+        visibility: flowEvents > 0 ? 'full' : 'unavailable',
         coverage: `${formatNumber(flowEvents)} flows observed`,
+        degraded_reasons: flowEvents > 0 ? undefined : ['no flow telemetry in the current window'],
       },
       {
-        key: 'protocol_analyzer',
-        label: 'Protocol analyzer',
-        status: protocolEvents > 0 || protocols.length > 0 ? 'healthy' : 'empty',
-        coverage: `${formatNumber(protocolEvents)} protocol events`,
+        key: 'dns_visibility',
+        label: 'DNS',
+        status: dnsEvents ? 'healthy' : flowEvents > 0 ? 'degraded' : 'empty',
+        visibility: dnsEvents ? 'full' : flowEvents > 0 ? 'partial' : 'unavailable',
+        coverage: dnsEvents ? 'DNS protocol rows observed' : 'No DNS query rows captured',
+        degraded_reasons: dnsEvents ? undefined : ['domains may be absent or inferred from SNI/host fields only'],
       },
       {
-        key: 'lateral_detector',
-        label: 'Lateral detector',
-        status: lateralEvents > 0 ? 'healthy' : 'empty',
-        coverage: `${formatNumber(lateralEvents)} lateral inputs`,
+        key: 'packet_dpi',
+        label: 'Packet / DPI',
+        status: packetOrDpiEvents ? 'healthy' : flowEvents > 0 ? 'degraded' : 'empty',
+        visibility: packetOrDpiEvents ? 'partial' : 'unavailable',
+        coverage: `${formatNumber(protocolEvents)} protocol analyzer events`,
+        degraded_reasons: packetOrDpiEvents ? ['metadata/protocol counters only; payload is not decrypted'] : ['no packet/DPI telemetry reported'],
       },
       {
         key: 'encrypted_traffic',
-        label: 'Encrypted traffic',
+        label: 'TLS / SNI / JA3',
         status: encryptedEvents > 0 ? 'healthy' : 'empty',
+        visibility: encryptedEvents > 0 ? 'partial' : 'unavailable',
         coverage: `${formatNumber(encryptedEvents)} TLS/JA3 inputs`,
+        degraded_reasons: encryptedEvents > 0 ? ['metadata only; no payload decryption'] : ['TLS/SNI/JA3 metadata not captured'],
+      },
+      {
+        key: 'byte_counters',
+        label: 'Bytes',
+        status: bytesCaptured ? 'healthy' : flowEvents > 0 ? 'degraded' : 'empty',
+        visibility: bytesCaptured ? 'full' : flowEvents > 0 ? 'partial' : 'unavailable',
+        coverage: bytesCaptured ? `${formatBytes(flowStats?.total_bytes || 0)} observed` : 'Byte counters absent',
+        degraded_reasons: bytesCaptured ? undefined : ['flows exist but byte counters are not captured'],
+      },
+      {
+        key: 'historical',
+        label: 'Persistence',
+        status: 'empty',
+        visibility: 'live only',
+        row_count: persistenceRows,
+        coverage: 'No persisted coverage returned by source health',
+        degraded_reasons: ['current page data is live/runtime unless historical coverage reports rows'],
+      },
+      {
+        key: 'lateral_detector',
+        label: 'Degraded reasons',
+        status: lateralEvents > 0 ? 'healthy' : 'empty',
+        visibility: lateralEvents > 0 ? 'partial' : 'unavailable',
+        coverage: `${formatNumber(lateralEvents)} lateral detector inputs`,
+        degraded_reasons: lateralEvents > 0 ? ['detection quality follows available flow/protocol metadata'] : ['lateral detector has no inputs in this window'],
       },
     ]
-  }, [sourceHealth, ndrStats, flowStats, protocols.length, lateralMovements.length, ja3Stats.length, tlsSessions.length, certificates.length])
+  }, [sourceHealth, ndrStats, flowStats, flows, topTalkers, protocols, lateralMovements.length, ja3Stats.length, tlsSessions.length, certificates.length])
 
   const historicalSource = sourceCoverage.find(source => source.key === 'historical')
   const historicalStatus = historicalSource?.status === 'healthy'
-    ? 'Available'
+    ? 'full'
     : historicalSource?.status === 'unavailable'
-      ? 'Not configured'
-      : 'Runtime only'
+      ? 'unavailable'
+      : 'live only'
   const historicalCoverage = useMemo(() => {
     const tables = sourceCoverage.filter(source => source.key.startsWith('historical-'))
     const rows = tables.reduce((sum, source) => sum + (source.row_count || 0), 0)
@@ -1635,7 +1767,7 @@ export default function NDR() {
           <DataModeCard
             icon={Database}
             title="Combined"
-            status={dataMode === 'combined' ? 'Selected' : 'Live + historical'}
+            status={historicalCoverage.available ? 'full' : 'partial'}
             description="Merges runtime flow state with persisted NDR rows for the broadest operational view."
             active={dataMode === 'combined'}
             onClick={() => setDataMode('combined')}
@@ -1643,7 +1775,7 @@ export default function NDR() {
           <DataModeCard
             icon={Radio}
             title="Live data"
-            status={connectionState === 'connected' ? 'Streaming' : 'REST snapshots'}
+            status="live only"
             description="Runtime flow, protocol, topology, JA3, and lateral-movement counters from active agent telemetry."
             active={dataMode === 'live'}
             onClick={() => setDataMode('live')}
@@ -1728,37 +1860,37 @@ export default function NDR() {
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">Protocol</span>
-                <select value={protocolFilter} onChange={event => setProtocolFilter(event.target.value)} className="input-sentinel">
-                  <option value="all">All protocols</option>
+                <Select value={protocolFilter} onValueChange={setProtocolFilter} className="input-sentinel" fullWidth>
+                  <SelectItem value="all">All protocols</SelectItem>
                   {protocolOptions.map(protocol => (
-                    <option key={protocol} value={protocol}>{protocol}</option>
+                    <SelectItem key={protocol} value={protocol}>{protocol}</SelectItem>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">Topology scope</span>
-                <select value={scopeFilter} onChange={event => setScopeFilter(event.target.value as typeof scopeFilter)} className="input-sentinel">
-                  <option value="all">Internal and external</option>
-                  <option value="internal">Internal only</option>
-                  <option value="external">External only</option>
-                </select>
+                <Select value={scopeFilter} onValueChange={value => setScopeFilter(value as typeof scopeFilter)} className="input-sentinel" fullWidth>
+                  <SelectItem value="all">Internal and external</SelectItem>
+                  <SelectItem value="internal">Internal only</SelectItem>
+                  <SelectItem value="external">External only</SelectItem>
+                </Select>
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">Lateral activity</span>
-                <select value={lateralTypeFilter} onChange={event => setLateralTypeFilter(event.target.value)} className="input-sentinel">
-                  <option value="all">All lateral detections</option>
+                <Select value={lateralTypeFilter} onValueChange={setLateralTypeFilter} className="input-sentinel" fullWidth>
+                  <SelectItem value="all">All lateral detections</SelectItem>
                   {lateralTypeOptions.map(type => (
-                    <option key={type} value={type}>{type.replace(/_/g, ' ')}</option>
+                    <SelectItem key={type} value={type}>{type.replace(/_/g, ' ')}</SelectItem>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">JA3 status</span>
-                <select value={ja3StatusFilter} onChange={event => setJa3StatusFilter(event.target.value as typeof ja3StatusFilter)} className="input-sentinel">
-                  <option value="all">All JA3 fingerprints</option>
-                  <option value="malicious">Malicious only</option>
-                  <option value="clean">Clean only</option>
-                </select>
+                <Select value={ja3StatusFilter} onValueChange={value => setJa3StatusFilter(value as typeof ja3StatusFilter)} className="input-sentinel" fullWidth>
+                  <SelectItem value="all">All JA3 fingerprints</SelectItem>
+                  <SelectItem value="malicious">Malicious only</SelectItem>
+                  <SelectItem value="clean">Clean only</SelectItem>
+                </Select>
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">Minimum bytes</span>
@@ -1772,12 +1904,12 @@ export default function NDR() {
               </label>
               <label className="space-y-1">
                 <span className="text-xs text-[var(--muted)]">Result limit</span>
-                <select value={limitFilter} onChange={event => setLimitFilter(event.target.value)} className="input-sentinel">
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </select>
+                <Select value={limitFilter} onValueChange={setLimitFilter} className="input-sentinel" fullWidth>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="20">20</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </Select>
               </label>
             </div>
           </div>
@@ -1931,7 +2063,7 @@ export default function NDR() {
                 <TrendingUp className="h-5 w-5 text-[var(--emerald-400)]" />
                 Top Talkers
               </h3>
-              <TopTalkersTable talkers={filteredTopTalkers} onBlockIP={handleBlockIP} />
+              <TopTalkersTable talkers={filteredTopTalkers} onBlockIP={handleBlockIP} onHuntIP={handleHuntIP} />
             </div>
 
             {/* Network Topology Mini */}

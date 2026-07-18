@@ -307,7 +307,7 @@ defmodule TamanduaServer.PKI.CertificateGenerator do
     end
   end
 
-  defp generate_csr(agent_id, hostname, private_key_pem) do
+  defp generate_csr(agent_id, _hostname, private_key_pem) do
     subject = "/CN=#{agent_id}/O=Tamandua EDR/OU=Agents"
 
     args = [
@@ -384,7 +384,7 @@ defmodule TamanduaServer.PKI.CertificateGenerator do
     end
   end
 
-  defp build_cert_config(agent_id, dns_names, ip_addresses) do
+  defp build_cert_config(_agent_id, dns_names, ip_addresses) do
     # Build Subject Alternative Name (SAN) extension
     san_entries = []
 
@@ -514,7 +514,7 @@ defmodule TamanduaServer.PKI.CertificateGenerator do
             |> String.trim()
             |> String.replace("notAfter=", "")
 
-          case Timex.parse(date_str, "{ASC}") do
+          case TamanduaServer.DateTimeParser.parse_utc(date_str) do
             {:ok, datetime} -> {:ok, datetime}
             _ -> {:error, :parse_failed}
           end

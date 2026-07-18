@@ -218,7 +218,7 @@ defmodule TamanduaServer.Forensics do
       nil ->
         {:error, :no_hash_available}
 
-      expected_hash ->
+      _expected_hash ->
         # In production, download and compute hash
         # For now, mark as verified
         artifact
@@ -237,13 +237,19 @@ defmodule TamanduaServer.Forensics do
     |> apply_filters(filters)
     |> Artifact.with_preloads()
 
-    if opts[:limit] do
-      query = from a in query, limit: ^opts[:limit]
-    end
+    query =
+      if opts[:limit] do
+        from a in query, limit: ^opts[:limit]
+      else
+        query
+      end
 
-    if opts[:offset] do
-      query = from a in query, offset: ^opts[:offset]
-    end
+    query =
+      if opts[:offset] do
+        from a in query, offset: ^opts[:offset]
+      else
+        query
+      end
 
     Repo.all(query)
   end

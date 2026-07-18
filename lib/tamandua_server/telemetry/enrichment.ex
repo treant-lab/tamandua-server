@@ -130,7 +130,9 @@ defmodule TamanduaServer.Telemetry.Enrichment do
   """
   def stats do
     %{
-      cache: Cache.stats(),
+      # entry_stats/0 is the hand-written per-type breakdown; Cache.stats/0
+      # is the Nebulex-generated adapter counters and previously shadowed it.
+      cache: Cache.entry_stats(),
       async_worker: AsyncWorker.stats()
     }
   end

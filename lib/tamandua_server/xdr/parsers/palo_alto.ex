@@ -636,19 +636,7 @@ defmodule TamanduaServer.XDR.Parsers.PaloAlto do
 
   defp parse_timestamp(nil), do: DateTime.utc_now()
   defp parse_timestamp(timestamp_str) do
-    # Try various formats
-    formats = [
-      "{YYYY}/{0M}/{0D} {h24}:{m}:{s}",
-      "{YYYY}-{0M}-{0D} {h24}:{m}:{s}",
-      "{YYYY}-{0M}-{0D}T{h24}:{m}:{s}"
-    ]
-
-    Enum.find_value(formats, DateTime.utc_now(), fn format ->
-      case Timex.parse(timestamp_str, format) do
-        {:ok, datetime} -> datetime
-        _ -> nil
-      end
-    end)
+    TamanduaServer.DateTimeParser.parse_utc!(timestamp_str)
   rescue
     _ -> DateTime.utc_now()
   end

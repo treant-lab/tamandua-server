@@ -30,9 +30,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Telemetry.Event
-  alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Detection.{Correlator, Rules.Sigma}
   alias TamanduaServer.AI.LLMClient
 
   @hunt_session_ttl :timer.hours(24)
@@ -40,7 +38,8 @@ defmodule TamanduaServer.Hunting.NLHunter do
   @evidence_batch_size 100
 
   # Entity types for extraction
-  @entity_patterns %{
+  defp entity_patterns do
+    %{
     ip_address: ~r/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/,
     domain: ~r/\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b/,
     hash_sha256: ~r/\b[a-fA-F0-9]{64}\b/,
@@ -51,10 +50,12 @@ defmodule TamanduaServer.Hunting.NLHunter do
     port: ~r/\bport\s*(?:number\s*)?(\d{1,5})\b/i,
     time_range: ~r/(?:last|past)\s+(\d+)\s*(hour|day|week|month)s?/i,
     mitre_technique: ~r/\bT\d{4}(?:\.\d{3})?\b/
-  }
+    }
+  end
 
   # Intent patterns for query classification
-  @intent_patterns %{
+  defp intent_patterns do
+    %{
     hunt_lateral_movement: [
       ~r/lateral\s*movement/i,
       ~r/spread|propagat/i,
@@ -108,7 +109,8 @@ defmodule TamanduaServer.Hunting.NLHunter do
       ~r/user\s*activity/i,
       ~r/account\s*(?:compromise|suspicious)/i
     ]
-  }
+    }
+  end
 
   # MITRE ATT&CK mapping for hypothesis generation
   @mitre_hypothesis_map %{
@@ -683,7 +685,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
   end
 
   defp extract_entities(query) do
-    @entity_patterns
+    entity_patterns()
     |> Enum.map(fn {type, pattern} ->
       matches = Regex.scan(pattern, query) |> List.flatten() |> Enum.uniq()
       {type, matches}
@@ -693,7 +695,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
   end
 
   defp detect_intent(query_lower) do
-    @intent_patterns
+    intent_patterns()
     |> Enum.find_value(fn {intent, patterns} ->
       if Enum.any?(patterns, &Regex.match?(&1, query_lower)) do
         intent
@@ -702,7 +704,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
   end
 
   defp extract_time_range(query_lower, context) do
-    case Regex.run(@entity_patterns.time_range, query_lower) do
+    case Regex.run(entity_patterns().time_range, query_lower) do
       [_, count, unit] ->
         count = String.to_integer(count)
         unit = String.downcase(unit)
@@ -750,7 +752,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     end
 
     # Port filter
-    filters = case Regex.run(@entity_patterns.port, query_lower) do
+    filters = case Regex.run(entity_patterns().port, query_lower) do
       [_, port] -> Map.put(filters, :port, String.to_integer(port))
       nil -> filters
     end
@@ -780,7 +782,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
   # Query Execution
   # ============================================================================
 
-  defp execute_hunt_query(parsed, organization_id, opts \\ []) do
+  defp execute_hunt_query(parsed, organization_id, _opts \\ []) do
     # Build Ecto query based on parsed intent
     base_query = build_base_query(parsed, organization_id)
 
@@ -1057,7 +1059,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     (base_techniques ++ result_techniques) |> Enum.uniq()
   end
 
-  defp generate_intent_hypotheses(intent, results) do
+  defp generate_intent_hypotheses(intent, _results) do
     case intent do
       :hunt_lateral_movement ->
         [%{
@@ -1280,7 +1282,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     |> Enum.uniq()
   end
 
-  defp suggest_next_steps(session) do
+  defp suggest_next_steps(_session) do
     [
       "Export Sigma rule for automated detection",
       "Create alert for similar activity",
@@ -1787,7 +1789,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
 
   defp extract_entity_conditions(query, conditions) do
     # Extract IP addresses
-    ips = Regex.scan(@entity_patterns.ip_address, query) |> List.flatten()
+    ips = Regex.scan(entity_patterns().ip_address, query) |> List.flatten()
     conditions = if length(ips) > 0 do
       ip_condition = Enum.map_join(ips, " OR ", fn ip -> "network.remote_ip:#{ip}" end)
       conditions ++ ["(#{ip_condition})"]
@@ -1796,7 +1798,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     end
 
     # Extract file hashes
-    hashes = Regex.scan(@entity_patterns.hash_sha256, query) |> List.flatten()
+    hashes = Regex.scan(entity_patterns().hash_sha256, query) |> List.flatten()
     conditions = if length(hashes) > 0 do
       hash_condition = Enum.map_join(hashes, " OR ", fn h -> "process.sha256:#{h}" end)
       conditions ++ ["(#{hash_condition})"]
@@ -1805,7 +1807,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     end
 
     # Extract process names
-    procs = Regex.scan(@entity_patterns.process_name, query) |> List.flatten()
+    procs = Regex.scan(entity_patterns().process_name, query) |> List.flatten()
     conditions = if length(procs) > 0 do
       proc_condition = Enum.map_join(procs, " OR ", fn p -> "process.name:#{p}" end)
       conditions ++ ["(#{proc_condition})"]
@@ -1814,7 +1816,7 @@ defmodule TamanduaServer.Hunting.NLHunter do
     end
 
     # Extract ports
-    ports = Regex.scan(@entity_patterns.port, query) |> Enum.map(fn [_, port] -> port end)
+    ports = Regex.scan(entity_patterns().port, query) |> Enum.map(fn [_, port] -> port end)
     conditions = if length(ports) > 0 do
       port_condition = Enum.map_join(ports, " OR ", fn p -> "network.remote_port:#{p}" end)
       conditions ++ ["(#{port_condition})"]

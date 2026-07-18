@@ -22,6 +22,8 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
   use TamanduaServer.DataCase, async: false
 
   alias TamanduaServer.ThreatIntel.CampaignTracker
+  @org_a "11111111-1111-4111-8111-111111111111"
+  @org_b "22222222-2222-4222-8222-222222222222"
 
   # ============================================================================
   # Campaign listing
@@ -29,12 +31,12 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "list_campaigns/1" do
     test "returns a list (possibly empty)" do
-      campaigns = CampaignTracker.list_campaigns()
+      campaigns = CampaignTracker.list_campaigns(@org_a, [])
       assert is_list(campaigns)
     end
 
     test "supports status filter" do
-      campaigns = CampaignTracker.list_campaigns(status: "active")
+      campaigns = CampaignTracker.list_campaigns(@org_a, status: "active")
       assert is_list(campaigns)
 
       for campaign <- campaigns do
@@ -43,13 +45,13 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
     end
 
     test "supports limit option" do
-      campaigns = CampaignTracker.list_campaigns(limit: 5)
+      campaigns = CampaignTracker.list_campaigns(@org_a, limit: 5)
       assert is_list(campaigns)
       assert length(campaigns) <= 5
     end
 
     test "supports actor filter" do
-      campaigns = CampaignTracker.list_campaigns(actor: "APT29")
+      campaigns = CampaignTracker.list_campaigns(@org_a, actor: "APT29")
       assert is_list(campaigns)
 
       for campaign <- campaigns do
@@ -60,11 +62,12 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
     test "supports min_severity filter" do
       severity_levels = %{"low" => 1, "medium" => 2, "high" => 3, "critical" => 4}
 
-      campaigns = CampaignTracker.list_campaigns(min_severity: "high")
+      campaigns = CampaignTracker.list_campaigns(@org_a, min_severity: "high")
       assert is_list(campaigns)
 
       for campaign <- campaigns do
         level = Map.get(severity_levels, campaign[:severity] || "low", 0)
+
         assert level >= severity_levels["high"],
                "campaign severity #{campaign[:severity]} should be >= high"
       end
@@ -77,7 +80,8 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "get_campaign/1" do
     test "returns {:error, :not_found} for unknown campaign" do
-      assert {:error, :not_found} = CampaignTracker.get_campaign("nonexistent-campaign-id")
+      assert {:error, :not_found} =
+               CampaignTracker.get_campaign(@org_a, "nonexistent-campaign-id")
     end
   end
 
@@ -87,7 +91,8 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "get_campaign_scope/1" do
     test "returns {:error, :not_found} for unknown campaign" do
-      assert {:error, :not_found} = CampaignTracker.get_campaign_scope("nonexistent-campaign-id")
+      assert {:error, :not_found} =
+               CampaignTracker.get_campaign_scope(@org_a, "nonexistent-campaign-id")
     end
   end
 
@@ -97,7 +102,8 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "resolve_campaign/1" do
     test "returns {:error, :not_found} for unknown campaign" do
-      assert {:error, :not_found} = CampaignTracker.resolve_campaign("nonexistent-campaign-id")
+      assert {:error, :not_found} =
+               CampaignTracker.resolve_campaign(@org_a, "nonexistent-campaign-id")
     end
   end
 
@@ -107,7 +113,9 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "campaigns_for_ioc/1" do
     test "returns empty list for unknown IOC" do
-      campaigns = CampaignTracker.campaigns_for_ioc("unknown-ioc-value-#{System.unique_integer()}")
+      campaigns =
+        CampaignTracker.campaigns_for_ioc(@org_a, "unknown-ioc-value-#{System.unique_integer()}")
+
       assert campaigns == []
     end
   end
@@ -118,7 +126,7 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "campaigns_for_agent/1" do
     test "returns empty list for unknown agent" do
-      campaigns = CampaignTracker.campaigns_for_agent(Ecto.UUID.generate())
+      campaigns = CampaignTracker.campaigns_for_agent(@org_a, Ecto.UUID.generate())
       assert campaigns == []
     end
   end
@@ -137,7 +145,7 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
         ioc_values: ["192.168.1.100", "evil.example.com"]
       }
 
-      assert CampaignTracker.record_attribution(attribution) == :ok
+      assert CampaignTracker.record_attribution(@org_a, attribution) == :ok
     end
 
     test "accepts attribution without IOC values" do
@@ -147,11 +155,11 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
         confidence: 0.7
       }
 
-      assert CampaignTracker.record_attribution(attribution) == :ok
+      assert CampaignTracker.record_attribution(@org_a, attribution) == :ok
     end
 
     test "accepts empty map" do
-      assert CampaignTracker.record_attribution(%{}) == :ok
+      assert CampaignTracker.record_attribution(@org_a, %{}) == :ok
     end
   end
 
@@ -161,12 +169,12 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "auto_detect_campaigns/0" do
     test "returns :ok (fire-and-forget)" do
-      assert CampaignTracker.auto_detect_campaigns() == :ok
+      assert CampaignTracker.auto_detect_campaigns(@org_a) == :ok
     end
 
     test "is idempotent" do
-      assert CampaignTracker.auto_detect_campaigns() == :ok
-      assert CampaignTracker.auto_detect_campaigns() == :ok
+      assert CampaignTracker.auto_detect_campaigns(@org_a) == :ok
+      assert CampaignTracker.auto_detect_campaigns(@org_a) == :ok
     end
   end
 
@@ -176,7 +184,7 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
 
   describe "get_stats/0" do
     test "returns a map with expected keys" do
-      stats = CampaignTracker.get_stats()
+      stats = CampaignTracker.get_stats(@org_a)
 
       assert is_map(stats)
       assert Map.has_key?(stats, :campaigns_created)
@@ -193,18 +201,19 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
     end
 
     test "all counter values are non-negative integers" do
-      stats = CampaignTracker.get_stats()
+      stats = CampaignTracker.get_stats(@org_a)
 
       for {key, value} <- stats do
         assert is_integer(value),
                "stat #{key} should be integer, got #{inspect(value)}"
+
         assert value >= 0,
                "stat #{key} should be non-negative, got #{value}"
       end
     end
 
     test "total_campaigns equals active + resolved (or more due to other statuses)" do
-      stats = CampaignTracker.get_stats()
+      stats = CampaignTracker.get_stats(@org_a)
       assert stats.total_campaigns >= stats.active_campaigns + stats.resolved_campaigns
     end
   end
@@ -245,14 +254,16 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
         ioc_values: [ioc_value]
       }
 
-      CampaignTracker.record_attribution(attribution)
+      CampaignTracker.record_attribution(@org_a, attribution)
 
       # Allow cast to be processed
       Process.sleep(50)
 
       # The IOC should now be indexed (may have empty campaign list initially)
-      case :ets.lookup(:campaign_tracker_ioc_index, ioc_value) do
-        [{^ioc_value, campaign_ids}] ->
+      key = {@org_a, ioc_value}
+
+      case :ets.lookup(:campaign_tracker_ioc_index, key) do
+        [{^key, campaign_ids}] ->
           assert is_list(campaign_ids)
 
         [] ->
@@ -274,5 +285,77 @@ defmodule TamanduaServer.ThreatIntel.CampaignTrackerTest do
       assert severity_levels["medium"] < severity_levels["high"]
       assert severity_levels["high"] < severity_levels["critical"]
     end
+  end
+
+  describe "tenant isolation" do
+    test "legacy arities fail closed" do
+      assert CampaignTracker.list_campaigns() == {:error, :organization_required}
+      assert CampaignTracker.list_campaigns(status: "active") == {:error, :organization_required}
+      assert CampaignTracker.get_campaign("campaign") == {:error, :organization_required}
+      assert CampaignTracker.record_attribution(%{}) == {:error, :organization_required}
+      assert CampaignTracker.auto_detect_campaigns() == {:error, :organization_required}
+      assert CampaignTracker.get_stats() == {:error, :organization_required}
+    end
+
+    test "campaign, IOC, agent and stats remain isolated between organizations" do
+      id = "tenant-campaign-#{System.unique_integer([:positive])}"
+      ioc = "shared.example.test"
+      agent = Ecto.UUID.generate()
+      now = DateTime.utc_now()
+
+      campaign_a = campaign_fixture(id, @org_a, "Actor A", agent, ioc, now)
+      campaign_b = campaign_fixture(id, @org_b, "Actor B", agent, ioc, now)
+
+      :ets.insert(:campaign_tracker_campaigns, {{@org_a, id}, campaign_a})
+      :ets.insert(:campaign_tracker_campaigns, {{@org_b, id}, campaign_b})
+      :ets.insert(:campaign_tracker_ioc_index, {{@org_a, ioc}, [id]})
+      :ets.insert(:campaign_tracker_ioc_index, {{@org_b, ioc}, [id]})
+      :ets.insert(:campaign_tracker_agent_index, {{@org_a, agent}, [id]})
+      :ets.insert(:campaign_tracker_agent_index, {{@org_b, agent}, [id]})
+
+      on_exit(fn ->
+        :ets.delete(:campaign_tracker_campaigns, {@org_a, id})
+        :ets.delete(:campaign_tracker_campaigns, {@org_b, id})
+        :ets.delete(:campaign_tracker_ioc_index, {@org_a, ioc})
+        :ets.delete(:campaign_tracker_ioc_index, {@org_b, ioc})
+        :ets.delete(:campaign_tracker_agent_index, {@org_a, agent})
+        :ets.delete(:campaign_tracker_agent_index, {@org_b, agent})
+      end)
+
+      assert {:ok, %{actor: "Actor A", organization_id: @org_a}} =
+               CampaignTracker.get_campaign(@org_a, id)
+
+      assert {:ok, %{actor: "Actor B", organization_id: @org_b}} =
+               CampaignTracker.get_campaign(@org_b, id)
+
+      assert [%{organization_id: @org_a}] = CampaignTracker.campaigns_for_ioc(@org_a, ioc)
+      assert [%{organization_id: @org_b}] = CampaignTracker.campaigns_for_ioc(@org_b, ioc)
+      assert [%{organization_id: @org_a}] = CampaignTracker.campaigns_for_agent(@org_a, agent)
+      assert [%{organization_id: @org_b}] = CampaignTracker.campaigns_for_agent(@org_b, agent)
+      assert CampaignTracker.get_stats(@org_a).total_campaigns >= 1
+      assert CampaignTracker.get_stats(@org_b).total_campaigns >= 1
+    end
+  end
+
+  defp campaign_fixture(id, organization_id, actor, agent, ioc, now) do
+    %{
+      id: id,
+      organization_id: organization_id,
+      name: "#{actor} Campaign",
+      actor: actor,
+      start_time: now,
+      end_time: now,
+      alert_ids: [],
+      affected_agents: [agent],
+      ioc_values: [ioc],
+      ioc_count: 1,
+      severity: "high",
+      status: "active",
+      confidence: 0.9,
+      mitre_techniques: [],
+      timeline: [],
+      created_at: now,
+      updated_at: now
+    }
   end
 end

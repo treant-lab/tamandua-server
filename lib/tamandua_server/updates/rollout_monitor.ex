@@ -30,8 +30,7 @@ defmodule TamanduaServer.Updates.RolloutMonitor do
   require Logger
 
   alias TamanduaServer.Updates
-  alias TamanduaServer.Updates.{Rollout, AgentUpdate}
-  alias TamanduaServer.Agents
+  alias TamanduaServer.Updates.{AgentUpdate}
   alias TamanduaServer.Repo
 
   import Ecto.Query

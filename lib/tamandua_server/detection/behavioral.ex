@@ -83,7 +83,8 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Rule Definitions (regex-based, loaded once at compile time as defaults)
   # ============================================================================
 
-  @default_process_rules [
+  defp default_process_rules do
+    [
     # === Original rules ===
     %{
       id: "mimikatz_execution",
@@ -273,7 +274,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       mitre: ["T1055.012"],
       description: "Process hollowing/shellcode tool detected"
     }
-  ]
+    ]
+  end
 
   # ============================================================================
   # Legitimate Parent Process Patterns (for reducing false positives)
@@ -281,23 +283,28 @@ defmodule TamanduaServer.Detection.Behavioral do
   # These patterns match processes that legitimately perform administrative
   # operations. When a rule match has a legitimate parent, severity is reduced.
 
-  @legitimate_system_parents [
-    ~r/services\.exe$/i,           # Windows Service Control Manager
-    ~r/svchost\.exe$/i,            # Windows Service Host
-    ~r/mmc\.exe$/i,                # Microsoft Management Console
-    ~r/gpscript\.exe$/i,           # Group Policy Script
-    ~r/ccmexec\.exe$/i,            # SCCM/MECM client agent
-    ~r/wuauclt\.exe$/i,            # Windows Update Agent
-    ~r/trustedinstaller\.exe$/i    # Windows Trusted Installer
-  ]
+  defp legitimate_system_parents do
+    [
+      ~r/services\.exe$/i,           # Windows Service Control Manager
+      ~r/svchost\.exe$/i,            # Windows Service Host
+      ~r/mmc\.exe$/i,                # Microsoft Management Console
+      ~r/gpscript\.exe$/i,           # Group Policy Script
+      ~r/ccmexec\.exe$/i,            # SCCM/MECM client agent
+      ~r/wuauclt\.exe$/i,            # Windows Update Agent
+      ~r/trustedinstaller\.exe$/i    # Windows Trusted Installer
+    ]
+  end
 
-  @legitimate_admin_parents [
-    ~r/explorer\.exe$/i,           # Windows Explorer (user-initiated)
-    ~r/cmd\.exe$/i,                # Command prompt
-    ~r/powershell(?:_ise)?\.exe$/i # PowerShell
-  ]
+  defp legitimate_admin_parents do
+    [
+      ~r/explorer\.exe$/i,           # Windows Explorer (user-initiated)
+      ~r/cmd\.exe$/i,                # Command prompt
+      ~r/powershell(?:_ise)?\.exe$/i # PowerShell
+    ]
+  end
 
-  @legitimate_deployment_parents [
+  defp legitimate_deployment_parents do
+    [
     ~r/sccm/i,                     # SCCM/MECM management
     ~r/mecm/i,                     # Microsoft Endpoint Configuration Manager
     ~r/intune/i,                   # Microsoft Intune management
@@ -314,9 +321,11 @@ defmodule TamanduaServer.Detection.Behavioral do
     ~r/pdqdeploy/i,                # PDQ Deploy
     ~r/landesk/i,                  # Ivanti/LANDesk
     ~r/bigfix/i                    # HCL BigFix
-  ]
+    ]
+  end
 
-  @legitimate_av_parents [
+  defp legitimate_av_parents do
+    [
     ~r/mpcmdrun\.exe$/i,           # Windows Defender CLI
     ~r/msmpeng\.exe$/i,            # Windows Defender engine
     ~r/nissrv\.exe$/i,             # Windows Defender NIS
@@ -332,9 +341,11 @@ defmodule TamanduaServer.Detection.Behavioral do
     ~r/symantec/i,                 # Broadcom/Symantec
     ~r/mcafee/i,                   # Trellix/McAfee
     ~r/trend\s*micro/i             # Trend Micro
-  ]
+    ]
+  end
 
-  @legitimate_backup_parents [
+  defp legitimate_backup_parents do
+    [
     ~r/backup/i,                   # Generic backup software
     ~r/veeam/i,                    # Veeam backup
     ~r/acronis/i,                  # Acronis backup
@@ -345,7 +356,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     ~r/veritas/i,                  # Veritas NetBackup
     ~r/datto/i,                    # Datto backup
     ~r/carbonite/i                 # Carbonite
-  ]
+    ]
+  end
 
   # ============================================================================
   # Known-safe parent-child relationships (suppress behavioral FP)
@@ -413,14 +425,17 @@ defmodule TamanduaServer.Detection.Behavioral do
     5985, 5986, 88, 464, 3268, 3269, 993, 995, 587, 25, 110, 143
   ])
 
-  @legitimate_installer_parents [
-    ~r/msiexec\.exe$/i,            # Windows Installer
-    ~r/setup\.exe$/i,              # Setup programs
-    ~r/installer/i,                # Generic installer
-    ~r/wusa\.exe$/i                # Windows Update Standalone
-  ]
+  defp legitimate_installer_parents do
+    [
+      ~r/msiexec\.exe$/i,            # Windows Installer
+      ~r/setup\.exe$/i,              # Setup programs
+      ~r/installer/i,                # Generic installer
+      ~r/wusa\.exe$/i                # Windows Update Standalone
+    ]
+  end
 
-  @default_command_line_rules [
+  defp default_command_line_rules do
+    [
     # Rule 1: Encoded PowerShell - high FP when run by legitimate automation
     %{
       id: "encoded_powershell",
@@ -429,7 +444,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 65,
       mitre: ["T1059.001", "T1027"],
       description: "Encoded PowerShell execution",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
     # Rule 2: Base64 decode - common in legitimate automation
@@ -440,7 +455,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1027", "T1140"],
       description: "Base64 decode operation in command line",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
     # Rule 3: Download cradle (.NET) - common in package managers and update tools
@@ -451,7 +466,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1105", "T1059.001"],
       description: "Download cradle pattern detected (.NET/PowerShell)",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents() ++ [
         ~r/nuget\.exe$/i,
         ~r/dotnet\.exe$/i,
         ~r/windows\s*update/i
@@ -466,7 +481,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 45,
       mitre: ["T1105"],
       description: "Download cradle pattern detected (native tool)",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
     # Rule 5: Execution policy bypass - often used legitimately by IT scripts
@@ -477,7 +492,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 75,
       mitre: ["T1059.001"],
       description: "PowerShell execution policy bypass",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents() ++ [
         ~r/schtasks\.exe$/i,
         ~r/taskeng\.exe$/i,
         ~r/taskhostw\.exe$/i
@@ -492,7 +507,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 70,
       mitre: ["T1564.003"],
       description: "Hidden window execution",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents() ++ [
         ~r/schtasks\.exe$/i,
         ~r/taskeng\.exe$/i,
         ~r/taskhostw\.exe$/i
@@ -507,8 +522,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 90,
       mitre: ["T1562.001"],
       description: "Attempt to disable Windows Defender",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_av_parents ++
-        @legitimate_deployment_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ legitimate_av_parents() ++
+        legitimate_deployment_parents() ++ [
         ~r/gpo/i,
         ~r/group\s*policy/i
       ],
@@ -539,7 +554,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 95,
       mitre: ["T1490"],
       description: "Volume shadow copy deletion (ransomware indicator)",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_backup_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ legitimate_backup_parents() ++ [
         ~r/disk\s*cleanup/i,
         ~r/cleanmgr\.exe$/i
       ],
@@ -553,7 +568,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1105", "T1218"],
       description: "Certutil LOLBin download",
-      legitimate_parents: @legitimate_system_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ [
         ~r/pki/i,
         ~r/certsvc/i,
         ~r/ad\s*cs/i,
@@ -569,7 +584,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 85,
       mitre: ["T1218.005"],
       description: "MSHTA script execution",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
     # Rule 12: Scheduled task creation with encoded command
@@ -580,7 +595,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1053.005", "T1059.001"],
       description: "Scheduled task with encoded PowerShell",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
     # Rule 13: Registry Run key modification for persistence
@@ -591,8 +606,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 75,
       mitre: ["T1547.001"],
       description: "Registry Run key modification for persistence",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents ++
-        @legitimate_installer_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents() ++
+        legitimate_installer_parents(),
       parent_reduces_severity: true
     },
     # Rule 14: Windows service creation
@@ -603,8 +618,8 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 60,
       mitre: ["T1543.003"],
       description: "Windows service creation",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents ++
-        @legitimate_installer_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents() ++
+        legitimate_installer_parents(),
       parent_reduces_severity: true
     },
 
@@ -620,7 +635,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 85,
       mitre: ["T1218.010"],
       description: "Regsvr32 LOLBin execution (Squiblydoo technique)",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_installer_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_installer_parents(),
       parent_reduces_severity: true
     },
 
@@ -632,7 +647,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1047"],
       description: "WMIC process creation or remote execution",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -656,7 +671,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1127.001"],
       description: "MSBuild trusted developer utility abuse",
-      legitimate_parents: @legitimate_system_parents ++ [
+      legitimate_parents: legitimate_system_parents() ++ [
         ~r/visual\s*studio/i,
         ~r/devenv/i,
         ~r/msbuild/i
@@ -672,7 +687,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1218.004"],
       description: "InstallUtil .NET execution bypass",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_installer_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_installer_parents(),
       parent_reduces_severity: true
     },
 
@@ -684,7 +699,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 75,
       mitre: ["T1059.005"],
       description: "WScript/CScript remote script execution",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -696,7 +711,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 75,
       mitre: ["T1197"],
       description: "BITSAdmin file download",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -708,7 +723,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 85,
       mitre: ["T1218.003"],
       description: "CMSTP execution bypass",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -720,7 +735,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1218.008"],
       description: "Odbcconf DLL registration abuse",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -732,7 +747,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 70,
       mitre: ["T1218"],
       description: "PresentationHost XAML execution",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -772,7 +787,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1059.001"],
       description: "PowerShell Invoke-Expression execution",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -784,7 +799,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1027.004"],
       description: ".NET in-memory compilation detected",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -796,7 +811,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 90,
       mitre: ["T1546.003"],
       description: "WMI event subscription persistence",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -864,7 +879,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 95,
       mitre: ["T1003.002"],
       description: "Registry hive export (SAM/SECURITY/SYSTEM)",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_backup_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_backup_parents(),
       parent_reduces_severity: true
     },
 
@@ -876,7 +891,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 95,
       mitre: ["T1003.003"],
       description: "Ntdsutil AD database extraction",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -928,7 +943,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 90,
       mitre: ["T1070.001"],
       description: "Windows event log clearing",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     },
 
@@ -940,7 +955,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 80,
       mitre: ["T1070.006"],
       description: "File timestamp modification detected",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -952,7 +967,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 85,
       mitre: ["T1562.004"],
       description: "Windows Firewall manipulation",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -976,7 +991,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 65,
       mitre: ["T1564.004"],
       description: "NTFS alternate data stream usage",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_deployment_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_deployment_parents(),
       parent_reduces_severity: true
     },
 
@@ -992,7 +1007,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 60,
       mitre: ["T1135"],
       description: "Network share enumeration",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_admin_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_admin_parents(),
       parent_reduces_severity: true
     },
 
@@ -1004,7 +1019,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 65,
       mitre: ["T1482"],
       description: "Domain trust enumeration",
-      legitimate_parents: @legitimate_system_parents ++ @legitimate_admin_parents,
+      legitimate_parents: legitimate_system_parents() ++ legitimate_admin_parents(),
       parent_reduces_severity: true
     },
 
@@ -1016,12 +1031,14 @@ defmodule TamanduaServer.Detection.Behavioral do
       risk_score: 75,
       mitre: ["T1574.011"],
       description: "Service privilege escalation reconnaissance",
-      legitimate_parents: @legitimate_system_parents,
+      legitimate_parents: legitimate_system_parents(),
       parent_reduces_severity: true
     }
-  ]
+    ]
+  end
 
-  @default_sensitive_path_rules [
+  defp default_sensitive_path_rules do
+    [
     %{id: "sam_database", pattern: ~r/\\sam$/i, mitre: ["T1003.002"], description: "SAM database access"},
     %{id: "security_hive", pattern: ~r/\\security$/i, mitre: ["T1003.002"], description: "SECURITY hive access"},
     %{id: "system32_config", pattern: ~r/\\system32\\config\\/i, mitre: ["T1003.002"], description: "System32 config access"},
@@ -1030,7 +1047,8 @@ defmodule TamanduaServer.Detection.Behavioral do
     %{id: "ssh_keys", pattern: ~r/[\/\\]\.ssh[\/\\]/i, mitre: ["T1552.004"], description: "SSH key access"},
     %{id: "credential_files", pattern: ~r/[\/\\](?:credentials|passwords)/i, mitre: ["T1552.001"], description: "Credential file access"},
     %{id: "aws_credentials", pattern: ~r/[\/\\]\.aws[\/\\]credentials/i, mitre: ["T1552.001"], description: "AWS credential file access"}
-  ]
+    ]
+  end
 
   @ransomware_extensions ~w(.encrypted .locked .crypt .locky .wannacry .lockbit .conti .ryuk .cerber .zepto .zzzzz)
 
@@ -1061,7 +1079,8 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Suspicious multi-hop ancestor chain patterns
   # Format: {[ancestor_pattern, ...], severity, mitre_technique, description}
   # Patterns match from deepest ancestor -> current process (left to right)
-  @suspicious_ancestor_chains [
+  defp suspicious_ancestor_chains do
+    [
     # ---- Office document -> shell -> payload chains ----
     {[~r/winword\.exe$/i, ~r/cmd\.exe$/i, :_any],
      :high, "T1204.002", "Office document spawned shell chain"},
@@ -1121,23 +1140,26 @@ defmodule TamanduaServer.Detection.Behavioral do
      :critical, "T1566.001", "Full phishing chain: email -> document -> shell -> payload"},
     {[~r/outlook\.exe$/i, ~r/(?:winword|excel|powerpnt)\.exe$/i, ~r/powershell\.exe$/i, :_any],
      :critical, "T1566.001", "Full phishing chain: email -> document -> PowerShell -> payload"}
-  ]
+    ]
+  end
 
   # Sensitive processes that are suspicious when deep in ancestor chains
-  @deep_chain_sensitive_processes [
-    ~r/powershell\.exe$/i,
-    ~r/pwsh\.exe$/i,
-    ~r/cmd\.exe$/i,
-    ~r/certutil\.exe$/i,
-    ~r/mshta\.exe$/i,
-    ~r/wscript\.exe$/i,
-    ~r/cscript\.exe$/i,
-    ~r/rundll32\.exe$/i,
-    ~r/regsvr32\.exe$/i,
-    ~r/bitsadmin\.exe$/i,
-    ~r/msbuild\.exe$/i,
-    ~r/installutil\.exe$/i
-  ]
+  defp deep_chain_sensitive_processes do
+    [
+      ~r/powershell\.exe$/i,
+      ~r/pwsh\.exe$/i,
+      ~r/cmd\.exe$/i,
+      ~r/certutil\.exe$/i,
+      ~r/mshta\.exe$/i,
+      ~r/wscript\.exe$/i,
+      ~r/cscript\.exe$/i,
+      ~r/rundll32\.exe$/i,
+      ~r/regsvr32\.exe$/i,
+      ~r/bitsadmin\.exe$/i,
+      ~r/msbuild\.exe$/i,
+      ~r/installutil\.exe$/i
+    ]
+  end
 
   # Known Living-off-the-Land Binaries (LOLBins)
   @lolbin_processes MapSet.new([
@@ -1582,19 +1604,6 @@ defmodule TamanduaServer.Detection.Behavioral do
     {:noreply, state}
   end
 
-  # Resolve org_id from an alert id; safe to call when Alerts/Repo is unavailable.
-  defp resolve_org_from_alert(nil), do: nil
-  defp resolve_org_from_alert(alert_id) do
-    try do
-      case Alerts.get_alert!(alert_id) do
-        %{organization_id: org_id} -> org_id
-        _ -> nil
-      end
-    rescue
-      _ -> nil
-    end
-  end
-
   # ── Risk Score Trend Tick (EWMA) ─────────────────────────────────────────
   @impl true
   def handle_info(:trend_tick, state) do
@@ -1630,6 +1639,19 @@ defmodule TamanduaServer.Detection.Behavioral do
   # Catch-all for unknown messages (prevents GenServer crash)
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Resolve org_id from an alert id; safe to call when Alerts/Repo is unavailable.
+  defp resolve_org_from_alert(nil), do: nil
+  defp resolve_org_from_alert(alert_id) do
+    try do
+      case Alerts.get_alert!(alert_id) do
+        %{organization_id: org_id} -> org_id
+        _ -> nil
+      end
+    rescue
+      _ -> nil
+    end
+  end
 
   # ============================================================================
   # Public API
@@ -2314,7 +2336,7 @@ defmodule TamanduaServer.Detection.Behavioral do
   defp check_suspicious_chain_patterns(chain) do
     chain_names = Enum.map(chain, & &1.process_name)
 
-    @suspicious_ancestor_chains
+    suspicious_ancestor_chains()
     |> Enum.flat_map(fn {patterns, severity, technique, description} ->
       pattern_len = length(patterns)
 
@@ -2375,7 +2397,7 @@ defmodule TamanduaServer.Detection.Behavioral do
       depth = index
       name = entry.process_name
 
-      is_sensitive = Enum.any?(@deep_chain_sensitive_processes, fn regex ->
+      is_sensitive = Enum.any?(deep_chain_sensitive_processes(), fn regex ->
         Regex.match?(regex, name)
       end)
 
@@ -2713,7 +2735,7 @@ defmodule TamanduaServer.Detection.Behavioral do
     anomalies
   end
 
-  defp check_unusual_login_time(user, nil, _state), do: []
+  defp check_unusual_login_time(_user, nil, _state), do: []
   defp check_unusual_login_time(user, user_profile, state) do
     typical_hours = user_profile.typical_login_hours || %{}
     current_hour = DateTime.utc_now().hour
@@ -3320,9 +3342,9 @@ defmodule TamanduaServer.Detection.Behavioral do
     db_rules = load_rules_from_db()
 
     %{
-      process: merge_rules(@default_process_rules, db_rules[:process] || []),
-      command_line: merge_rules(@default_command_line_rules, db_rules[:command_line] || []),
-      sensitive_path: merge_rules(@default_sensitive_path_rules, db_rules[:sensitive_path] || [])
+      process: merge_rules(default_process_rules(), db_rules[:process] || []),
+      command_line: merge_rules(default_command_line_rules(), db_rules[:command_line] || []),
+      sensitive_path: merge_rules(default_sensitive_path_rules(), db_rules[:sensitive_path] || [])
     }
   end
 

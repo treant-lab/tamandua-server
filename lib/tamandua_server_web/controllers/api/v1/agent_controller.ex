@@ -7,11 +7,15 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   alias TamanduaServer.Repo
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
+  alias TamanduaServer.Agents.ModelScanRuntime
   alias TamanduaServer.Agents.PlatformCapabilities
+  alias TamanduaServer.Agents.PlatformVisibility
+  alias TamanduaServer.LiveResponse.ScreenCapturePolicy
   alias TamanduaServer.Authorization.RBAC
   alias TamanduaServer.AuditLog
   alias TamanduaServer.Alerts
   alias TamanduaServer.Response
+  alias TamanduaServer.Response.ResponseActor
   alias TamanduaServer.Telemetry
   alias TamanduaServer.Telemetry.Event
 
@@ -32,6 +36,8 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   # permission or is unauthenticated.
   plug(TamanduaServerWeb.Plugs.Authorize, :agents_command when action in [:restart_agent])
   plug(TamanduaServerWeb.Plugs.Authorize, :agents_policy when action in [:update_config])
+  plug(TamanduaServerWeb.Plugs.Authorize, :agents_update when action in [:update])
+  plug(TamanduaServerWeb.Plugs.Authorize, :agents_delete when action in [:delete])
 
   # Helper to authorize agent access within the current organization
   defp authorize_agent!(conn, agent_id) do
@@ -117,6 +123,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         health_status = TamanduaServer.Agents.Registry.get_agent_health_status_detail(agent_id)
         driver_status = normalize_driver_status(live_health_value(health, :driver_status))
         platform_status = live_health_value(health, :platform_status) || []
+        agent_health_visibility = live_health_value(health, :platform_visibility)
         source_contracts = get_in(source_health_by_agent, [agent_id, :sources]) || %{}
 
         sources =
@@ -140,6 +147,28 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
             }
           end)
 
+        platform_capabilities =
+          PlatformCapabilities.for_agent(agent,
+            status: heartbeat_state(live_info, agent),
+            config: agent_config,
+            health:
+              Map.merge(health_status || %{}, %{
+                driver_status: driver_status,
+                platform_status: platform_status
+              }),
+            data_sources: source_counts(sources),
+            screen_capture_policy: ScreenCapturePolicy.resolve(agent_field(agent, :id))
+          )
+
+        platform_visibility =
+          PlatformVisibility.summarize(agent,
+            capabilities: platform_capabilities,
+            agent_health_visibility: agent_health_visibility,
+            last_telemetry_at: agent_stats.last_seen,
+            last_heartbeat_at:
+              live_health_value(live_info, :last_seen_at) || agent_field(agent, :last_seen_at)
+          )
+
         %{
           agentId: agent_id,
           hostname: agent_field(agent, :hostname),
@@ -154,17 +183,9 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
           healthStatus: serialize_health_status_detail(health_status),
           driverStatus: driver_status,
           platformStatus: platform_status,
-          platformCapabilities:
-            PlatformCapabilities.for_agent(agent,
-              status: heartbeat_state(live_info, agent),
-              config: agent_config,
-              health:
-                Map.merge(health_status || %{}, %{
-                  driver_status: driver_status,
-                  platform_status: platform_status
-                }),
-              data_sources: source_counts(sources)
-            ),
+          agentHealthPlatformVisibility: agent_health_visibility,
+          platformCapabilities: platform_capabilities,
+          platformVisibility: platform_visibility,
           dropCounters: driver_drop_counters(driver_status),
           sources: sources,
           missingSources:
@@ -207,6 +228,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
             uptime_seconds: h.uptime_seconds,
             collector_status: Map.get(h, :collector_status),
             platform_status: Map.get(h, :platform_status, []),
+            platform_visibility: Map.get(h, :platform_visibility),
             driver_status: normalize_driver_status(Map.get(h, :driver_status))
           }
 
@@ -219,6 +241,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
                 disk_usage: Map.get(info, :disk_usage, 0),
                 collector_status: Map.get(info, :collector_status),
                 platform_status: Map.get(info, :platform_status, []),
+                platform_visibility: Map.get(info, :platform_visibility),
                 driver_status: normalize_driver_status(Map.get(info, :driver_status)),
                 cpu_history: [],
                 memory_history: [],
@@ -241,9 +264,16 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         _ -> agent.config || %{}
       end
 
-    events =
-      Telemetry.list_events_for_agent(id, 20)
-      |> Enum.map(&serialize_event/1)
+    {agent_events, events_partial_reason} =
+      safe_list_events_for_agent(id, 20, "agent_detail_recent_events")
+
+    events = Enum.map(agent_events, &serialize_event/1)
+
+    model_scan_event =
+      safe_latest_ai_discovery_event(conn.assigns[:current_organization_id], id)
+
+    model_scan_runtime =
+      ModelScanRuntime.summarize(if(model_scan_event, do: [model_scan_event], else: agent_events))
 
     alerts =
       try do
@@ -265,7 +295,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         _ -> []
       end
 
-    collectors = derive_collectors(Telemetry.list_events_for_agent(id, 500), config)
+    {collector_events, collectors_partial_reason} =
+      safe_list_events_for_agent(id, 500, "agent_detail_collectors")
+
+    collectors = derive_collectors(collector_events, config)
     capabilities = derive_capabilities(config, collectors)
     data_source_health = get_data_source_health(id)
     live_status_info = live_agent_info(id)
@@ -284,7 +317,17 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
           ),
         config: config,
         collectors: collectors,
-        data_sources: data_source_counts(data_source_health)
+        data_sources: data_source_counts(data_source_health),
+        screen_capture_policy: ScreenCapturePolicy.resolve(id)
+      )
+
+    platform_visibility =
+      PlatformVisibility.summarize(agent,
+        capabilities: platform_capabilities,
+        agent_health_visibility: Map.get(health || %{}, :platform_visibility),
+        last_telemetry_at: latest_source_seen_at(data_source_health),
+        last_heartbeat_at:
+          live_health_value(live_status_info, :last_seen_at) || agent.last_seen_at
       )
 
     json(conn, %{
@@ -301,8 +344,16 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         |> Map.put(:capabilities, capabilities)
         |> Map.put(:platform_capabilities, platform_capabilities)
         |> Map.put(:platformCapabilities, platform_capabilities)
+        |> Map.put(:platform_visibility, platform_visibility)
+        |> Map.put(:platformVisibility, platform_visibility)
         |> Map.put(:dataSourceHealth, data_source_health)
         |> Map.put(:events, events)
+        |> Map.put(:model_scan_runtime, model_scan_runtime)
+        |> Map.put(:modelScanRuntime, model_scan_runtime)
+        |> Map.put(:events_partial, not is_nil(events_partial_reason))
+        |> Map.put(:events_partial_reason, events_partial_reason)
+        |> Map.put(:collectors_partial, not is_nil(collectors_partial_reason))
+        |> Map.put(:collectors_partial_reason, collectors_partial_reason)
         |> Map.put(:alerts, alerts)
         |> Map.put(:config, config)
     })
@@ -311,7 +362,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   def update(conn, %{"id" => id} = params) do
     agent = authorize_agent!(conn, id)
 
-    with {:ok, %Agent{} = agent} <- Agents.update_agent(agent, params) do
+    with {:ok, %Agent{} = agent} <-
+           agent
+           |> Agent.public_update_changeset(params)
+           |> Repo.update() do
       json(conn, %{data: serialize(agent)})
     end
   end
@@ -325,127 +379,144 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   end
 
   def isolate(conn, %{"id" => id} = params) do
-    user = conn.assigns[:current_user]
-    agent = authorize_agent!(conn, id)
+    with :ok <- authorize_response_isolate(conn) do
+      user = conn.assigns[:current_user]
+      agent = authorize_agent!(conn, id)
 
-    if mobile_agent?(agent) do
-      unsupported_mobile_host_action(conn, "network isolation")
-    else
-      with :ok <- authorize_response_isolate(conn) do
-        allowed_ips = Map.get(params, "allowed_ips", [])
-
-        case TamanduaServer.Response.Executor.isolate_network(id, allowed_ips: allowed_ips) do
-          {:ok, response} ->
-            # The Executor already updated the agent's isolation_status and
-            # broadcast the PubSub event, so just log and respond.
-            AuditLog.log_agent_action(
-              user,
-              "isolate_agent",
-              id,
-              %{
-                hostname: agent.hostname,
-                allowed_ips: allowed_ips,
-                result: "success",
-                isolation_state: get_in(response, ["result_data", "state"]) || "unknown"
-              },
-              request_metadata(conn)
-            )
-
-            record_response_action(conn, user, "isolate_network", id, params, "success", response)
-
-            # Re-read agent to get updated isolation_status
-            updated_agent = authorize_agent!(conn, id)
-
-            json(conn, %{
-              data: serialize(updated_agent),
-              message: "Agent isolation command executed",
-              isolation_status: updated_agent.isolation_status
-            })
-
-          {:error, reason} ->
-            AuditLog.log_agent_action(
-              user,
-              "isolate_agent",
-              id,
-              %{
-                hostname: agent.hostname,
-                result: "failed",
-                error: inspect(reason)
-              },
-              request_metadata(conn)
-            )
-
-            record_response_action(
-              conn,
-              user,
-              "isolate_network",
-              id,
-              params,
-              "failed",
-              nil,
-              inspect(reason)
-            )
-
-            conn
-            |> put_status(400)
-            |> json(%{success: false, error: inspect(reason)})
-        end
+      if mobile_agent?(agent) do
+        unsupported_mobile_host_action(conn, "network isolation")
       else
-        {:error, conn} -> conn
+        with {:ok, actor} <-
+               ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+          allowed_ips = Map.get(params, "allowed_ips", [])
+
+          case TamanduaServer.Response.Executor.isolate_network(id,
+                 allowed_ips: allowed_ips,
+                 actor: actor
+               ) do
+            {:ok, response} ->
+              # The Executor already updated the agent's isolation_status and
+              # broadcast the PubSub event, so just log and respond.
+              AuditLog.log_agent_action(
+                user,
+                "isolate_agent",
+                id,
+                %{
+                  hostname: agent.hostname,
+                  allowed_ips: allowed_ips,
+                  result: "success",
+                  isolation_state: get_in(response, ["result_data", "state"]) || "unknown"
+                },
+                request_metadata(conn)
+              )
+
+              record_response_action(
+                conn,
+                user,
+                "isolate_network",
+                id,
+                params,
+                "success",
+                response
+              )
+
+              # Re-read agent to get updated isolation_status
+              updated_agent = authorize_agent!(conn, id)
+
+              json(conn, %{
+                data: serialize(updated_agent),
+                message: "Agent isolation command executed",
+                isolation_status: updated_agent.isolation_status
+              })
+
+            {:error, reason} ->
+              AuditLog.log_agent_action(
+                user,
+                "isolate_agent",
+                id,
+                %{
+                  hostname: agent.hostname,
+                  result: "failed",
+                  error: inspect(reason)
+                },
+                request_metadata(conn)
+              )
+
+              record_response_action(
+                conn,
+                user,
+                "isolate_network",
+                id,
+                params,
+                "failed",
+                nil,
+                inspect(reason)
+              )
+
+              conn
+              |> put_status(400)
+              |> json(%{success: false, error: inspect(reason)})
+          end
+        end
       end
+    else
+      {:error, conn} -> conn
     end
   end
 
   def unisolate(conn, %{"id" => id}) do
-    user = conn.assigns[:current_user]
-    agent = authorize_agent!(conn, id)
+    with :ok <- authorize_response_isolate(conn) do
+      user = conn.assigns[:current_user]
+      agent = authorize_agent!(conn, id)
 
-    if mobile_agent?(agent) do
-      unsupported_mobile_host_action(conn, "network isolation removal")
-    else
-      with :ok <- authorize_response_isolate(conn) do
-        case TamanduaServer.Response.Executor.unisolate_network(id) do
-          {:ok, response} ->
-            AuditLog.log_agent_action(
-              user,
-              "unisolate_agent",
-              id,
-              %{
-                hostname: agent.hostname,
-                result: "success",
-                isolation_state: get_in(response, ["result_data", "state"]) || "disabled"
-              },
-              request_metadata(conn)
-            )
-
-            updated_agent = authorize_agent!(conn, id)
-
-            json(conn, %{
-              data: serialize(updated_agent),
-              message: "Agent de-isolation command executed",
-              isolation_status: updated_agent.isolation_status
-            })
-
-          {:error, reason} ->
-            AuditLog.log_agent_action(
-              user,
-              "unisolate_agent",
-              id,
-              %{
-                hostname: agent.hostname,
-                result: "failed",
-                error: inspect(reason)
-              },
-              request_metadata(conn)
-            )
-
-            conn
-            |> put_status(400)
-            |> json(%{success: false, error: inspect(reason)})
-        end
+      if mobile_agent?(agent) do
+        unsupported_mobile_host_action(conn, "network isolation removal")
       else
-        {:error, conn} -> conn
+        with {:ok, actor} <-
+               ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+          case TamanduaServer.Response.Executor.unisolate_network(id, actor: actor) do
+            {:ok, response} ->
+              AuditLog.log_agent_action(
+                user,
+                "unisolate_agent",
+                id,
+                %{
+                  hostname: agent.hostname,
+                  result: "success",
+                  isolation_state: get_in(response, ["result_data", "state"]) || "disabled"
+                },
+                request_metadata(conn)
+              )
+
+              updated_agent = authorize_agent!(conn, id)
+
+              json(conn, %{
+                data: serialize(updated_agent),
+                message: "Agent de-isolation command executed",
+                isolation_status: updated_agent.isolation_status
+              })
+
+            {:error, reason} ->
+              AuditLog.log_agent_action(
+                user,
+                "unisolate_agent",
+                id,
+                %{
+                  hostname: agent.hostname,
+                  result: "failed",
+                  error: inspect(reason)
+                },
+                request_metadata(conn)
+              )
+
+              conn
+              |> put_status(400)
+              |> json(%{success: false, error: inspect(reason)})
+          end
+        end
       end
+    else
+      {:error, conn} -> conn
     end
   end
 
@@ -526,16 +597,67 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
       to: params["to"]
     }
 
-    {events, total} = Telemetry.list_agent_events(id, filters)
+    {events, total, partial_reason} = safe_list_agent_events(id, filters, "agent_events")
 
     json(conn, %{
       data: Enum.map(events, &serialize_event/1),
       meta: %{
         total: total,
         limit: filters.limit,
-        offset: filters.offset
+        offset: filters.offset,
+        partial: not is_nil(partial_reason),
+        partial_reason: partial_reason
       }
     })
+  end
+
+  defp safe_list_events_for_agent(agent_id, limit, label) do
+    {Telemetry.list_events_for_agent(agent_id, limit), nil}
+  rescue
+    exception ->
+      Logger.warning(
+        "[AgentController] #{label} failed for #{agent_id}: #{Exception.message(exception)}"
+      )
+
+      {[], "event_query_failed"}
+  catch
+    :exit, reason ->
+      Logger.warning("[AgentController] #{label} failed for #{agent_id}: exit #{inspect(reason)}")
+      {[], "event_query_exit"}
+  end
+
+  defp safe_latest_ai_discovery_event(organization_id, agent_id) do
+    Telemetry.latest_ai_discovery_event_for_agent(organization_id, agent_id)
+  rescue
+    exception ->
+      Logger.warning(
+        "[AgentController] agent_detail_model_runtime failed for #{agent_id}: #{Exception.message(exception)}"
+      )
+
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "[AgentController] agent_detail_model_runtime failed for #{agent_id}: exit #{inspect(reason)}"
+      )
+
+      nil
+  end
+
+  defp safe_list_agent_events(agent_id, filters, label) do
+    {events, total} = Telemetry.list_agent_events(agent_id, filters)
+    {events, total, nil}
+  rescue
+    exception ->
+      Logger.warning(
+        "[AgentController] #{label} failed for #{agent_id}: #{Exception.message(exception)}"
+      )
+
+      {[], 0, "event_query_failed"}
+  catch
+    :exit, reason ->
+      Logger.warning("[AgentController] #{label} failed for #{agent_id}: exit #{inspect(reason)}")
+      {[], 0, "event_query_exit"}
   end
 
   defp serialize_event(event) do
@@ -672,6 +794,37 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     end
   end
 
+  def process_context(conn, %{"id" => id, "pid" => pid_str}) do
+    _agent = authorize_agent!(conn, id)
+
+    pid = parse_int(pid_str, 0)
+
+    case Agents.get_process_context(id, pid) do
+      {:ok, context} ->
+        json(conn, %{
+          data: %{
+            process: serialize_flat_process(context.process),
+            ancestors: Enum.map(context.ancestors, &serialize_flat_process/1),
+            chain: Enum.map(context.chain, &serialize_flat_process/1)
+          },
+          meta: %{
+            target_pid: pid,
+            depth: length(context.ancestors),
+            claim_boundary:
+              "Process context is correlated from process telemetry already held by the server; sparse network events may still lack binary/hash data if process telemetry was not collected."
+          }
+        })
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(404)
+        |> json(%{
+          error: "not_found",
+          message: "Process #{pid} context was not found for this agent"
+        })
+    end
+  end
+
   defp serialize_flat_process(node) do
     %{
       pid: node.pid,
@@ -753,6 +906,20 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
     last_seen_at = live_health_value(live_info, :last_seen_at) || agent.last_seen_at
     health_status = agent_health_status_for_display(agent.id, status)
 
+    platform_capabilities =
+      PlatformCapabilities.for_agent(agent,
+        status: status,
+        health: health_status,
+        config: agent.config || %{},
+        screen_capture_policy: ScreenCapturePolicy.resolve(agent.id)
+      )
+
+    platform_visibility =
+      PlatformVisibility.summarize(agent,
+        capabilities: platform_capabilities,
+        last_heartbeat_at: last_seen_at
+      )
+
     %{
       id: agent.id,
       hostname: agent.hostname,
@@ -764,12 +931,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
       isolated: status == "isolated",
       isolation_status: agent.isolation_status,
       capabilities: derive_capabilities(agent.config || %{}, []),
-      platform_capabilities:
-        PlatformCapabilities.for_agent(agent,
-          status: status,
-          health: health_status,
-          config: agent.config || %{}
-        ),
+      platform_capabilities: platform_capabilities,
+      platformCapabilities: platform_capabilities,
+      platform_visibility: platform_visibility,
+      platformVisibility: platform_visibility,
       last_seen: format_datetime(last_seen_at),
       created_at: format_datetime(agent.inserted_at)
     }
@@ -792,10 +957,33 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
     health_status = agent_health_status_for_display(id, status)
 
+    platform_capabilities =
+      agent[:platform_capabilities] ||
+        agent["platform_capabilities"] ||
+        agent[:platformCapabilities] ||
+        agent["platformCapabilities"] ||
+        PlatformCapabilities.for_agent(agent,
+          status: status,
+          health: health_status,
+          config: agent[:config] || agent["config"] || %{},
+          screen_capture_policy: ScreenCapturePolicy.resolve(id)
+        )
+
+    platform_visibility =
+      agent[:platform_visibility] ||
+        agent["platform_visibility"] ||
+        agent[:platformVisibility] ||
+        agent["platformVisibility"] ||
+        PlatformVisibility.summarize(agent,
+          capabilities: platform_capabilities,
+          last_heartbeat_at: last_seen_at
+        )
+
     %{
       id: id,
       hostname: agent[:hostname] || agent["hostname"],
       ip_address: agent[:ip_address] || agent["ip_address"],
+      machine_id: searchable_agent_value(agent[:machine_id] || agent["machine_id"]),
       os_type: agent[:os_type] || agent["os_type"],
       os_version: agent[:os_version] || agent["os_version"],
       agent_version: agent[:agent_version] || agent["agent_version"],
@@ -804,16 +992,10 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
       isolated: status in [:isolated, "isolated"],
       isolation_status: agent[:isolation_status] || agent["isolation_status"],
       capabilities: agent[:capabilities] || agent["capabilities"] || [],
-      platform_capabilities:
-        agent[:platform_capabilities] ||
-          agent["platform_capabilities"] ||
-          agent[:platformCapabilities] ||
-          agent["platformCapabilities"] ||
-          PlatformCapabilities.for_agent(agent,
-            status: status,
-            health: health_status,
-            config: agent[:config] || agent["config"] || %{}
-          ),
+      platform_capabilities: platform_capabilities,
+      platformCapabilities: platform_capabilities,
+      platform_visibility: platform_visibility,
+      platformVisibility: platform_visibility,
       last_seen: format_datetime(last_seen_at),
       created_at: format_datetime(agent[:inserted_at] || agent["inserted_at"])
     }
@@ -884,13 +1066,31 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
         agent[:agent_id] || agent["agent_id"] || agent[:id] || agent["id"],
         agent[:hostname] || agent["hostname"],
         agent[:ip_address] || agent["ip_address"],
+        agent[:machine_id] || agent["machine_id"],
+        get_in(agent, [:config, "mobile_device_external_id"]) ||
+          get_in(agent, ["config", "mobile_device_external_id"]),
+        get_in(agent, [:config, "mobile_device_v2_id"]) ||
+          get_in(agent, ["config", "mobile_device_v2_id"]),
+        get_in(agent, [:config, "mobile_device_id"]) ||
+          get_in(agent, ["config", "mobile_device_id"]),
         agent[:os_type] || agent["os_type"]
       ]
       |> Enum.any?(fn value ->
-        value && String.contains?(String.downcase(to_string(value)), query)
+        case searchable_agent_value(value) do
+          nil -> false
+          text -> String.contains?(String.downcase(text), query)
+        end
       end)
     end)
   end
+
+  defp searchable_agent_value(nil), do: nil
+
+  defp searchable_agent_value(value) when is_binary(value) do
+    if String.valid?(value), do: value, else: Base.encode16(value, case: :lower)
+  end
+
+  defp searchable_agent_value(value), do: to_string(value)
 
   # Clamps client-supplied limit/offset so /agents cannot return an unbounded
   # response. Defaults each page to @default_per_page; absolute ceiling is
@@ -999,6 +1199,18 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
   defp data_source_counts(%{sources: sources}), do: source_counts(sources)
   defp data_source_counts(%{"sources" => sources}), do: source_counts(sources)
   defp data_source_counts(_), do: %{}
+
+  defp latest_source_seen_at(%{sources: sources}), do: latest_source_seen_at(sources)
+  defp latest_source_seen_at(%{"sources" => sources}), do: latest_source_seen_at(sources)
+
+  defp latest_source_seen_at(sources) when is_list(sources) do
+    sources
+    |> Enum.map(&(Map.get(&1, :last_seen) || Map.get(&1, "last_seen")))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> nil end)
+  end
+
+  defp latest_source_seen_at(_), do: nil
 
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
@@ -1238,7 +1450,7 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
     String.contains?(os, "android") or String.contains?(os, "ios") or
       String.contains?(os, "iphone") or String.contains?(os, "ipad") or
-      source == "tamandua_mobile" or "mobile_endpoint" in tags
+      mobile_source?(source) or mobile_tags?(tags)
   end
 
   defp mobile_agent?(%{} = agent) do
@@ -1257,10 +1469,27 @@ defmodule TamanduaServerWeb.API.V1.AgentController do
 
     String.contains?(os, "android") or String.contains?(os, "ios") or
       String.contains?(os, "iphone") or String.contains?(os, "ipad") or
-      source == "tamandua_mobile" or "mobile_endpoint" in tags
+      mobile_source?(source) or mobile_tags?(tags)
   end
 
   defp mobile_agent?(_), do: false
+
+  defp mobile_source?(source) do
+    normalized =
+      source
+      |> to_string()
+      |> String.downcase()
+
+    normalized in ["tamandua_mobile", "tamandua_mobile_v2"]
+  end
+
+  defp mobile_tags?(tags) when is_list(tags) do
+    tags
+    |> Enum.map(&(to_string(&1) |> String.downcase()))
+    |> Enum.any?(&(&1 in ["mobile", "mobile-v2", "mobile_endpoint"]))
+  end
+
+  defp mobile_tags?(_), do: false
 
   defp unsupported_mobile_host_action(conn, action) do
     conn

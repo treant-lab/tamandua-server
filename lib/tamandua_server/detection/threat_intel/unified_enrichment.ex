@@ -38,10 +38,9 @@ defmodule TamanduaServer.Detection.ThreatIntel.UnifiedEnrichment do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.ThreatIntel.{AbuseCh, VirusTotal, AlienVault, Shodan, Feeds}
+  alias TamanduaServer.Detection.ThreatIntel.{VirusTotal, AlienVault, Shodan, Feeds}
 
   # Timeout for individual provider lookups
-  @provider_timeout 10_000
 
   # Timeout for the entire enrichment operation
   @enrichment_timeout 30_000

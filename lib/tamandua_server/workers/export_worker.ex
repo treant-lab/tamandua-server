@@ -28,7 +28,7 @@ defmodule TamanduaServer.Workers.ExportWorker do
 
     with {:ok, export_job} <- Exporter.get_export_job(export_job_id),
          {:ok, export_job} <- generate_export(export_job),
-         {:ok, export_job} <- deliver_export(export_job, delivery_config) do
+         {:ok, _export_job} <- deliver_export(export_job, delivery_config) do
       Logger.info("[ExportWorker] Export job #{export_job_id} completed successfully")
       :ok
     else
@@ -94,7 +94,8 @@ defmodule TamanduaServer.Workers.ExportWorker do
 
     Logger.info("[ExportWorker] Delivering export via email to #{inspect(recipients)}")
 
-    case TamanduaServer.Mailer.deliver_export_email(
+    # The composing/delivery function lives in Mailer.ExportEmail, not Mailer.
+    case TamanduaServer.Mailer.ExportEmail.deliver_export_email(
            recipients,
            subject,
            message,

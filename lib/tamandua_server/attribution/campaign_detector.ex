@@ -9,8 +9,6 @@ defmodule TamanduaServer.Attribution.CampaignDetector do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Alerts
-  alias TamanduaServer.Repo
 
   @scan_interval 300_000  # 5 minutes
   @time_window_hours 24
@@ -131,7 +129,7 @@ defmodule TamanduaServer.Attribution.CampaignDetector do
     end
   end
 
-  defp load_recent_alerts(cutoff_time) do
+  defp load_recent_alerts(_cutoff_time) do
     # Load alerts from DB
     # This is a simplified version - in production, use Ecto query
     alerts = []  # Placeholder
@@ -270,12 +268,12 @@ defmodule TamanduaServer.Attribution.CampaignDetector do
       process_lower = String.downcase(alert.process_name)
       known_tools = ["mimikatz", "powershell", "psexec", "wmic", "cmd"]
 
-      tools = Enum.reduce(known_tools, tools, fn tool, acc ->
+      Enum.reduce(known_tools, tools, fn tool, acc ->
         if String.contains?(process_lower, tool), do: MapSet.put(acc, tool), else: acc
       end)
+    else
+      tools
     end
-
-    tools
   end
 
   defp dbscan_clustering(distance_matrix, epsilon, min_points) do

@@ -1,4 +1,4 @@
-defmodule TamanduaServerWeb.Api.V1.SoarWebhookController do
+defmodule TamanduaServerWeb.API.V1.SoarWebhookController do
   @moduledoc """
   Webhook endpoint for SOAR platform callbacks.
 

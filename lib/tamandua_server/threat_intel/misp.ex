@@ -38,7 +38,6 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   alias TamanduaServer.ThreatIntel.ThreatActor
   alias TamanduaServer.Detection.IOCs
 
-  @http_timeout 60_000
   @recv_timeout 120_000
 
   # Default sync interval: 4 hours
@@ -247,20 +246,24 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   @impl true
   def handle_cast(:sync_all, state) do
     parent = self()
+
     Task.start(fn ->
       results = do_sync_all()
       send(parent, {:sync_complete, results})
     end)
+
     {:noreply, state}
   end
 
   @impl true
   def handle_cast({:sync_instance, instance_id}, state) do
     parent = self()
+
     Task.start(fn ->
       result = do_sync_instance(instance_id)
       send(parent, {:instance_sync_complete, instance_id, result})
     end)
+
     {:noreply, state}
   end
 
@@ -282,10 +285,12 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   @impl true
   def handle_info({:do_sync, _type}, state) do
     parent = self()
+
     Task.start(fn ->
       results = do_sync_all()
       send(parent, {:sync_complete, results})
     end)
+
     {:noreply, state}
   end
 
@@ -360,19 +365,20 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
   defp do_test_connection(%MISPInstance{url: url, api_key: api_key, verify_ssl: verify_ssl}) do
     headers = build_headers(api_key)
-    ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
+    _ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
 
     case Finch.build(:get, "#{url}/servers/getVersion", headers)
          |> Finch.request(TamanduaServer.Finch, receive_timeout: @recv_timeout) do
       {:ok, %Finch.Response{status: 200, body: body}} ->
         case Jason.decode(body) do
           {:ok, data} ->
-            {:ok, %{
-              connected: true,
-              version: Map.get(data, "version"),
-              perm_sync: Map.get(data, "perm_sync", false),
-              perm_sighting: Map.get(data, "perm_sighting", false)
-            }}
+            {:ok,
+             %{
+               connected: true,
+               version: Map.get(data, "version"),
+               perm_sync: Map.get(data, "perm_sync", false),
+               perm_sighting: Map.get(data, "perm_sighting", false)
+             }}
 
           _ ->
             {:error, :parse_error}
@@ -448,7 +454,7 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
   defp do_fetch_events(%MISPInstance{url: url, api_key: api_key, verify_ssl: verify_ssl}, opts) do
     headers = build_headers(api_key)
-    ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
+    _ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
 
     # Build request body
     request_body = build_event_search_body(opts)
@@ -482,17 +488,21 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   end
 
   defp maybe_add_timestamp(body, nil), do: body
+
   defp maybe_add_timestamp(body, %DateTime{} = dt) do
     Map.put(body, "timestamp", DateTime.to_unix(dt))
   end
+
   defp maybe_add_timestamp(body, %NaiveDateTime{} = dt) do
     Map.put(body, "timestamp", NaiveDateTime.diff(dt, ~N[1970-01-01 00:00:00]))
   end
+
   defp maybe_add_timestamp(body, timestamp) when is_binary(timestamp) do
     Map.put(body, "timestamp", timestamp)
   end
 
   defp maybe_add_tags(body, nil), do: body
+
   defp maybe_add_tags(body, tags) when is_list(tags) do
     Map.put(body, "tags", tags)
   end
@@ -501,6 +511,7 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   defp maybe_add_limit(body, limit), do: Map.put(body, "limit", limit)
 
   defp maybe_add_published(body, nil), do: body
+
   defp maybe_add_published(body, published) do
     Map.put(body, "published", published)
   end
@@ -542,15 +553,17 @@ defmodule TamanduaServer.ThreatIntel.MISP do
     end)
 
     # Bulk add IOCs
-    case IOCs.bulk_add(iocs, on_conflict: :nothing) do
+    case IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
       {:ok, %{successful: count}} ->
         # Refresh the detection engine ETS cache so workers see new IOCs
         if count > 0 do
-          Task.start(fn -> TamanduaServer.Detection.Engine.reload_iocs() end)
+          TamanduaServer.Detection.IOCReload.schedule()
         end
+
         {:ok, count}
 
-      error -> error
+      error ->
+        error
     end
   end
 
@@ -574,7 +587,10 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
     %MISPEvent{}
     |> MISPEvent.changeset(attrs)
-    |> Repo.insert(on_conflict: :replace_all, conflict_target: [:misp_instance_id, :misp_event_id])
+    |> Repo.insert(
+      on_conflict: :replace_all,
+      conflict_target: [:misp_instance_id, :misp_event_id]
+    )
   rescue
     e ->
       Logger.warning("[MISP] Failed to store event: #{inspect(e)}")
@@ -639,12 +655,10 @@ defmodule TamanduaServer.ThreatIntel.MISP do
       "ip-dst" -> "ip"
       "ip-dst|port" -> "ip"
       "ip-src|port" -> "ip"
-
       # Domain types
       "domain" -> "domain"
       "hostname" -> "domain"
       "domain|ip" -> "domain"
-
       # Hash types
       "md5" -> "hash_md5"
       "sha1" -> "hash_sha1"
@@ -652,29 +666,26 @@ defmodule TamanduaServer.ThreatIntel.MISP do
       "filename|md5" -> "hash_md5"
       "filename|sha1" -> "hash_sha1"
       "filename|sha256" -> "hash_sha256"
-      "ssdeep" -> "hash_sha256"  # Store as sha256 for simplicity
+      # Store as sha256 for simplicity
+      "ssdeep" -> "hash_sha256"
       "imphash" -> "hash_md5"
       "authentihash" -> "hash_sha256"
-
       # URL types
       "url" -> "url"
       "uri" -> "url"
       "link" -> "url"
-
       # Email types
       "email-src" -> "email"
       "email-dst" -> "email"
       "email" -> "email"
-      "email-subject" -> nil  # Not a direct IOC
-
+      # Not a direct IOC
+      "email-subject" -> nil
       # Filename types
       "filename" -> "filename"
       "filepath" -> "filename"
-
       # Registry (store as filename for searchability)
       "regkey" -> "filename"
       "regkey|value" -> "filename"
-
       # Unsupported types
       _ -> nil
     end
@@ -719,8 +730,10 @@ defmodule TamanduaServer.ThreatIntel.MISP do
         case category do
           c when c in ["Payload delivery", "Payload installation", "External analysis"] ->
             "critical"
+
           c when c in ["Network activity", "Artifacts dropped"] ->
             "high"
+
           _ ->
             "high"
         end
@@ -746,7 +759,8 @@ defmodule TamanduaServer.ThreatIntel.MISP do
     |> Map.get("Tag", [])
     |> Enum.map(&Map.get(&1, "name", ""))
     |> Enum.reject(&(&1 == ""))
-    |> Enum.reject(&String.starts_with?(&1, "tlp:"))  # TLP handled separately
+    # TLP handled separately
+    |> Enum.reject(&String.starts_with?(&1, "tlp:"))
     |> Enum.map(&sanitize_tag/1)
   end
 
@@ -758,14 +772,16 @@ defmodule TamanduaServer.ThreatIntel.MISP do
   end
 
   defp extract_tlp(event) do
+    # Default to AMBER if not specified
     event
     |> Map.get("Tag", [])
     |> Enum.find_value(fn tag ->
       name = Map.get(tag, "name", "")
+
       if String.starts_with?(name, "tlp:") do
         String.replace(name, "tlp:", "") |> String.upcase()
       end
-    end) || "AMBER"  # Default to AMBER if not specified
+    end) || "AMBER"
   end
 
   defp extract_mitre_ttps(event) do
@@ -811,7 +827,7 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
   defp do_fetch_galaxies(%MISPInstance{url: url, api_key: api_key, verify_ssl: verify_ssl}) do
     headers = build_headers(api_key)
-    ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
+    _ssl_options = if verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
 
     case Finch.build(:get, "#{url}/galaxies", headers)
          |> Finch.request(TamanduaServer.Finch, receive_timeout: @recv_timeout) do
@@ -859,9 +875,10 @@ defmodule TamanduaServer.ThreatIntel.MISP do
     galaxy_id = Map.get(galaxy, "id")
     url = "#{instance.url}/galaxies/view/#{galaxy_id}"
     headers = build_headers(instance.api_key)
-    ssl_options = if instance.verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
+    _ssl_options = if instance.verify_ssl, do: [], else: [ssl: [verify: :verify_none]]
 
-    case Finch.build(:get, url, headers) |> Finch.request(TamanduaServer.Finch, receive_timeout: @recv_timeout) do
+    case Finch.build(:get, url, headers)
+         |> Finch.request(TamanduaServer.Finch, receive_timeout: @recv_timeout) do
       {:ok, %Finch.Response{status: 200, body: body}} ->
         case Jason.decode(body) do
           {:ok, %{"Galaxy" => galaxy_data, "GalaxyCluster" => clusters}} ->
@@ -902,7 +919,9 @@ defmodule TamanduaServer.ThreatIntel.MISP do
     %ThreatActor{}
     |> ThreatActor.changeset(attrs)
     |> Repo.insert(
-      on_conflict: {:replace, [:description, :aliases, :motivation, :target_sectors, :ttps, :last_seen, :metadata]},
+      on_conflict:
+        {:replace,
+         [:description, :aliases, :motivation, :target_sectors, :ttps, :last_seen, :metadata]},
       conflict_target: [:misp_cluster_uuid]
     )
   rescue
@@ -932,7 +951,8 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
   defp extract_target_sectors(cluster) do
     meta = Map.get(cluster, "meta", %{})
-    Map.get(meta, "cfr-target-category", []) ++ Map.get(meta, "sectors", [])
+
+    (Map.get(meta, "cfr-target-category", []) ++ Map.get(meta, "sectors", []))
     |> Enum.uniq()
   end
 
@@ -949,7 +969,8 @@ defmodule TamanduaServer.ThreatIntel.MISP do
 
   defp extract_cluster_ttps(cluster) do
     meta = Map.get(cluster, "meta", %{})
-    Map.get(meta, "mitre-attack-id", []) ++ Map.get(meta, "refs", [])
+
+    (Map.get(meta, "mitre-attack-id", []) ++ Map.get(meta, "refs", []))
     |> Enum.filter(&String.match?(&1, ~r/^T\d{4}/))
     |> Enum.uniq()
   end
@@ -959,13 +980,17 @@ defmodule TamanduaServer.ThreatIntel.MISP do
     date = Map.get(meta, "date", nil)
 
     case date do
-      nil -> nil
+      nil ->
+        nil
+
       d when is_binary(d) ->
         case Date.from_iso8601(d) do
           {:ok, date} -> DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
           _ -> nil
         end
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
@@ -1004,11 +1029,12 @@ defmodule TamanduaServer.ThreatIntel.MISP do
       if Enum.empty?(matching_events) and Enum.empty?(matching_actors) do
         {:error, :no_match}
       else
-        {:ok, %{
-          misp_events: Enum.map(matching_events, &serialize_event/1),
-          threat_actors: Enum.map(matching_actors, &serialize_actor/1),
-          correlation_score: calculate_correlation_score(matching_events, matching_actors)
-        }}
+        {:ok,
+         %{
+           misp_events: Enum.map(matching_events, &serialize_event/1),
+           threat_actors: Enum.map(matching_actors, &serialize_actor/1),
+           correlation_score: calculate_correlation_score(matching_events, matching_actors)
+         }}
       end
     end
   rescue

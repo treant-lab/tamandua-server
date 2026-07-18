@@ -36,7 +36,6 @@ defmodule TamanduaServer.FPAnalysis.FPTracker do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.FPAnalysis.{FPReport, RuleQualityMetrics, FPPatterns, AutoTuner}
 
   # ETS table for caching rule stats
@@ -395,7 +394,7 @@ defmodule TamanduaServer.FPAnalysis.FPTracker do
     FPReport.changeset(%FPReport{}, attrs)
   end
 
-  defp update_alert_verdict(alert, classification, user_id, report_id) do
+  defp update_alert_verdict(alert, classification, user_id, _report_id) do
     verdict = case classification do
       "true_positive" -> "true_positive"
       "false_positive" -> "false_positive"
@@ -530,30 +529,39 @@ defmodule TamanduaServer.FPAnalysis.FPTracker do
     updates = Map.put(updates, :fp_by_day_of_week, fp_by_day)
 
     # Update OS-based tracking
-    if report.os_type do
-      fp_by_os = Map.update(metrics.fp_by_os || %{}, report.os_type, 1, &(&1 + 1))
-      updates = Map.put(updates, :fp_by_os, fp_by_os)
-    end
+    updates =
+      if report.os_type do
+        fp_by_os = Map.update(metrics.fp_by_os || %{}, report.os_type, 1, &(&1 + 1))
+        Map.put(updates, :fp_by_os, fp_by_os)
+      else
+        updates
+      end
 
     # Update top FP processes
-    if report.process_name do
-      top_processes = update_top_list(
-        metrics.top_fp_processes || [],
-        report.process_name,
-        10
-      )
-      updates = Map.put(updates, :top_fp_processes, top_processes)
-    end
+    updates =
+      if report.process_name do
+        top_processes = update_top_list(
+          metrics.top_fp_processes || [],
+          report.process_name,
+          10
+        )
+        Map.put(updates, :top_fp_processes, top_processes)
+      else
+        updates
+      end
 
     # Update top FP paths
-    if report.file_path do
-      top_paths = update_top_list(
-        metrics.top_fp_paths || [],
-        report.file_path,
-        10
-      )
-      updates = Map.put(updates, :top_fp_paths, top_paths)
-    end
+    updates =
+      if report.file_path do
+        top_paths = update_top_list(
+          metrics.top_fp_paths || [],
+          report.file_path,
+          10
+        )
+        Map.put(updates, :top_fp_paths, top_paths)
+      else
+        updates
+      end
 
     updates
   end

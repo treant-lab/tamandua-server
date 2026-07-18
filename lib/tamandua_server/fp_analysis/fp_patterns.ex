@@ -31,7 +31,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.FPAnalysis.{FPReport, FPPattern, TuningRecommendation, AutoTuner}
+  alias TamanduaServer.FPAnalysis.{FPReport, FPPattern, AutoTuner}
 
   # Minimum FP count to consider a pattern valid
   @min_fp_count 5
@@ -40,7 +40,6 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
   @min_fp_confidence 0.8
 
   # Maximum patterns to track per organization
-  @max_patterns_per_org 500
 
   # Pattern analysis interval
   @analysis_interval :timer.hours(4)
@@ -148,7 +147,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
   """
   @spec reject_pattern(String.t(), String.t(), String.t() | nil) ::
           {:ok, FPPattern.t()} | {:error, term()}
-  def reject_pattern(pattern_id, user_id, reason \\ nil) do
+  def reject_pattern(pattern_id, user_id, _reason \\ nil) do
     case Repo.get(FPPattern, pattern_id) do
       nil ->
         {:error, :not_found}
@@ -267,7 +266,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     saved_patterns
   end
 
-  defp analyze_process_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_process_patterns(_organization_id, fp_reports, tp_reports) do
     # Group FPs by process name
     fp_by_process =
       fp_reports
@@ -308,7 +307,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp analyze_path_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_path_patterns(_organization_id, fp_reports, tp_reports) do
     # Group FPs by file path directory
     fp_by_path =
       fp_reports
@@ -355,7 +354,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp analyze_rule_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_rule_patterns(_organization_id, fp_reports, tp_reports) do
     # Group by rule_id - rules that always generate FPs
     fp_by_rule =
       fp_reports
@@ -399,7 +398,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp analyze_user_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_user_patterns(_organization_id, fp_reports, tp_reports) do
     # Group by event user
     fp_by_user =
       fp_reports
@@ -438,7 +437,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp analyze_host_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_host_patterns(_organization_id, fp_reports, tp_reports) do
     # Group by hostname
     fp_by_host =
       fp_reports
@@ -476,7 +475,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp analyze_time_patterns(organization_id, fp_reports, _tp_reports) do
+  defp analyze_time_patterns(_organization_id, fp_reports, _tp_reports) do
     # Group FPs by hour of day
     fp_by_hour =
       fp_reports
@@ -510,7 +509,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     end)
   end
 
-  defp analyze_combined_patterns(organization_id, fp_reports, tp_reports) do
+  defp analyze_combined_patterns(_organization_id, fp_reports, tp_reports) do
     # Analyze process + rule combinations
     fp_by_combo =
       fp_reports
@@ -645,7 +644,7 @@ defmodule TamanduaServer.FPAnalysis.FPPatterns do
     end
   end
 
-  defp check_new_patterns(%FPReport{} = report) do
+  defp check_new_patterns(%FPReport{} = _report) do
     # This is called for each new FP report to check if we should
     # start tracking a new pattern. The full analysis runs periodically
     # to find patterns across all reports.

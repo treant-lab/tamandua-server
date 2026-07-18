@@ -15,8 +15,7 @@ defmodule TamanduaServer.Storyline.Renderer do
 
   require Logger
 
-  @node_types [:process, :file, :network, :registry, :user, :dns]
-  @edge_types [:spawned, :wrote, :read, :connected, :modified, :resolved, :deleted, :created, :renamed, :accessed]
+  alias TamanduaServer.Alerts.TriageAgent
 
   @type rendered_node :: %{
     id: String.t(),
@@ -79,6 +78,7 @@ defmodule TamanduaServer.Storyline.Renderer do
       nodes: nodes,
       edges: edges,
       stats: calculate_stats(nodes, edges),
+      triage: render_triage(alert),
       layout: %{
         type: layout_type,
         width: calculate_width(nodes),
@@ -117,6 +117,7 @@ defmodule TamanduaServer.Storyline.Renderer do
       nodes: nodes,
       edges: edges,
       stats: calculate_stats(nodes, edges),
+      triage: nil,
       layout: %{
         type: layout_type,
         width: calculate_width(nodes),
@@ -141,6 +142,9 @@ defmodule TamanduaServer.Storyline.Renderer do
   end
 
   # Private functions
+
+  defp render_triage(nil), do: nil
+  defp render_triage(alert), do: TriageAgent.contract_for(alert)
 
   defp render_nodes(nodes, alert, layout_type) do
     # Get alert-related node IDs for highlighting
@@ -459,10 +463,14 @@ defmodule TamanduaServer.Storyline.Renderer do
 
     # Extract from evidence
     process = alert.evidence[:process] || get_in(alert.evidence, ["process"])
-    if process do
-      pid = process[:pid] || process["pid"]
-      if pid, do: ids = ["process_#{pid}" | ids]
-    end
+
+    ids =
+      if process do
+        pid = process[:pid] || process["pid"]
+        if pid, do: ["process_#{pid}" | ids], else: ids
+      else
+        ids
+      end
 
     # Extract from process chain
     process_chain = alert.process_chain || []

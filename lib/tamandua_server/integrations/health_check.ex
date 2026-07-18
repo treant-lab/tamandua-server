@@ -160,6 +160,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
+  defp check_splunk(_integration, _type), do: {:ok, "Check type not implemented"}
+
   defp check_sentinel(integration, :connectivity) do
     config = integration.config
 
@@ -218,6 +220,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
+  defp check_sentinel(_integration, _type), do: {:ok, "Check type not implemented"}
+
   defp check_elastic(integration, :connectivity) do
     config = integration.config
 
@@ -267,6 +271,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
+  defp check_elastic(_integration, _type), do: {:ok, "Check type not implemented"}
+
   defp check_xsoar(integration, :connectivity) do
     config = integration.config
 
@@ -287,6 +293,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
         {:error, "Connection failed: #{inspect(reason)}"}
     end
   end
+
+  defp check_xsoar(_integration, _type), do: {:ok, "Check type not implemented"}
 
   defp check_servicenow(integration, :connectivity) do
     config = integration.config
@@ -309,6 +317,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
+  defp check_servicenow(_integration, _type), do: {:ok, "Check type not implemented"}
+
   defp check_jira(integration, :connectivity) do
     config = integration.config
 
@@ -330,8 +340,10 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
+  defp check_jira(_integration, _type), do: {:ok, "Check type not implemented"}
+
   defp check_pagerduty(integration, :connectivity) do
-    config = integration.config
+    _config = integration.config
 
     # PagerDuty Events API v2 health check
     url = "https://events.pagerduty.com/health"
@@ -348,6 +360,8 @@ defmodule TamanduaServer.Integrations.HealthCheck do
         {:error, "Connection failed: #{inspect(reason)}"}
     end
   end
+
+  defp check_pagerduty(_integration, _type), do: {:ok, "Check type not implemented"}
 
   defp check_webhook(integration, :connectivity) do
     config = integration.config
@@ -376,17 +390,12 @@ defmodule TamanduaServer.Integrations.HealthCheck do
     end
   end
 
-  # Default handlers for unsupported check types
-  defp check_splunk(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_sentinel(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_elastic(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_xsoar(_integration, _type), do: {:ok, "Check type not implemented"}
+  defp check_webhook(_integration, _type), do: {:ok, "Check type not implemented"}
+
+  # Default handlers for unsupported check types (per-function catch-alls live
+  # next to their specific clauses above to keep clauses grouped)
   defp check_swimlane(_integration, _type), do: {:ok, "Check type not implemented"}
   defp check_tines(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_servicenow(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_jira(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_pagerduty(_integration, _type), do: {:ok, "Check type not implemented"}
-  defp check_webhook(_integration, _type), do: {:ok, "Check type not implemented"}
 
   # ============================================================================
   # HTTP Helpers

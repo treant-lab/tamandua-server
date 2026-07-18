@@ -17,7 +17,6 @@ defmodule TamanduaServer.Webhooks.HealthMonitor do
   alias TamanduaServer.Webhooks.Webhook
 
   @health_check_interval :timer.minutes(5)
-  @error_rate_threshold 0.10  # 10% error rate triggers health alert
 
   ## Client API
 

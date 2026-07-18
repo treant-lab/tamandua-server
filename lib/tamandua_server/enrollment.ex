@@ -10,9 +10,9 @@ defmodule TamanduaServer.Enrollment do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Repo.MultiTenant
+  alias TamanduaServer.EnrollmentLocatorAccess
   alias TamanduaServer.OSCommand
-  alias TamanduaServer.Agents.{Agent, AgentCredential}
-  alias TamanduaServer.Agents.TokenManager.AgentToken
+  alias TamanduaServer.Agents.Agent
 
   # --------------------------------------------------------------------------
   # Schema
@@ -142,27 +142,21 @@ defmodule TamanduaServer.Enrollment do
   remaining uses. Returns `{:ok, token_record}` or `{:error, reason}`.
   """
   def validate_token(cleartext) do
-    with_enrollment_bypass(fn -> do_validate_token(cleartext) end)
-  end
-
-  defp do_validate_token(cleartext) do
-    digest = token_digest(cleartext)
-
-    token =
-      from(t in InstallationToken,
-        where:
-          t.revoked == false and
-            t.token_digest == ^digest
-      )
-      |> Repo.one()
-
-    case token do
-      nil ->
-        {:error, "Invalid token"}
-
-      token ->
-        validate_installation_token_record(cleartext, token)
+    with {:ok, token_id, organization_id} <- locate_token(cleartext) do
+      MultiTenant.with_organization(organization_id, fn ->
+        cleartext
+        |> lock_exact_token(token_id, organization_id)
+        |> validate_locked_token(cleartext)
+      end)
+      |> normalize_public_result()
+    else
+      {:error, :persistence_unavailable} -> {:error, :enrollment_unavailable}
+      _error -> timing_normalized_invalid_token()
     end
+  rescue
+    _error -> {:error, :enrollment_unavailable}
+  catch
+    :exit, _reason -> {:error, :enrollment_unavailable}
   end
 
   @doc """
@@ -176,327 +170,40 @@ defmodule TamanduaServer.Enrollment do
   end
 
   defp do_exchange_token(cleartext, agent_info) do
-    case validate_token(cleartext) do
-      {:error, reason} ->
-        {:error, reason}
-
-      {:ok, token} ->
-        if is_nil(token.organization_id) do
-          {:error, "Installation token is not bound to an organization"}
-        else
-          # Generate agent credentials
-          agent_id = Ecto.UUID.generate()
-
-          case consume_token_for_registration(cleartext, token.id, agent_id, agent_info) do
-            {:ok, org_id} ->
-              case generate_agent_jwt(agent_id, org_id) do
-                {:ok, jwt} ->
-                  case finalize_token_use(cleartext, token.id, agent_id) do
-                    :ok ->
-                      {:ok,
-                       %{
-                         agent_id: agent_id,
-                         jwt: jwt,
-                         org_id: org_id
-                       }}
-
-                    {:error, reason} ->
-                      cleanup_failed_enrollment(agent_id)
-                      {:error, reason}
-                  end
-
-                {:error, reason} ->
-                  cleanup_failed_enrollment(agent_id)
-                  {:error, {:credential_issuance_failed, reason}}
-              end
-
-            {:error, {:agent_registration_failed, reason}} ->
-              {:error, {:agent_registration_failed, reason}}
-
-            {:error, reason} ->
-              {:error, reason}
+    with {:ok, token_id, organization_id} <- locate_token(cleartext) do
+      try do
+        MultiTenant.with_organization(organization_id, fn ->
+          case exchange_in_current_tenant(
+                 cleartext,
+                 token_id,
+                 organization_id,
+                 agent_info
+               ) do
+            {:ok, result} -> result
+            {:error, reason} -> throw({:enrollment_exchange_failed, reason})
           end
-        end
+        end)
+        |> then(&{:ok, &1})
+      catch
+        {:enrollment_exchange_failed, _reason} -> {:error, :invalid_enrollment_token}
+      end
+    else
+      {:error, :persistence_unavailable} -> {:error, :enrollment_unavailable}
+      _error -> timing_normalized_invalid_token()
     end
+  rescue
+    _error -> {:error, :enrollment_unavailable}
+  catch
+    :exit, _reason -> {:error, :enrollment_unavailable}
   end
 
   @doc """
-  Enroll an agent using CSR-based flow (private key never leaves agent).
-
-  This is the secure enrollment flow where:
-  1. Agent generates RSA keypair locally
-  2. Agent sends CSR (containing public key) to server
-  3. Server generates agent_id for new installs, or accepts the existing
-     agent_id only for same-agent recovery
-  4. Server signs CSR with the server-approved agent_id as CN
-  5. Server returns signed certificate + CA bundle
-
-  ## Security
-
-  The server generates the agent_id for first-time enrollment. Existing agent_id
-  recovery is only accepted when the installation token was previously consumed
-  by that same agent, which allows unattended credential recovery without letting
-  exhausted tokens create arbitrary agents.
-
-  ## Parameters
-
-    * `cleartext` - Installation token for authorization
-    * `csr_pem` - Certificate Signing Request in PEM format
-    * `agent_info` - Agent system information map
-
-  ## Returns
-
-    * `{:ok, result}` - Success with certificate, CA bundle, JWT, and agent_id
-    * `{:error, reason}` - Error reason
+  CSR enrollment is unavailable until the Phase 2 durable signing-intent and
+  recovery protocol can preserve token and credential atomicity.
   """
   def enroll_with_csr(cleartext, csr_pem, agent_info \\ %{}) do
-    do_enroll_with_csr(cleartext, csr_pem, agent_info)
-  end
-
-  defp do_enroll_with_csr(cleartext, csr_pem, agent_info) do
-    alias TamanduaServer.PKI.CertificateAuthority
-
-    case validate_csr_enrollment_token(cleartext, agent_info) do
-      {:error, reason} ->
-        {:error, reason}
-
-      {:ok, token, mode} ->
-        if is_nil(token.organization_id) do
-          {:error, "Installation token is not bound to an organization"}
-        else
-          # Validate CSR format (but ignore the CN - we generate our own agent_id)
-          case validate_csr_format(csr_pem) do
-            {:error, reason} ->
-              {:error, reason}
-
-            :ok ->
-              agent_id = csr_enrollment_agent_id(mode)
-
-              case CertificateAuthority.ensure_initialized() do
-                :ok ->
-                  # Sign the CSR with the server-approved agent_id as the CN.
-                  case CertificateAuthority.sign_csr(csr_pem,
-                         validity_days: 90,
-                         agent_id: agent_id
-                       ) do
-                    {:error, reason} ->
-                      {:error, {:signing_failed, reason}}
-
-                    {:ok, cert_pem, ^agent_id} ->
-                      case prepare_csr_agent_registration(
-                             cleartext,
-                             token,
-                             agent_id,
-                             agent_info,
-                             mode
-                           ) do
-                        {:ok, org_id} ->
-                          case generate_agent_jwt(agent_id, org_id) do
-                            {:ok, jwt} ->
-                              case finalize_csr_token_use(cleartext, token, agent_id, mode) do
-                                :ok ->
-                                  ca_bundle = effective_agent_ca_bundle()
-
-                                  {:ok,
-                                   %{
-                                     agent_id: agent_id,
-                                     jwt: jwt,
-                                     org_id: org_id,
-                                     certificate: cert_pem,
-                                     ca_bundle: ca_bundle
-                                   }}
-
-                                {:error, reason} ->
-                                  cleanup_failed_enrollment(agent_id)
-                                  {:error, reason}
-                              end
-
-                            {:error, reason} ->
-                              cleanup_failed_enrollment(agent_id)
-                              {:error, {:credential_issuance_failed, reason}}
-                          end
-
-                        {:error, {:agent_registration_failed, reason}} ->
-                          {:error, {:agent_registration_failed, reason}}
-
-                        {:error, reason} ->
-                          {:error, reason}
-                      end
-                  end
-
-                {:error, reason} ->
-                  {:error, {:pki_not_ready, reason}}
-              end
-          end
-        end
-    end
-  end
-
-  defp with_enrollment_bypass(fun) do
-    MultiTenant.with_bypass(fun)
-  rescue
-    e ->
-      require Logger
-
-      Logger.error("""
-      Enrollment failed during trusted system operation
-      #{Exception.format(:error, e, __STACKTRACE__)}
-      """)
-
-      {:error, {:enrollment_failed, :internal_error}}
-  end
-
-  defp validate_csr_enrollment_token(cleartext, agent_info) do
-    case validate_token(cleartext) do
-      {:ok, token} ->
-        {:ok, token, :new_enrollment}
-
-      {:error, "Token has reached its maximum number of uses"} ->
-        validate_csr_recovery_token(cleartext, requested_agent_id(agent_info))
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp validate_csr_recovery_token(_cleartext, nil), do: {:error, "Invalid token"}
-
-  defp validate_csr_recovery_token(cleartext, requested_agent_id) do
-    with_enrollment_bypass(fn ->
-      digest = token_digest(cleartext)
-
-      token =
-        from(t in InstallationToken,
-          where:
-            t.revoked == false and
-              t.token_digest == ^digest
-        )
-        |> Repo.one()
-
-      case token do
-        nil ->
-          {:error, "Invalid token"}
-
-        token ->
-          cond do
-            token_expired?(token) ->
-              {:error, "Token has expired"}
-
-            token.consumed_agent_id != requested_agent_id ->
-              {:error, "Token has reached its maximum number of uses"}
-
-            !verify_hash(cleartext, token.token_hash) ->
-              {:error, "Invalid token"}
-
-            !agent_exists_for_token_org?(requested_agent_id, token.organization_id) ->
-              {:error, "Agent not found for recovery token"}
-
-            true ->
-              {:ok, token, {:recovery, requested_agent_id}}
-          end
-      end
-    end)
-  end
-
-  defp requested_agent_id(agent_info) when is_map(agent_info) do
-    case Map.get(agent_info, "agent_id") do
-      value when is_binary(value) ->
-        value = String.trim(value)
-
-        case Ecto.UUID.cast(value) do
-          {:ok, uuid} -> uuid
-          :error -> nil
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp requested_agent_id(_), do: nil
-
-  defp agent_exists_for_token_org?(agent_id, org_id)
-       when is_binary(agent_id) and is_binary(org_id) do
-    case Repo.get_by(Agent, id: agent_id, organization_id: org_id) do
-      nil -> false
-      _agent -> true
-    end
-  end
-
-  defp agent_exists_for_token_org?(_, _), do: false
-
-  defp csr_enrollment_agent_id(:new_enrollment), do: Ecto.UUID.generate()
-  defp csr_enrollment_agent_id({:recovery, agent_id}), do: agent_id
-
-  defp prepare_csr_agent_registration(cleartext, token, agent_id, agent_info, :new_enrollment) do
-    consume_token_for_registration(cleartext, token.id, agent_id, agent_info)
-  end
-
-  defp prepare_csr_agent_registration(_cleartext, token, agent_id, agent_info, {:recovery, _}) do
-    case register_agent(agent_id, token.organization_id, agent_info) do
-      :ok -> {:ok, token.organization_id}
-      {:error, reason} -> {:error, {:agent_registration_failed, reason}}
-    end
-  end
-
-  defp finalize_csr_token_use(cleartext, token, agent_id, :new_enrollment) do
-    finalize_token_use(cleartext, token.id, agent_id)
-  end
-
-  defp finalize_csr_token_use(_cleartext, token, agent_id, {:recovery, _}) do
-    finalize_recovery_token_use(token.id, agent_id)
-  end
-
-  defp finalize_recovery_token_use(token_id, agent_id) do
-    with_enrollment_bypass(fn ->
-      Repo.transaction(fn ->
-        token =
-          from(t in InstallationToken,
-            where: t.id == ^token_id,
-            lock: "FOR UPDATE"
-          )
-          |> Repo.one()
-
-        case token do
-          nil ->
-            Repo.rollback("Invalid token")
-
-          token ->
-            token
-            |> Ecto.Changeset.change(
-              last_used_at: DateTime.utc_now(),
-              consumed_at: token.consumed_at || DateTime.utc_now(),
-              consumed_agent_id: agent_id
-            )
-            |> Repo.update!()
-
-            :ok
-        end
-      end)
-      |> case do
-        {:ok, :ok} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-    end)
-  end
-
-  # Validate CSR format without trusting the CN
-  defp validate_csr_format(csr_pem) do
-    temp_path =
-      Path.join(System.tmp_dir!(), "tamandua_csr_validate_#{:rand.uniform(999_999)}.pem")
-
-    File.write!(temp_path, csr_pem)
-
-    try do
-      # Verify CSR signature (proves client has private key)
-      case openssl(["req", "-in", temp_path, "-verify", "-noout"]) do
-        {_, 0} -> :ok
-        {:error, reason} -> {:error, reason}
-        {_error, _} -> {:error, :invalid_csr_signature}
-      end
-    after
-      File.rm(temp_path)
-    end
+    _ = {cleartext, csr_pem, agent_info}
+    {:error, :enrollment_unavailable}
   end
 
   @doc """
@@ -553,6 +260,91 @@ defmodule TamanduaServer.Enrollment do
   # --------------------------------------------------------------------------
   # Private Helpers
   # --------------------------------------------------------------------------
+
+  defp locate_token(cleartext)
+       when is_binary(cleartext) and byte_size(cleartext) >= 1 and byte_size(cleartext) <= 512 do
+    cleartext
+    |> token_digest()
+    |> EnrollmentLocatorAccess.locate()
+  end
+
+  defp locate_token(_cleartext), do: {:error, :invalid_enrollment_token}
+
+  defp lock_exact_token(cleartext, token_id, organization_id) do
+    digest = token_digest(cleartext)
+
+    from(t in InstallationToken,
+      where:
+        t.id == ^token_id and t.organization_id == ^organization_id and
+          t.token_digest == ^digest,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp validate_locked_token(nil, _cleartext), do: {:error, :invalid_enrollment_token}
+
+  defp validate_locked_token(%InstallationToken{} = token, cleartext) do
+    # Verify the expensive secret first so revoked/expired/exhausted states are
+    # not distinguishable from a wrong bearer token through this public API.
+    if verify_hash(cleartext, token.token_hash) do
+      if valid_token_state?(token),
+        do: {:ok, token},
+        else: {:error, :invalid_enrollment_token}
+    else
+      {:error, :invalid_enrollment_token}
+    end
+  end
+
+  defp valid_token_state?(token) do
+    token.revoked == false and not token_expired?(token) and not token_exhausted?(token) and
+      is_binary(token.organization_id)
+  end
+
+  defp exchange_in_current_tenant(cleartext, token_id, organization_id, agent_info) do
+    with %InstallationToken{} = token <-
+           lock_exact_token(cleartext, token_id, organization_id),
+         {:ok, ^token} <- validate_locked_token(token, cleartext),
+         agent_id <- Ecto.UUID.generate(),
+         :ok <- register_agent(agent_id, organization_id, agent_info),
+         %Agent{} = locked_agent <- lock_exact_agent(agent_id, organization_id),
+         {:ok, jwt, _token_record} <-
+           TamanduaServer.Agents.TokenManager.issue_token_in_current_tenant(locked_agent),
+         {:ok, _consumed_token} <- consume_locked_token(token, agent_id) do
+      {:ok, %{agent_id: agent_id, jwt: jwt, org_id: organization_id}}
+    else
+      _error -> {:error, :invalid_enrollment_token}
+    end
+  end
+
+  defp lock_exact_agent(agent_id, organization_id) do
+    from(a in Agent,
+      where: a.id == ^agent_id and a.organization_id == ^organization_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp consume_locked_token(%InstallationToken{} = token, agent_id) do
+    now = DateTime.utc_now()
+
+    token
+    |> Ecto.Changeset.change(
+      use_count: token.use_count + 1,
+      last_used_at: now,
+      consumed_at: now,
+      consumed_agent_id: agent_id
+    )
+    |> Repo.update()
+  end
+
+  defp normalize_public_result({:ok, %InstallationToken{} = token}), do: {:ok, token}
+  defp normalize_public_result(_result), do: {:error, :invalid_enrollment_token}
+
+  defp timing_normalized_invalid_token do
+    Argon2.no_user_verify()
+    {:error, :invalid_enrollment_token}
+  end
 
   defp effective_agent_ca_bundle do
     file_bundle =
@@ -659,22 +451,6 @@ defmodule TamanduaServer.Enrollment do
     Argon2.verify_pass(cleartext, hash)
   end
 
-  defp validate_installation_token_record(cleartext, token) do
-    cond do
-      token_expired?(token) ->
-        {:error, "Token has expired"}
-
-      token_exhausted?(token) ->
-        {:error, "Token has reached its maximum number of uses"}
-
-      !verify_hash(cleartext, token.token_hash) ->
-        {:error, "Invalid token"}
-
-      true ->
-        {:ok, token}
-    end
-  end
-
   defp token_expired?(%{expires_at: nil}), do: false
 
   defp token_expired?(%{expires_at: expires_at}) do
@@ -685,113 +461,6 @@ defmodule TamanduaServer.Enrollment do
 
   defp token_exhausted?(%{max_uses: max, use_count: count}) do
     count >= max
-  end
-
-  defp consume_token_for_registration(cleartext, token_id, agent_id, agent_info) do
-    with_enrollment_bypass(fn ->
-      Repo.transaction(fn ->
-        token =
-          from(t in InstallationToken,
-            where: t.id == ^token_id,
-            lock: "FOR UPDATE"
-          )
-          |> Repo.one()
-
-        case token do
-          nil ->
-            Repo.rollback("Invalid token")
-
-          token ->
-            case validate_installation_token_record(cleartext, token) do
-              {:error, reason} ->
-                Repo.rollback(reason)
-
-              {:ok, token} ->
-                org_id = token.organization_id
-
-                case register_agent(agent_id, org_id, agent_info) do
-                  :ok ->
-                    org_id
-
-                  {:error, reason} ->
-                    Repo.rollback({:agent_registration_failed, reason})
-                end
-            end
-        end
-      end)
-      |> case do
-        {:ok, org_id} -> {:ok, org_id}
-        {:error, reason} -> {:error, reason}
-      end
-    end)
-  end
-
-  defp finalize_token_use(cleartext, token_id, agent_id) do
-    with_enrollment_bypass(fn ->
-      Repo.transaction(fn ->
-        token =
-          from(t in InstallationToken,
-            where: t.id == ^token_id,
-            lock: "FOR UPDATE"
-          )
-          |> Repo.one()
-
-        case token do
-          nil ->
-            Repo.rollback("Invalid token")
-
-          token ->
-            case validate_installation_token_record(cleartext, token) do
-              {:error, reason} ->
-                Repo.rollback(reason)
-
-              {:ok, token} ->
-                token
-                |> Ecto.Changeset.change(
-                  use_count: token.use_count + 1,
-                  last_used_at: DateTime.utc_now(),
-                  consumed_at: DateTime.utc_now(),
-                  consumed_agent_id: agent_id
-                )
-                |> Repo.update!()
-
-                :ok
-            end
-        end
-      end)
-      |> case do
-        {:ok, :ok} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-    end)
-  rescue
-    e ->
-      require Logger
-
-      Logger.error(
-        "Failed to finalize installation token for agent #{agent_id}: #{Exception.message(e)}"
-      )
-
-      {:error, :token_finalize_failed}
-  end
-
-  defp cleanup_failed_enrollment(agent_id) do
-    with_enrollment_bypass(fn ->
-      Repo.delete_all(from(t in AgentToken, where: t.agent_id == ^agent_id))
-      Repo.delete_all(from(c in AgentCredential, where: c.agent_id == ^agent_id))
-      Repo.delete_all(from(a in Agent, where: a.id == ^agent_id and a.status == "registered"))
-    end)
-
-    :ok
-  rescue
-    e ->
-      require Logger
-
-      Logger.warning(
-        "Failed to cleanup incomplete enrollment for agent #{agent_id}: #{Exception.message(e)}"
-      )
-
-      :ok
   end
 
   defp register_agent(agent_id, org_id, agent_info) do
@@ -817,7 +486,7 @@ defmodule TamanduaServer.Enrollment do
       token_rotation_enabled: true,
       token_ttl_hours: 720,
       token_refresh_window_percent: 60,
-      current_token_generation: 1,
+      current_token_generation: 0,
       inserted_at: now,
       updated_at: now,
       config: %{
@@ -830,26 +499,41 @@ defmodule TamanduaServer.Enrollment do
       }
     }
 
+    config = attrs.config
+
+    conflict_update =
+      from(a in Agent,
+        where: a.organization_id == ^org_id,
+        update: [
+          set: [
+            hostname: ^hostname,
+            os_type: ^os_type,
+            os_version: ^os_version,
+            agent_version: ^agent_version,
+            machine_id: ^machine_id,
+            status: "registered",
+            last_seen_at: ^now,
+            token_rotation_enabled: true,
+            token_ttl_hours: 720,
+            token_refresh_window_percent: 60,
+            updated_at: ^now,
+            config: ^config
+          ]
+        ]
+      )
+
     case Repo.insert_all("agents", [attrs],
-           on_conflict: [
-             set: [
-               hostname: hostname,
-               os_type: os_type,
-               os_version: os_version,
-               agent_version: agent_version,
-               machine_id: machine_id,
-               status: "registered",
-               last_seen_at: now,
-               token_rotation_enabled: true,
-               token_ttl_hours: 720,
-               token_refresh_window_percent: 60,
-               updated_at: now,
-               config: attrs.config
-             ]
-           ],
+           on_conflict: conflict_update,
            conflict_target: [:id]
          ) do
-      {_count, _rows} -> :ok
+      {1, _rows} ->
+        :ok
+
+      {0, _rows} ->
+        {:error, :organization_mismatch}
+
+      {count, _rows} ->
+        {:error, {:unexpected_registration_count, count}}
     end
   rescue
     e ->
@@ -863,54 +547,6 @@ defmodule TamanduaServer.Enrollment do
       {:ok, dumped} -> dumped
       :error -> raise ArgumentError, "invalid UUID: #{inspect(uuid)}"
     end
-  end
-
-  defp generate_agent_jwt(agent_id, org_id) do
-    # Use TokenManager for JWT generation with rotation support.
-    try do
-      case TamanduaServer.Agents.TokenManager.issue_token(agent_id) do
-        {:ok, jwt, _token_record} ->
-          {:ok, jwt}
-
-        {:error, :token_rotation_disabled} ->
-          maybe_legacy_agent_jwt(agent_id, org_id, :token_rotation_disabled)
-
-        {:error, reason} ->
-          maybe_legacy_agent_jwt(agent_id, org_id, reason)
-      end
-    catch
-      :exit, reason ->
-        maybe_legacy_agent_jwt(agent_id, org_id, {:exit, reason})
-    end
-  end
-
-  defp maybe_legacy_agent_jwt(agent_id, org_id, reason) do
-    env = Application.get_env(:tamandua_server, :env, :prod)
-
-    if env in [:dev, :test] or System.get_env("TAMANDUA_LAB_LIGHT", "false") == "true" do
-      {:ok, legacy_agent_jwt(agent_id, org_id)}
-    else
-      require Logger
-      Logger.error("Refusing legacy agent token fallback in production: #{inspect(reason)}")
-      {:error, reason}
-    end
-  end
-
-  defp legacy_agent_jwt(agent_id, org_id) do
-    claims = %{
-      agent_id: agent_id,
-      org_id: org_id,
-      organization_id: org_id,
-      type: "agent",
-      iat: DateTime.utc_now() |> DateTime.to_unix()
-    }
-
-    Phoenix.Token.sign(
-      TamanduaServerWeb.Endpoint,
-      "agent_auth",
-      claims,
-      max_age: 720 * 3600
-    )
   end
 
   defp openssl(args) do

@@ -54,7 +54,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   Gets a single case investigation by ID.
   """
   def show(conn, %{"id" => id}) do
-    case Investigations.get_investigation(id) do
+    case Investigations.get_investigation_for_org(get_org_id(conn), id) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 
@@ -112,7 +112,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   Updates a case investigation.
   """
   def update(conn, %{"id" => id} = params) do
-    with {:ok, investigation} <- Investigations.get_investigation(id) do
+    with {:ok, investigation} <- Investigations.get_investigation_for_org(get_org_id(conn), id) do
       attrs = params
       |> Map.take(~w(title description status severity assigned_to notes findings tags mitre_tactics mitre_techniques))
 
@@ -132,7 +132,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   Deletes a case investigation.
   """
   def delete(conn, %{"id" => id}) do
-    with {:ok, investigation} <- Investigations.get_investigation(id),
+    with {:ok, investigation} <- Investigations.get_investigation_for_org(get_org_id(conn), id),
          {:ok, _} <- Investigations.delete_investigation(investigation) do
       send_resp(conn, :no_content, "")
     end
@@ -148,7 +148,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   def add_note(conn, %{"id" => id, "content" => content}) do
     author_name = get_current_user_name(conn)
 
-    case Investigations.add_note(id, content, author_name) do
+    case Investigations.add_note(id, content, author_name, organization_id: get_org_id(conn)) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 
@@ -178,7 +178,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
     * `alert_id` - Required. The alert ID to link.
   """
   def add_alert(conn, %{"id" => id, "alert_id" => alert_id}) do
-    case Investigations.add_alert_to_investigation(id, alert_id) do
+    case Investigations.add_alert_to_investigation(id, alert_id, organization_id: get_org_id(conn)) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 
@@ -204,7 +204,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   Removes an alert from a case investigation.
   """
   def remove_alert(conn, %{"id" => id, "alert_id" => alert_id}) do
-    case Investigations.remove_alert_from_investigation(id, alert_id) do
+    case Investigations.remove_alert_from_investigation(id, alert_id, organization_id: get_org_id(conn)) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 
@@ -228,7 +228,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
     * `status` - Required. The new status (open, in_progress, closed, archived).
   """
   def update_status(conn, %{"id" => id, "status" => status}) do
-    case Investigations.update_status(id, status) do
+    case Investigations.update_status(id, status, organization_id: get_org_id(conn)) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 
@@ -265,7 +265,7 @@ defmodule TamanduaServerWeb.API.V1.CaseInvestigationController do
   def assign(conn, %{"id" => id} = params) do
     user_id = params["user_id"]  # Can be nil to unassign
 
-    case Investigations.assign_investigation(id, user_id) do
+    case Investigations.assign_investigation(id, user_id, organization_id: get_org_id(conn)) do
       {:ok, investigation} ->
         json(conn, %{data: serialize_investigation(investigation)})
 

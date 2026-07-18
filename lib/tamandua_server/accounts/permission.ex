@@ -120,6 +120,7 @@ defmodule TamanduaServer.Accounts.Permission do
       {:live_response_file, "File operations in live response", :live_response},
       {:live_response_process, "Process operations in live response", :live_response},
       {:live_response_memory, "Memory operations in live response", :live_response},
+      {:live_response_screen, "Request audited endpoint screen snapshots", :live_response},
       {:live_response_shell, "Execute shell commands (restricted)", :live_response},
       {:live_response_admin, "Full shell access (privileged)", :live_response}
     ],

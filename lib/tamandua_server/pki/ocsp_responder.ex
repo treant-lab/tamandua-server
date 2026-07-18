@@ -57,7 +57,6 @@ defmodule TamanduaServer.PKI.OCSPResponder do
   @response_cache_ttl_seconds 3600
   @max_requests_per_minute 1000
   # OCSP response valid for 24 hours
-  @response_validity_seconds 86400
 
   defmodule State do
     @moduledoc false

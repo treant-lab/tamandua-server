@@ -17,13 +17,13 @@ defmodule TamanduaServer.Reports.Compliance.ComplianceBase do
 
   Returns one of: :compliant, :partial, :non_compliant, :not_assessed
   """
-  def evaluate_control_status(control_id, evidence_checks) do
+  def evaluate_control_status(_control_id, evidence_checks) do
     results = Enum.map(evidence_checks, fn check ->
       check.()
     end)
 
     passed = Enum.count(results, & &1 == :pass)
-    failed = Enum.count(results, & &1 == :fail)
+    _failed = Enum.count(results, & &1 == :fail)
     total = length(results)
 
     cond do

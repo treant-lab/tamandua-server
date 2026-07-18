@@ -18,7 +18,6 @@ defmodule TamanduaServer.Backup.Scheduler do
 
   require Logger
   alias TamanduaServer.Backup.{Encryptor, PostgresBackup, RedisBackup, ClickHouseBackup, ConfigBackup, MLModelBackup}
-  alias TamanduaServer.Repo
 
   @backup_dir Application.compile_env(:tamandua_server, :backup_dir, "/var/backups/tamandua")
   @retention_days 30
@@ -203,7 +202,7 @@ defmodule TamanduaServer.Backup.Scheduler do
   defp backup_redis(backup_path) do
     dest_file = Path.join(backup_path, "redis.rdb.enc")
 
-    with {:ok, rdb_data} <- RedisBackup.save_snapshot(),
+    with {:ok, _rdb_data} <- RedisBackup.save_snapshot(),
          :ok <- Encryptor.encrypt_file(
            Path.join(System.tmp_dir!(), "dump.rdb"),
            dest_file,
@@ -305,7 +304,7 @@ defmodule TamanduaServer.Backup.Scheduler do
   defp backup_redis_aof(backup_path) do
     dest_file = Path.join(backup_path, "redis_aof.enc")
 
-    with {:ok, aof_data} <- RedisBackup.get_aof(),
+    with {:ok, _aof_data} <- RedisBackup.get_aof(),
          :ok <- Encryptor.encrypt_file(
            Path.join(System.tmp_dir!(), "appendonly.aof"),
            dest_file,
@@ -329,7 +328,7 @@ defmodule TamanduaServer.Backup.Scheduler do
       manifest_path = Path.join(backup_path, "manifest.json")
 
       with {:ok, manifest_json} <- File.read(manifest_path),
-           {:ok, manifest} <- Jason.decode(manifest_json),
+           {:ok, _manifest} <- Jason.decode(manifest_json),
            {:ok, postgres_result} <- test_restore_postgres(backup_path, test_dir),
            {:ok, redis_result} <- test_restore_redis(backup_path, test_dir),
            {:ok, config_result} <- test_restore_configs(backup_path, test_dir) do

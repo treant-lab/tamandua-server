@@ -541,8 +541,8 @@ defmodule TamanduaServer.Serverless.LambdaExtension do
     end
   end
 
-  defp check_platform_metrics_anomalies(arn, request_id, metrics, state) do
-    findings = []
+  defp check_platform_metrics_anomalies(arn, request_id, metrics, _state) do
+    _findings = []
 
     # Check for excessive memory usage (>90% of allocated)
     if metrics.max_memory_used_mb && metrics.memory_size_mb do
@@ -1031,7 +1031,7 @@ defmodule TamanduaServer.Serverless.LambdaExtension do
     path = file_event.path || ""
     operation = file_event.operation || ""
 
-    findings = []
+    _findings = []
 
     # Check for sensitive file access
     sensitive_paths = [

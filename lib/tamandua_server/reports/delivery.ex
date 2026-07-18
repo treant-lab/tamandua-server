@@ -208,7 +208,7 @@ defmodule TamanduaServer.Reports.Delivery do
   # File System Delivery
   # ============================================================================
 
-  defp deliver_file(report_data, content, opts) do
+  defp deliver_file(_report_data, content, opts) do
     file_path = opts[:file_path]
 
     if is_nil(file_path) do

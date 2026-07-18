@@ -64,7 +64,6 @@ defmodule TamanduaServer.FPAnalysis do
     BaselineLearner,
     AlertQualityScorer,
     FPReport,
-    RuleQualityMetrics,
     BaselineProfile,
     FPPattern,
     TuningRecommendation

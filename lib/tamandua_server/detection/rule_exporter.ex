@@ -4,7 +4,6 @@ defmodule TamanduaServer.Detection.RuleExporter do
   Supports exporting individual rules, rule sets, and with metadata.
   """
 
-  alias TamanduaServer.Detection
   alias TamanduaServer.Detection.{YaraRule, SigmaRule, IOC}
   alias TamanduaServer.Repo
 
@@ -133,7 +132,7 @@ defmodule TamanduaServer.Detection.RuleExporter do
   Export a rule bundle (combined package).
   Returns a JSON bundle with all rule types.
   """
-  def export_bundle(organization_id, opts \\ []) do
+  def export_bundle(organization_id, _opts \\ []) do
     yara_rules = from(r in YaraRule, where: r.organization_id == ^organization_id) |> Repo.all()
     sigma_rules = from(r in SigmaRule, where: r.organization_id == ^organization_id) |> Repo.all()
     iocs = from(i in IOC, where: i.organization_id == ^organization_id) |> Repo.all()
@@ -365,7 +364,7 @@ defmodule TamanduaServer.Detection.RuleExporter do
   end
 
   defp ioc_to_stix_object(ioc) do
-    stix_type = case ioc.type do
+    _stix_type = case ioc.type do
       "ip" -> "ipv4-addr"
       "domain" -> "domain-name"
       "url" -> "url"
@@ -432,7 +431,7 @@ defmodule TamanduaServer.Detection.RuleExporter do
     end
   end
 
-  defp get_performance_stats(rule_type, rule_id) do
+  defp get_performance_stats(_rule_type, _rule_id) do
     # This would query the rule_performance_metrics table
     # For now, return nil (not implemented in this phase)
     nil

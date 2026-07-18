@@ -3,7 +3,6 @@ defmodule TamanduaServerWeb.GraphQL.Types.AgentTypes do
   GraphQL types for Agents.
   """
   use Absinthe.Schema.Notation
-  import Absinthe.Resolution.Helpers, only: [dataloader: 1]
 
   @desc "Agent status"
   enum :agent_status do

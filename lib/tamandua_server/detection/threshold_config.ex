@@ -41,7 +41,6 @@ defmodule TamanduaServer.Detection.ThresholdConfig do
   alias TamanduaServer.Detection.PresetResolver
 
   @ets_table :detection_threshold_config
-  @config_path Path.join([:code.priv_dir(:tamandua_server), "..", "..", "..", "config", "detection_thresholds.yml"])
 
   # ============================================================================
   # Client API

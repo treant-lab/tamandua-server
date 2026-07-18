@@ -5,7 +5,7 @@ defmodule TamanduaServer.Registries.HuggingFace do
   Provides integration with the HuggingFace Hub API for:
   - Listing and searching models
   - Retrieving detailed model metadata
-  - Triggering security scans on models
+  - Discovering candidates for the governed artifact-intake pipeline
 
   ## Authentication
 
@@ -31,8 +31,8 @@ defmodule TamanduaServer.Registries.HuggingFace do
       # Search for models
       {:ok, models} = HuggingFace.search_models("pytorch llama", %{limit: 5})
 
-      # Scan a model for security issues
-      {:ok, scan} = HuggingFace.scan_model("suspicious/model", %{ml_service_url: "http://localhost:8000"})
+      # Direct remote scans are intentionally disabled. Download pinned
+      # artifacts through DownloadHook quarantine before scanning them.
   """
 
   use TamanduaServer.Registries.Behaviour
@@ -40,7 +40,8 @@ defmodule TamanduaServer.Registries.HuggingFace do
   require Logger
 
   @hf_api_base "https://huggingface.co/api"
-  @request_timeout 30_000  # 30 seconds
+  # 30 seconds
+  @request_timeout 30_000
 
   @impl true
   def metadata do
@@ -50,7 +51,7 @@ defmodule TamanduaServer.Registries.HuggingFace do
       type: :model_registry,
       description: "Official HuggingFace model registry connector",
       author: "Tamandua Team",
-      capabilities: [:search, :scan, :pagination]
+      capabilities: [:search, :pagination]
     }
   end
 
@@ -61,12 +62,13 @@ defmodule TamanduaServer.Registries.HuggingFace do
     filter = Map.get(config, :filter, %{})
     sort = Map.get(config, :sort, "downloads")
 
-    query_params = build_query_params(%{
-      limit: limit,
-      skip: skip,
-      sort: sort,
-      filter: filter
-    })
+    query_params =
+      build_query_params(%{
+        limit: limit,
+        skip: skip,
+        sort: sort,
+        filter: filter
+      })
 
     url = "#{@hf_api_base}/models?#{URI.encode_query(query_params)}"
 
@@ -93,11 +95,12 @@ defmodule TamanduaServer.Registries.HuggingFace do
     limit = Map.get(config, :limit, 20)
     filter = Map.get(config, :filter, %{})
 
-    query_params = build_query_params(%{
-      search: query,
-      limit: limit,
-      filter: filter
-    })
+    query_params =
+      build_query_params(%{
+        search: query,
+        limit: limit,
+        filter: filter
+      })
 
     url = "#{@hf_api_base}/models?#{URI.encode_query(query_params)}"
 
@@ -109,15 +112,12 @@ defmodule TamanduaServer.Registries.HuggingFace do
   end
 
   @impl true
-  def scan_model(model_id, config) do
-    # First, get model metadata to fetch file information
-    with {:ok, model} <- get_model(model_id, config),
-         {:ok, scan_result} <- call_ml_service(model, config) do
-      {:ok, scan_result}
-    else
-      {:error, :not_found} -> {:error, :not_found}
-      {:error, reason} -> {:error, :scan_failed}
-    end
+  def scan_model(_model_id, _config) do
+    # The old implementation sent mutable resolve/main URLs and metadata to a
+    # nonexistent /api/scan endpoint. That neither inspected artifact bytes nor
+    # established provenance. Fail closed until DownloadHook can provide a
+    # quarantined artifact pinned by commit and SHA-256.
+    {:error, :secure_artifact_intake_required}
   end
 
   # Private Functions
@@ -194,7 +194,9 @@ defmodule TamanduaServer.Registries.HuggingFace do
 
   defp decode_json(body) do
     case Jason.decode(body) do
-      {:ok, data} -> {:ok, data}
+      {:ok, data} ->
+        {:ok, data}
+
       {:error, reason} ->
         Logger.error("Failed to decode JSON: #{inspect(reason)}")
         {:error, :invalid_json}
@@ -238,8 +240,14 @@ defmodule TamanduaServer.Registries.HuggingFace do
   end
 
   defp extract_task(tags) when is_list(tags) do
-    task_tags = ["text-generation", "text-classification", "translation",
-                 "summarization", "question-answering", "image-classification"]
+    task_tags = [
+      "text-generation",
+      "text-classification",
+      "translation",
+      "summarization",
+      "question-answering",
+      "image-classification"
+    ]
 
     Enum.find(tags, fn tag -> tag in task_tags end)
   end
@@ -251,72 +259,13 @@ defmodule TamanduaServer.Registries.HuggingFace do
   end
 
   defp parse_datetime(nil), do: DateTime.utc_now()
+
   defp parse_datetime(datetime_string) when is_binary(datetime_string) do
     case DateTime.from_iso8601(datetime_string) do
       {:ok, datetime, _offset} -> datetime
       {:error, _} -> DateTime.utc_now()
     end
   end
+
   defp parse_datetime(_), do: DateTime.utc_now()
-
-  defp call_ml_service(model, config) do
-    ml_service_url = Map.get(config, :ml_service_url) ||
-                     System.get_env("ML_SERVICE_URL") ||
-                     "http://localhost:8000"
-
-    scan_url = "#{ml_service_url}/api/scan"
-
-    # Prepare scan request payload
-    payload = %{
-      model_id: model.id,
-      author: model.author,
-      sha: model.sha,
-      files: extract_file_urls(model),
-      metadata: model.metadata
-    }
-
-    body = Jason.encode!(payload)
-    headers = [
-      {"content-type", "application/json"},
-      {"accept", "application/json"}
-    ]
-
-    request = Finch.build(:post, scan_url, headers, body)
-
-    case Finch.request(request, TamanduaServer.Finch, receive_timeout: 60_000) do
-      {:ok, %Finch.Response{status: status, body: resp_body}} when status in 200..299 ->
-        case Jason.decode(resp_body) do
-          {:ok, scan_data} ->
-            {:ok, %{
-              risk_score: scan_data["risk_score"] || 0.0,
-              findings: scan_data["findings"] || [],
-              scanned_at: DateTime.utc_now()
-            }}
-          {:error, _} ->
-            {:error, :invalid_scan_response}
-        end
-
-      {:ok, %Finch.Response{status: 404}} ->
-        {:error, :scan_service_unavailable}
-
-      {:error, _reason} ->
-        {:error, :scan_failed}
-    end
-  end
-
-  defp extract_file_urls(model) do
-    siblings = get_in(model, [:metadata, :siblings]) || []
-
-    Enum.map(siblings, fn sibling ->
-      %{
-        filename: sibling["rfilename"],
-        size: sibling["size"],
-        url: build_file_url(model.id, sibling["rfilename"])
-      }
-    end)
-  end
-
-  defp build_file_url(model_id, filename) do
-    "https://huggingface.co/#{model_id}/resolve/main/#{filename}"
-  end
 end

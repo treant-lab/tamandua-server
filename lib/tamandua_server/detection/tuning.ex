@@ -21,7 +21,6 @@ defmodule TamanduaServer.Detection.Tuning do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Alerts
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Detection.Config
 
@@ -640,7 +639,7 @@ defmodule TamanduaServer.Detection.Tuning do
     {:ok, adjustment}
   end
 
-  defp calculate_threshold_from_feedback(rule_id, metrics) do
+  defp calculate_threshold_from_feedback(rule_id, _metrics) do
     # Query feedback entries with alert scores
     feedback_entries = :ets.match(@feedback_table, {:_, %{rule_id: rule_id}, :_})
     |> Enum.map(fn [entry] -> entry end)

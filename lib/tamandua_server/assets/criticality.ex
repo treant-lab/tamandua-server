@@ -60,8 +60,10 @@ defmodule TamanduaServer.Assets.Criticality do
   @sensitivity_modifiers %{
     "classified" => 1.5,
     "pii" => 1.3,
-    "phi" => 1.4,  # Protected Health Information
-    "pci" => 1.3,  # Payment Card Industry
+    # Protected Health Information
+    "phi" => 1.4,
+    # Payment Card Industry
+    "pci" => 1.3,
     "financial" => 1.2,
     "intellectual_property" => 1.2,
     "public" => 1.0,
@@ -80,40 +82,46 @@ defmodule TamanduaServer.Assets.Criticality do
   }
 
   # Auto-detection patterns
-  @dc_indicators [
-    # Process names
-    "lsass.exe",
-    "ntds.dit",
-    "Active Directory",
-    "AD DS",
-    # Hostname patterns
-    ~r/^DC\d+/i,
-    ~r/^PDC/i,
-    ~r/^ADC/i,
-    ~r/domain.*controller/i
-  ]
+  defp dc_indicators do
+    [
+      # Process names
+      "lsass.exe",
+      "ntds.dit",
+      "Active Directory",
+      "AD DS",
+      # Hostname patterns
+      ~r/^DC\d+/i,
+      ~r/^PDC/i,
+      ~r/^ADC/i,
+      ~r/domain.*controller/i
+    ]
+  end
 
-  @db_indicators [
-    # Process/service names
-    "sqlservr.exe",
-    "mysqld",
-    "postgres",
-    "oracle",
-    "mongod",
-    "redis-server",
-    "cassandra",
-    # Hostname patterns
-    ~r/^DB\d+/i,
-    ~r/^SQL/i,
-    ~r/database/i
-  ]
+  defp db_indicators do
+    [
+      # Process/service names
+      "sqlservr.exe",
+      "mysqld",
+      "postgres",
+      "oracle",
+      "mongod",
+      "redis-server",
+      "cassandra",
+      # Hostname patterns
+      ~r/^DB\d+/i,
+      ~r/^SQL/i,
+      ~r/database/i
+    ]
+  end
 
-  @ca_indicators [
-    "certsrv",
-    "CertificateAuthority",
-    ~r/^CA\d*/i,
-    ~r/cert.*server/i
-  ]
+  defp ca_indicators do
+    [
+      "certsrv",
+      "CertificateAuthority",
+      ~r/^CA\d*/i,
+      ~r/cert.*server/i
+    ]
+  end
 
   # GenServer state
   defstruct [
@@ -143,6 +151,18 @@ defmodule TamanduaServer.Assets.Criticality do
   @spec get_criticality(String.t()) :: map()
   def get_criticality(agent_id) do
     GenServer.call(__MODULE__, {:get_criticality, agent_id})
+  end
+
+  @doc """
+  Batch variant of `get_criticality/1`: resolves a list of agent ids in a
+  single GenServer round-trip instead of one call per agent.
+
+  Returns the assessments (same shape as `get_criticality/1`) in the same
+  order as the input list.
+  """
+  @spec get_criticality_for_agents([String.t()]) :: [map()]
+  def get_criticality_for_agents(agent_ids) when is_list(agent_ids) do
+    GenServer.call(__MODULE__, {:get_criticality_batch, agent_ids})
   end
 
   @doc """
@@ -229,14 +249,24 @@ defmodule TamanduaServer.Assets.Criticality do
   end
 
   @impl true
+  def handle_call({:get_criticality_batch, agent_ids}, _from, state) do
+    results = Enum.map(agent_ids, &calculate_criticality(&1, state))
+    {:reply, results, state}
+  end
+
+  @impl true
   def handle_call({:set_criticality, agent_id, attrs}, _from, state) do
     # Validate and save override
     case validate_criticality_attrs(attrs) do
       :ok ->
-        override = Map.merge(%{
-          agent_id: agent_id,
-          updated_at: DateTime.utc_now()
-        }, attrs)
+        override =
+          Map.merge(
+            %{
+              agent_id: agent_id,
+              updated_at: DateTime.utc_now()
+            },
+            attrs
+          )
 
         save_override(agent_id, override)
 
@@ -266,22 +296,25 @@ defmodule TamanduaServer.Assets.Criticality do
 
     agents = list_agents(org_id)
 
-    assets = Enum.map(agents, fn agent ->
-      criticality = calculate_criticality(agent.id, state)
-      Map.merge(criticality, %{
-        agent_id: agent.id,
-        hostname: agent.hostname,
-        os_type: agent.os_type,
-        status: agent.status
-      })
-    end)
+    assets =
+      Enum.map(agents, fn agent ->
+        criticality = calculate_criticality(agent.id, state)
+
+        Map.merge(criticality, %{
+          agent_id: agent.id,
+          hostname: agent.hostname,
+          os_type: agent.os_type,
+          status: agent.status
+        })
+      end)
 
     # Filter by level if specified
-    filtered = if level do
-      Enum.filter(assets, fn a -> a.level == level end)
-    else
-      assets
-    end
+    filtered =
+      if level do
+        Enum.filter(assets, fn a -> a.level == level end)
+      else
+        assets
+      end
 
     {:reply, filtered, state}
   end
@@ -290,17 +323,19 @@ defmodule TamanduaServer.Assets.Criticality do
   def handle_call({:get_critical, org_id}, _from, state) do
     agents = list_agents(org_id)
 
-    critical_assets = agents
-    |> Enum.map(fn agent ->
-      criticality = calculate_criticality(agent.id, state)
-      Map.merge(criticality, %{
-        agent_id: agent.id,
-        hostname: agent.hostname,
-        os_type: agent.os_type
-      })
-    end)
-    |> Enum.filter(fn a -> a.level in [:critical, :high] end)
-    |> Enum.sort_by(& &1.score, :desc)
+    critical_assets =
+      agents
+      |> Enum.map(fn agent ->
+        criticality = calculate_criticality(agent.id, state)
+
+        Map.merge(criticality, %{
+          agent_id: agent.id,
+          hostname: agent.hostname,
+          os_type: agent.os_type
+        })
+      end)
+      |> Enum.filter(fn a -> a.level in [:critical, :high] end)
+      |> Enum.sort_by(& &1.score, :desc)
 
     {:reply, critical_assets, state}
   end
@@ -318,25 +353,32 @@ defmodule TamanduaServer.Assets.Criticality do
 
   @impl true
   def handle_call({:bulk_import, assets}, _from, state) do
-    count = Enum.reduce(assets, 0, fn asset, acc ->
-      case validate_criticality_attrs(asset) do
-        :ok ->
-          agent_id = asset[:agent_id] || asset["agent_id"]
-          if agent_id do
-            override = Map.merge(%{
-              agent_id: agent_id,
-              updated_at: DateTime.utc_now()
-            }, normalize_attrs(asset))
-            save_override(agent_id, override)
-            acc + 1
-          else
-            acc
-          end
+    count =
+      Enum.reduce(assets, 0, fn asset, acc ->
+        case validate_criticality_attrs(asset) do
+          :ok ->
+            agent_id = asset[:agent_id] || asset["agent_id"]
 
-        _ ->
-          acc
-      end
-    end)
+            if agent_id do
+              override =
+                Map.merge(
+                  %{
+                    agent_id: agent_id,
+                    updated_at: DateTime.utc_now()
+                  },
+                  normalize_attrs(asset)
+                )
+
+              save_override(agent_id, override)
+              acc + 1
+            else
+              acc
+            end
+
+          _ ->
+            acc
+        end
+      end)
 
     # Reload overrides
     new_overrides = load_overrides()
@@ -347,16 +389,18 @@ defmodule TamanduaServer.Assets.Criticality do
   def handle_call({:get_distribution, org_id}, _from, state) do
     agents = list_agents(org_id)
 
-    distribution = agents
-    |> Enum.map(fn agent -> calculate_criticality(agent.id, state) end)
-    |> Enum.group_by(& &1.level)
-    |> Enum.map(fn {level, items} -> {level, length(items)} end)
-    |> Map.new()
+    distribution =
+      agents
+      |> Enum.map(fn agent -> calculate_criticality(agent.id, state) end)
+      |> Enum.group_by(& &1.level)
+      |> Enum.map(fn {level, items} -> {level, length(items)} end)
+      |> Map.new()
 
     # Ensure all levels are present
-    full_distribution = @levels
-    |> Enum.map(fn level -> {level, Map.get(distribution, level, 0)} end)
-    |> Map.new()
+    full_distribution =
+      @levels
+      |> Enum.map(fn level -> {level, Map.get(distribution, level, 0)} end)
+      |> Map.new()
 
     {:reply, full_distribution, state}
   end
@@ -366,10 +410,11 @@ defmodule TamanduaServer.Assets.Criticality do
     Logger.debug("Refreshing all asset criticality data")
 
     # Clear cache to force recalculation
-    new_state = %{state |
-      criticality_cache: %{},
-      auto_discovered: %{},
-      last_refresh: DateTime.utc_now()
+    new_state = %{
+      state
+      | criticality_cache: %{},
+        auto_discovered: %{},
+        last_refresh: DateTime.utc_now()
     }
 
     schedule_refresh()
@@ -422,9 +467,10 @@ defmodule TamanduaServer.Assets.Criticality do
       level = score_to_level(final_score)
 
       # Collect factors
-      factors = role_factors ++
-        [data_sensitivity, compliance] ++
-        if(user_privilege_factor > 1.0, do: ["privileged_access"], else: [])
+      factors =
+        role_factors ++
+          [data_sensitivity, compliance] ++
+          if(user_privilege_factor > 1.0, do: ["privileged_access"], else: [])
 
       %{
         level: level,
@@ -432,7 +478,7 @@ defmodule TamanduaServer.Assets.Criticality do
         role: role,
         data_sensitivity: data_sensitivity,
         compliance: compliance,
-        factors: Enum.filter(factors, & &1 != nil and &1 != "none"),
+        factors: Enum.filter(factors, &(&1 != nil and &1 != "none")),
         auto_discovered: true,
         override: false,
         agent: %{
@@ -493,13 +539,13 @@ defmodule TamanduaServer.Assets.Criticality do
         {"database_server", ["tagged_as_database"]}
 
       # Check hostname patterns
-      matches_patterns?(hostname, @dc_indicators) ->
+      matches_patterns?(hostname, dc_indicators()) ->
         {"domain_controller", ["hostname_pattern_dc"]}
 
-      matches_patterns?(hostname, @db_indicators) ->
+      matches_patterns?(hostname, db_indicators()) ->
         {"database_server", ["hostname_pattern_db"]}
 
-      matches_patterns?(hostname, @ca_indicators) ->
+      matches_patterns?(hostname, ca_indicators()) ->
         {"certificate_authority", ["hostname_pattern_ca"]}
 
       # Check OS type for server vs workstation
@@ -731,19 +777,22 @@ defmodule TamanduaServer.Assets.Criticality do
 
   defp load_overrides do
     try do
-      query = from(c in "asset_criticality",
-        select: {c.agent_id, %{
-          agent_id: c.agent_id,
-          level: c.level,
-          score: c.score,
-          role: c.role,
-          data_sensitivity: c.data_sensitivity,
-          compliance: c.compliance,
-          factors: c.factors,
-          reason: c.reason,
-          updated_at: c.updated_at
-        }}
-      )
+      query =
+        from(c in "asset_criticality",
+          select:
+            {c.agent_id,
+             %{
+               agent_id: c.agent_id,
+               level: c.level,
+               score: c.score,
+               role: c.role,
+               data_sensitivity: c.data_sensitivity,
+               compliance: c.compliance,
+               factors: c.factors,
+               reason: c.reason,
+               updated_at: c.updated_at
+             }}
+        )
 
       Repo.all(query) |> Map.new()
     rescue
@@ -753,21 +802,28 @@ defmodule TamanduaServer.Assets.Criticality do
 
   defp save_override(agent_id, override) do
     try do
-      Repo.insert_all("asset_criticality", [%{
-        id: Ecto.UUID.generate(),
-        agent_id: agent_id,
-        level: to_string(override[:level]),
-        score: override[:score],
-        role: override[:role],
-        data_sensitivity: override[:data_sensitivity],
-        compliance: override[:compliance],
-        factors: override[:factors],
-        reason: override[:reason],
-        updated_at: override[:updated_at],
-        inserted_at: DateTime.utc_now()
-      }],
-      on_conflict: {:replace, [:level, :score, :role, :data_sensitivity, :compliance, :factors, :reason, :updated_at]},
-      conflict_target: :agent_id)
+      Repo.insert_all(
+        "asset_criticality",
+        [
+          %{
+            id: Ecto.UUID.generate(),
+            agent_id: agent_id,
+            level: to_string(override[:level]),
+            score: override[:score],
+            role: override[:role],
+            data_sensitivity: override[:data_sensitivity],
+            compliance: override[:compliance],
+            factors: override[:factors],
+            reason: override[:reason],
+            updated_at: override[:updated_at],
+            inserted_at: DateTime.utc_now()
+          }
+        ],
+        on_conflict:
+          {:replace,
+           [:level, :score, :role, :data_sensitivity, :compliance, :factors, :reason, :updated_at]},
+        conflict_target: :agent_id
+      )
     rescue
       e -> Logger.error("Failed to save criticality override: #{inspect(e)}")
     end
@@ -775,7 +831,7 @@ defmodule TamanduaServer.Assets.Criticality do
 
   defp delete_override(agent_id) do
     try do
-      Repo.delete_all(from c in "asset_criticality", where: c.agent_id == ^agent_id)
+      Repo.delete_all(from(c in "asset_criticality", where: c.agent_id == ^agent_id))
     rescue
       _ -> :ok
     end

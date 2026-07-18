@@ -25,8 +25,6 @@ defmodule TamanduaServer.ML.FeedbackCollector do
   use GenServer
   require Logger
 
-  alias TamanduaServer.ML.AnalystFeedback
-  alias TamanduaServer.ML.ModelManager
 
   # ── Configuration ────────────────────────────────────────────────────
 

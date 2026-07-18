@@ -392,7 +392,7 @@ defmodule TamanduaServer.ThreatIntel.AlertScoringIntegration do
     end
   end
 
-  defp maybe_escalate_alert(alert, nil), do: :ok
+  defp maybe_escalate_alert(_alert, nil), do: :ok
   defp maybe_escalate_alert(alert, aggregate_score) do
     # Escalate if:
     # 1. Aggregate score >= 90

@@ -10,6 +10,7 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
   require Logger
 
   alias TamanduaServer.Hunting.NLHunter
+  alias TamanduaServer.Telemetry
 
   action_fallback TamanduaServerWeb.FallbackController
 
@@ -60,10 +61,62 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
       POST /api/v1/hunting/nl/query
       {"query": "Show me all PowerShell executions with encoded commands in the last hour"}
   """
+  def natural_language_query(conn, %{"query" => query, "execute" => true} = params) do
+    translated_query = params["translated_query"] |> present_string()
+    executable_query = direct_hunt_query(translated_query) || direct_hunt_query(query)
+
+    if is_nil(executable_query) do
+      execute_natural_language_query(conn, query,
+        meta: %{translated_query_not_executed: translated_query}
+      )
+    else
+      execute_direct_hunt_query(conn, query, executable_query, params, translated_query)
+    end
+  end
+
   def natural_language_query(conn, %{"query" => query} = _params) do
+    execute_natural_language_query(conn, query)
+  end
+
+  def natural_language_query(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "Missing required parameter: query"})
+  end
+
+  defp execute_direct_hunt_query(conn, query, executable_query, params, translated_query) do
+    time_range = params["time_range"] || "24h"
+    limit = parse_int(params["limit"], 100)
+
+    results =
+      Telemetry.hunt_search(executable_query, time_range, limit,
+        agent_ids: params["agent_ids"],
+        organization_id: organization_id(conn)
+      )
+
+    json(conn, %{
+      data: %{
+        query: query,
+        translated_query: executable_query,
+        translation_source: if(translated_query, do: "provided", else: "natural_language"),
+        results: Enum.map(results, &serialize_event/1),
+        result_count: length(results)
+      },
+      meta: %{
+        total_matches: length(results),
+        executed_query: executable_query,
+        execution_mode: "simple_hunt",
+        time_range: time_range
+      }
+    })
+  end
+
+  defp execute_natural_language_query(conn, query, opts \\ []) do
     # Pass nil as session_id to create a new session for this query
     case NLHunter.execute_query(nil, query) do
       {:ok, results} ->
+        extra_meta = Keyword.get(opts, :meta, %{})
+
         json(conn, %{
           data: %{
             query: query,
@@ -73,9 +126,12 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
             results: results[:results] || [],
             result_count: results[:result_count] || 0
           },
-          meta: %{
-            total_matches: results[:result_count] || 0
-          }
+          meta:
+            %{
+              total_matches: results[:result_count] || 0,
+              execution_mode: "nl_hunter"
+            }
+            |> Map.merge(extra_meta)
         })
 
       {:error, :invalid_query, details} ->
@@ -92,12 +148,6 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
         |> put_status(:internal_server_error)
         |> json(%{error: to_string(reason)})
     end
-  end
-
-  def natural_language_query(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "Missing required parameter: query"})
   end
 
   @doc """
@@ -260,4 +310,66 @@ defmodule TamanduaServerWeb.API.V1.NLHuntController do
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  defp present_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp present_string(_), do: nil
+
+  defp direct_hunt_query(nil), do: nil
+
+  defp direct_hunt_query(query) when is_binary(query) do
+    trimmed = String.trim(query)
+
+    cond do
+      trimmed == "" ->
+        nil
+
+      String.contains?(trimmed, "|") or String.contains?(trimmed, "\n") ->
+        nil
+
+      Regex.match?(~r/\b(select|from|where|match|fields|title|detection|condition):?\b/i, trimmed) ->
+        nil
+
+      Regex.match?(~r/(^|\s|\()[-A-Za-z0-9_.]+:(~|!|\*|>|<|>=|<=|in|!in)?\S+/, trimmed) ->
+        trimmed
+
+      true ->
+        nil
+    end
+  end
+
+  defp direct_hunt_query(_), do: nil
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
+  defp organization_id(conn) do
+    case conn.assigns[:current_user] do
+      %{organization_id: org_id} -> org_id
+      _ -> nil
+    end
+  end
+
+  defp serialize_event(event) do
+    %{
+      id: event.id,
+      agent_id: event.agent_id,
+      agent_hostname: Map.get(event, :agent_hostname, "Unknown"),
+      event_type: event.event_type,
+      timestamp: format_datetime(event.timestamp),
+      payload: event.payload || %{}
+    }
+  end
 end

@@ -127,13 +127,19 @@ defmodule TamanduaServer.Repo.RLSSecurityTest do
       end)
     end
 
-    test "cannot modify session variable directly to bypass", %{org1: org1, org2: org2} do
+    test "supported Repo queries reassert tenant context after a trusted raw GUC write", %{
+      org1: org1,
+      org2: org2
+    } do
       MultiTenant.with_organization(org2.id, fn ->
-        # Attacker sets session variable to victim's org
-        Repo.query("SET LOCAL app.current_organization_id = $1", [org1.id])
+        assert {:ok, _} =
+                 Repo.query(
+                   "SELECT set_config('app.current_organization_id', $1, TRUE)",
+                   [org1.id]
+                 )
 
-        # Query should still respect the transaction-level context
-        # The with_organization transaction already set the variable
+        # Repo.default_options reasserts the Process-bound org before Ecto queries.
+        # Raw SQL remains a trusted-internal boundary and is not claimed safe here.
         alerts = Repo.all(Alert)
 
         # Should not see victim's alerts
@@ -170,8 +176,8 @@ defmodule TamanduaServer.Repo.RLSSecurityTest do
     test "cannot clear organization_id to see all records", %{org1: org1, org2: org2} do
       # Start with org2 context
       MultiTenant.with_organization(org2.id, fn ->
-        # Try to clear the organization context
-        Repo.query("SET LOCAL app.current_organization_id = NULL")
+        assert {:ok, _} =
+                 Repo.query("SELECT set_config('app.current_organization_id', '', TRUE)")
 
         # Should not be able to query without organization context
         # Default RESTRICTIVE policy should deny access
@@ -227,37 +233,32 @@ defmodule TamanduaServer.Repo.RLSSecurityTest do
     end
 
     test "cannot access other org's data via transaction nesting", %{org1: org1, org2: org2} do
-      result = MultiTenant.with_organization(org1.id, fn ->
-        # Start inner transaction with different org
-        Repo.transaction(fn ->
-          MultiTenant.put_organization_id(org2.id)
+      alerts =
+        MultiTenant.with_organization(org1.id, fn ->
+          assert_raise ArgumentError, ~r/nested organization context switch/, fn ->
+            Repo.transaction(fn ->
+              MultiTenant.put_organization_id(org2.id)
+              send(self(), :cross_tenant_callback_executed)
+              Repo.all(Alert)
+            end)
+          end
+
+          refute_received :cross_tenant_callback_executed
           Repo.all(Alert)
         end)
-      end)
 
-      # Inner transaction should only see org2's data
-      case result do
-        {:ok, alerts} ->
-          assert length(alerts) == 1
-          assert hd(alerts).organization_id == org2.id
-
-        alerts when is_list(alerts) ->
-          assert length(alerts) == 1
-          assert hd(alerts).organization_id == org2.id
-      end
+      assert length(alerts) == 1
+      assert hd(alerts).organization_id == org1.id
     end
 
     test "RLS context is maintained after rollback", %{org1: org1, org2: org2, alert1: alert1} do
       MultiTenant.with_organization(org1.id, fn ->
         # Attempt an operation that will rollback
-        try do
+        assert_raise ArgumentError, ~r/nested organization context switch/, fn ->
           Repo.transaction(fn ->
-            # Try to update with wrong org context
             MultiTenant.put_organization_id(org2.id)
             Repo.update!(alert1 |> Ecto.Changeset.change(title: "Hacked"))
           end)
-        rescue
-          _ -> :ok
         end
 
         # After rollback, context should still be org1

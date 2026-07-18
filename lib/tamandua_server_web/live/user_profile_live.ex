@@ -12,7 +12,7 @@ defmodule TamanduaServerWeb.UserProfileLive do
   use TamanduaServerWeb, :live_view
   require Logger
 
-  alias TamanduaServer.UBA.{RiskScorer, BehaviorTracker, AnomalyDetector, BaselineLearner}
+  alias TamanduaServer.UBA.{RiskScorer, BehaviorTracker, AnomalyDetector}
   alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.User
 

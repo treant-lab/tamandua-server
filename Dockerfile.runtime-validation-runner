@@ -1,0 +1,131 @@
+# syntax=docker/dockerfile:1
+# Local validation runner only. The orchestration script binds the immutable
+# index, linux/amd64 manifest and config/image identities independently.
+ARG BASE_PLATFORM_IMAGE
+FROM --platform=linux/amd64 ${BASE_PLATFORM_IMAGE}
+
+ARG BASE_PLATFORM_IMAGE
+ARG BASE_INDEX_IMAGE
+ARG BASE_INDEX_DIGEST
+ARG BASE_PLATFORM_MANIFEST_DIGEST
+ARG EXPECTED_BASE_CONFIG_ID
+ARG EXPECTED_ELIXIR_VERSION
+ARG EXPECTED_ERLANG_VERSION
+ARG EXPECTED_OTP_RELEASE
+ARG EXPECTED_ALPINE_VERSION
+ARG HEX_VERSION
+ARG APK_REPOSITORY_BRANCH
+ARG POSTGRESQL_CLIENT_PACKAGE
+ARG POSTGRESQL_CLIENT_PACKAGE_VERSION
+ARG EXPECTED_PSQL_VERSION
+ARG ALPINE_TOOLCHAIN_PACKAGES
+ARG EXPECTED_PACKAGE_MANIFEST_SHA256
+ARG SOURCE_SHA
+ARG DOCKERFILE_SHA256
+ARG MIX_EXS_SHA256
+ARG MIX_LOCK_SHA256
+ARG CONFIG_SHA256
+ARG INPUT_BUNDLE_SHA256
+ARG INVOCATION_ID
+
+ENV MIX_ENV=test \
+    LANG=C.UTF-8 \
+    HOME=/opt/tamandua \
+    MIX_HOME=/opt/tamandua/.mix \
+    HEX_HOME=/opt/tamandua/.hex \
+    ERL_FLAGS="+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none"
+
+LABEL org.opencontainers.image.title="Tamandua Elixir/PostgreSQL runtime validation runner" \
+      org.opencontainers.image.description="Local-only provenance-bound validation prerequisite; not a release image" \
+      org.opencontainers.image.revision="${SOURCE_SHA}" \
+      io.tamandua.validation.claim-scope="local-only" \
+      io.tamandua.validation.product-ready="false" \
+      io.tamandua.validation.production-validated="false" \
+      io.tamandua.validation.external-claim-allowed="false" \
+      io.tamandua.validation.vendor-parity="false" \
+      io.tamandua.validation.platform="linux/amd64" \
+      io.tamandua.validation.base.index-reference="${BASE_INDEX_IMAGE}" \
+      io.tamandua.validation.base.index-digest="${BASE_INDEX_DIGEST}" \
+      io.tamandua.validation.base.manifest-reference="${BASE_PLATFORM_IMAGE}" \
+      io.tamandua.validation.base.manifest-digest="${BASE_PLATFORM_MANIFEST_DIGEST}" \
+      io.tamandua.validation.base.config-id="${EXPECTED_BASE_CONFIG_ID}" \
+      io.tamandua.validation.source.sha="${SOURCE_SHA}" \
+      io.tamandua.validation.input.dockerfile.sha256="${DOCKERFILE_SHA256}" \
+      io.tamandua.validation.input.mix-exs.sha256="${MIX_EXS_SHA256}" \
+      io.tamandua.validation.input.mix-lock.sha256="${MIX_LOCK_SHA256}" \
+      io.tamandua.validation.input.config.sha256="${CONFIG_SHA256}" \
+      io.tamandua.validation.input.bundle.sha256="${INPUT_BUNDLE_SHA256}" \
+      io.tamandua.validation.invocation.id="${INVOCATION_ID}" \
+      io.tamandua.validation.tool.elixir="${EXPECTED_ELIXIR_VERSION}" \
+      io.tamandua.validation.tool.erlang="${EXPECTED_ERLANG_VERSION}" \
+      io.tamandua.validation.tool.otp="${EXPECTED_OTP_RELEASE}" \
+      io.tamandua.validation.os.alpine="${EXPECTED_ALPINE_VERSION}" \
+      io.tamandua.validation.tool.hex="${HEX_VERSION}" \
+      io.tamandua.validation.tool.psql="${EXPECTED_PSQL_VERSION}" \
+      io.tamandua.validation.package.manager="apk" \
+      io.tamandua.validation.package.repository-branch="${APK_REPOSITORY_BRANCH}" \
+      io.tamandua.validation.package.repository-main="https://dl-cdn.alpinelinux.org/alpine/v3.21/main" \
+      io.tamandua.validation.package.repository-community="https://dl-cdn.alpinelinux.org/alpine/v3.21/community" \
+      io.tamandua.validation.package.postgresql-client="${POSTGRESQL_CLIENT_PACKAGE}=${POSTGRESQL_CLIENT_PACKAGE_VERSION}" \
+      io.tamandua.validation.package.toolchain="${ALPINE_TOOLCHAIN_PACKAGES}" \
+      io.tamandua.validation.package.manifest.sha256="${EXPECTED_PACKAGE_MANIFEST_SHA256}"
+
+USER root
+RUN test "${EXPECTED_ELIXIR_VERSION}" = "1.18.4" \
+    && test "${EXPECTED_ERLANG_VERSION}" = "27.3.4" \
+    && test "${EXPECTED_OTP_RELEASE}" = "27" \
+    && test "${EXPECTED_ALPINE_VERSION}" = "3.21.3" \
+    && test "${HEX_VERSION}" = "2.2.1" \
+    && test "${APK_REPOSITORY_BRANCH}" = "v3.21" \
+    && test "${POSTGRESQL_CLIENT_PACKAGE}" = "postgresql16-client" \
+    && test "${POSTGRESQL_CLIENT_PACKAGE_VERSION}" = "16.14-r0" \
+    && test "${EXPECTED_PSQL_VERSION}" = "16.14" \
+    && test "${ALPINE_TOOLCHAIN_PACKAGES}" = "build-base git python3 pkgconf openssl-dev libxml2-dev" \
+    && test -n "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+    && test -n "${INVOCATION_ID}" \
+    && test "$(cat /etc/alpine-release)" = "${EXPECTED_ALPINE_VERSION}" \
+    && test "$(elixir --version | sed -n 's/^Elixir \([0-9][^ ]*\).*/\1/p')" = "${EXPECTED_ELIXIR_VERSION}" \
+    && test "$(erl -noshell -eval 'io:format(\"~s\", [erlang:system_info(otp_release)]), halt().' 2>/dev/null)" = "${EXPECTED_OTP_RELEASE}" \
+    && test "$(cat /usr/local/lib/erlang/releases/${EXPECTED_OTP_RELEASE}/OTP_VERSION)" = "${EXPECTED_ERLANG_VERSION}" \
+    && test "$(apk --print-arch)" = "x86_64"
+
+RUN ( test "$(grep -Ev '^[[:space:]]*($|#)' /etc/apk/repositories | wc -l | tr -d '[:space:]')" = "2" \
+      && grep -Fqx 'https://dl-cdn.alpinelinux.org/alpine/v3.21/main' /etc/apk/repositories \
+      && grep -Fqx 'https://dl-cdn.alpinelinux.org/alpine/v3.21/community' /etc/apk/repositories ) \
+    || { rc=$?; printf '%s\n' 'TAMANDUA_RUNNER_FAILURE_V1:repositories' >&2; exit "$rc"; }
+
+# The direct PostgreSQL package is exact; the complete canonical apk closure
+# additionally binds transitive packages from the unsnapshotted v3.21 indexes.
+RUN apk add --no-cache ${ALPINE_TOOLCHAIN_PACKAGES} \
+       "${POSTGRESQL_CLIENT_PACKAGE}=${POSTGRESQL_CLIENT_PACKAGE_VERSION}" \
+    || { rc=$?; printf '%s\n' 'TAMANDUA_RUNNER_FAILURE_V1:apk_install' >&2; exit "$rc"; }
+
+RUN test "$(psql --version | sed 's/^psql (PostgreSQL) //')" = "${EXPECTED_PSQL_VERSION}" \
+    || { rc=$?; printf '%s\n' 'TAMANDUA_RUNNER_FAILURE_V1:psql_version' >&2; exit "$rc"; }
+
+RUN ( mkdir -p /opt/tamandua/provenance \
+      && apk info -v | LC_ALL=C sort > /opt/tamandua/provenance/apk-manifest.txt \
+      && echo "${EXPECTED_PACKAGE_MANIFEST_SHA256}  /opt/tamandua/provenance/apk-manifest.txt" | sha256sum -c - ) \
+    || { rc=$?; printf '%s\n' 'TAMANDUA_RUNNER_FAILURE_V1:closure_digest' >&2; exit "$rc"; }
+
+WORKDIR /app
+COPY mix.exs mix.lock ./
+COPY config ./config
+COPY .tamandua-config-files.sha256 /opt/tamandua/provenance/config-files.sha256
+
+RUN test "$(sha256sum mix.exs | cut -d' ' -f1)" = "${MIX_EXS_SHA256}" \
+    && test "$(sha256sum mix.lock | cut -d' ' -f1)" = "${MIX_LOCK_SHA256}" \
+    && (cd config && sha256sum -c /opt/tamandua/provenance/config-files.sha256) \
+    && lock_before="$(sha256sum mix.lock | cut -d' ' -f1)" \
+    && mix local.hex "${HEX_VERSION}" --force \
+    && mix local.rebar --force \
+    && mix deps.get --only test --locked \
+    && mix deps.compile \
+    && mix compile \
+    && mix deps.check \
+    && test "$(sha256sum mix.lock | cut -d' ' -f1)" = "${lock_before}" \
+    && mix hex.info | grep -F "Hex: ${HEX_VERSION}" \
+    && (cd config && sha256sum -c /opt/tamandua/provenance/config-files.sha256)
+
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["MIX_ENV=test mix deps.check"]

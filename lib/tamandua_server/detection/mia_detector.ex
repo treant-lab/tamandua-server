@@ -24,7 +24,6 @@ defmodule TamanduaServer.Detection.MIADetector do
   @session_ttl_seconds 1800  # 30 minutes
   @garbage_collection_interval :timer.minutes(5)
   @probing_confidence_threshold 0.15  # Cliff threshold
-  @sustained_probing_window 300  # 5 minutes
 
   # ============================================================================
   # Types
@@ -541,7 +540,7 @@ defmodule TamanduaServer.Detection.MIADetector do
     end
   end
 
-  defp calculate_cliff_membership_score(cliffs, confidences) do
+  defp calculate_cliff_membership_score(cliffs, _confidences) do
     if Enum.empty?(cliffs) do
       0.0
     else

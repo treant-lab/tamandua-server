@@ -30,7 +30,7 @@ defmodule TamanduaServer.Auth.SSO.Provisioner do
   """
 
   require Logger
-  alias TamanduaServer.{Repo, Accounts}
+  alias TamanduaServer.{Accounts}
   alias TamanduaServer.Auth.SSO.SSOConfig
   alias TamanduaServer.AuditLog
 
@@ -152,7 +152,8 @@ defmodule TamanduaServer.Auth.SSO.Provisioner do
   def deprovision_user(%Accounts.User{} = user, reason \\ "Removed from IdP") do
     case Accounts.update_user(user, %{is_active: false}) do
       {:ok, updated_user} ->
-        AuditLog.log(user.organization_id, %{
+        AuditLog.log(%{
+          organization_id: user.organization_id,
           action: "sso.user_deprovisioned",
           actor_id: nil,
           resource_type: "user",
@@ -389,7 +390,8 @@ defmodule TamanduaServer.Auth.SSO.Provisioner do
   end
 
   defp log_provisioning_event(config, event_type, user, details) do
-    AuditLog.log(config.organization_id, %{
+    AuditLog.log(%{
+      organization_id: config.organization_id,
       action: "sso.#{event_type}",
       actor_id: nil,
       resource_type: "user",

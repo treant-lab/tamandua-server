@@ -25,7 +25,6 @@ defmodule TamanduaServer.Compliance do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Compliance.{Control, Assessment, Evidence, Report}
 
   @compliance_frameworks [

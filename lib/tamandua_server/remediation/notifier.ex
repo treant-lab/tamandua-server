@@ -11,8 +11,7 @@ defmodule TamanduaServer.Remediation.Notifier do
   alias TamanduaServer.Repo
   alias TamanduaServer.NotificationCenter.{Dispatcher, NotificationWebhook}
   alias TamanduaServer.NotificationCenter.Channels.WebhookWorker
-  alias TamanduaServer.Remediation.{Workflow, Policy}
-  alias TamanduaServer.Alerts.Alert
+  alias TamanduaServer.Remediation.{Workflow}
   alias TamanduaServer.Accounts.User
 
   import Ecto.Query

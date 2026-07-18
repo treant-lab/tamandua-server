@@ -143,7 +143,7 @@ defmodule TamanduaServer.Integrations.SOAR.Swimlane do
   @impl true
   def handle_call({:trigger_playbook, playbook_name, params}, _from, state) do
     # In Swimlane, playbooks are workflows
-    app_id = params[:application_id] || state.application_id
+    _app_id = params[:application_id] || state.application_id
     record_id = params[:record_id]
 
     body = %{

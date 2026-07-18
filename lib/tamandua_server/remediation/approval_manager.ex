@@ -13,17 +13,24 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
 
   use GenServer
   require Logger
+  import Ecto.Query
 
-  alias TamanduaServer.Remediation.{Execution, Executor}
+  alias TamanduaServer.Accounts.User
+  alias TamanduaServer.Remediation.{ApprovalRestore, Execution, Executor}
+  alias TamanduaServer.Repo
+  alias TamanduaServer.Repo.MultiTenant
   alias TamanduaServer.{Accounts, Notifications}
 
-  @check_timeout_interval 60_000 # Check every minute for timeouts
-  @approval_notification_reminder_interval 300_000 # Remind every 5 minutes
+  # Check every minute for timeouts
+  @check_timeout_interval 60_000
+  # Remind every 5 minutes
+  @approval_notification_reminder_interval 300_000
 
   defstruct [
     :pending_approvals,
     :approval_history,
-    :notification_tracker
+    :notification_tracker,
+    :restore_status
   ]
 
   # ============================================================================
@@ -37,60 +44,68 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   @doc """
   Request approval for an execution.
   """
-  @spec request_approval(Execution.t()) :: :ok
-  def request_approval(execution) do
+  @spec request_approval(Execution.t()) :: :ok | {:error, :tenant_required}
+  def request_approval(%Execution{organization_id: organization_id} = execution)
+      when is_binary(organization_id) and organization_id != "" do
     GenServer.cast(__MODULE__, {:request_approval, execution})
   end
+
+  def request_approval(_execution), do: {:error, :tenant_required}
 
   @doc """
   Approve a pending execution.
   """
-  @spec approve(String.t(), String.t(), String.t() | nil) ::
+  @spec approve(String.t(), String.t(), String.t() | nil, term()) ::
           {:ok, Execution.t()} | {:error, term()}
-  def approve(execution_id, approver_id, comments \\ nil) do
-    GenServer.call(__MODULE__, {:approve, execution_id, approver_id, comments})
+  def approve(execution_id, approver_id, comments \\ nil, scope \\ nil) do
+    GenServer.call(__MODULE__, {:approve, execution_id, approver_id, comments, scope})
   end
 
   @doc """
   Reject a pending execution.
   """
-  @spec reject(String.t(), String.t(), String.t()) :: {:ok, Execution.t()} | {:error, term()}
-  def reject(execution_id, approver_id, reason) do
-    GenServer.call(__MODULE__, {:reject, execution_id, approver_id, reason})
+  @spec reject(String.t(), String.t(), String.t(), term()) ::
+          {:ok, Execution.t()} | {:error, term()}
+  def reject(execution_id, approver_id, reason, scope \\ nil) do
+    GenServer.call(__MODULE__, {:reject, execution_id, approver_id, reason, scope})
   end
 
   @doc """
   Delegate approval to another user.
   """
-  @spec delegate(String.t(), String.t(), String.t(), String.t() | nil) ::
+  @spec delegate(String.t(), String.t(), String.t(), String.t() | nil, term()) ::
           {:ok, map()} | {:error, term()}
-  def delegate(execution_id, from_user_id, to_user_id, reason \\ nil) do
-    GenServer.call(__MODULE__, {:delegate, execution_id, from_user_id, to_user_id, reason})
+  def delegate(execution_id, from_user_id, to_user_id, reason \\ nil, scope \\ nil) do
+    GenServer.call(__MODULE__, {:delegate, execution_id, from_user_id, to_user_id, reason, scope})
   end
 
   @doc """
   List pending approvals for a specific approver or approval tier.
   """
-  @spec list_pending_approvals(keyword()) :: {:ok, [map()]}
-  def list_pending_approvals(filters \\ []) do
-    GenServer.call(__MODULE__, {:list_pending_approvals, filters})
+  @spec list_pending_approvals(keyword(), term()) :: {:ok, [map()]} | {:error, term()}
+  def list_pending_approvals(filters \\ [], scope \\ nil) do
+    GenServer.call(__MODULE__, {:list_pending_approvals, filters, scope})
   end
 
   @doc """
   Get approval history for an execution.
   """
-  @spec get_approval_history(String.t()) :: {:ok, [map()]}
-  def get_approval_history(execution_id) do
-    GenServer.call(__MODULE__, {:get_approval_history, execution_id})
+  @spec get_approval_history(String.t(), term()) :: {:ok, [map()]} | {:error, term()}
+  def get_approval_history(execution_id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_approval_history, execution_id, scope})
   end
 
   @doc """
   Check if a user has permission to approve an execution.
   """
-  @spec can_approve?(String.t(), String.t()) :: boolean()
-  def can_approve?(execution_id, user_id) do
-    GenServer.call(__MODULE__, {:can_approve, execution_id, user_id})
+  @spec can_approve?(String.t(), String.t(), term()) :: boolean()
+  def can_approve?(execution_id, user_id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:can_approve, execution_id, user_id, scope})
   end
+
+  @doc "Returns the explicit startup restore state: disabled, ready, or degraded."
+  @spec restore_status() :: :disabled | :ready | :degraded
+  def restore_status, do: GenServer.call(__MODULE__, :restore_status)
 
   # ============================================================================
   # Server Callbacks
@@ -107,7 +122,8 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
     state = %__MODULE__{
       pending_approvals: %{},
       approval_history: %{},
-      notification_tracker: %{}
+      notification_tracker: %{},
+      restore_status: :disabled
     }
 
     # Load pending approvals from database
@@ -116,7 +132,9 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
 
   @impl true
   def handle_cast({:request_approval, execution}, state) do
-    Logger.info("Approval requested for execution #{execution.id} (tier: #{execution.approval_tier})")
+    Logger.info(
+      "Approval requested for execution #{execution.id} (tier: #{execution.approval_tier})"
+    )
 
     # Add to pending approvals
     approval_request = %{
@@ -145,44 +163,42 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   end
 
   @impl true
-  def handle_call({:approve, execution_id, approver_id, comments}, _from, state) do
-    case Map.get(state.pending_approvals, execution_id) do
+  def handle_call({:approve, execution_id, approver_id, comments, scope}, _from, state) do
+    case approval_for_scope(state, execution_id, scope) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       approval_request ->
         # Validate approver has permission
-        case validate_approver(approval_request, approver_id) do
-          :ok ->
-            # Execute the approval
-            result = Executor.approve_execution(execution_id, approver_id, comments)
+        with :ok <- validate_approver(approval_request, approver_id),
+             {:ok, _execution} = result <-
+               Executor.approve_execution(execution_id, approver_id, comments, scope) do
+          # Record approval history
+          history_entry = %{
+            execution_id: execution_id,
+            action: :approved,
+            approver_id: approver_id,
+            comments: comments,
+            timestamp: DateTime.utc_now()
+          }
 
-            # Record approval history
-            history_entry = %{
-              execution_id: execution_id,
-              action: :approved,
-              approver_id: approver_id,
-              comments: comments,
-              timestamp: DateTime.utc_now()
-            }
+          new_history =
+            Map.update(
+              state.approval_history,
+              {scope, execution_id},
+              [history_entry],
+              &[history_entry | &1]
+            )
 
-            new_history =
-              Map.update(
-                state.approval_history,
-                execution_id,
-                [history_entry],
-                &[history_entry | &1]
-              )
+          # Remove from pending
+          new_pending = Map.delete(state.pending_approvals, execution_id)
 
-            # Remove from pending
-            new_pending = Map.delete(state.pending_approvals, execution_id)
+          # Send notification
+          send_approval_decision_notification(approval_request.execution, :approved, approver_id)
 
-            # Send notification
-            send_approval_decision_notification(approval_request.execution, :approved, approver_id)
-
-            {:reply, result,
-             %{state | pending_approvals: new_pending, approval_history: new_history}}
-
+          {:reply, result,
+           %{state | pending_approvals: new_pending, approval_history: new_history}}
+        else
           {:error, reason} ->
             {:reply, {:error, reason}, state}
         end
@@ -190,44 +206,42 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   end
 
   @impl true
-  def handle_call({:reject, execution_id, approver_id, reason}, _from, state) do
-    case Map.get(state.pending_approvals, execution_id) do
+  def handle_call({:reject, execution_id, approver_id, reason, scope}, _from, state) do
+    case approval_for_scope(state, execution_id, scope) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       approval_request ->
         # Validate approver has permission
-        case validate_approver(approval_request, approver_id) do
-          :ok ->
-            # Execute the rejection
-            result = Executor.reject_execution(execution_id, approver_id, reason)
+        with :ok <- validate_approver(approval_request, approver_id),
+             {:ok, _execution} = result <-
+               Executor.reject_execution(execution_id, approver_id, reason, scope) do
+          # Record rejection history
+          history_entry = %{
+            execution_id: execution_id,
+            action: :rejected,
+            approver_id: approver_id,
+            reason: reason,
+            timestamp: DateTime.utc_now()
+          }
 
-            # Record rejection history
-            history_entry = %{
-              execution_id: execution_id,
-              action: :rejected,
-              approver_id: approver_id,
-              reason: reason,
-              timestamp: DateTime.utc_now()
-            }
+          new_history =
+            Map.update(
+              state.approval_history,
+              {scope, execution_id},
+              [history_entry],
+              &[history_entry | &1]
+            )
 
-            new_history =
-              Map.update(
-                state.approval_history,
-                execution_id,
-                [history_entry],
-                &[history_entry | &1]
-              )
+          # Remove from pending
+          new_pending = Map.delete(state.pending_approvals, execution_id)
 
-            # Remove from pending
-            new_pending = Map.delete(state.pending_approvals, execution_id)
+          # Send notification
+          send_approval_decision_notification(approval_request.execution, :rejected, approver_id)
 
-            # Send notification
-            send_approval_decision_notification(approval_request.execution, :rejected, approver_id)
-
-            {:reply, result,
-             %{state | pending_approvals: new_pending, approval_history: new_history}}
-
+          {:reply, result,
+           %{state | pending_approvals: new_pending, approval_history: new_history}}
+        else
           {:error, reason} ->
             {:reply, {:error, reason}, state}
         end
@@ -235,66 +249,86 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   end
 
   @impl true
-  def handle_call({:delegate, execution_id, from_user_id, to_user_id, reason}, _from, state) do
-    case Map.get(state.pending_approvals, execution_id) do
+  def handle_call(
+        {:delegate, execution_id, from_user_id, to_user_id, reason, scope},
+        _from,
+        state
+      ) do
+    case approval_for_scope(state, execution_id, scope) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       approval_request ->
         # Validate delegator has permission
-        case validate_approver(approval_request, from_user_id) do
-          :ok ->
-            # Record delegation history
-            history_entry = %{
-              execution_id: execution_id,
-              action: :delegated,
-              from_user_id: from_user_id,
-              to_user_id: to_user_id,
-              reason: reason,
-              timestamp: DateTime.utc_now()
-            }
+        with :ok <- validate_approver(approval_request, from_user_id),
+             :ok <-
+               validate_user_organization(
+                 to_user_id,
+                 approval_request.execution.organization_id
+               ) do
+          # Record delegation history
+          history_entry = %{
+            execution_id: execution_id,
+            action: :delegated,
+            from_user_id: from_user_id,
+            to_user_id: to_user_id,
+            reason: reason,
+            timestamp: DateTime.utc_now()
+          }
 
-            new_history =
-              Map.update(
-                state.approval_history,
-                execution_id,
-                [history_entry],
-                &[history_entry | &1]
-              )
+          new_history =
+            Map.update(
+              state.approval_history,
+              {scope, execution_id},
+              [history_entry],
+              &[history_entry | &1]
+            )
 
-            # Send notification to delegatee
-            send_delegation_notification(approval_request.execution, from_user_id, to_user_id)
+          # Send notification to delegatee
+          send_delegation_notification(approval_request.execution, from_user_id, to_user_id)
 
-            {:reply, {:ok, history_entry},
-             %{state | approval_history: new_history}}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
+          {:reply, {:ok, history_entry}, %{state | approval_history: new_history}}
+        else
+          {:error, failure} ->
+            {:reply, {:error, failure}, state}
         end
     end
   end
 
   @impl true
-  def handle_call({:list_pending_approvals, filters}, _from, state) do
-    approvals =
-      state.pending_approvals
-      |> Map.values()
-      |> filter_approvals(filters)
-      |> Enum.sort_by(& &1.requested_at, {:asc, DateTime})
+  def handle_call({:list_pending_approvals, filters, scope}, _from, state) do
+    case organization_from_scope(scope) do
+      {:ok, organization_id} ->
+        approvals =
+          state.pending_approvals
+          |> Map.values()
+          |> Enum.filter(&(&1.execution.organization_id == organization_id))
+          |> filter_approvals(filters)
+          |> Enum.sort_by(& &1.requested_at, {:asc, DateTime})
 
-    {:reply, {:ok, approvals}, state}
+        {:reply, {:ok, approvals}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
-  def handle_call({:get_approval_history, execution_id}, _from, state) do
-    history = Map.get(state.approval_history, execution_id, [])
-    {:reply, {:ok, history}, state}
+  def handle_call({:get_approval_history, execution_id, scope}, _from, state) do
+    case organization_from_scope(scope) do
+      {:ok, _organization_id} ->
+        history = Map.get(state.approval_history, {scope, execution_id}, [])
+        {:reply, {:ok, history}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
-  def handle_call({:can_approve, execution_id, user_id}, _from, state) do
+  def handle_call({:can_approve, execution_id, user_id, scope}, _from, state) do
     result =
-      case Map.get(state.pending_approvals, execution_id) do
+      case approval_for_scope(state, execution_id, scope) do
         nil ->
           false
 
@@ -308,6 +342,8 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
     {:reply, result, state}
   end
 
+  def handle_call(:restore_status, _from, state), do: {:reply, state.restore_status, state}
+
   @impl true
   def handle_info(:check_timeouts, state) do
     now = DateTime.utc_now()
@@ -318,80 +354,81 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
         DateTime.compare(now, approval.timeout_at) == :gt
       end)
 
-    # Process timeouts
-    Enum.each(timed_out, fn {execution_id, approval} ->
-      Logger.warning("Approval timeout for execution #{execution_id}")
+    # Process timeouts and retain the audit history in state.
+    {updated_history, failed_timeouts} =
+      Enum.reduce(timed_out, {state.approval_history, %{}}, fn
+        {execution_id, approval}, {history, failed} ->
+          Logger.warning("Approval timeout for execution #{execution_id}")
 
-      # Auto-deny the execution
-      Executor.reject_execution(
-        execution_id,
-        "system",
-        "Approval timeout exceeded (#{approval.tier})"
-      )
+          case Executor.expire_approval(execution_id, execution_scope(approval.execution)) do
+            {:ok, _execution} ->
+              send_timeout_notification(approval.execution)
 
-      # Send timeout notification
-      send_timeout_notification(approval.execution)
+              history_entry = %{
+                execution_id: execution_id,
+                action: :timeout,
+                timestamp: DateTime.utc_now(),
+                tier: approval.tier
+              }
 
-      # Record timeout in history
-      history_entry = %{
-        execution_id: execution_id,
-        action: :timeout,
-        timestamp: DateTime.utc_now(),
-        tier: approval.tier
-      }
+              updated =
+                Map.update(
+                  history,
+                  {execution_scope(approval.execution), execution_id},
+                  [history_entry],
+                  &[history_entry | &1]
+                )
 
-      state =
-        %{
-          state
-          | approval_history:
-              Map.update(
-                state.approval_history,
-                execution_id,
-                [history_entry],
-                &[history_entry | &1]
-              )
-        }
-    end)
+              {updated, failed}
 
-    new_pending = Map.new(remaining)
+            {:error, reason} ->
+              Logger.error("Failed to expire approval #{execution_id}: #{inspect(reason)}")
+              {history, Map.put(failed, execution_id, approval)}
+          end
+      end)
+
+    new_pending = remaining |> Map.new() |> Map.merge(failed_timeouts)
 
     # Schedule next check
     schedule_timeout_check()
 
-    {:noreply, %{state | pending_approvals: new_pending}}
+    {:noreply, %{state | pending_approvals: new_pending, approval_history: updated_history}}
   end
 
   @impl true
   def handle_info(:send_reminders, state) do
     now = DateTime.utc_now()
 
-    # Send reminders for pending approvals that haven't been reminded recently
-    Enum.each(state.pending_approvals, fn {execution_id, approval} ->
-      notification_info = Map.get(state.notification_tracker, execution_id, %{})
-      last_notified = Map.get(notification_info, :last_notified)
+    # Send reminders and persist their counters in the GenServer state.
+    notification_tracker =
+      Enum.reduce(state.pending_approvals, state.notification_tracker, fn
+        {execution_id, approval}, tracker ->
+          notification_info = Map.get(tracker, execution_id, %{})
+          last_notified = Map.get(notification_info, :last_notified)
 
-      should_remind =
-        if last_notified do
-          DateTime.diff(now, last_notified, :second) > 300
-        else
-          true
-        end
+          should_remind =
+            if last_notified do
+              DateTime.diff(now, last_notified, :second) > 300
+            else
+              true
+            end
 
-      if should_remind do
-        send_approval_reminder(approval.execution, approval)
+          if should_remind do
+            send_approval_reminder(approval.execution, approval)
 
-        # Update notification tracker
-        Map.put(state.notification_tracker, execution_id, %{
-          last_notified: now,
-          notification_count: Map.get(notification_info, :notification_count, 0) + 1
-        })
-      end
-    end)
+            Map.put(tracker, execution_id, %{
+              last_notified: now,
+              notification_count: Map.get(notification_info, :notification_count, 0) + 1
+            })
+          else
+            tracker
+          end
+      end)
 
     # Schedule next reminder check
     schedule_reminder_check()
 
-    {:noreply, state}
+    {:noreply, %{state | notification_tracker: notification_tracker}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -401,26 +438,35 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   # ============================================================================
 
   defp load_pending_approvals(state) do
-    pending = Execution.list_pending_approvals()
+    if Application.get_env(:tamandua_server, :remediation_approval_authority_repo_enabled, false) do
+      case ApprovalRestore.restore() do
+        {:ok, pending} ->
+          pending_map =
+            pending
+            |> Enum.map(fn execution ->
+              approval_request = %{
+                execution_id: execution.id,
+                execution: execution,
+                requested_at: execution.inserted_at,
+                timeout_at: calculate_timeout(execution),
+                tier: execution.approval_tier,
+                status: :pending,
+                reminders_sent: 0
+              }
 
-    pending_map =
-      pending
-      |> Enum.map(fn execution ->
-        approval_request = %{
-          execution_id: execution.id,
-          execution: execution,
-          requested_at: execution.inserted_at,
-          timeout_at: calculate_timeout(execution),
-          tier: execution.approval_tier,
-          status: :pending,
-          reminders_sent: 0
-        }
+              {execution.id, approval_request}
+            end)
+            |> Map.new()
 
-        {execution.id, approval_request}
-      end)
-      |> Map.new()
+          %{state | pending_approvals: pending_map, restore_status: :ready}
 
-    %{state | pending_approvals: pending_map}
+        {:error, reason} ->
+          Logger.error("Approval restore degraded: #{inspect(reason)}")
+          %{state | restore_status: :degraded}
+      end
+    else
+      %{state | restore_status: :disabled}
+    end
   end
 
   defp calculate_timeout(execution) do
@@ -434,37 +480,85 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
   end
 
   defp validate_approver(approval_request, user_id) do
-    # Check if user has the required tier permission
     required_tier = approval_request.tier
+    organization_id = approval_request.execution.organization_id
 
-    case get_user_tier(user_id) do
+    case get_user_tier(user_id, organization_id) do
+      {:ok, user_tier} ->
+        if has_required_tier?(user_tier, required_tier),
+          do: :ok,
+          else: {:error, :insufficient_permissions}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp get_user_tier(user_id, organization_id) do
+    user =
+      MultiTenant.with_organization(organization_id, fn ->
+        Accounts.get_user(user_id)
+      end)
+
+    case user do
+      %{organization_id: ^organization_id, role: role}
+      when role in ["security_director", "admin"] ->
+        {:ok, "security_director"}
+
+      %{organization_id: ^organization_id, role: role}
+      when role in ["manager", "senior_analyst", "analyst"] ->
+        {:ok, role}
+
+      %{organization_id: _other_organization} ->
+        {:error, :organization_mismatch}
+
       nil ->
         {:error, :user_not_found}
 
-      user_tier ->
-        if has_required_tier?(user_tier, required_tier) do
-          :ok
-        else
-          {:error, :insufficient_permissions}
-        end
+      _ ->
+        {:error, :insufficient_permissions}
+    end
+  rescue
+    _ -> {:error, :user_lookup_failed}
+  end
+
+  defp validate_user_organization(user_id, organization_id) do
+    user =
+      MultiTenant.with_organization(organization_id, fn ->
+        Accounts.get_user(user_id)
+      end)
+
+    case user do
+      %{organization_id: ^organization_id} -> :ok
+      %{organization_id: _other} -> {:error, :organization_mismatch}
+      nil -> {:error, :user_not_found}
+      _ -> {:error, :user_lookup_failed}
+    end
+  rescue
+    _ -> {:error, :user_lookup_failed}
+  end
+
+  defp approval_for_scope(state, execution_id, scope) do
+    with {:ok, organization_id} <- organization_from_scope(scope),
+         %{execution: %{organization_id: ^organization_id}} = approval <-
+           Map.get(state.pending_approvals, execution_id) do
+      approval
+    else
+      _ -> nil
     end
   end
 
-  defp get_user_tier(user_id) do
-    # This would integrate with your user management system
-    # For now, return a default tier based on user ID pattern
-    try do
-      case Accounts.get_user(user_id) do
-        %{role: role} when role in ["security_director", "admin"] -> "security_director"
-        %{role: role} when role in ["manager"] -> "manager"
-        %{role: role} when role in ["senior_analyst"] -> "senior_analyst"
-        %{role: role} when role in ["analyst"] -> "analyst"
-        _ -> "analyst"
-      end
-    rescue
-      _ -> "analyst"
-    end
-  end
+  defp organization_from_scope({:organization, organization_id})
+       when is_binary(organization_id) and organization_id != "",
+       do: {:ok, organization_id}
+
+  defp organization_from_scope(_scope), do: {:error, :tenant_required}
+
+  defp execution_scope(%Execution{organization_id: organization_id})
+       when is_binary(organization_id) and organization_id != "",
+       do: {:organization, organization_id}
+
+  defp execution_scope(_execution), do: nil
 
   defp has_required_tier?(user_tier, required_tier) do
     tier_hierarchy = %{
@@ -510,7 +604,7 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
         title: "Remediation Approval Required",
         message: "Playbook #{execution.playbook_name} requires #{approval_request.tier} approval",
         priority: "high",
-        recipients: get_tier_users(approval_request.tier),
+        recipients: get_tier_users(approval_request.tier, execution.organization_id),
         metadata: %{
           execution_id: execution.id,
           playbook_name: execution.playbook_name,
@@ -531,8 +625,7 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
       Notifications.send(%{
         type: "approval_decision",
         title: "Remediation #{String.capitalize(to_string(decision))}",
-        message:
-          "Playbook #{execution.playbook_name} has been #{decision} by #{approver_id}",
+        message: "Playbook #{execution.playbook_name} has been #{decision} by #{approver_id}",
         priority: "medium",
         recipients: [execution.triggered_by],
         metadata: %{
@@ -555,8 +648,7 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
       Notifications.send(%{
         type: "approval_timeout",
         title: "Remediation Approval Timeout",
-        message:
-          "Playbook #{execution.playbook_name} approval timed out and was auto-denied",
+        message: "Playbook #{execution.playbook_name} approval timed out and was auto-denied",
         priority: "high",
         recipients: [execution.triggered_by],
         metadata: %{
@@ -581,7 +673,7 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
         message:
           "Playbook #{execution.playbook_name} still requires #{approval_request.tier} approval",
         priority: "high",
-        recipients: get_tier_users(approval_request.tier),
+        recipients: get_tier_users(approval_request.tier, execution.organization_id),
         metadata: %{
           execution_id: execution.id,
           playbook_name: execution.playbook_name,
@@ -620,16 +712,23 @@ defmodule TamanduaServer.Remediation.ApprovalManager do
     end
   end
 
-  defp get_tier_users(tier) do
-    # This would query your user management system for users with the given tier/role
-    # For now, return an empty list
-    try do
-      Accounts.list_users_by_role(tier_to_role(tier))
-      |> Enum.map(& &1.id)
-    rescue
-      _ -> []
-    end
+  defp get_tier_users(tier, organization_id)
+       when is_binary(organization_id) and organization_id != "" do
+    role = tier_to_role(tier)
+
+    MultiTenant.with_organization(organization_id, fn ->
+      User
+      |> where([user], user.organization_id == ^organization_id and user.role == ^role)
+      |> select([user], user.id)
+      |> Repo.all()
+    end)
+  rescue
+    error ->
+      Logger.error("Failed to resolve tenant approval recipients: #{inspect(error)}")
+      []
   end
+
+  defp get_tier_users(_tier, _organization_id), do: []
 
   defp tier_to_role(tier) do
     case tier do

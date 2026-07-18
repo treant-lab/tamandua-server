@@ -126,7 +126,7 @@ defmodule TamanduaServer.Hunting.QueryBuilder do
       {:ok, %{data: [%{count: 42}], meta: %{...}}}
   """
   @spec execute(String.t(), keyword()) :: {:ok, execution_result()} | {:error, String.t()}
-  def execute(query_string, opts \\ []) do
+  def execute(query_string, _opts \\ []) do
     start_time = System.monotonic_time(:millisecond)
 
     with {:ok, parsed} <- parse(query_string),
@@ -182,7 +182,7 @@ defmodule TamanduaServer.Hunting.QueryBuilder do
   Build an Ecto query from a parsed query structure.
   """
   @spec build_query(parsed_query()) :: {:ok, Ecto.Query.t()} | {:error, String.t()}
-  def build_query(%{from: from} = parsed) when from != :events do
+  def build_query(%{from: from} = _parsed) when from != :events do
     {:error, "Only 'events' table is supported, got: #{from}"}
   end
 
@@ -976,7 +976,7 @@ defmodule TamanduaServer.Hunting.QueryBuilder do
     select(query, [e], ^select_map)
   end
 
-  defp apply_select(query, %{select: fields, aggregations: aggs, group_by: group_by}) when aggs != [] do
+  defp apply_select(query, %{select: fields, aggregations: aggs, group_by: _group_by}) when aggs != [] do
     # Mix of fields and aggregations (GROUP BY query)
     select_fields = build_field_select(fields)
     agg_fields = build_aggregation_select(aggs)

@@ -21,8 +21,6 @@ import {
   FileWarning,
   RotateCw,
   Trash2,
-  Download,
-  FolderOpen,
   Plus,
   Calendar,
   Bot,
@@ -32,7 +30,6 @@ import {
   ToggleLeft,
   ToggleRight,
   TrendingUp,
-  Server,
   ThumbsUp,
   ThumbsDown,
   Eye,
@@ -118,16 +115,6 @@ interface AutonomousSettings {
   min_confidence_for_auto: number
 }
 
-interface AssetCriticality {
-  level: string
-  score: number
-  role: string
-  data_sensitivity: string
-  compliance: string
-  factors: string[]
-  auto_discovered: boolean
-}
-
 interface LearningStats {
   total_decisions: number
   approval_rate: number
@@ -190,8 +177,6 @@ interface TrackedAction {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const DESTRUCTIVE_ACTIONS = new Set(['kill_process', 'isolate_network', 'quarantine_file', 'block_ip', 'block_domain'])
 
 const UNDO_MAP: Record<string, string> = {
   isolate_network: 'unisolate_network',
@@ -473,12 +458,17 @@ export default function Response({ agents, recentActions }: ResponseProps) {
   // Autonomous response state
   const [autonomousSettings, setAutonomousSettings] = useState<AutonomousSettings | null>(null)
   const [pendingRecommendations, setPendingRecommendations] = useState<AutonomousRecommendation[]>([])
+  const [processingRecommendationIds, setProcessingRecommendationIds] = useState<Set<string>>(new Set())
+  const processingRecommendationIdsRef = useRef<Set<string>>(new Set())
+  const recommendationPollControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const [activeRecommendationExecutionIds, setActiveRecommendationExecutionIds] = useState<Set<string>>(new Set())
+  const [pausedRecommendationExecutionIds, setPausedRecommendationExecutionIds] = useState<Set<string>>(new Set())
   const [autonomousRules, setAutonomousRules] = useState<AutonomousRule[]>([])
   const [learningStats, setLearningStats] = useState<LearningStats | null>(null)
   const [loadingAutonomous, setLoadingAutonomous] = useState(false)
   const [autonomousSubTab, setAutonomousSubTab] = useState<'recommendations' | 'rules' | 'learning' | 'settings'>('recommendations')
-  const [editingRule, setEditingRule] = useState<AutonomousRule | null>(null)
-  const [showRuleEditor, setShowRuleEditor] = useState(false)
+  const [, setEditingRule] = useState<AutonomousRule | null>(null)
+  const [, setShowRuleEditor] = useState(false)
   const [ruleTemplates, setRuleTemplates] = useState<any[]>([])
 
   // Response metrics state
@@ -695,7 +685,7 @@ export default function Response({ agents, recentActions }: ResponseProps) {
 
     setCreatingSnapshot(true)
     try {
-      const response = await axios.post(`/api/v1/agents/${selectedAgent.id}/snapshots`, {
+      await axios.post(`/api/v1/agents/${selectedAgent.id}/snapshots`, {
         volume: selectedVolume
       })
       toast.success('Snapshot created successfully')
@@ -805,23 +795,267 @@ export default function Response({ agents, recentActions }: ResponseProps) {
     }
   }, [])
 
-  const approveRecommendation = useCallback(async (recId: string) => {
-    try {
-      await axios.post(`/api/v1/autonomous/recommendations/${recId}/approve`)
-      toast.success('Recommendation approved and executed')
-      loadAutonomousData()
-    } catch (error: any) {
-      toast.error(`Failed to approve: ${error.response?.data?.error || error.message}`)
+  const pollRecommendationStatus = useCallback(async (
+    statusUrl: string,
+    retryAfterMs = 2000,
+    signal?: AbortSignal,
+  ) => {
+    const terminalStatuses = new Set([
+      'approved',
+      'auto_executed',
+      'failed',
+      'execution_unknown',
+      'rejected',
+      'expired',
+    ])
+    const deadline = Date.now() + 5 * 60 * 1000
+    let delayMs = retryAfterMs
+
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new DOMException('Recommendation polling cancelled', 'AbortError')
+
+      try {
+        const response = await axios.get(statusUrl, { signal })
+        const recommendation = response.data.recommendation
+
+        if (
+          !recommendation ||
+          typeof recommendation !== 'object' ||
+          typeof recommendation.status !== 'string' ||
+          recommendation.status.trim() === ''
+        ) {
+          const contractError = new Error(
+            'Recommendation status response is missing recommendation/status'
+          )
+          contractError.name = 'RecommendationStatusContractError'
+          throw contractError
+        }
+
+        if (terminalStatuses.has(recommendation.status)) {
+          return recommendation
+        }
+      } catch (error: any) {
+        if (error?.name === 'RecommendationStatusContractError') throw error
+        const status = error.response?.status
+        if (status && status < 500) throw error
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new DOMException('Recommendation polling cancelled', 'AbortError'))
+          return
+        }
+
+        const onAbort = () => {
+          window.clearTimeout(timer)
+          reject(new DOMException('Recommendation polling cancelled', 'AbortError'))
+        }
+        const timer = window.setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        }, delayMs)
+        signal?.addEventListener('abort', onAbort, { once: true })
+      })
+      delayMs = Math.min(Math.round(delayMs * 1.5), 10_000)
     }
-  }, [loadAutonomousData])
+
+    throw new Error('Recommendation execution is still running; check history for status')
+  }, [])
+
+  const startRecommendationPoll = useCallback((
+    storageKey: string,
+    statusUrl: string,
+    retryAfterMs = 2000,
+  ) => {
+    recommendationPollControllersRef.current.get(storageKey)?.abort()
+
+    const controller = new AbortController()
+    recommendationPollControllersRef.current.set(storageKey, controller)
+
+    return pollRecommendationStatus(statusUrl, retryAfterMs, controller.signal)
+      .finally(() => {
+        if (recommendationPollControllersRef.current.get(storageKey) === controller) {
+          recommendationPollControllersRef.current.delete(storageKey)
+        }
+      })
+  }, [pollRecommendationStatus])
+
+  const notifyRecommendationTerminal = useCallback((terminal: any) => {
+    if (terminal.status === 'approved' || terminal.status === 'auto_executed') {
+      toast.success('Recommendation executed successfully')
+    } else if (terminal.status === 'failed') {
+      toast.warning('Recommendation approved, but one or more response actions failed')
+    } else if (terminal.status === 'execution_unknown') {
+      toast.error('Execution state is unknown; manual reconciliation is required')
+    } else {
+      toast.warning(`Recommendation finished with status: ${terminal.status}`)
+    }
+  }, [])
+
+  const markRecommendationExecutionActive = useCallback((recommendationId: string) => {
+    setActiveRecommendationExecutionIds(current => {
+      const next = new Set(current)
+      next.add(recommendationId)
+      return next
+    })
+    setPausedRecommendationExecutionIds(current => {
+      if (!current.has(recommendationId)) return current
+      const next = new Set(current)
+      next.delete(recommendationId)
+      return next
+    })
+  }, [])
+
+  const clearRecommendationExecutionActive = useCallback((recommendationId: string) => {
+    setActiveRecommendationExecutionIds(current => {
+      if (!current.has(recommendationId)) return current
+      const next = new Set(current)
+      next.delete(recommendationId)
+      return next
+    })
+  }, [])
+
+  const markRecommendationExecutionPaused = useCallback((recommendationId: string) => {
+    clearRecommendationExecutionActive(recommendationId)
+    setPausedRecommendationExecutionIds(current => {
+      const next = new Set(current)
+      next.add(recommendationId)
+      return next
+    })
+  }, [clearRecommendationExecutionActive])
+
+  const clearRecommendationExecutionTracking = useCallback((recommendationId: string) => {
+    clearRecommendationExecutionActive(recommendationId)
+    setPausedRecommendationExecutionIds(current => {
+      if (!current.has(recommendationId)) return current
+      const next = new Set(current)
+      next.delete(recommendationId)
+      return next
+    })
+  }, [clearRecommendationExecutionActive])
+
+  useEffect(() => {
+    if (activeTab !== 'autonomous') return
+
+    const prefix = 'tamandua:autonomous-execution:'
+    const pollControllers = recommendationPollControllersRef.current
+    const stored = Object.keys(sessionStorage).filter(key => key.startsWith(prefix))
+
+    for (const key of stored) {
+      const statusUrl = sessionStorage.getItem(key)
+      if (!statusUrl) continue
+      const recommendationId = key.slice(prefix.length)
+      if (!recommendationId) continue
+
+      markRecommendationExecutionActive(recommendationId)
+
+      void startRecommendationPoll(key, statusUrl)
+        .then(terminal => {
+          sessionStorage.removeItem(key)
+          clearRecommendationExecutionTracking(recommendationId)
+          notifyRecommendationTerminal(terminal)
+          void loadAutonomousData()
+        })
+        .catch(error => {
+          if (axios.isCancel(error) || error?.name === 'AbortError') return
+
+          if (error.response?.status === 403 || error.response?.status === 404) {
+            sessionStorage.removeItem(key)
+            clearRecommendationExecutionTracking(recommendationId)
+          } else {
+            markRecommendationExecutionPaused(recommendationId)
+          }
+          logger.error('Failed to resume recommendation polling:', error)
+        })
+    }
+
+    return () => {
+      for (const controller of pollControllers.values()) {
+        controller.abort()
+      }
+      pollControllers.clear()
+    }
+  }, [activeTab, clearRecommendationExecutionTracking, loadAutonomousData, markRecommendationExecutionActive, markRecommendationExecutionPaused, notifyRecommendationTerminal, startRecommendationPoll])
+
+  const approveRecommendation = useCallback(async (recId: string) => {
+    if (processingRecommendationIdsRef.current.has(recId)) return
+    processingRecommendationIdsRef.current.add(recId)
+    setProcessingRecommendationIds(new Set(processingRecommendationIdsRef.current))
+    const storageKey = `tamandua:autonomous-execution:${recId}`
+
+    try {
+      const response = await axios.post(
+        `/api/v1/autonomous/recommendations/${recId}/approve`,
+        undefined,
+        { headers: { Prefer: 'respond-async' } }
+      )
+
+      if (response.status === 202 && response.data.status_url) {
+        toast.info(response.data.message || 'Recommendation execution queued')
+        setPendingRecommendations(current => current.filter(rec => rec.id !== recId))
+        sessionStorage.setItem(storageKey, response.data.status_url)
+        markRecommendationExecutionActive(recId)
+
+        const terminal = await startRecommendationPoll(
+          storageKey,
+          response.data.status_url,
+          response.data.retry_after_ms || 2000
+        )
+
+        sessionStorage.removeItem(storageKey)
+        clearRecommendationExecutionTracking(recId)
+        notifyRecommendationTerminal(terminal)
+      } else if (response.data.result?.status === 'execution_failed') {
+        toast.warning(response.data.message || 'Recommendation approved, but execution failed')
+      } else {
+        toast.success(response.data.message || 'Recommendation approved')
+      }
+      await loadAutonomousData()
+    } catch (error: any) {
+      if (axios.isCancel(error) || error?.name === 'AbortError') return
+
+      const payload = error.response?.data
+      toast.error(`Failed to approve: ${payload?.error || error.message}`)
+
+      if (error.response?.status === 403 || error.response?.status === 404) {
+        sessionStorage.removeItem(storageKey)
+        clearRecommendationExecutionTracking(recId)
+      } else if (sessionStorage.getItem(storageKey)) {
+        markRecommendationExecutionPaused(recId)
+      }
+
+      if (
+        error.response?.status === 404 ||
+        payload?.code === 'already_processed' ||
+        payload?.code === 'execution_state_unknown'
+      ) {
+        await loadAutonomousData()
+      }
+    } finally {
+      processingRecommendationIdsRef.current.delete(recId)
+      setProcessingRecommendationIds(new Set(processingRecommendationIdsRef.current))
+    }
+  }, [clearRecommendationExecutionTracking, loadAutonomousData, markRecommendationExecutionActive, markRecommendationExecutionPaused, notifyRecommendationTerminal, startRecommendationPoll])
 
   const rejectRecommendation = useCallback(async (recId: string, reason: string) => {
+    if (processingRecommendationIdsRef.current.has(recId)) return
+    processingRecommendationIdsRef.current.add(recId)
+    setProcessingRecommendationIds(new Set(processingRecommendationIdsRef.current))
+
     try {
       await axios.post(`/api/v1/autonomous/recommendations/${recId}/reject`, { reason })
       toast.success('Recommendation rejected')
-      loadAutonomousData()
+      await loadAutonomousData()
     } catch (error: any) {
-      toast.error(`Failed to reject: ${error.response?.data?.error || error.message}`)
+      const payload = error.response?.data
+      toast.error(`Failed to reject: ${payload?.error || error.message}`)
+
+      if (error.response?.status === 404 || payload?.code === 'already_processed') {
+        await loadAutonomousData()
+      }
+    } finally {
+      processingRecommendationIdsRef.current.delete(recId)
+      setProcessingRecommendationIds(new Set(processingRecommendationIdsRef.current))
     }
   }, [loadAutonomousData])
 
@@ -1488,6 +1722,60 @@ export default function Response({ agents, recentActions }: ResponseProps) {
                     </div>
                   </div>
 
+                  {activeRecommendationExecutionIds.size > 0 && (
+                    <div className="col-span-3 rounded-xl border border-[var(--med)]/40 bg-[var(--med-bg)] p-4">
+                      <div className="flex items-start gap-3">
+                        <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-[var(--med)]" />
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-sm font-semibold text-[var(--fg)]">
+                            Response executions in progress
+                          </h2>
+                          <p className="mt-1 text-xs text-[var(--muted)]">
+                            Queued or executing — status is being monitored and will resume after navigation.
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {Array.from(activeRecommendationExecutionIds).map(recommendationId => (
+                              <span
+                                key={recommendationId}
+                                className="rounded-md border border-[var(--med)]/30 bg-[var(--surface)] px-2 py-1 font-mono text-xs text-[var(--fg-2)]"
+                                title={recommendationId}
+                              >
+                                {recommendationId.slice(0, 12)}{recommendationId.length > 12 ? '…' : ''}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {pausedRecommendationExecutionIds.size > 0 && (
+                    <div className="col-span-3 rounded-xl border border-[var(--warn)]/40 bg-[var(--warn-bg)] p-4">
+                      <div className="flex items-start gap-3">
+                        <Clock className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warn)]" />
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-sm font-semibold text-[var(--fg)]">
+                            Response execution monitoring paused
+                          </h2>
+                          <p className="mt-1 text-xs text-[var(--muted)]">
+                            Status URL is still stored locally. Refresh or revisit this page to resume polling.
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {Array.from(pausedRecommendationExecutionIds).map(recommendationId => (
+                              <span
+                                key={recommendationId}
+                                className="rounded-md border border-[var(--warn)]/30 bg-[var(--surface)] px-2 py-1 font-mono text-xs text-[var(--fg-2)]"
+                                title={recommendationId}
+                              >
+                                {recommendationId.slice(0, 12)}{recommendationId.length > 12 ? '…' : ''}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Pending Recommendations */}
                   <div className="col-span-3 bg-[var(--surface)] rounded-xl border border-[var(--border)]">
                     <div className="p-4 border-b border-[var(--border)] flex items-center justify-between">
@@ -1565,9 +1853,14 @@ export default function Response({ agents, recentActions }: ResponseProps) {
                                 <div className="flex items-center gap-2">
                                   <button
                                     onClick={() => approveRecommendation(rec.id)}
+                                    disabled={processingRecommendationIds.has(rec.id)}
                                     className="btn-sentinel btn-sentinel-primary btn-sentinel-sm"
                                   >
-                                    <ThumbsUp className="h-4 w-4" />
+                                    {processingRecommendationIds.has(rec.id) ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <ThumbsUp className="h-4 w-4" />
+                                    )}
                                     Approve
                                   </button>
                                   <button
@@ -1575,9 +1868,14 @@ export default function Response({ agents, recentActions }: ResponseProps) {
                                       const reason = prompt('Rejection reason:')
                                       if (reason) rejectRecommendation(rec.id, reason)
                                     }}
-                                    className="flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium bg-[var(--crit-bg)] text-[var(--crit)] hover:opacity-80 transition-colors"
+                                    disabled={processingRecommendationIds.has(rec.id)}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium bg-[var(--crit-bg)] text-[var(--crit)] hover:opacity-80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    <ThumbsDown className="h-4 w-4" />
+                                    {processingRecommendationIds.has(rec.id) ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <ThumbsDown className="h-4 w-4" />
+                                    )}
                                     Reject
                                   </button>
                                   <button

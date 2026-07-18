@@ -40,7 +40,6 @@ defmodule TamanduaServer.Billing do
   alias TamanduaServer.Repo
   alias TamanduaServer.Billing.{StripeClient, UsageMeter, Subscription, UsageRecord}
   alias TamanduaServer.Tenants
-  alias TamanduaServer.Accounts.Organization
 
   require Logger
 

@@ -10,7 +10,8 @@ defmodule TamanduaServer.Alerts.Deduplication do
   ## Architecture
 
   - **ETS-based fast lookup**: The `:alert_dedup_windows` table stores active
-    dedup windows keyed by dedup hash for O(1) lookups on the hot path.
+    dedup windows keyed by `{organization_id, dedup_hash}` for O(1) lookups on
+    the hot path without allowing one tenant to affect another.
   - **Sliding window aggregation**: Each window tracks the alert ID, first
     occurrence time, last occurrence time, and occurrence count.
   - **Configurable hash fields**: Dedup hashes are generated from
@@ -38,7 +39,8 @@ defmodule TamanduaServer.Alerts.Deduplication do
 
   # ── ETS Tables ────────────────────────────────────────────────────
 
-  # Active dedup windows: {dedup_hash, %{alert_id, first_at, last_at, count, severity, title}}
+  # Active dedup windows:
+  # {{organization_id, dedup_hash}, %{alert_id, first_at, last_at, count, severity, title}}
   @dedup_table :alert_dedup_windows
   # Stats counters: {key, value}
   @stats_table :alert_dedup_stats
@@ -97,15 +99,27 @@ defmodule TamanduaServer.Alerts.Deduplication do
     `last_seen_at` have already been updated in the database. The caller
     should skip insertion.
   """
-  @spec check_and_deduplicate(map()) :: {:new, map()} | {:duplicate, String.t(), non_neg_integer()}
+  @spec check_and_deduplicate(map()) ::
+          {:new, map()}
+          | {:duplicate, String.t(), non_neg_integer()}
+          | {:error, :organization_id_required}
   def check_and_deduplicate(attrs) do
-    GenServer.call(__MODULE__, {:check_and_deduplicate, attrs})
+    with {:ok, attrs} <- ensure_tenant(attrs) do
+      GenServer.call(__MODULE__, {:check_and_deduplicate, attrs})
+    end
   catch
     :exit, _ ->
-      # If GenServer is down, fall through to allow normal alert creation
-      Logger.warning("[Dedup] GenServer unavailable, allowing alert creation")
-      dedup_key = compute_dedup_hash(attrs)
-      {:new, Map.put(attrs, :dedup_key, dedup_key)}
+      # Availability degradation may bypass aggregation, but never tenant
+      # validation. A tenant-scoped key is still attached to the new alert.
+      case ensure_tenant(attrs) do
+        {:ok, scoped_attrs} ->
+          Logger.warning("[Dedup] GenServer unavailable, allowing tenant-scoped alert creation")
+          dedup_key = compute_dedup_hash(scoped_attrs)
+          {:new, Map.put(scoped_attrs, :dedup_key, dedup_key)}
+
+        {:error, :organization_id_required} = error ->
+          error
+      end
   end
 
   @doc """
@@ -120,9 +134,12 @@ defmodule TamanduaServer.Alerts.Deduplication do
   - `alert_id` - The ID of the newly created alert
   - `attrs` - The alert attributes (for metadata in the window entry)
   """
-  @spec register_new_alert(String.t(), String.t(), map()) :: :ok
+  @spec register_new_alert(String.t(), String.t(), map()) ::
+          :ok | {:error, :organization_id_required}
   def register_new_alert(dedup_key, alert_id, attrs) do
-    GenServer.cast(__MODULE__, {:register_new_alert, dedup_key, alert_id, attrs})
+    with {:ok, attrs} <- ensure_tenant(attrs) do
+      GenServer.cast(__MODULE__, {:register_new_alert, dedup_key, alert_id, attrs})
+    end
   end
 
   @doc """
@@ -158,6 +175,7 @@ defmodule TamanduaServer.Alerts.Deduplication do
   Generate a deterministic dedup hash for the given alert attributes.
 
   The hash is based on:
+  - `organization_id` (required; resolved from `agent_id` when possible)
   - `rule_id` (from detection_metadata or title fallback)
   - `agent_id`
   - Primary entity (process name, file path, IP, DNS query, etc.)
@@ -175,12 +193,16 @@ defmodule TamanduaServer.Alerts.Deduplication do
   """
   @spec compute_dedup_hash(map()) :: String.t()
   def compute_dedup_hash(attrs) do
+    organization_id =
+      extract_organization_id(attrs) ||
+        raise ArgumentError, "organization_id is required to compute an alert dedup hash"
+
     event_type = extract_event_type(attrs)
+
     hash_fields = Map.get(@hash_fields_by_type, event_type_prefix(event_type), [:rule_id, :agent_id, :primary_entity])
 
-    key_parts = Enum.map(hash_fields, fn field ->
-      extract_hash_field(attrs, field)
-    end)
+    key_parts =
+      [organization_id | Enum.map(hash_fields, fn field -> extract_hash_field(attrs, field) end)]
 
     key_material = Enum.join(key_parts, ":")
     :crypto.hash(:sha256, key_material) |> Base.encode16(case: :lower) |> binary_part(0, 40)
@@ -223,33 +245,38 @@ defmodule TamanduaServer.Alerts.Deduplication do
 
   @impl true
   def handle_call({:check_and_deduplicate, attrs}, _from, state) do
+    organization_id = extract_organization_id(attrs)
     dedup_key = attrs[:dedup_key] || compute_dedup_hash(attrs)
     attrs = Map.put(attrs, :dedup_key, dedup_key)
+    window_key = {organization_id, dedup_key}
 
     increment_stat(:total_checked)
 
-    result = case lookup_active_window(dedup_key) do
+    result = case lookup_active_window(window_key) do
       {:ok, window} ->
         # Duplicate found in ETS window -- increment in DB and ETS
         new_count = window.count + 1
         now = System.system_time(:second)
 
-        # Update the ETS window entry
-        update_window(dedup_key, %{window | count: new_count, last_at: now})
+        case update_existing_alert(organization_id, window.alert_id, new_count) do
+          :ok ->
+            # Only suppress the incoming alert after the tenant-scoped update
+            # proves that the ETS window belongs to a live row in this tenant.
+            updated_window = %{window | count: new_count, last_at: now}
+            update_window(window_key, updated_window)
+            track_top_duplicated(window_key, updated_window)
+            increment_stat(:total_deduplicated)
+            {:duplicate, window.alert_id, new_count}
 
-        # Update the database alert
-        update_existing_alert(window.alert_id, new_count)
-
-        # Track in top-duplicated
-        track_top_duplicated(dedup_key, window)
-
-        increment_stat(:total_deduplicated)
-
-        {:duplicate, window.alert_id, new_count}
+          :error ->
+            :ets.delete(@dedup_table, window_key)
+            increment_stat(:total_new)
+            {:new, attrs}
+        end
 
       :not_found ->
         # Check database as fallback (window may have been lost on restart)
-        case find_duplicate_in_db(dedup_key) do
+        case find_duplicate_in_db(organization_id, dedup_key) do
           {:ok, existing_alert} ->
             new_count = (existing_alert.occurrence_count || 1) + 1
             now = System.system_time(:second)
@@ -264,13 +291,17 @@ defmodule TamanduaServer.Alerts.Deduplication do
               title: existing_alert.title
             }
 
-            insert_window(dedup_key, window)
-            update_existing_alert(existing_alert.id, new_count)
-            track_top_duplicated(dedup_key, window)
+            case update_existing_alert(organization_id, existing_alert.id, new_count) do
+              :ok ->
+                insert_window(window_key, window)
+                track_top_duplicated(window_key, window)
+                increment_stat(:total_deduplicated)
+                {:duplicate, existing_alert.id, new_count}
 
-            increment_stat(:total_deduplicated)
-
-            {:duplicate, existing_alert.id, new_count}
+              :error ->
+                increment_stat(:total_new)
+                {:new, attrs}
+            end
 
           :not_found ->
             increment_stat(:total_new)
@@ -296,6 +327,7 @@ defmodule TamanduaServer.Alerts.Deduplication do
   @impl true
   def handle_cast({:register_new_alert, dedup_key, alert_id, attrs}, state) do
     now = System.system_time(:second)
+    organization_id = extract_organization_id(attrs)
 
     window = %{
       alert_id: alert_id,
@@ -306,7 +338,7 @@ defmodule TamanduaServer.Alerts.Deduplication do
       title: to_string(attrs[:title] || "")
     }
 
-    insert_window(dedup_key, window)
+    insert_window({organization_id, dedup_key}, window)
     {:noreply, state}
   end
 
@@ -337,7 +369,10 @@ defmodule TamanduaServer.Alerts.Deduplication do
     if dedup_key = payload[:dedup_key] || payload["dedup_key"] do
       alert_id = payload[:id] || payload["id"]
 
-      if alert_id && !has_window?(dedup_key) do
+      organization_id = extract_organization_id(payload)
+      window_key = {organization_id, dedup_key}
+
+      if alert_id && organization_id && !has_window?(window_key) do
         now = System.system_time(:second)
 
         window = %{
@@ -349,7 +384,7 @@ defmodule TamanduaServer.Alerts.Deduplication do
           title: to_string(payload[:title] || payload["title"] || "")
         }
 
-        insert_window(dedup_key, window)
+        insert_window(window_key, window)
       end
     end
 
@@ -480,11 +515,12 @@ defmodule TamanduaServer.Alerts.Deduplication do
   # Database Operations
   # ═══════════════════════════════════════════════════════════════════
 
-  defp find_duplicate_in_db(dedup_key) do
+  defp find_duplicate_in_db(organization_id, dedup_key) do
     ws = window_seconds()
-    cutoff = NaiveDateTime.utc_now() |> NaiveDateTime.add(-ws, :second)
+    cutoff = DateTime.utc_now() |> DateTime.add(-ws, :second)
 
     query = from(a in Alert,
+      where: a.organization_id == ^organization_id,
       where: a.dedup_key == ^dedup_key,
       where: a.inserted_at >= ^cutoff,
       where: a.status not in ["resolved", "false_positive"],
@@ -502,16 +538,27 @@ defmodule TamanduaServer.Alerts.Deduplication do
       :not_found
   end
 
-  defp update_existing_alert(alert_id, new_count) do
+  defp update_existing_alert(organization_id, alert_id, new_count) do
     now = DateTime.utc_now()
 
-    from(a in Alert, where: a.id == ^alert_id)
+    case from(a in Alert, where: a.id == ^alert_id and a.organization_id == ^organization_id)
     |> Repo.update_all(
-      set: [occurrence_count: new_count, last_seen_at: now, updated_at: NaiveDateTime.utc_now()]
-    )
+      set: [occurrence_count: new_count, last_seen_at: now, updated_at: now]
+    ) do
+      {1, _} ->
+        :ok
+
+      {row_count, _} ->
+        Logger.warning(
+          "[Dedup] Tenant-scoped update matched #{row_count} rows for alert #{alert_id}"
+        )
+
+        :error
+    end
   rescue
     e ->
       Logger.warning("[Dedup] Failed to update alert #{alert_id}: #{inspect(e)}")
+      :error
   end
 
   # ═══════════════════════════════════════════════════════════════════
@@ -559,6 +606,52 @@ defmodule TamanduaServer.Alerts.Deduplication do
   end
 
   defp extract_hash_field(_attrs, _field), do: ""
+
+  defp ensure_tenant(attrs) when is_map(attrs) do
+    case extract_organization_id(attrs) || resolve_organization_id(attrs) do
+      organization_id when is_binary(organization_id) and organization_id != "" ->
+        {:ok, Map.put(attrs, :organization_id, organization_id)}
+
+      _ ->
+        Logger.warning("[Dedup] Refusing unscoped deduplication: organization_id is required")
+        {:error, :organization_id_required}
+    end
+  end
+
+  defp ensure_tenant(_attrs), do: {:error, :organization_id_required}
+
+  defp extract_organization_id(attrs) when is_map(attrs) do
+    case attrs[:organization_id] || attrs["organization_id"] do
+      nil -> nil
+      "" -> nil
+      organization_id -> to_string(organization_id)
+    end
+  end
+
+  defp extract_organization_id(_attrs), do: nil
+
+  defp resolve_organization_id(attrs) do
+    case attrs[:agent_id] || attrs["agent_id"] do
+      nil -> nil
+      "" -> nil
+      agent_id -> TamanduaServer.Agents.OrgLookup.get_org_id(agent_id)
+    end
+    |> case do
+      nil -> nil
+      organization_id -> to_string(organization_id)
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[Dedup] Failed to resolve organization from agent: #{Exception.message(error)}"
+      )
+
+      nil
+  catch
+    :exit, reason ->
+      Logger.warning("[Dedup] Organization lookup exited: #{inspect(reason)}")
+      nil
+  end
 
   defp extract_rule_id(attrs) do
     detection_meta = attrs[:detection_metadata] || attrs["detection_metadata"] || %{}
@@ -612,8 +705,10 @@ defmodule TamanduaServer.Alerts.Deduplication do
   # Stats & Top Duplicated Tracking
   # ═══════════════════════════════════════════════════════════════════
 
-  defp track_top_duplicated(dedup_key, window) do
+  defp track_top_duplicated({organization_id, dedup_key} = window_key, window) do
     entry = %{
+      window_key: window_key,
+      organization_id: organization_id,
       dedup_key: dedup_key,
       alert_id: window.alert_id,
       title: window.title,
@@ -622,14 +717,16 @@ defmodule TamanduaServer.Alerts.Deduplication do
       last_at: window.last_at
     }
 
-    current_top = case :ets.lookup(@stats_table, :top_duplicated) do
+    current_top =
+      case :ets.lookup(@stats_table, :top_duplicated) do
       [{:top_duplicated, list}] when is_list(list) -> list
       _ -> []
     end
 
     # Update or insert entry
-    updated = current_top
-    |> Enum.reject(fn e -> e.dedup_key == dedup_key end)
+    updated =
+      current_top
+      |> Enum.reject(fn e -> Map.get(e, :window_key) == window_key end)
     |> List.insert_at(0, entry)
     |> Enum.sort_by(fn e -> -e.count end)
     |> Enum.take(@top_duplicated_limit)
@@ -644,24 +741,28 @@ defmodule TamanduaServer.Alerts.Deduplication do
     total_deduplicated = get_stat(:total_deduplicated)
     total_new = get_stat(:total_new)
 
-    active_windows = try do
+    active_windows =
+      try do
       :ets.info(@dedup_table, :size)
     rescue
       _ -> 0
     end
 
-    top_duplicated = case :ets.lookup(@stats_table, :top_duplicated) do
+    top_duplicated =
+      case :ets.lookup(@stats_table, :top_duplicated) do
       [{:top_duplicated, list}] when is_list(list) -> list
       _ -> []
     end
 
-    dedup_rate = if total_checked > 0 do
+    dedup_rate =
+      if total_checked > 0 do
       Float.round(total_deduplicated / total_checked * 100, 1)
     else
       0.0
     end
 
-    uptime_seconds = System.system_time(:second) - Map.get(state, :started_at, System.system_time(:second))
+    uptime_seconds =
+      System.system_time(:second) - Map.get(state, :started_at, System.system_time(:second))
 
     %{
       total_checked: total_checked,
@@ -670,8 +771,10 @@ defmodule TamanduaServer.Alerts.Deduplication do
       dedup_rate: dedup_rate,
       active_windows: active_windows,
       window_seconds: window_seconds(),
-      top_duplicated: Enum.map(top_duplicated, fn entry ->
+      top_duplicated:
+        Enum.map(top_duplicated, fn entry ->
         %{
+            organization_id: Map.get(entry, :organization_id),
           dedup_key: entry.dedup_key,
           alert_id: entry.alert_id,
           title: entry.title,

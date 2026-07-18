@@ -18,7 +18,6 @@ defmodule TamanduaServer.Investigations.GraphBuilder do
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Telemetry.{Event, ClickHouseQuery}
-  alias TamanduaServer.Agents.Agent
 
   require Logger
 
@@ -226,7 +225,7 @@ defmodule TamanduaServer.Investigations.GraphBuilder do
     Repo.all(query)
   end
 
-  defp build_graph(alerts, depth, time_window, include_benign, max_nodes) do
+  defp build_graph(alerts, _depth, time_window, include_benign, max_nodes) do
     # Extract time range from alerts
     {start_time, end_time} = calculate_time_range(alerts, time_window)
 
@@ -829,7 +828,7 @@ defmodule TamanduaServer.Investigations.GraphBuilder do
   defp registry_action_to_edge_type("delete"), do: :deletes
   defp registry_action_to_edge_type(_), do: :modifies
 
-  defp expand_by_type(node, _opts) do
+  defp expand_by_type(_node, _opts) do
     # Placeholder for node expansion logic
     # Would query additional events related to this node
     %{nodes: [], edges: []}

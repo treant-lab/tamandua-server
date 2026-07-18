@@ -36,7 +36,6 @@ defmodule TamanduaServer.Detection.ThreatIntel.AlienVault do
   require Logger
 
   @api_base "https://otx.alienvault.com/api/v1"
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   # Cache TTL: 6 hours for indicator lookups

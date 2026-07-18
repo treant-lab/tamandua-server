@@ -32,16 +32,13 @@ defmodule TamanduaServerWeb.FileBrowserLive do
   use TamanduaServerWeb, :live_view
 
   alias TamanduaServer.Agents
-  alias TamanduaServer.Agents.Registry
   alias TamanduaServer.LiveResponse.CommandExecutor
   alias TamanduaServer.LiveResponse.SessionManager
-  alias TamanduaServer.LiveResponse.AuditLogger
 
   require Logger
 
   @max_preview_size 1_048_576  # 1 MB
   @max_hex_preview 65_536      # 64 KB for hex view
-  @chunk_size 1_048_576        # 1 MB download chunks
 
   # ============================================================================
   # Lifecycle
@@ -299,7 +296,7 @@ defmodule TamanduaServerWeb.FileBrowserLive do
   end
 
   @impl true
-  def handle_info({:download_chunk, download_id, chunk, offset, total}, socket) do
+  def handle_info({:download_chunk, download_id, _chunk, offset, total}, socket) do
     progress = Map.get(socket.assigns.download_progress, download_id, %{})
     progress = Map.merge(progress, %{
       offset: offset,
@@ -867,7 +864,7 @@ defmodule TamanduaServerWeb.FileBrowserLive do
     socket = socket |> assign(:loading, true) |> assign(:error, nil)
 
     # Send command to agent
-    agent_id = socket.assigns.agent_id
+    _agent_id = socket.assigns.agent_id
     session_id = socket.assigns.session_id
 
     Task.start(fn ->
@@ -921,7 +918,7 @@ defmodule TamanduaServerWeb.FileBrowserLive do
       session_id = socket.assigns.session_id
 
       case CommandExecutor.download_file(session_id, path) do
-        {:ok, result} ->
+        {:ok, _result} ->
           # Handle download result (chunked or single-shot)
           send(self(), {:download_complete, download_id, path})
 

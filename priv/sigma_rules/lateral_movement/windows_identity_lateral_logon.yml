@@ -1,0 +1,55 @@
+title: Windows Identity Lateral Logon Signals
+id: lm-idtr-0001-windows-identity-lateral-logon
+status: experimental
+description: |
+  Detects Windows Security Event Log authentication patterns commonly used for
+  lateral movement: network/RDP logons and explicit credential use against a
+  remote target. Intended as a first ITDR contract rule over normalized
+  identity telemetry from events 4624 and 4648.
+references:
+  - https://attack.mitre.org/techniques/T1021/
+  - https://attack.mitre.org/techniques/T1078/
+author: Tamandua EDR
+date: 2026/07/08
+modified: 2026/07/08
+tags:
+  - attack.lateral_movement
+  - attack.t1021
+  - attack.t1078
+  - tamandua.itdr
+logsource:
+  product: windows
+  service: security
+detection:
+  selection_network_logon:
+    EventID: 4624
+    LogonType:
+      - 3
+      - 10
+  selection_explicit_credentials:
+    EventID: 4648
+    TargetServerName|exists: true
+  filter_machine_accounts:
+    TargetUserName|endswith: '$'
+  filter_loopback:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  condition: (selection_network_logon or selection_explicit_credentials) and not 1 of filter_*
+fields:
+  - EventID
+  - TargetUserName
+  - TargetDomainName
+  - SubjectUserName
+  - SubjectDomainName
+  - LogonType
+  - AuthenticationPackageName
+  - IpAddress
+  - WorkstationName
+  - TargetServerName
+falsepositives:
+  - Remote administration over SMB, WinRM, or RDP
+  - Service accounts accessing file shares
+  - RunAs or scheduled administration with explicit credentials
+level: medium

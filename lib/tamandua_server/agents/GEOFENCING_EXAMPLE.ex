@@ -5,7 +5,6 @@ defmodule TamanduaServer.Agents.GeofencingExample do
   This module demonstrates common geofencing scenarios and integrations.
   """
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Agents.GeofencingAPI
 
   @doc """
@@ -281,7 +280,7 @@ defmodule TamanduaServer.Agents.GeofencingExample do
   """
   def example_track_agent_connection(agent_id, ip_address) do
     # Track location
-    {:ok, location} = GeofencingAPI.track_location(agent_id, ip_address)
+    {:ok, _location} = GeofencingAPI.track_location(agent_id, ip_address)
 
     # Evaluate geofencing
     {:ok, result} = GeofencingAPI.evaluate_location(agent_id)

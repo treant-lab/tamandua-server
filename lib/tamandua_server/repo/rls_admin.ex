@@ -440,25 +440,25 @@ defmodule TamanduaServer.Repo.RLSAdmin do
     end
   end
 
-  defp test_read_isolation(org1_id, org2_id) do
+  defp test_read_isolation(_org1_id, _org2_id) do
     # This would need actual test data - stub for now
     # In real implementation, would query as each org and verify isolation
     :ok
   end
 
-  defp test_write_isolation(org1_id, org2_id) do
+  defp test_write_isolation(_org1_id, _org2_id) do
     :ok
   end
 
-  defp test_update_isolation(org1_id, org2_id) do
+  defp test_update_isolation(_org1_id, _org2_id) do
     :ok
   end
 
-  defp test_delete_isolation(org1_id, org2_id) do
+  defp test_delete_isolation(_org1_id, _org2_id) do
     :ok
   end
 
-  defp test_count_isolation(org1_id, org2_id) do
+  defp test_count_isolation(_org1_id, _org2_id) do
     :ok
   end
 end

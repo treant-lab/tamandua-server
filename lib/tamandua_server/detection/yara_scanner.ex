@@ -111,12 +111,17 @@ defmodule TamanduaServer.Detection.YaraScanner do
             Logger.info("Compiled #{length(rule_files)} YARA rule files to #{compiled_path}")
             {:ok, compiled_path}
 
+          # OSCommand.run/3 returns {:error, reason} for validation failures
+          # and timeouts; match it before the generic {output, exit_code}
+          # 2-tuple, which would otherwise swallow it (previously this clause
+          # was unreachable and {:error, :timeout} was misreported as
+          # compilation output).
+          {:error, reason} ->
+            {:error, reason}
+
           {error, _} ->
             Logger.error("YARA rule compilation failed: #{error}")
             {:error, {:compilation_failed, error}}
-
-          {:error, reason} ->
-            {:error, reason}
         end
       else
         {:error, :yarac_not_found}
@@ -423,12 +428,16 @@ defmodule TamanduaServer.Detection.YaraScanner do
           # Exit code 1 with no output means no matches
           {:ok, []}
 
+        # OSCommand.run/3 returns {:error, reason} for validation failures
+        # and timeouts; match it before the generic {output, exit_code}
+        # 2-tuple, which would otherwise swallow it (previously this clause
+        # was unreachable and String.slice/3 on the :error atom raised).
+        {:error, reason} ->
+          {:error, reason}
+
         {error, code} ->
           Logger.warning("YARA scan failed (code #{code}): #{String.slice(error, 0, 200)}")
           {:error, {:scan_failed, code, error}}
-
-        {:error, reason} ->
-          {:error, reason}
       end
     catch
       :exit, {:timeout, _} ->

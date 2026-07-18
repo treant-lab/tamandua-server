@@ -1,10 +1,100 @@
 import Config
 
+ioc_snapshot_provider =
+  case System.get_env("IOC_SNAPSHOT_PROVIDER", "legacy") |> String.trim() |> String.downcase() do
+    "legacy" ->
+      :legacy
+
+    "authority_v1" ->
+      :authority_v1
+
+    unsupported ->
+      raise "IOC_SNAPSHOT_PROVIDER must be 'legacy' or 'authority_v1', got: #{inspect(unsupported)}"
+  end
+
+ioc_snapshot_authority_repo_enabled =
+  case System.get_env("IOC_SNAPSHOT_AUTHORITY_REPO_ENABLED", "false")
+       |> String.trim()
+       |> String.downcase() do
+    "true" ->
+      true
+
+    "false" ->
+      false
+
+    unsupported ->
+      raise "IOC_SNAPSHOT_AUTHORITY_REPO_ENABLED must be 'true' or 'false', got: #{inspect(unsupported)}"
+  end
+
+if ioc_snapshot_provider == :authority_v1 != ioc_snapshot_authority_repo_enabled do
+  raise "authority_v1 requires its dedicated IOC snapshot repository enabled, and legacy requires it disabled"
+end
+
+config :tamandua_server,
+  ioc_snapshot_provider: ioc_snapshot_provider,
+  ioc_snapshot_authority_repo_enabled: ioc_snapshot_authority_repo_enabled
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # temporary file watchers are started.
 
-if config_env() == :prod do
+decision_engine_autonomous_response_enabled =
+  case System.get_env("TAMANDUA_DECISION_ENGINE_AUTONOMOUS_RESPONSE", "false")
+       |> String.trim()
+       |> String.downcase() do
+    "true" ->
+      true
+
+    "false" ->
+      false
+
+    unsupported ->
+      raise "TAMANDUA_DECISION_ENGINE_AUTONOMOUS_RESPONSE must be 'true' or 'false', got: #{inspect(unsupported)}"
+  end
+
+config :tamandua_server,
+       :decision_engine_autonomous_response_enabled,
+       decision_engine_autonomous_response_enabled
+
+shadow_alert_trigger =
+  case System.get_env("TAMANDUA_SHADOW_ALERT_TRIGGER", "off")
+       |> String.trim()
+       |> String.downcase() do
+    "off" ->
+      :off
+
+    "shadow" ->
+      :shadow
+
+    unsupported ->
+      raise "TAMANDUA_SHADOW_ALERT_TRIGGER must be 'off' or 'shadow', got: #{inspect(unsupported)}"
+  end
+
+config :tamandua_server, TamanduaServer.Investigations.ShadowOrchestrator,
+  alert_creation_trigger: shadow_alert_trigger,
+  max_active_per_tenant:
+    System.get_env("TAMANDUA_SHADOW_MAX_ACTIVE_PER_TENANT", "2") |> String.to_integer(),
+  max_admissions_per_minute:
+    System.get_env("TAMANDUA_SHADOW_MAX_ADMISSIONS_PER_MINUTE", "10") |> String.to_integer(),
+  worker_timeout_ms:
+    System.get_env("TAMANDUA_SHADOW_WORKER_TIMEOUT_MS", "30000") |> String.to_integer()
+
+migration_release_task =
+  config_env() == :prod and System.get_env("TAMANDUA_RELEASE_TASK") == "migrate"
+
+if migration_release_task do
+  migrator_database_url =
+    System.get_env("MIGRATOR_DATABASE_URL") ||
+      raise "MIGRATOR_DATABASE_URL is required for the migrate release task"
+
+  config :tamandua_server, TamanduaServer.Repo,
+    url: migrator_database_url,
+    pool_size: 1,
+    socket_options: if(System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []),
+    ssl: System.get_env("DATABASE_SSL") == "true"
+end
+
+if config_env() == :prod and not migration_release_task do
   # Database configuration
   database_url =
     System.get_env("DATABASE_URL") ||
@@ -18,8 +108,365 @@ if config_env() == :prod do
   config :tamandua_server, TamanduaServer.Repo,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+    timeout: String.to_integer(System.get_env("DB_TIMEOUT") || "15000"),
+    queue_target: String.to_integer(System.get_env("DB_QUEUE_TARGET") || "5000"),
+    queue_interval: String.to_integer(System.get_env("DB_QUEUE_INTERVAL") || "1000"),
     socket_options: maybe_ipv6,
     ssl: System.get_env("DATABASE_SSL") == "true"
+
+  authority_repo_enabled = System.get_env("AUTHORITY_REPO_ENABLED") == "true"
+  config :tamandua_server, :authority_repo_enabled, authority_repo_enabled
+
+  if authority_repo_enabled do
+    authority_database_url =
+      System.get_env("AUTHORITY_DATABASE_URL") ||
+        raise "AUTHORITY_DATABASE_URL is required when AUTHORITY_REPO_ENABLED=true"
+
+    if authority_database_url == database_url do
+      raise "AUTHORITY_DATABASE_URL must use a separate database identity"
+    end
+
+    authority_database_role =
+      System.get_env("AUTHORITY_DATABASE_ROLE") ||
+        raise "AUTHORITY_DATABASE_ROLE is required when AUTHORITY_REPO_ENABLED=true"
+
+    authority_pool_size =
+      System.get_env("AUTHORITY_POOL_SIZE", "2") |> String.to_integer()
+
+    if authority_pool_size < 1 or authority_pool_size > 5 do
+      raise "AUTHORITY_POOL_SIZE must be between 1 and 5"
+    end
+
+    config :tamandua_server, :authority_database_role, authority_database_role
+
+    config :tamandua_server, TamanduaServer.AuthorityRepo,
+      url: authority_database_url,
+      pool_size: authority_pool_size,
+      timeout: String.to_integer(System.get_env("AUTHORITY_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("AUTHORITY_DATABASE_SSL") == "true"
+  end
+
+  agentic_restore_authority_repo_enabled =
+    System.get_env("AGENTIC_RESTORE_AUTHORITY_REPO_ENABLED") == "true"
+
+  config :tamandua_server,
+         :agentic_restore_authority_repo_enabled,
+         agentic_restore_authority_repo_enabled
+
+  if agentic_restore_authority_repo_enabled do
+    agentic_restore_authority_database_url =
+      System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_URL") ||
+        raise "AGENTIC_RESTORE_AUTHORITY_DATABASE_URL is required when its pool is enabled"
+
+    if agentic_restore_authority_database_url == database_url or
+         agentic_restore_authority_database_url == System.get_env("AUTHORITY_DATABASE_URL") do
+      raise "agentic restore authority must use a dedicated database identity"
+    end
+
+    agentic_restore_authority_database_role =
+      System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE") ||
+        raise "AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE is required when its pool is enabled"
+
+    config :tamandua_server,
+           :agentic_restore_authority_database_role,
+           agentic_restore_authority_database_role
+
+    config :tamandua_server, TamanduaServer.AgenticRestoreAuthorityRepo,
+      url: agentic_restore_authority_database_url,
+      pool_size: 1,
+      timeout:
+        String.to_integer(System.get_env("AGENTIC_RESTORE_AUTHORITY_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_SSL") == "true"
+  end
+
+  decision_engine_authority_repo_enabled =
+    System.get_env("DECISION_ENGINE_AUTHORITY_REPO_ENABLED") == "true"
+
+  config :tamandua_server,
+         :decision_engine_authority_repo_enabled,
+         decision_engine_authority_repo_enabled
+
+  if decision_engine_authority_repo_enabled do
+    decision_engine_authority_database_url =
+      System.get_env("DECISION_ENGINE_AUTHORITY_DATABASE_URL") ||
+        raise "DECISION_ENGINE_AUTHORITY_DATABASE_URL is required when its pool is enabled"
+
+    peer_urls = [
+      database_url,
+      System.get_env("AUTHORITY_DATABASE_URL"),
+      System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_URL"),
+      System.get_env("ENROLLMENT_LOCATOR_DATABASE_URL"),
+      System.get_env("IOC_SNAPSHOT_AUTHORITY_DATABASE_URL")
+    ]
+
+    if decision_engine_authority_database_url in peer_urls do
+      raise "DecisionEngine authority must use a dedicated database identity"
+    end
+
+    decision_engine_authority_database_role =
+      System.get_env("DECISION_ENGINE_AUTHORITY_DATABASE_ROLE") ||
+        raise "DECISION_ENGINE_AUTHORITY_DATABASE_ROLE is required when its pool is enabled"
+
+    peer_roles =
+      [
+        System.get_env("RUNTIME_DATABASE_ROLE"),
+        System.get_env("MIGRATOR_DATABASE_ROLE"),
+        System.get_env("AUTHORITY_DATABASE_ROLE"),
+        System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE"),
+        System.get_env("ENROLLMENT_LOCATOR_DATABASE_ROLE"),
+        System.get_env("IOC_SNAPSHOT_AUTHORITY_DATABASE_ROLE")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if decision_engine_authority_database_role in peer_roles do
+      raise "DecisionEngine authority database role must be distinct from every peer role"
+    end
+
+    config :tamandua_server,
+           :decision_engine_authority_database_role,
+           decision_engine_authority_database_role
+
+    config :tamandua_server, TamanduaServer.DecisionEngineAuthorityRepo,
+      url: decision_engine_authority_database_url,
+      pool_size: 1,
+      timeout:
+        String.to_integer(System.get_env("DECISION_ENGINE_AUTHORITY_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("DECISION_ENGINE_AUTHORITY_DATABASE_SSL") == "true"
+  end
+
+  remediation_approval_authority_repo_enabled =
+    System.get_env("REMEDIATION_APPROVAL_AUTHORITY_REPO_ENABLED") == "true"
+
+  config :tamandua_server,
+         :remediation_approval_authority_repo_enabled,
+         remediation_approval_authority_repo_enabled
+
+  if remediation_approval_authority_repo_enabled do
+    fetch_remediation_identity = fn url_env, role_env ->
+      url =
+        System.get_env(url_env) ||
+          raise "#{url_env} is required when the remediation approval authority pool is enabled"
+
+      role =
+        System.get_env(role_env) ||
+          raise "#{role_env} is required when the remediation approval authority pool is enabled"
+
+      unless Regex.match?(~r/^[a-z_][a-z0-9_]{0,62}$/, role) do
+        raise "#{role_env} is invalid"
+      end
+
+      identity =
+        try do
+          uri =
+            case URI.new(url) do
+              {:ok, uri} -> uri
+              {:error, _reason} -> raise ArgumentError
+            end
+
+          scheme =
+            case uri.scheme && String.downcase(uri.scheme) do
+              scheme when scheme in ["ecto", "postgres", "postgresql"] -> "postgresql"
+              _ -> raise ArgumentError
+            end
+
+          [encoded_user | _] = String.split(uri.userinfo || "", ":", parts: 2)
+          user = URI.decode(encoded_user)
+
+          encoded_database =
+            case uri.path do
+              "/" <> encoded_database when encoded_database != "" -> encoded_database
+              _ -> raise ArgumentError
+            end
+
+          database = URI.decode(encoded_database)
+
+          host =
+            case uri.host do
+              host when is_binary(host) and host != "" ->
+                case :inet.parse_address(String.to_charlist(host)) do
+                  {:ok, address} -> address |> :inet.ntoa() |> List.to_string()
+                  {:error, _reason} -> host |> String.downcase() |> String.trim_trailing(".")
+                end
+
+              _ ->
+                raise ArgumentError
+            end
+
+          if host == "" or user == "" or database == "" or uri.query != nil or
+               uri.fragment != nil or
+               String.contains?(database, "/") do
+            raise ArgumentError
+          end
+
+          {scheme, host, uri.port || 5432, database, user}
+        rescue
+          _ -> raise "#{url_env} has an invalid database identity"
+        end
+
+      if elem(identity, 4) != role do
+        raise "#{url_env} user must exactly match #{role_env}"
+      end
+
+      {url, role, identity}
+    end
+
+    remediation_identity_specs = [
+      {"DATABASE_URL", "RUNTIME_DATABASE_ROLE"},
+      {"MIGRATOR_DATABASE_URL", "MIGRATOR_DATABASE_ROLE"},
+      {"AUTHORITY_DATABASE_URL", "AUTHORITY_DATABASE_ROLE"},
+      {"AGENTIC_RESTORE_AUTHORITY_DATABASE_URL", "AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE"},
+      {"DECISION_ENGINE_AUTHORITY_DATABASE_URL", "DECISION_ENGINE_AUTHORITY_DATABASE_ROLE"},
+      {"ENROLLMENT_LOCATOR_DATABASE_URL", "ENROLLMENT_LOCATOR_DATABASE_ROLE"},
+      {"IOC_SNAPSHOT_AUTHORITY_DATABASE_URL", "IOC_SNAPSHOT_AUTHORITY_DATABASE_ROLE"},
+      {"REMEDIATION_APPROVAL_AUTHORITY_DATABASE_URL",
+       "REMEDIATION_APPROVAL_AUTHORITY_DATABASE_ROLE"}
+    ]
+
+    remediation_identities =
+      Enum.map(remediation_identity_specs, fn {url_env, role_env} ->
+        fetch_remediation_identity.(url_env, role_env)
+      end)
+
+    if remediation_identities |> Enum.map(&elem(&1, 2)) |> Enum.uniq() |> length() !=
+         length(remediation_identities) do
+      raise "remediation approval authority database identities must be pairwise distinct"
+    end
+
+    if remediation_identities |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() !=
+         length(remediation_identities) do
+      raise "remediation approval authority database roles must be pairwise distinct"
+    end
+
+    {remediation_approval_authority_database_url,
+     remediation_approval_authority_database_role, _remediation_identity} =
+      List.last(remediation_identities)
+
+    config :tamandua_server,
+           :remediation_approval_authority_database_role,
+           remediation_approval_authority_database_role
+
+    config :tamandua_server, TamanduaServer.RemediationApprovalAuthorityRepo,
+      url: remediation_approval_authority_database_url,
+      pool_size: 1,
+      timeout:
+        String.to_integer(System.get_env("REMEDIATION_APPROVAL_AUTHORITY_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("REMEDIATION_APPROVAL_AUTHORITY_DATABASE_SSL") == "true"
+  end
+
+  enrollment_locator_repo_enabled =
+    System.get_env("ENROLLMENT_LOCATOR_REPO_ENABLED") == "true"
+
+  config :tamandua_server, :enrollment_locator_repo_enabled, enrollment_locator_repo_enabled
+
+  if enrollment_locator_repo_enabled do
+    enrollment_locator_database_url =
+      System.get_env("ENROLLMENT_LOCATOR_DATABASE_URL") ||
+        raise "ENROLLMENT_LOCATOR_DATABASE_URL is required when its pool is enabled"
+
+    if enrollment_locator_database_url in [
+         database_url,
+         System.get_env("AUTHORITY_DATABASE_URL"),
+         System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_URL")
+       ] do
+      raise "enrollment locator must use a dedicated database identity"
+    end
+
+    enrollment_locator_database_role =
+      System.get_env("ENROLLMENT_LOCATOR_DATABASE_ROLE") ||
+        raise "ENROLLMENT_LOCATOR_DATABASE_ROLE is required when its pool is enabled"
+
+    enrollment_locator_peer_roles =
+      [
+        System.get_env("RUNTIME_DATABASE_ROLE") ||
+          raise("RUNTIME_DATABASE_ROLE is required when the enrollment locator pool is enabled"),
+        System.get_env("MIGRATOR_DATABASE_ROLE") ||
+          raise("MIGRATOR_DATABASE_ROLE is required when the enrollment locator pool is enabled"),
+        System.get_env("AUTHORITY_DATABASE_ROLE") ||
+          raise("AUTHORITY_DATABASE_ROLE is required when the enrollment locator pool is enabled"),
+        System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE") ||
+          raise(
+            "AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE is required when the enrollment locator pool is enabled"
+          )
+      ]
+
+    if enrollment_locator_database_role in enrollment_locator_peer_roles or
+         Enum.uniq(enrollment_locator_peer_roles) != enrollment_locator_peer_roles do
+      raise "enrollment locator, runtime, migrator, retention and agentic database roles must be distinct"
+    end
+
+    config :tamandua_server,
+           :enrollment_locator_database_role,
+           enrollment_locator_database_role
+
+    config :tamandua_server, TamanduaServer.EnrollmentLocatorRepo,
+      url: enrollment_locator_database_url,
+      pool_size: 1,
+      timeout: String.to_integer(System.get_env("ENROLLMENT_LOCATOR_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("ENROLLMENT_LOCATOR_DATABASE_SSL") == "true"
+  end
+
+  if ioc_snapshot_authority_repo_enabled do
+    ioc_snapshot_authority_database_url =
+      System.get_env("IOC_SNAPSHOT_AUTHORITY_DATABASE_URL") ||
+        raise "IOC_SNAPSHOT_AUTHORITY_DATABASE_URL is required for authority_v1"
+
+    peer_urls = [
+      database_url,
+      System.get_env("AUTHORITY_DATABASE_URL"),
+      System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_URL"),
+      System.get_env("ENROLLMENT_LOCATOR_DATABASE_URL")
+    ]
+
+    if ioc_snapshot_authority_database_url in peer_urls do
+      raise "IOC snapshot authority must use a dedicated database identity"
+    end
+
+    ioc_snapshot_authority_database_role =
+      System.get_env("IOC_SNAPSHOT_AUTHORITY_DATABASE_ROLE") ||
+        raise "IOC_SNAPSHOT_AUTHORITY_DATABASE_ROLE is required for authority_v1"
+
+    peer_roles =
+      [
+        System.get_env("RUNTIME_DATABASE_ROLE"),
+        System.get_env("MIGRATOR_DATABASE_ROLE"),
+        System.get_env("AUTHORITY_DATABASE_ROLE"),
+        System.get_env("AGENTIC_RESTORE_AUTHORITY_DATABASE_ROLE"),
+        System.get_env("ENROLLMENT_LOCATOR_DATABASE_ROLE")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if ioc_snapshot_authority_database_role in peer_roles do
+      raise "IOC snapshot authority database role must be distinct from every peer role"
+    end
+
+    config :tamandua_server,
+           :ioc_snapshot_authority_database_role,
+           ioc_snapshot_authority_database_role
+
+    config :tamandua_server, TamanduaServer.IocSnapshotAuthorityRepo,
+      url: ioc_snapshot_authority_database_url,
+      pool_size: 1,
+      timeout: String.to_integer(System.get_env("IOC_SNAPSHOT_AUTHORITY_DB_TIMEOUT") || "15000"),
+      queue_target: 1_000,
+      queue_interval: 1_000,
+      socket_options: maybe_ipv6,
+      ssl: System.get_env("IOC_SNAPSHOT_AUTHORITY_DATABASE_SSL") == "true"
+  end
 
   # Guardian secret (required in production)
   guardian_secret =
@@ -29,8 +476,7 @@ if config_env() == :prod do
       Generate one with: mix guardian.gen.secret
       """
 
-  config :tamandua_server, TamanduaServer.Guardian,
-    secret_key: guardian_secret
+  config :tamandua_server, TamanduaServer.Guardian, secret_key: guardian_secret
 
   # Agent authentication secret (required in production)
   agent_secret =
@@ -77,6 +523,7 @@ if config_env() == :prod do
   lab_light? = System.get_env("TAMANDUA_LAB_LIGHT", "false") == "true"
   endpoint_scheme = if(lab_light?, do: "http", else: "https")
   endpoint_port = if(lab_light?, do: port, else: 443)
+
   default_check_origins =
     [
       "#{endpoint_scheme}://#{host}",
@@ -134,7 +581,7 @@ if config_env() == :prod do
           raise "AGENT_MTLS_ENABLED=true requires AGENT_MTLS_CLIENT_CA_CERTFILE or CA_CERT_PATH"
 
       Keyword.put(endpoint_config, :https,
-        ip: {0, 0, 0, 0, 0, 0, 0, 0},
+        ip: {0, 0, 0, 0},
         port: agent_mtls_port,
         certfile: server_certfile,
         keyfile: server_keyfile,
@@ -157,21 +604,23 @@ if config_env() == :prod do
   # Format: comma-separated list e.g., "https://app.example.com,https://admin.example.com"
   cors_origins = System.get_env("CORS_ORIGINS")
 
-  cors_config = cond do
-    cors_origins == "*" ->
-      Logger.warning(
-        "[Security] CORS_ORIGINS='*' is insecure in production. " <>
-        "Set to specific origins or leave unset for default (same-origin only)."
-      )
-      "*"
+  cors_config =
+    cond do
+      cors_origins == "*" ->
+        Logger.warning(
+          "[Security] CORS_ORIGINS='*' is insecure in production. " <>
+            "Set to specific origins or leave unset for default (same-origin only)."
+        )
 
-    is_binary(cors_origins) and cors_origins != "" ->
-      cors_origins
+        "*"
 
-    true ->
-      # Default: only allow same-origin (the Phoenix host)
-      "https://#{host}"
-  end
+      is_binary(cors_origins) and cors_origins != "" ->
+        cors_origins
+
+      true ->
+        # Default: only allow same-origin (the Phoenix host)
+        "https://#{host}"
+    end
 
   config :tamandua_server,
     cors_origins: cors_config
@@ -237,15 +686,19 @@ if config_env() == :prod do
     repo: TamanduaServer.Repo,
     plugins: [
       {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
-      {Oban.Plugins.Cron, crontab: [
-        {"0 * * * *", TamanduaServer.Workers.CleanupWorker},
-        # Daily recording retention cleanup at 3:00 AM UTC
-        {"0 3 * * *", TamanduaServer.Workers.RecordingRetentionWorker},
-        # Threat intel feed sync every 4 hours (at minute 15 to stagger)
-        {"15 */4 * * *", TamanduaServer.Workers.ThreatIntelSyncWorker},
-        # Alert digest every 15 minutes
-        {"*/15 * * * *", TamanduaServer.Workers.DigestWorker}
-      ]}
+      {Oban.Plugins.Cron,
+       crontab: [
+         {"0 * * * *", TamanduaServer.Workers.CleanupWorker},
+         # Daily recording retention cleanup at 3:00 AM UTC
+         {"0 3 * * *", TamanduaServer.Workers.RecordingRetentionWorker},
+         # Threat intel feed sync every 4 hours (at minute 15 to stagger)
+         {"15 */4 * * *", TamanduaServer.Workers.ThreatIntelSyncWorker},
+         # Alert digest every 15 minutes
+         {"*/15 * * * *", TamanduaServer.Workers.DigestWorker},
+         # Erase expired screen-capture bytes and one-time credentials
+         {"*/5 * * * *", TamanduaServer.Workers.ScreenCaptureRetentionWorker},
+         {"*/5 * * * *", TamanduaServer.Workers.EvidenceSessionRetentionWorker}
+       ]}
     ],
     queues: [
       default: 10,
@@ -255,7 +708,8 @@ if config_env() == :prod do
       threat_intel: 2,
       notifications: 5,
       escalations: 3,
-      blockchain: 3
+      blockchain: 3,
+      ai_investigations: 2
     ]
 
   # Live Response Session Recording configuration
@@ -282,7 +736,8 @@ if config_env() == :prod do
   config :tamandua_server, TamanduaServer.Detection.ThreatIntelFeeds,
     enabled: System.get_env("THREAT_INTEL_FEEDS_ENABLED", "true") == "true",
     sync_interval_hours: String.to_integer(System.get_env("THREAT_INTEL_SYNC_HOURS", "4")),
-    initial_sync_delay_seconds: String.to_integer(System.get_env("THREAT_INTEL_INITIAL_DELAY", "30")),
+    initial_sync_delay_seconds:
+      String.to_integer(System.get_env("THREAT_INTEL_INITIAL_DELAY", "30")),
     feeds: %{
       abusech_feodo: %{enabled: true, description: "Abuse.ch Feodo Tracker"},
       abusech_urlhaus: %{enabled: true, description: "Abuse.ch URLhaus"},
@@ -333,7 +788,10 @@ if config_env() == :prod do
     service_account_key: gcp_key,
     service_account_key_path: gcp_key_path
 
-  if System.get_env("OTEL_ENABLED", "false") == "true" do
+  otel_enabled? = System.get_env("OTEL_ENABLED", "false") == "true"
+  otel_exporter_available? = Application.spec(:opentelemetry_exporter) != nil
+
+  if otel_enabled? and otel_exporter_available? do
     # OpenTelemetry distributed tracing. Disabled by default so an unavailable
     # local collector cannot delay control-plane or agent socket startup.
     config :opentelemetry,
@@ -359,15 +817,22 @@ if config_env() == :prod do
       }
 
     # Sampling: Parent-based with 1% ratio for new traces
-    config :opentelemetry, :sampler,
-      {:parent_based,
-       %{
-         root: {:trace_id_ratio_based, 0.01},
-         remote_parent_sampled: :always_on,
-         remote_parent_not_sampled: :always_off,
-         local_parent_sampled: :always_on,
-         local_parent_not_sampled: :always_off
-       }}
+    config :opentelemetry,
+           :sampler,
+           {:parent_based,
+            %{
+              root: {:trace_id_ratio_based, 0.01},
+              remote_parent_sampled: :always_on,
+              remote_parent_not_sampled: :always_off,
+              local_parent_sampled: :always_on,
+              local_parent_not_sampled: :always_off
+            }}
+  else
+    if otel_enabled? do
+      IO.warn(
+        "OTEL_ENABLED=true ignored because opentelemetry_exporter is not included in this release"
+      )
+    end
   end
 
   # Trivy vulnerability scanner configuration
@@ -395,49 +860,34 @@ if config_env() == :prod do
     enabled: System.get_env("CLICKHOUSE_ENABLED", "true") == "true",
     url: System.get_env("CLICKHOUSE_URL") || "http://localhost:8123",
     database: System.get_env("CLICKHOUSE_DATABASE") || "tamandua",
-    username: System.get_env("CLICKHOUSE_USERNAME") || System.get_env("CLICKHOUSE_USER") || "default",
+    username:
+      System.get_env("CLICKHOUSE_USERNAME") || System.get_env("CLICKHOUSE_USER") || "default",
     password: System.get_env("CLICKHOUSE_PASSWORD") || "",
     batch_size: String.to_integer(System.get_env("CLICKHOUSE_BATCH_SIZE") || "1000"),
-    flush_interval_ms: String.to_integer(System.get_env("CLICKHOUSE_FLUSH_INTERVAL_MS") || "5000"),
+    flush_interval_ms:
+      String.to_integer(System.get_env("CLICKHOUSE_FLUSH_INTERVAL_MS") || "5000"),
     retry_count: String.to_integer(System.get_env("CLICKHOUSE_RETRY_COUNT") || "3"),
     max_consecutive_failures: String.to_integer(System.get_env("CLICKHOUSE_MAX_FAILURES") || "5"),
-    circuit_open_duration_ms: String.to_integer(System.get_env("CLICKHOUSE_CIRCUIT_OPEN_MS") || "60000"),
+    circuit_open_duration_ms:
+      String.to_integer(System.get_env("CLICKHOUSE_CIRCUIT_OPEN_MS") || "60000"),
     query_timeout: String.to_integer(System.get_env("CLICKHOUSE_QUERY_TIMEOUT") || "30000")
 end
 
 # Test environment configuration
 if config_env() == :test do
-  # Defaults preserved; env vars allow pointing tests at a differently
-  # provisioned Postgres (e.g. the docker-compose container or CI).
-  config :tamandua_server, TamanduaServer.Repo,
-    username: System.get_env("TEST_DB_USER", "postgres"),
-    password: System.get_env("TEST_DB_PASS", "postgres"),
-    hostname: System.get_env("TEST_DB_HOST", "localhost"),
-    port: String.to_integer(System.get_env("TEST_DB_PORT", "5432")),
-    database: "tamandua_server_test#{System.get_env("MIX_TEST_PARTITION")}",
-    pool: Ecto.Adapters.SQL.Sandbox,
-    pool_size: String.to_integer(System.get_env("TEST_DB_POOL_SIZE", "10")),
-    # Defaults match DBConnection's built-ins; env vars let slow environments
-    # (e.g. proxied/dockerized Postgres) run long migrations without timeouts.
-    timeout: String.to_integer(System.get_env("TEST_DB_TIMEOUT", "15000")),
-    ownership_timeout: String.to_integer(System.get_env("TEST_DB_OWNERSHIP_TIMEOUT", "15000")),
-    queue_target: String.to_integer(System.get_env("TEST_DB_QUEUE_TARGET", "50")),
-    queue_interval: String.to_integer(System.get_env("TEST_DB_QUEUE_INTERVAL", "1000"))
-
   config :tamandua_server, TamanduaServerWeb.Endpoint,
     http: [ip: {127, 0, 0, 1}, port: 4002],
     secret_key_base: "test_secret_key_base_for_testing_only",
     server: false
 
-  config :tamandua_server, TamanduaServer.Guardian,
-    secret_key: "test_secret_key_for_testing_only"
+  config :tamandua_server, TamanduaServer.Guardian, secret_key: "test_secret_key_for_testing_only"
 
   config :tamandua_server,
     agent_secret: "test_agent_secret_for_testing_only_min32",
     env: :test,
     require_mtls: false
 
-  config :tamandua_server, Oban, testing: :inline
+  config :tamandua_server, Oban, testing: :manual
 
   # Disable Trivy in tests by default (can be enabled for integration tests)
   config :tamandua_server, :trivy,
@@ -446,8 +896,7 @@ if config_env() == :test do
     timeout: 30_000
 
   # Disable ClickHouse in tests — Broadway tests should not hit real ClickHouse
-  config :tamandua_server, TamanduaServer.Telemetry.ClickHouse,
-    enabled: false
+  config :tamandua_server, TamanduaServer.Telemetry.ClickHouse, enabled: false
 
   config :bcrypt_elixir, :log_rounds, 1
   config :logger, level: :warning
@@ -491,7 +940,8 @@ config :tamandua_server,
 
 # Notification Deduplication
 config :tamandua_server,
-  notification_dedup_minutes: String.to_integer(System.get_env("NOTIFICATION_DEDUP_MINUTES") || "15")
+  notification_dedup_minutes:
+    String.to_integer(System.get_env("NOTIFICATION_DEDUP_MINUTES") || "15")
 
 # Digest Configuration
 config :tamandua_server,
@@ -499,7 +949,8 @@ config :tamandua_server,
 
 # Alert Deduplication Window
 config :tamandua_server,
-  alert_dedup_window_seconds: String.to_integer(System.get_env("ALERT_DEDUP_WINDOW_SECONDS") || "300")
+  alert_dedup_window_seconds:
+    String.to_integer(System.get_env("ALERT_DEDUP_WINDOW_SECONDS") || "300")
 
 # ===========================================================================
 # Solana Blockchain Integration (Hackathon MVP)

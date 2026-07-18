@@ -16,7 +16,6 @@ defmodule TamanduaServerWeb.API.V1.APIKeyController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Tenants
-  alias TamanduaServer.Accounts.APIKey
 
   action_fallback TamanduaServerWeb.FallbackController
 

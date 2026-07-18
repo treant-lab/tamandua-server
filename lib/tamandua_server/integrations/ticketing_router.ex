@@ -295,7 +295,7 @@ defmodule TamanduaServer.Integrations.TicketingRouter do
   end
 
   @doc false
-  def check_duplicate_servicenow(alert_id, config) do
+  def check_duplicate_servicenow(alert_id, _config) do
     query = %{
       sysparm_query: "u_tamandua_alert_id=#{alert_id}",
       limit: 1,

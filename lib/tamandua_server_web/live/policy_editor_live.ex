@@ -13,7 +13,6 @@ defmodule TamanduaServerWeb.PolicyEditorLive do
   use TamanduaServerWeb, :live_view
 
   alias TamanduaServer.Agents.{PolicyManager, PolicyDeployer, Policy}
-  alias TamanduaServer.Repo
 
   @impl true
   def mount(_params, session, socket) do

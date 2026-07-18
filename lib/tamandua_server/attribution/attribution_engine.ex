@@ -10,7 +10,6 @@ defmodule TamanduaServer.Attribution.AttributionEngine do
   require Logger
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Attribution.CampaignDetector
   alias TamanduaServer.Repo
 
   @ml_service_url Application.compile_env(:tamandua_server, :ml_service_url, "http://localhost:8000")
@@ -368,13 +367,17 @@ defmodule TamanduaServer.Attribution.AttributionEngine do
     Enum.filter(known_tools, &String.contains?(cmdline_lower, &1))
   end
 
-  defp calculate_duration_hours(alerts) do
-    case {Enum.min_by(alerts, & &1.inserted_at, DateTime), Enum.max_by(alerts, & &1.inserted_at, DateTime)} do
-      {min_alert, max_alert} ->
-        DateTime.diff(max_alert.inserted_at, min_alert.inserted_at, :second) / 3600.0
+  # The previous version wrapped min/max in a case with an unreachable
+  # `_ -> 0.0` fallback (a {min, max} tuple always matches); its evident
+  # intent was the empty-alerts case, which Enum.min_by/3 raised on before
+  # the case could match. Handle it as an explicit function clause instead.
+  defp calculate_duration_hours([]), do: 0.0
 
-      _ -> 0.0
-    end
+  defp calculate_duration_hours(alerts) do
+    min_alert = Enum.min_by(alerts, & &1.inserted_at, DateTime)
+    max_alert = Enum.max_by(alerts, & &1.inserted_at, DateTime)
+
+    DateTime.diff(max_alert.inserted_at, min_alert.inserted_at, :second) / 3600.0
   end
 
   defp call_ml_service(features, type \\ :alert) do
@@ -418,7 +421,7 @@ defmodule TamanduaServer.Attribution.AttributionEngine do
   end
 
   defp persist_attribution(alert_id, attribution) do
-    attrs = %{
+    _attrs = %{
       alert_id: alert_id,
       threat_actor: attribution.primary_actor,
       confidence: attribution.confidence,
@@ -461,7 +464,7 @@ defmodule TamanduaServer.Attribution.AttributionEngine do
     {:ok, Map.merge(attrs, %{id: UUID.uuid4()})}
   end
 
-  defp load_attribution_from_db(alert_id) do
+  defp load_attribution_from_db(_alert_id) do
     # Query from DB (placeholder)
     nil
   end

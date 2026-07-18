@@ -2,11 +2,11 @@ import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Network as NetworkIcon, Globe, ArrowUpRight, ArrowDownLeft, Filter, RefreshCw,
-  Cpu, Share2, Search, ExternalLink, Copy, ChevronDown, ChevronRight,
-  Play, Pause, Shield, AlertTriangle, Clock, Wifi, WifiOff, MoreHorizontal,
-  TrendingUp, TrendingDown, Activity, MonitorSmartphone
+  Cpu, Share2, Search, Copy, ChevronDown, ChevronRight,
+  Play, Pause, Shield, AlertTriangle,
+  TrendingUp, TrendingDown, Activity, MonitorSmartphone, Ban, Lock, CheckCircle2, XCircle
 } from 'lucide-react'
-import { cn, formatDate, safeRandomUUID } from '@/lib/utils'
+import { cn, safeRandomUUID } from '@/lib/utils'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useEventStream } from '@/hooks/useSocket'
 import { ExportDropdown } from '@/components/ExportDropdown'
@@ -14,6 +14,7 @@ import { ConnectionStatus } from '@/components/ConnectionStatus'
 import { Select, SelectItem } from '@/components/ui/baseui'
 import type { WebSocketConnectionState } from '@/types'
 import { logger } from '@/lib/logger'
+import { toast } from 'sonner'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,6 +22,8 @@ import { logger } from '@/lib/logger'
 
 type Direction = 'inbound' | 'outbound' | 'local'
 type ConnStatus = 'established' | 'closed' | 'blocked' | 'suspicious'
+type NetworkActionKind = 'block-ip' | 'block-domain' | 'isolate-agent'
+type NetworkActionStatus = 'idle' | 'running' | 'success' | 'failed'
 
 interface Connection {
   id: string
@@ -32,6 +35,7 @@ interface Connection {
   bytes: number
   bytesIn: number
   bytesOut: number
+  bytesCaptured: boolean
   agent: string
   agentId: string
   timestamp: string
@@ -40,6 +44,11 @@ interface Connection {
   direction: Direction
   status: ConnStatus
   isNew?: boolean
+  domain?: string
+  domainSource?: 'captured' | 'inferred'
+  tlsCaptured?: boolean
+  ja3?: string
+  tlsVersion?: string
 }
 
 interface NetworkStats {
@@ -69,6 +78,13 @@ interface InertiaConnection {
   bytesIn?: number
   bytesOut?: number
   bytes?: number
+  domain?: string
+  host?: string
+  hostname?: string
+  sni?: string
+  ja3?: string
+  tlsVersion?: string
+  tls_version?: string
 }
 
 interface NetworkPageProps {
@@ -90,6 +106,55 @@ function isPrivateIp(ip: string): boolean {
   return PRIVATE_IP_PREFIXES.some(prefix => ip.startsWith(prefix))
 }
 
+function isIpAddress(value: string): boolean {
+  const text = value.trim()
+  if (!text || text === 'N/A') return false
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) return true
+  return /^[0-9a-f:]+$/i.test(text) && text.includes(':')
+}
+
+function getCsrfToken(): string {
+  if (typeof document === 'undefined') return ''
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+}
+
+function responseErrorMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === 'object') {
+    const record = data as { error?: unknown; message?: unknown }
+    if (typeof record.error === 'string' && record.error) return record.error
+    if (typeof record.message === 'string' && record.message) return record.message
+  }
+  return fallback
+}
+
+function getRemoteIp(conn: Connection): string {
+  const preferred = conn.direction === 'inbound' ? conn.src : conn.dst
+  if (preferred && preferred !== 'N/A' && isIpAddress(preferred)) return preferred
+  if (conn.dst && conn.dst !== 'N/A' && isIpAddress(conn.dst)) return conn.dst
+  if (conn.src && conn.src !== 'N/A' && isIpAddress(conn.src)) return conn.src
+  return ''
+}
+
+function getDomainCandidate(conn: Connection): string {
+  const domain = String(conn.domain || '').trim()
+  if (domain) return domain
+  const dst = String(conn.dst || '').trim()
+  if (dst && dst !== 'N/A' && !isIpAddress(dst)) return dst
+  return ''
+}
+
+function getDomainVisibility(conn: Connection): string {
+  const domain = getDomainCandidate(conn)
+  if (!domain) return 'not captured'
+  if (conn.domainSource === 'inferred' || (!conn.domain && !isIpAddress(conn.dst))) return `${domain} (inferred)`
+  return domain
+}
+
+function getTlsVisibility(conn: Connection): string {
+  if (!conn.tlsCaptured) return 'unavailable'
+  return [conn.tlsVersion || 'TLS metadata captured', conn.ja3 ? `JA3 ${conn.ja3}` : 'JA3 not captured'].join(' / ')
+}
+
 function parseDirection(raw: string | undefined | null): Direction {
   const val = (raw || '').toLowerCase()
   if (val === 'inbound' || val === 'in') return 'inbound'
@@ -107,11 +172,16 @@ function parseStatus(raw: string | undefined | null): ConnStatus {
 
 function formatBytes(bytes: number | undefined | null): string {
   const n = Number(bytes)
-  if (!Number.isFinite(n) || n <= 0) return '\u2014'
+  if (!Number.isFinite(n) || n <= 0) return 'not captured'
   if (n < 1024) return `${Math.round(n)} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function formatConnectionBytes(bytes: number | undefined | null, captured: boolean): string {
+  if (!captured) return 'not captured'
+  return formatBytes(bytes)
 }
 
 function formatBytesShort(bytes: number): string {
@@ -184,6 +254,10 @@ function transformConnection(conn: InertiaConnection): Connection {
   const bytesIn = Number(conn.bytesIn) || 0
   const bytesOut = Number(conn.bytesOut) || 0
   const totalBytes = bytesIn + bytesOut || Number(conn.bytes) || 0
+  const capturedDomain = String(conn.domain || conn.host || conn.hostname || '').trim()
+  const inferredDomain = String(conn.sni || '').trim()
+  const tlsVersion = String(conn.tlsVersion || conn.tls_version || '').trim()
+  const ja3 = String(conn.ja3 || '').trim()
 
   return {
     id: conn.id,
@@ -195,6 +269,7 @@ function transformConnection(conn: InertiaConnection): Connection {
     bytes: totalBytes,
     bytesIn,
     bytesOut,
+    bytesCaptured: conn.bytesIn !== undefined || conn.bytesOut !== undefined || conn.bytes !== undefined,
     agent: conn.processName || 'Unknown',
     agentId: conn.agentId || '',
     timestamp: conn.timestamp || '',
@@ -202,6 +277,11 @@ function transformConnection(conn: InertiaConnection): Connection {
     processName: conn.processName || 'Unknown',
     direction: parseDirection(conn.direction),
     status: parseStatus(conn.status),
+    domain: capturedDomain || inferredDomain || undefined,
+    domainSource: capturedDomain ? 'captured' : inferredDomain ? 'inferred' : undefined,
+    tlsCaptured: Boolean(inferredDomain || tlsVersion || ja3),
+    ja3: ja3 || undefined,
+    tlsVersion: tlsVersion || undefined,
   }
 }
 
@@ -273,6 +353,13 @@ export default function Network({ connections: initialConnections, stats: initia
       const bytesSent = Number(p.bytes_sent) || 0
       const bytesRecv = Number(p.bytes_received) || 0
       const totalBytes = bytesSent + bytesRecv || Number(p.bytes) || 0
+      const capturedDomain = String(p.domain || p.host || p.hostname || '').trim()
+      const inferredDomain = String(p.sni || p.server_name || '').trim()
+      const tlsVersion = String(p.tls_version || p.tlsVersion || '').trim()
+      const ja3 = String(p.ja3 || '').trim()
+      const bytesCaptured = Object.prototype.hasOwnProperty.call(p, 'bytes_sent') ||
+        Object.prototype.hasOwnProperty.call(p, 'bytes_received') ||
+        Object.prototype.hasOwnProperty.call(p, 'bytes')
 
       return {
         id: event.id || safeRandomUUID(),
@@ -284,6 +371,7 @@ export default function Network({ connections: initialConnections, stats: initia
         bytes: isNaN(totalBytes) ? 0 : totalBytes,
         bytesIn: bytesRecv,
         bytesOut: bytesSent,
+        bytesCaptured,
         agent: String(p.process_name || 'Unknown'),
         agentId: event.agentId || '',
         timestamp: event.timestamp ? new Date(event.timestamp).toISOString() : new Date().toISOString(),
@@ -292,6 +380,11 @@ export default function Network({ connections: initialConnections, stats: initia
         direction: parseDirection(String(p.direction || '')),
         status: parseStatus(String(p.status || 'established')),
         isNew: true,
+        domain: capturedDomain || inferredDomain || undefined,
+        domainSource: capturedDomain ? 'captured' : inferredDomain ? 'inferred' : undefined,
+        tlsCaptured: Boolean(inferredDomain || tlsVersion || ja3),
+        ja3: ja3 || undefined,
+        tlsVersion: tlsVersion || undefined,
       }
     }).filter(c => c.src !== 'N/A' || c.dst !== 'N/A')
 
@@ -345,6 +438,13 @@ export default function Network({ connections: initialConnections, stats: initia
             const bytesSent = Number(payload.bytes_sent) || 0
             const bytesReceived = Number(payload.bytes_received) || 0
             const bytesTotal = bytesSent + bytesReceived || Number(payload.bytes) || 0
+            const capturedDomain = String(payload.domain || payload.host || payload.hostname || '').trim()
+            const inferredDomain = String(payload.sni || payload.server_name || '').trim()
+            const tlsVersion = String(payload.tls_version || payload.tlsVersion || '').trim()
+            const ja3 = String(payload.ja3 || '').trim()
+            const bytesCaptured = Object.prototype.hasOwnProperty.call(payload, 'bytes_sent') ||
+              Object.prototype.hasOwnProperty.call(payload, 'bytes_received') ||
+              Object.prototype.hasOwnProperty.call(payload, 'bytes')
 
             return {
               id: event.id || safeRandomUUID(),
@@ -356,6 +456,7 @@ export default function Network({ connections: initialConnections, stats: initia
               bytes: isNaN(bytesTotal) ? 0 : bytesTotal,
               bytesIn: bytesReceived,
               bytesOut: bytesSent,
+              bytesCaptured,
               agent: event.agent_hostname || payload.process_name || 'Unknown',
               agentId: event.agent_id || '',
               timestamp: event.timestamp || new Date().toISOString(),
@@ -363,6 +464,11 @@ export default function Network({ connections: initialConnections, stats: initia
               processName: payload.process_name || 'Unknown',
               direction: parseDirection(payload.direction),
               status: parseStatus(payload.status || payload.state),
+              domain: capturedDomain || inferredDomain || undefined,
+              domainSource: capturedDomain ? 'captured' : inferredDomain ? 'inferred' : undefined,
+              tlsCaptured: Boolean(inferredDomain || tlsVersion || ja3),
+              ja3: ja3 || undefined,
+              tlsVersion: tlsVersion || undefined,
             }
           })
           .filter((conn: Connection) => conn.src !== 'N/A' || conn.dst !== 'N/A')
@@ -866,6 +972,130 @@ function ConnectionRow({ conn, expanded, onToggle, onCopyIp, copiedIp }: {
   const proc = getProcessDisplay(conn.processName, conn.pid)
   const srcEndpoint = formatEndpoint(conn.src, conn.srcPort)
   const dstEndpoint = formatEndpoint(conn.dst, conn.dstPort)
+  const [actionStatus, setActionStatus] = useState<Partial<Record<NetworkActionKind, NetworkActionStatus>>>({})
+  const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'failed'; text: string } | null>(null)
+  const remoteIp = getRemoteIp(conn)
+  const domain = getDomainCandidate(conn)
+  const domainVisibility = getDomainVisibility(conn)
+
+  const setTransientStatus = (action: NetworkActionKind, status: NetworkActionStatus, message: string) => {
+    setActionStatus(prev => ({ ...prev, [action]: status }))
+    setActionMessage({ type: status === 'failed' ? 'failed' : 'success', text: message })
+    if (status === 'success') {
+      setTimeout(() => {
+        setActionStatus(prev => ({ ...prev, [action]: 'idle' }))
+        setActionMessage(null)
+      }, 3500)
+    }
+  }
+
+  const postAction = async (
+    action: NetworkActionKind,
+    url: string,
+    payload: Record<string, unknown>,
+    successMessage: string,
+    failurePrefix: string,
+  ) => {
+    setActionStatus(prev => ({ ...prev, [action]: 'running' }))
+    setActionMessage(null)
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-CSRF-Token': getCsrfToken(),
+        },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => null)
+
+      if (!res.ok) {
+        const message = responseErrorMessage(data, `${failurePrefix}: HTTP ${res.status}`)
+        setTransientStatus(action, 'failed', message)
+        toast.error(message)
+        return
+      }
+
+      setTransientStatus(action, 'success', successMessage)
+      toast.success(successMessage)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : failurePrefix
+      logger.error(failurePrefix, error)
+      setTransientStatus(action, 'failed', message)
+      toast.error(message)
+    }
+  }
+
+  const handleOperationalAction = (action: NetworkActionKind) => {
+    if (!conn.agentId) {
+      const message = 'Agent ID is required before queueing this response action'
+      setTransientStatus(action, 'failed', message)
+      toast.error(message)
+      return
+    }
+
+    if (action === 'block-ip') {
+      if (!remoteIp) {
+        const message = 'No blockable IP is available for this connection'
+        setTransientStatus(action, 'failed', message)
+        toast.error(message)
+        return
+      }
+      const confirmed = window.confirm(`Queue an IP block request for ${remoteIp} on agent ${conn.agentId}? Enforcement status is reported by the response action, not by this row.`)
+      if (!confirmed) return
+      postAction(
+        action,
+        '/api/v1/response/block-ip',
+        {
+          agent_id: conn.agentId,
+          ip: remoteIp,
+          direction: 'both',
+          reason: `Blocked from Network Monitor connection ${conn.id}`,
+        },
+        `Block IP request queued for ${remoteIp}`,
+        `Failed to queue IP block for ${remoteIp}`,
+      )
+      return
+    }
+
+    if (action === 'block-domain') {
+      if (!domain) {
+        const message = 'No domain, host, or SNI was captured for this connection'
+        setTransientStatus(action, 'failed', message)
+        toast.error(message)
+        return
+      }
+      const confirmed = window.confirm(`Queue a domain block request for ${domain} on agent ${conn.agentId}? Enforcement status is reported by the response action, not by this row.`)
+      if (!confirmed) return
+      postAction(
+        action,
+        '/api/v1/response/block-domain',
+        {
+          agent_id: conn.agentId,
+          domain,
+          reason: `Blocked from Network Monitor connection ${conn.id}`,
+        },
+        `Block domain request queued for ${domain}`,
+        `Failed to queue domain block for ${domain}`,
+      )
+      return
+    }
+
+    const confirmed = window.confirm(`Queue network isolation for agent ${conn.agentId}? The agent should only retain management connectivity if the endpoint applies the command.`)
+    if (!confirmed) return
+    postAction(
+      action,
+      `/api/v1/agents/${conn.agentId}/isolate`,
+      {
+        agent_id: conn.agentId,
+      },
+      `Isolation request queued for agent ${conn.agentId}`,
+      `Failed to queue isolation for agent ${conn.agentId}`,
+    )
+  }
 
   const rowStyle: React.CSSProperties = {
     borderBottom: '1px solid var(--hairline)',
@@ -932,6 +1162,9 @@ function ConnectionRow({ conn, expanded, onToggle, onCopyIp, copiedIp }: {
             onCopy={onCopyIp}
             isCopied={copiedIp === conn.dst}
           />
+          <div className="mt-1 max-w-[180px] truncate text-[10px]" style={{ color: 'var(--subtle)' }} title={domainVisibility}>
+            domain {domainVisibility}
+          </div>
         </td>
 
         {/* Protocol */}
@@ -965,7 +1198,7 @@ function ConnectionRow({ conn, expanded, onToggle, onCopyIp, copiedIp }: {
         {/* Bytes */}
         <td className="px-3 py-2.5 text-right">
           <span className="text-xs font-mono" style={{ color: 'var(--muted)' }}>
-            {formatBytes(conn.bytes)}
+            {formatConnectionBytes(conn.bytes, conn.bytesCaptured)}
           </span>
         </td>
 
@@ -977,6 +1210,33 @@ function ConnectionRow({ conn, expanded, onToggle, onCopyIp, copiedIp }: {
         {/* Actions */}
         <td className="px-3 py-2.5">
           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+            <ActionButton
+              icon={Ban}
+              title={remoteIp ? `Block IP: ${remoteIp}` : 'No blockable IP for this connection'}
+              color="crit"
+              disabled={!remoteIp || actionStatus['block-ip'] === 'running'}
+              loading={actionStatus['block-ip'] === 'running'}
+              state={actionStatus['block-ip']}
+              onClick={() => handleOperationalAction('block-ip')}
+            />
+            <ActionButton
+              icon={Globe}
+              title={domain ? `Block Domain: ${domain}` : 'No domain/SNI captured for this connection'}
+              color="crit"
+              disabled={!domain || actionStatus['block-domain'] === 'running'}
+              loading={actionStatus['block-domain'] === 'running'}
+              state={actionStatus['block-domain']}
+              onClick={() => handleOperationalAction('block-domain')}
+            />
+            <ActionButton
+              icon={Lock}
+              title={conn.agentId ? `Isolate Agent: ${conn.agentId}` : 'Agent ID is required to isolate'}
+              color="crit"
+              disabled={!conn.agentId || actionStatus['isolate-agent'] === 'running'}
+              loading={actionStatus['isolate-agent'] === 'running'}
+              state={actionStatus['isolate-agent']}
+              onClick={() => handleOperationalAction('isolate-agent')}
+            />
             {conn.dst && conn.dst !== 'N/A' && (
               <ActionButton
                 icon={Search}
@@ -1002,6 +1262,11 @@ function ConnectionRow({ conn, expanded, onToggle, onCopyIp, copiedIp }: {
               />
             )}
           </div>
+          {actionMessage && (
+            <div className="mt-1 text-right text-[10px] max-w-[220px] truncate" style={{ color: actionMessage.type === 'failed' ? 'var(--crit)' : 'var(--emerald-400)' }} title={actionMessage.text}>
+              {actionMessage.text}
+            </div>
+          )}
         </td>
       </tr>
 
@@ -1029,9 +1294,11 @@ function ExpandedDetail({ conn }: { conn: Connection }) {
       <DetailItem label="Process" value={`${proc.label} (${proc.pid || 'N/A'})`} />
       <DetailItem label="Direction" value={conn.direction} />
       <DetailItem label="Status" value={conn.status} />
-      <DetailItem label="Total Bytes" value={formatBytes(conn.bytes)} mono />
-      <DetailItem label="Bytes In" value={formatBytes(conn.bytesIn)} mono />
-      <DetailItem label="Bytes Out" value={formatBytes(conn.bytesOut)} mono />
+      <DetailItem label="Domain / SNI" value={getDomainVisibility(conn)} mono />
+      <DetailItem label="TLS / JA3" value={getTlsVisibility(conn)} mono />
+      <DetailItem label="Total Bytes" value={formatConnectionBytes(conn.bytes, conn.bytesCaptured)} mono />
+      <DetailItem label="Bytes In" value={formatConnectionBytes(conn.bytesIn, conn.bytesCaptured)} mono />
+      <DetailItem label="Bytes Out" value={formatConnectionBytes(conn.bytesOut, conn.bytesCaptured)} mono />
       <DetailItem label="Agent ID" value={conn.agentId || 'N/A'} mono />
       <DetailItem
         label="Source Type"
@@ -1170,13 +1437,19 @@ function StatusBadge({ status }: { status: ConnStatus }) {
   )
 }
 
-function ActionButton({ icon: Icon, title, color, onClick }: {
+function ActionButton({ icon: Icon, title, color, onClick, disabled, loading, state }: {
   icon: React.ElementType
   title: string
-  color: 'high' | 'med' | 'emerald'
+  color: 'high' | 'med' | 'emerald' | 'crit'
   onClick: () => void
+  disabled?: boolean
+  loading?: boolean
+  state?: NetworkActionStatus
 }) {
-  const getStyle = (c: string): React.CSSProperties => {
+  const getStyle = (c: string, disabled?: boolean): React.CSSProperties => {
+    if (disabled) {
+      return { backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--subtle)', opacity: 0.55 }
+    }
     switch (c) {
       case 'high':
         return { backgroundColor: 'var(--high-bg)', border: '1px solid var(--high)', color: 'var(--high)' }
@@ -1184,19 +1457,24 @@ function ActionButton({ icon: Icon, title, color, onClick }: {
         return { backgroundColor: 'var(--med-bg)', border: '1px solid var(--med)', color: 'var(--med)' }
       case 'emerald':
         return { backgroundColor: 'var(--emerald-glow)', border: '1px solid var(--emerald-600)', color: 'var(--emerald-400)' }
+      case 'crit':
+        return { backgroundColor: 'var(--crit-bg)', border: '1px solid var(--crit)', color: 'var(--crit)' }
       default:
         return { backgroundColor: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--muted)' }
     }
   }
 
+  const DisplayIcon = loading ? RefreshCw : state === 'success' ? CheckCircle2 : state === 'failed' ? XCircle : Icon
+
   return (
     <button
       onClick={onClick}
-      className="p-1.5 rounded transition-colors hover:brightness-110"
-      style={getStyle(color)}
+      disabled={disabled}
+      className="p-1.5 rounded transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:hover:brightness-100"
+      style={getStyle(color, disabled)}
       title={title}
     >
-      <Icon className="h-3.5 w-3.5" />
+      <DisplayIcon className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
     </button>
   )
 }

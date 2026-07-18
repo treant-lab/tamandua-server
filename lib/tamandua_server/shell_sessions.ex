@@ -12,7 +12,7 @@ defmodule TamanduaServer.ShellSessions do
   import Ecto.Query
   alias TamanduaServer.LiveResponse.SessionRecording
   alias TamanduaServer.Repo
-  alias TamanduaServer.ShellSessions.{Session, Recording}
+  alias TamanduaServer.ShellSessions.{Session}
 
   require Logger
 
@@ -74,6 +74,7 @@ defmodule TamanduaServer.ShellSessions do
 
   Options:
   - :agent_id - Filter by agent
+  - :agent_ids - Filter by a list of agents
   - :user_id - Filter by user
   - :status - Filter by status (:active, :ended)
   - :from - Start date
@@ -86,6 +87,7 @@ defmodule TamanduaServer.ShellSessions do
 
     query
     |> filter_by_agent(opts[:agent_id])
+    |> filter_by_agents(opts[:agent_ids])
     |> filter_by_user(opts[:user_id])
     |> filter_by_status(opts[:status])
     |> filter_by_date_range(opts[:from], opts[:to])
@@ -95,8 +97,16 @@ defmodule TamanduaServer.ShellSessions do
   end
 
   defp filter_by_agent(query, nil), do: query
+
   defp filter_by_agent(query, agent_id) do
     where(query, [s], s.agent_id == ^agent_id)
+  end
+
+  defp filter_by_agents(query, nil), do: query
+  defp filter_by_agents(query, []), do: where(query, false)
+
+  defp filter_by_agents(query, agent_ids) when is_list(agent_ids) do
+    where(query, [s], s.agent_id in ^agent_ids)
   end
 
   defp filter_by_user(query, nil), do: query

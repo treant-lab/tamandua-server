@@ -82,7 +82,7 @@ defmodule TamanduaServer.Alerts.Suppression do
   def check_suppression_v2(alert_data, context \\ %{}) do
     case TamanduaServer.Alerts.SuppressionEngine.evaluate_rules(alert_data, context) do
       :allow -> :allow
-      {:suppress, rule_id, reason} -> {:suppress, reason}
+      {:suppress, _rule_id, reason} -> {:suppress, reason}
       {:reduce_severity, new_severity, _rule_id, reason} -> {:reduce_severity, new_severity, reason}
       {:tag, _tags, _rule_id, _reason} -> :allow  # Tags don't block alert creation
     end
@@ -365,25 +365,141 @@ defmodule TamanduaServer.Alerts.Suppression do
       if rule.max_matches && rule.match_count >= rule.max_matches do
         false
       else
-        checks = [
-          {rule.title_pattern, get_alert_field(alert_data, :title), :contains},
-          {rule.severity, get_alert_field(alert_data, :severity), :exact},
-          {rule.agent_id, get_alert_field(alert_data, :agent_id), :exact},
-          {rule.rule_name_pattern, get_detection_rule_name(alert_data), :contains},
-          {rule.process_name_pattern, get_evidence_process_name(alert_data), :contains},
-          {rule.file_path_pattern, get_evidence_file_path(alert_data), :contains}
-        ]
-
-        Enum.all?(checks, fn
-          {nil, _actual, _mode} -> true
-          {"", _actual, _mode} -> true
-          {_pattern, nil, _mode} -> false
-          {pattern, actual, :exact} -> to_string(pattern) == to_string(actual)
-          {pattern, actual, :contains} ->
-            String.contains?(String.downcase(to_string(actual)), String.downcase(to_string(pattern)))
-        end)
+        if is_exempted?(rule, alert_data) do
+          false
+        else
+          matches_named_criteria?(rule, alert_data) and
+            matches_collection_criteria?(rule, alert_data) and
+            matches_json_criteria?(rule.criteria || %{}, alert_data)
+        end
       end
     end
+  end
+
+  defp is_exempted?(rule, alert_data) do
+    agent_id = get_alert_field(alert_data, :agent_id)
+    user = get_event_user(alert_data)
+
+    agent_exempted = present?(agent_id) and to_string(agent_id) in Enum.map(rule.exempted_agent_ids || [], &to_string/1)
+    user_exempted = present?(user) and user_member?(user, rule.exempted_users || [])
+
+    agent_exempted or user_exempted
+  end
+
+  defp matches_named_criteria?(rule, alert_data) do
+    [
+      {rule.title_pattern, get_alert_field(alert_data, :title), :contains},
+      {rule.severity, get_alert_field(alert_data, :severity), :exact},
+      {rule.agent_id, get_alert_field(alert_data, :agent_id), :exact},
+      {rule.rule_name_pattern, get_detection_rule_name(alert_data), :contains},
+      {rule.process_name_pattern, get_evidence_process_name(alert_data), :contains},
+      {rule.parent_process_pattern, get_evidence_parent_process_name(alert_data), :contains},
+      {rule.file_path_pattern, get_evidence_file_path(alert_data), :contains}
+    ]
+    |> Enum.all?(&match_value?/1)
+  end
+
+  defp matches_collection_criteria?(rule, alert_data) do
+    mitre_match =
+      empty_list?(rule.mitre_techniques) or
+        has_overlap?(rule.mitre_techniques, get_list_field(alert_data, :mitre_techniques))
+
+    tags_match =
+      empty_list?(rule.tags) or
+        has_overlap?(rule.tags, get_list_field(alert_data, :tags))
+
+    mitre_match and tags_match
+  end
+
+  defp matches_json_criteria?(criteria, _alert_data) when map_size(criteria) == 0, do: true
+
+  defp matches_json_criteria?(criteria, alert_data) when is_map(criteria) do
+    criteria
+    |> Enum.reject(fn {_key, value} -> blank?(value) end)
+    |> Enum.all?(fn {key, expected} ->
+      case normalize_criteria_key(key) do
+        "severity" -> match_expected?(expected, get_alert_field(alert_data, :severity), :exact)
+        "rule_name" -> match_expected?(expected, get_detection_rule_name(alert_data), :contains)
+        "rule_name_pattern" -> match_expected?(expected, get_detection_rule_name(alert_data), :contains)
+        "process_name" -> match_expected?(expected, get_evidence_process_name(alert_data), :contains)
+        "process_name_pattern" -> match_expected?(expected, get_evidence_process_name(alert_data), :contains)
+        "parent_process" -> match_expected?(expected, get_evidence_parent_process_name(alert_data), :contains)
+        "parent_process_pattern" -> match_expected?(expected, get_evidence_parent_process_name(alert_data), :contains)
+        "file_path" -> match_expected?(expected, get_evidence_file_path(alert_data), :contains)
+        "file_path_pattern" -> match_expected?(expected, get_evidence_file_path(alert_data), :contains)
+        "path" -> match_expected?(expected, get_evidence_file_path(alert_data), :contains)
+        "username" -> match_expected?(expected, get_event_user(alert_data), :contains)
+        "user" -> match_expected?(expected, get_event_user(alert_data), :contains)
+        "user_name" -> match_expected?(expected, get_event_user(alert_data), :contains)
+        "event_user" -> match_expected?(expected, get_event_user(alert_data), :contains)
+        "mitre_techniques" -> has_overlap?(List.wrap(expected), get_list_field(alert_data, :mitre_techniques))
+        "tags" -> has_overlap?(List.wrap(expected), get_list_field(alert_data, :tags))
+        _ -> true
+      end
+    end)
+  end
+
+  defp matches_json_criteria?(_criteria, _alert_data), do: true
+
+  defp match_value?({nil, _actual, _mode}), do: true
+  defp match_value?({"", _actual, _mode}), do: true
+  defp match_value?({_pattern, nil, _mode}), do: false
+  defp match_value?({pattern, actual, :exact}), do: to_string(pattern) == to_string(actual)
+  defp match_value?({pattern, actual, :contains}), do: pattern_matches?(pattern, actual)
+
+  defp match_expected?(expected, actual, mode) when is_list(expected) do
+    Enum.any?(expected, &match_expected?(&1, actual, mode))
+  end
+
+  defp match_expected?(expected, actual, mode), do: match_value?({expected, actual, mode})
+
+  defp pattern_matches?(pattern, actual) do
+    pattern_lower = String.downcase(to_string(pattern))
+    actual_lower = String.downcase(to_string(actual))
+
+    if String.contains?(pattern_lower, "*") do
+      regex_str =
+        pattern_lower
+        |> Regex.escape()
+        |> String.replace("\\*", ".*")
+
+      case Regex.compile("^#{regex_str}$") do
+        {:ok, regex} -> Regex.match?(regex, actual_lower)
+        _ -> String.contains?(actual_lower, pattern_lower)
+      end
+    else
+      String.contains?(actual_lower, pattern_lower)
+    end
+  end
+
+  defp has_overlap?(expected, actual) do
+    expected_values = expected |> List.wrap() |> Enum.map(&String.downcase(to_string(&1)))
+    actual_values = actual |> List.wrap() |> Enum.map(&String.downcase(to_string(&1)))
+
+    Enum.any?(expected_values, &(&1 in actual_values))
+  end
+
+  defp user_member?(user, users) do
+    normalized_user = String.downcase(to_string(user))
+
+    Enum.any?(users, fn candidate ->
+      String.downcase(to_string(candidate)) == normalized_user
+    end)
+  end
+
+  defp present?(value), do: not blank?(value)
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?([]), do: true
+  defp blank?(%{}), do: true
+  defp blank?(_), do: false
+
+  defp empty_list?(value), do: value in [nil, []]
+
+  defp normalize_criteria_key(key) do
+    key
+    |> to_string()
+    |> String.downcase()
   end
 
   # Check contextual auto-suppression (same type + agent + process = suppress after N)
@@ -444,10 +560,44 @@ defmodule TamanduaServer.Alerts.Suppression do
     process[:name] || process["name"]
   end
 
+  defp get_evidence_parent_process_name(alert_data) do
+    evidence = Map.get(alert_data, :evidence) || Map.get(alert_data, "evidence") || %{}
+    process = evidence[:process] || evidence["process"] || %{}
+    process[:parent_name] || process["parent_name"] || process[:parent_image] || process["parent_image"]
+  end
+
   defp get_evidence_file_path(alert_data) do
     evidence = Map.get(alert_data, :evidence) || Map.get(alert_data, "evidence") || %{}
     process = evidence[:process] || evidence["process"] || %{}
-    process[:path] || process["path"]
+    file = evidence[:file] || evidence["file"] || %{}
+
+    process[:path] || process["path"] || process[:image] || process["image"] ||
+      file[:path] || file["path"]
+  end
+
+  defp get_event_user(alert_data) do
+    evidence = Map.get(alert_data, :evidence) || Map.get(alert_data, "evidence") || %{}
+    process = evidence[:process] || evidence["process"] || %{}
+    raw_event = Map.get(alert_data, :raw_event) || Map.get(alert_data, "raw_event") || %{}
+    identity = raw_event[:identity] || raw_event["identity"] || %{}
+
+    get_alert_field(alert_data, :username) ||
+      get_alert_field(alert_data, :user) ||
+      get_alert_field(alert_data, :user_email) ||
+      process[:user] || process["user"] ||
+      raw_event[:username] || raw_event["username"] ||
+      raw_event[:user] || raw_event["user"] ||
+      raw_event["User"] || raw_event["UserName"] ||
+      raw_event["SubjectUserName"] || raw_event["TargetUserName"] ||
+      identity[:user] || identity["user"] ||
+      identity[:username] || identity["username"]
+  end
+
+  defp get_list_field(data, key) do
+    data
+    |> get_alert_field(key)
+    |> List.wrap()
+    |> Enum.reject(&blank?/1)
   end
 
   # ---------------------------------------------------------------------------

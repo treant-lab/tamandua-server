@@ -68,6 +68,43 @@ defmodule TamanduaServer.Policies.ModelPolicy do
   end
 
   @doc """
+  Returns a normalized Model Guard status summary for API and UI consumers.
+  """
+  @spec model_guard_summary(map() | nil) :: map()
+  def model_guard_summary(nil), do: unsupported_model_guard_summary()
+
+  def model_guard_summary(%{scan_result: scan_result, status: status} = provenance) do
+    scan_result = scan_result || %{}
+    model_guard = scan_result[:model_guard] || scan_result["model_guard"] || %{}
+    enforcement = model_guard[:enforcement] || model_guard["enforcement"] || "unsupported"
+    normalized_enforcement = normalize_enforcement(enforcement)
+    guard_status = model_guard[:status] || model_guard["status"] || status || "unsupported"
+    decision = model_guard[:decision] || model_guard["decision"] || decision_from_provenance(provenance)
+    action = model_guard[:action] || model_guard["action"] || action_from_guard(decision, normalized_enforcement)
+    evidence = model_guard[:evidence] || model_guard["evidence"] || %{}
+
+    %{
+      status: normalize_guard_status(guard_status, enforcement),
+      decision: decision,
+      enforcement: normalized_enforcement,
+      action: action,
+      evidence: evidence,
+      thresholds: model_guard[:thresholds] || model_guard["thresholds"] || %{},
+      fp_rationale: model_guard[:fp_rationale] || model_guard["fp_rationale"],
+      package_findings: evidence_value(evidence, :package_findings, []),
+      package_findings_count: evidence_value(evidence, :package_findings_count, 0),
+      package_scanner: evidence_value(evidence, :package_scanner, "not_collected"),
+      external_model_scores: evidence_value(evidence, :external_model_scores, []),
+      external_model_scores_count: evidence_value(evidence, :external_model_scores_count, 0),
+      model_consensus: evidence_value(evidence, :model_consensus, %{}),
+      model_consensus_state: evidence_value(evidence, :model_consensus_state, "not_collected"),
+      enforcement_note: evidence_value(evidence, :enforcement_note, nil)
+    }
+  end
+
+  def model_guard_summary(_), do: unsupported_model_guard_summary()
+
+  @doc """
   Determines if a model can be loaded based on its provenance and policy.
 
   ## Parameters
@@ -97,11 +134,19 @@ defmodule TamanduaServer.Policies.ModelPolicy do
         nil ->
           {:ok, false, "unscanned"}
 
-        %{status: "malicious"} ->
-          {:ok, false, "malicious_model"}
+        %{status: "malicious"} = provenance ->
+          if decision_only?(provenance) do
+            {:ok, true}
+          else
+            {:ok, false, "malicious_model"}
+          end
 
-        %{status: "suspicious", risk_score: score} when score >= @block_threshold ->
-          {:ok, false, "high_risk_score"}
+        %{status: "suspicious", risk_score: score} = provenance when score >= @block_threshold ->
+          if decision_only?(provenance) do
+            {:ok, true}
+          else
+            {:ok, false, "high_risk_score"}
+          end
 
         %{status: "suspicious", risk_score: _score} ->
           # Suspicious but below block threshold
@@ -168,7 +213,7 @@ defmodule TamanduaServer.Policies.ModelPolicy do
   @spec list_blocked() :: [map()]
   def list_blocked do
     query =
-      from p in ModelProvenance,
+      from(p in ModelProvenance,
         where: p.risk_score >= ^@block_threshold or p.status == "malicious",
         order_by: [desc: p.risk_score],
         select: %{
@@ -176,10 +221,15 @@ defmodule TamanduaServer.Policies.ModelPolicy do
           registry: p.registry,
           risk_score: p.risk_score,
           status: p.status,
-          scanned_at: p.scanned_at
+          scanned_at: p.scanned_at,
+          scan_result: p.scan_result
         }
+      )
 
-    Repo.all(query)
+    query
+    |> Repo.all()
+    |> Enum.reject(&decision_only?/1)
+    |> Enum.map(&Map.delete(&1, :scan_result))
   end
 
   @doc """
@@ -357,9 +407,10 @@ defmodule TamanduaServer.Policies.ModelPolicy do
   def handle_scan_complete(model_id, scan_result) do
     status = scan_result["status"] || scan_result[:status]
     risk_score = scan_result["risk_score"] || scan_result[:risk_score] || 0.0
+    decision_only? = decision_only?(%{scan_result: scan_result})
 
     cond do
-      status == "malicious" ->
+      status == "malicious" and not decision_only? ->
         detection_info = %{
           detection_source: "model_security_scan",
           reason: "malicious_model",
@@ -372,7 +423,7 @@ defmodule TamanduaServer.Policies.ModelPolicy do
           {:error, _} -> :ok
         end
 
-      risk_score >= @block_threshold ->
+      risk_score >= @block_threshold and not decision_only? ->
         detection_info = %{
           detection_source: "model_security_scan",
           reason: "high_risk_score",
@@ -393,13 +444,89 @@ defmodule TamanduaServer.Policies.ModelPolicy do
 
   defp get_latest_provenance(model_id) do
     query =
-      from p in ModelProvenance,
+      from(p in ModelProvenance,
         where: p.model_id == ^model_id,
         order_by: [desc: p.downloaded_at],
         limit: 1
+      )
 
     Repo.one(query)
   end
+
+  defp unsupported_model_guard_summary do
+    %{
+      status: "unsupported",
+      decision: "unknown",
+      enforcement: "unsupported",
+      action: "none",
+      evidence: %{},
+      thresholds: %{},
+      fp_rationale: "No Model Guard scan evidence is available for this model.",
+      package_findings: [],
+      package_findings_count: 0,
+      package_scanner: "not_collected",
+      external_model_scores: [],
+      external_model_scores_count: 0,
+      model_consensus: %{},
+      model_consensus_state: "not_collected",
+      enforcement_note: "Model Guard evidence has not been collected."
+    }
+  end
+
+  defp evidence_value(evidence, key, default) when is_map(evidence) do
+    Map.get(evidence, key) || Map.get(evidence, to_string(key)) || default
+  end
+
+  defp evidence_value(_, _key, default), do: default
+
+  defp normalize_guard_status(status, _enforcement) when status in [:failed, "failed", :error, "error"],
+    do: "failed"
+
+  defp normalize_guard_status(status, _enforcement) when status in [:degraded, "degraded"],
+    do: "degraded"
+
+  defp normalize_guard_status(status, _enforcement)
+       when status in [:unsupported, "unsupported", :not_supported, "not_supported"],
+       do: "unsupported"
+
+  defp normalize_guard_status(_status, enforcement) when enforcement in [:decision_only, "decision_only"],
+    do: "decision_only"
+
+  defp normalize_guard_status(_status, enforcement) when enforcement in [:enforced, "enforced"],
+    do: "enforced"
+
+  defp normalize_guard_status(status, _enforcement) when status in ["pending", "scanning"],
+    do: to_string(status)
+
+  defp normalize_guard_status(_, _), do: "unsupported"
+
+  defp normalize_enforcement(enforcement) when enforcement in [:decision_only, "decision_only"],
+    do: "decision_only"
+
+  defp normalize_enforcement(enforcement) when enforcement in [:enforced, "enforced"], do: "enforced"
+  defp normalize_enforcement(enforcement) when enforcement in [:failed, "failed"], do: "failed"
+  defp normalize_enforcement(enforcement) when enforcement in [:degraded, "degraded"], do: "degraded"
+  defp normalize_enforcement(_), do: "unsupported"
+
+  defp decision_from_provenance(%{status: "clean"}), do: "allow"
+  defp decision_from_provenance(%{status: "suspicious"}), do: "review"
+  defp decision_from_provenance(%{status: "malicious"}), do: "block"
+  defp decision_from_provenance(_), do: "unknown"
+
+  defp action_from_guard("block", "enforced"), do: "block_load"
+  defp action_from_guard("block", "decision_only"), do: "report_only"
+  defp action_from_guard("review", _), do: "allow_with_review"
+  defp action_from_guard("allow", _), do: "allow"
+  defp action_from_guard(_, _), do: "none"
+
+  defp decision_only?(%{scan_result: scan_result}) when is_map(scan_result) do
+    model_guard = scan_result[:model_guard] || scan_result["model_guard"] || %{}
+    enforcement = model_guard[:enforcement] || model_guard["enforcement"]
+
+    enforcement in [:decision_only, "decision_only"]
+  end
+
+  defp decision_only?(_), do: false
 
   defp quarantine_on_known_agents(model_id, detection_info) do
     # In a full implementation, this would:
@@ -408,7 +535,9 @@ defmodule TamanduaServer.Policies.ModelPolicy do
     # 3. Trigger quarantine on each agent
     #
     # For now, we log and return success (agents will need explicit paths)
-    Logger.info("[ModelPolicy] Model #{model_id} blocked - agents with this model should be quarantined")
+    Logger.info(
+      "[ModelPolicy] Model #{model_id} blocked - agents with this model should be quarantined"
+    )
 
     # Try to find agents via AI inventory if available
     try do

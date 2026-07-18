@@ -26,7 +26,6 @@ defmodule TamanduaServer.Detection.ModelFileCorrelator do
     ".keras" => {:keras, :medium}
   }
 
-  @ttl_seconds 3600  # 1 hour
 
   # Client API
 

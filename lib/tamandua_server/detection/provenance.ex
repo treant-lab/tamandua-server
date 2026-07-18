@@ -48,7 +48,7 @@ defmodule TamanduaServer.Detection.Provenance do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.{Config, EventTypes}
+  alias TamanduaServer.Detection.{EventTypes}
 
   # ---------------------------------------------------------------------------
   # ETS table names

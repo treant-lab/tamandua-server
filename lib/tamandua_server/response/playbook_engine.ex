@@ -34,8 +34,8 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Repo, Agents}
-  alias TamanduaServer.Response.{Executor, ConditionEvaluator}
+  alias TamanduaServer.{Repo}
+  alias TamanduaServer.Response.{ConditionEvaluator}
   alias TamanduaServer.Response.Playbook.{Execution, StepExecution}
 
   import Ecto.Query
@@ -57,6 +57,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   Execute a playbook with the given context.
 
   ## Options
+  - `:scope` - Tenant scope (`{:organization, organization_id}`) for non-system callers
   - `:skip_approval` - Skip approval even if required (default: false)
   - `:dry_run` - Simulate execution without actually running steps (default: false)
   - `:timeout` - Overall execution timeout in milliseconds (default: 600000)
@@ -75,34 +76,34 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   @doc """
   Get the current status of a playbook execution.
   """
-  @spec get_execution_status(String.t()) ::
+  @spec get_execution_status(String.t(), term()) ::
           {:ok, map()} | {:error, :not_found}
-  def get_execution_status(execution_id) do
-    GenServer.call(__MODULE__, {:get_execution_status, execution_id})
+  def get_execution_status(execution_id, scope \\ :system) do
+    GenServer.call(__MODULE__, {:get_execution_status, execution_id, scope})
   end
 
   @doc """
   Cancel a running execution.
   """
-  @spec cancel_execution(String.t(), String.t()) :: :ok | {:error, term()}
-  def cancel_execution(execution_id, reason \\ "Cancelled by user") do
-    GenServer.call(__MODULE__, {:cancel_execution, execution_id, reason})
+  @spec cancel_execution(String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def cancel_execution(execution_id, reason \\ "Cancelled by user", scope \\ :system) do
+    GenServer.call(__MODULE__, {:cancel_execution, execution_id, reason, scope})
   end
 
   @doc """
   Retry a failed step within an execution.
   """
-  @spec retry_step(String.t(), integer()) :: {:ok, map()} | {:error, term()}
-  def retry_step(execution_id, step_index) do
-    GenServer.call(__MODULE__, {:retry_step, execution_id, step_index})
+  @spec retry_step(String.t(), integer(), term()) :: {:ok, map()} | {:error, term()}
+  def retry_step(execution_id, step_index, scope \\ :system) do
+    GenServer.call(__MODULE__, {:retry_step, execution_id, step_index, scope})
   end
 
   @doc """
   List all active executions.
   """
-  @spec list_active_executions() :: {:ok, [map()]}
-  def list_active_executions do
-    GenServer.call(__MODULE__, :list_active_executions)
+  @spec list_active_executions(term()) :: {:ok, [map()]} | {:error, term()}
+  def list_active_executions(scope \\ :system) do
+    GenServer.call(__MODULE__, {:list_active_executions, scope})
   end
 
   # ============================================================================
@@ -147,14 +148,18 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   end
 
   @impl true
-  def handle_call({:get_execution_status, execution_id}, _from, state) do
+  def handle_call({:get_execution_status, execution_id, scope}, _from, state) do
     # Try in-memory first, then database
     status =
-      case Map.get(state.active_executions, execution_id) do
+      case scoped_active_execution(state, execution_id, scope) do
+        {:error, reason} ->
+          {:error, reason}
+
         nil ->
           # Load from database
-          case Repo.get(Execution, execution_id) do
+          case scoped_execution(execution_id, scope) do
             nil -> {:error, :not_found}
+            {:error, reason} -> {:error, reason}
             execution -> build_execution_status(execution)
           end
 
@@ -166,14 +171,20 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   end
 
   @impl true
-  def handle_call({:cancel_execution, execution_id, reason}, _from, state) do
-    case Map.get(state.active_executions, execution_id) do
+  def handle_call({:cancel_execution, execution_id, reason, scope}, _from, state) do
+    case scoped_active_execution(state, execution_id, scope) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+
       nil ->
         # Try to cancel from database if it's pending approval
-        case Repo.get(Execution, execution_id) do
+        case scoped_execution(execution_id, scope) do
           %Execution{status: "pending_approval"} = exec ->
             cancel_execution_record(exec, reason)
             {:reply, :ok, state}
+
+          {:error, scope_reason} ->
+            {:reply, {:error, scope_reason}, state}
 
           _ ->
             {:reply, {:error, :not_found}, state}
@@ -185,7 +196,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
         if task, do: Task.shutdown(task, :brutal_kill)
 
         # Mark as cancelled in database
-        case Repo.get(Execution, execution_id) do
+        case scoped_execution(execution_id, scope) do
           %Execution{} = exec ->
             cancel_execution_record(exec, reason)
 
@@ -204,9 +215,9 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   end
 
   @impl true
-  def handle_call({:retry_step, execution_id, step_index}, _from, state) do
+  def handle_call({:retry_step, execution_id, step_index, scope}, _from, state) do
     # Load execution and step from database
-    with %Execution{} = execution <- Repo.get(Execution, execution_id),
+    with %Execution{} = execution <- scoped_execution(execution_id, scope),
          %StepExecution{} = step <- get_step_execution(execution_id, step_index),
          true <- step.status in ["failed", "completed"] do
       # Retry the step
@@ -214,18 +225,29 @@ defmodule TamanduaServer.Response.PlaybookEngine do
       {:reply, result, state}
     else
       nil -> {:reply, {:error, :not_found}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
       false -> {:reply, {:error, :step_not_failed}, state}
     end
   end
 
   @impl true
-  def handle_call(:list_active_executions, _from, state) do
-    active =
-      state.active_executions
-      |> Map.values()
-      |> Enum.map(&build_execution_status/1)
+  def handle_call({:list_active_executions, scope}, _from, state) do
+    case validate_scope(scope) do
+      {:ok, normalized_scope} ->
+        active =
+          state.active_executions
+          |> Map.values()
+          |> Enum.filter(&scope_allows?(normalized_scope, &1))
+          |> Enum.map(fn execution ->
+            {:ok, status} = build_execution_status(execution)
+            status
+          end)
 
-    {:reply, {:ok, active}, state}
+        {:reply, {:ok, active}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -268,7 +290,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     # Resume any in-progress executions
     in_progress =
       from(e in Execution,
-        where: e.status in ["running", "pending"],
+        where: e.status in ["running", "pending"] and not is_nil(e.organization_id),
         preload: []
       )
       |> Repo.all()
@@ -294,7 +316,8 @@ defmodule TamanduaServer.Response.PlaybookEngine do
 
   defp start_playbook_execution(playbook_id, context, opts) do
     # Load playbook
-    playbook = TamanduaServer.Response.Playbook.get_playbook(playbook_id)
+    scope = Keyword.get(opts, :scope, :system)
+    playbook = TamanduaServer.Response.Playbook.get_playbook(playbook_id, scope)
 
     case playbook do
       {:ok, pb} ->
@@ -313,7 +336,8 @@ defmodule TamanduaServer.Response.PlaybookEngine do
           status: status,
           execution_context: context,
           started_at: DateTime.utc_now(),
-          dry_run: dry_run
+          dry_run: dry_run,
+          organization_id: pb.organization_id
         }
 
         # Create execution record
@@ -347,7 +371,10 @@ defmodule TamanduaServer.Response.PlaybookEngine do
 
       _ ->
         # Load playbook
-        case TamanduaServer.Response.Playbook.get_playbook(execution.playbook_id) do
+        case TamanduaServer.Response.Playbook.get_playbook(
+               execution.playbook_id,
+               execution_scope(execution)
+             ) do
           {:ok, playbook} ->
             # Execute all steps
             result = execute_steps(execution, playbook.steps, 0, execution.execution_context)
@@ -367,7 +394,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     end
   end
 
-  defp execute_steps(execution, steps, current_index, context) when current_index >= length(steps) do
+  defp execute_steps(_execution, steps, current_index, context) when current_index >= length(steps) do
     # All steps completed
     {:ok, context}
   end
@@ -446,7 +473,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     end
   end
 
-  defp execute_single_step(execution, step, context, step_exec) do
+  defp execute_single_step(execution, step, context, _step_exec) do
     action = step["action"]
     params = step["params"] || %{}
     timeout = (step["timeout_seconds"] || div(@default_step_timeout, 1000)) * 1000
@@ -516,7 +543,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
         results
         |> Enum.reduce(context, fn result, acc ->
           case result do
-            {:ok, step_result, ctx} -> Map.merge(acc, ctx)
+            {:ok, _step_result, ctx} -> Map.merge(acc, ctx)
             _ -> acc
           end
         end)
@@ -616,7 +643,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     |> Repo.update()
   end
 
-  defp retry_step_execution(execution, step_exec) do
+  defp retry_step_execution(_execution, step_exec) do
     # Increment retry count
     case step_exec
          |> StepExecution.changeset(%{
@@ -664,7 +691,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     |> Repo.update()
 
     # Update playbook statistics
-    update_playbook_stats(execution.playbook_id, status)
+    update_playbook_stats(execution.playbook_id, execution.organization_id, status)
   end
 
   defp cancel_execution_record(execution, reason) do
@@ -677,11 +704,11 @@ defmodule TamanduaServer.Response.PlaybookEngine do
     |> Repo.update()
   end
 
-  defp update_playbook_stats(playbook_id, status) do
+  defp update_playbook_stats(playbook_id, organization_id, status) do
     success_increment = if status == :success, do: 1, else: 0
 
     from(p in TamanduaServer.Response.Playbook.Schema,
-      where: p.id == ^playbook_id
+      where: p.id == ^playbook_id and p.organization_id == ^organization_id
     )
     |> Repo.update_all(
       inc: [execution_count: 1, success_count: success_increment],
@@ -698,7 +725,7 @@ defmodule TamanduaServer.Response.PlaybookEngine do
 
   defp wait_for_approval_loop(execution, start_time, timeout) do
     # Check if approved
-    case Repo.get(Execution, execution.id) do
+    case scoped_execution(execution.id, execution_scope(execution)) do
       %Execution{status: "running"} = exec ->
         # Approved
         exec
@@ -723,6 +750,9 @@ defmodule TamanduaServer.Response.PlaybookEngine do
 
       nil ->
         # Execution deleted
+        %{execution | status: "cancelled"}
+
+      {:error, _reason} ->
         %{execution | status: "cancelled"}
     end
   end
@@ -757,4 +787,50 @@ defmodule TamanduaServer.Response.PlaybookEngine do
   defp schedule_recovery do
     Process.send_after(self(), :recover_executions, 5000)
   end
+
+  defp scoped_active_execution(state, execution_id, scope) do
+    with {:ok, normalized_scope} <- validate_scope(scope) do
+      case Map.get(state.active_executions, execution_id) do
+        %Execution{} = execution ->
+          if scope_allows?(normalized_scope, execution), do: execution, else: nil
+
+        nil ->
+          nil
+      end
+    end
+  end
+
+  defp scoped_execution(execution_id, scope) do
+    with {:ok, normalized_scope} <- validate_scope(scope) do
+      query = from(e in Execution, where: e.id == ^execution_id)
+
+      query =
+        case normalized_scope do
+          :system -> query
+          {:organization, organization_id} ->
+            from(e in query, where: e.organization_id == ^organization_id)
+        end
+
+      Repo.one(query)
+    end
+  end
+
+  defp execution_scope(%Execution{organization_id: organization_id})
+       when is_binary(organization_id) and organization_id != "",
+       do: {:organization, organization_id}
+
+  defp execution_scope(_execution), do: :system
+
+  defp validate_scope(:system), do: {:ok, :system}
+
+  defp validate_scope({:organization, organization_id})
+       when is_binary(organization_id) and organization_id != "",
+       do: {:ok, {:organization, organization_id}}
+
+  defp validate_scope(_scope), do: {:error, :tenant_required}
+
+  defp scope_allows?(:system, _execution), do: true
+
+  defp scope_allows?({:organization, organization_id}, %Execution{} = execution),
+    do: execution.organization_id == organization_id
 end

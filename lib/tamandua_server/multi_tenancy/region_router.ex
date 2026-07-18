@@ -397,7 +397,7 @@ defmodule TamanduaServer.MultiTenancy.RegionRouter do
     end
   end
 
-  defp lookup_cache(key) do
+  defp lookup_cache(_key) do
     # This would use ETS or Cachex
     # For now, just return :miss
     :miss

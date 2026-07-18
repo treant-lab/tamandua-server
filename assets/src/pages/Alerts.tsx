@@ -2,17 +2,17 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
-  AlertTriangle, Clock, Shield, Filter, Search, Bell, CheckSquare, Square,
-  ChevronDown, ChevronUp, X, Plus, Save, Download, Settings, Users,
-  ExternalLink, History, Layers, Tag, Calendar, SlidersHorizontal,
+  Shield, Filter, Search, CheckSquare, Square,
+  ChevronDown, ChevronUp, X, Save, Download, Settings,
+  ExternalLink, History, Layers, SlidersHorizontal,
   Ban, Eye, EyeOff, RefreshCw, FileJson, FileSpreadsheet, FileText,
-  Trash2, CheckCircle, XCircle, AlertCircle, UserPlus, FolderPlus
+  Trash2, CheckCircle, XCircle, UserPlus, FolderPlus
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useAlertChannel } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
-import type { Alert, User } from '@/types'
+import type { Agent, Alert, User } from '@/types'
 import { Select, SelectItem, Menu, MenuItem, Popover } from '@/components/ui/baseui'
 
 // ===========================================================================
@@ -24,6 +24,26 @@ interface AlertsPageProps {
   users?: User[]
   investigations?: { id: string; title: string }[]
 }
+
+interface AlertsApiMeta {
+  total?: number
+  limit?: number
+  per_page?: number
+  offset?: number
+  page?: number
+  total_pages?: number
+  returned?: number
+  truncated?: boolean
+  has_more?: boolean
+  applied_filters?: Record<string, unknown>
+}
+
+interface AlertsApiResponse {
+  data?: unknown[]
+  meta?: AlertsApiMeta
+}
+
+type AlertSourceInput = Pick<Alert, 'source' | 'detectionMetadata' | 'rawEvent' | 'raw_event' | 'evidence'>
 
 interface ExclusionRule {
   id: string
@@ -52,6 +72,27 @@ interface BulkAction {
   inputType?: 'user' | 'investigation' | 'text' | 'status'
 }
 
+type OperationalQueueState =
+  | 'needs_triage'
+  | 'triaged'
+  | 'needs_evidence'
+  | 'ready_for_response'
+  | 'false_positive_candidate'
+
+interface OperationalTriage {
+  state: OperationalQueueState
+  label: string
+  priority?: 'low' | 'normal' | 'high' | 'review' | string
+  queue?: string
+  nextAction?: string
+  next_action?: string
+  reasons?: string[]
+  evidenceQuality?: string
+  evidence_quality?: string
+  claimable?: boolean
+  terminal?: boolean
+}
+
 // ===========================================================================
 // Constants
 // ===========================================================================
@@ -66,12 +107,48 @@ const BULK_ACTIONS: BulkAction[] = [
 ]
 
 const SEVERITY_OPTIONS = ['critical', 'high', 'medium', 'low', 'info']
-const STATUS_OPTIONS = ['new', 'open', 'investigating', 'resolved', 'false_positive']
-const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
+const STATUS_OPTIONS = ['new', 'open', 'acknowledged', 'triaged', 'investigating', 'resolved', 'false_positive', 'closed']
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const
+const SOURCE_OPTIONS = [
+  { value: '', label: 'All sources' },
+  { value: 'ml', label: 'ML' },
+  { value: 'behavioral', label: 'Behavioral' },
+  { value: 'sigma', label: 'Sigma' },
+  { value: 'yara', label: 'YARA' },
+  { value: 'mobile', label: 'Mobile' },
+  { value: 'ndr', label: 'NDR' },
+  { value: 'ai_security', label: 'AI Security' },
+  { value: 'ioc', label: 'IOC' },
+] as const
+const CATEGORY_OPTIONS = [
+  { value: '', label: 'All categories' },
+  { value: 'process', label: 'Process' },
+  { value: 'network', label: 'Network' },
+  { value: 'dns', label: 'DNS' },
+  { value: 'file', label: 'File' },
+  { value: 'registry', label: 'Registry' },
+  { value: 'mobile', label: 'Mobile' },
+  { value: 'identity', label: 'Identity' },
+] as const
+const EVIDENCE_OPTIONS = [
+  { value: '', label: 'Any evidence' },
+  { value: 'true', label: 'Has evidence' },
+  { value: 'false', label: 'Missing evidence' },
+] as const
+const VALIDATION_OPTIONS = [
+  { value: 'exclude', label: 'Hide validation' },
+  { value: 'include', label: 'Include validation' },
+  { value: 'only', label: 'Validation only' },
+] as const
 
 function getCsrfHeaders(): Record<string, string> {
   const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
   return token ? { 'X-CSRF-Token': token } : {}
+}
+
+function getTenantHeaders(): Record<string, string> {
+  const tenantId = localStorage.getItem('tamandua_current_tenant_id')
+  return tenantId ? { 'X-Tenant-ID': tenantId } : {}
 }
 
 function apiRequest(url: string, options: RequestInit = {}) {
@@ -81,6 +158,7 @@ function apiRequest(url: string, options: RequestInit = {}) {
     headers: {
       Accept: 'application/json',
       ...getCsrfHeaders(),
+      ...getTenantHeaders(),
       ...((options.headers || {}) as Record<string, string>),
     },
   })
@@ -110,7 +188,7 @@ function safeSeverity(severity: unknown): Alert['severity'] | 'info' {
 
 function safeStatus(status: unknown): Alert['status'] {
   const value = String(status || '').toLowerCase()
-  return ['new', 'open', 'investigating', 'resolved', 'false_positive'].includes(value)
+  return ['new', 'open', 'acknowledged', 'triaged', 'investigating', 'resolved', 'false_positive', 'closed'].includes(value)
     ? (value as Alert['status'])
     : 'new'
 }
@@ -122,6 +200,10 @@ function safeStringArray(value: unknown): string[] {
 function readAlertUrlParam(key: string): string {
   if (typeof window === 'undefined') return ''
   return new URLSearchParams(window.location.search).get(key) || ''
+}
+
+function readAlertUrlListParam(key: string): string[] {
+  return readAlertUrlParam(key).split(',').map(item => item.trim()).filter(Boolean)
 }
 
 function replaceAlertUrlState(params: Record<string, string>) {
@@ -138,22 +220,150 @@ function replaceAlertUrlState(params: Record<string, string>) {
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' ? value : Number(value ?? fallback) || fallback
+}
+
+function alertCategory(alert: Alert): string {
+  const detectionMetadata = asRecord(alert.detectionMetadata)
+  const rawEvent = asRecord(alert.rawEvent ?? alert.raw_event)
+  const evidence = asRecord(alert.evidence)
+
+  return asString(
+    detectionMetadata.category ??
+      detectionMetadata.threat_category ??
+      rawEvent.category ??
+      rawEvent.event_type ??
+      evidence.category
+  ).toLowerCase()
+}
+
+function alertHasEvidence(alert: Alert): boolean {
+  return Object.keys(asRecord(alert.evidence)).length > 0
+}
+
+function alertValidationKind(alert: Alert): string {
+  const explicit = asString(asRecord(alert).validationKind ?? asRecord(alert).validation_kind)
+  if (explicit) return explicit
+  return isParityTestAlert(alert) ? 'parity' : ''
+}
+
+function alertIsValidation(alert: Alert): boolean {
+  const explicit = asRecord(alert).validationAlert ?? asRecord(alert).validation_alert
+  if (typeof explicit === 'boolean') return explicit
+  return alertValidationKind(alert) !== ''
+}
+
+function sourceMatchesAny(source: string, aliases: string[]): boolean {
+  return aliases.some(alias => source.includes(alias))
+}
+
+function normalizeAlertSourceValue(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_')
+}
+
+function normalizeAlertSource(alert: AlertSourceInput): string {
+  const detectionMetadata = asRecord(alert.detectionMetadata)
+  const rawEvent = asRecord(alert.rawEvent ?? alert.raw_event)
+  const payload = asRecord(rawEvent.payload)
+  const evidence = asRecord(alert.evidence)
+
+  const explicit = [
+    alert.source,
+    detectionMetadata.source,
+    detectionMetadata.detection_source,
+    rawEvent.source,
+    rawEvent.alert_source,
+    payload.detection_source,
+    payload.source,
+    asRecord(rawEvent.metadata).detection_source,
+    asRecord(rawEvent.metadata).source,
+    evidence.source,
+    evidence.detection_source,
+    evidence.alert_source,
+  ].map(normalizeAlertSourceValue).find(Boolean) || ''
+
+  const detectionType = normalizeAlertSourceValue(detectionMetadata.detection_type || payload.detection_type || evidence.detection_type)
+  const ruleType = normalizeAlertSourceValue(detectionMetadata.rule_type || payload.rule_type || evidence.rule_type)
+  const ruleName = normalizeAlertSourceValue(detectionMetadata.rule_name || payload.rule_name || evidence.rule_name)
+
+  if (sourceMatchesAny(explicit, ['sigma'])) return 'sigma'
+  if (sourceMatchesAny(explicit, ['yara'])) return 'yara'
+  if (sourceMatchesAny(explicit, ['mobile', 'android', 'ios', 'app_guard', 'mdm', 'tamandua_mobile'])) return 'mobile'
+  if (sourceMatchesAny(explicit, ['ndr', 'network', 'dns', 'flow', 'packet', 'zeek', 'suricata', 'firewall', 'doh'])) return 'ndr'
+  if (sourceMatchesAny(explicit, ['ml', 'onnx', 'model'])) return 'ml'
+  if (sourceMatchesAny(explicit, ['ai_security', 'ai_runtime', 'llm', 'prompt', 'rag'])) return 'ai_security'
+  if (sourceMatchesAny(explicit, ['ioc', 'threat_intel', 'indicator'])) return 'ioc'
+  if (sourceMatchesAny(explicit, ['behavior', 'baseline', 'anomaly', 'rule_match', 'detection_engine'])) return 'behavioral'
+  if ([detectionType, ruleType].includes('ml') || ruleName.startsWith('ml_') || ruleName.startsWith('offline_ml')) return 'ml'
+
+  return explicit || 'behavioral'
+}
+
+function normalizeAlert(value: unknown): Alert {
+  const item = asRecord(value)
+  const detectionMetadata = asRecord(item.detectionMetadata ?? item.detection_metadata)
+  const rawEvent = asRecord(item.rawEvent ?? item.raw_event)
+
+  return {
+    ...(item as Partial<Alert>),
+    id: asString(item.id),
+    agentId: asString(item.agentId ?? item.agent_id),
+    severity: safeSeverity(item.severity) as Alert['severity'],
+    title: asString(item.title, 'Untitled alert'),
+    description: asString(item.description),
+    status: safeStatus(item.status),
+    threatScore: asNumber(item.threatScore ?? item.threat_score),
+    source: normalizeAlertSource({
+      source: asString(item.source),
+      detectionMetadata,
+      rawEvent,
+      raw_event: rawEvent,
+      evidence: asRecord(item.evidence),
+    }),
+    mitreTactics: safeStringArray(item.mitreTactics ?? item.mitre_tactics),
+    mitreTechniques: safeStringArray(item.mitreTechniques ?? item.mitre_techniques),
+    createdAt: asString(item.createdAt ?? item.created_at),
+    assignedToId: asString(item.assignedToId ?? item.assigned_to_id),
+    evidence: asRecord(item.evidence),
+    evidenceQuality: (item.evidenceQuality ?? item.evidence_quality) as Alert['evidenceQuality'],
+    rawEvent,
+    raw_event: rawEvent,
+    detectionMetadata,
+    processChain: Array.isArray(item.processChain) ? item.processChain as Alert['processChain'] : Array.isArray(item.process_chain) ? item.process_chain as Alert['processChain'] : [],
+    sourceEventId: asString(item.sourceEventId ?? item.source_event_id),
+    contributingEvents: safeStringArray(item.contributingEvents ?? item.contributing_events),
+  }
+}
+
 // ===========================================================================
 // Main Component
 // ===========================================================================
 
 export default function Alerts({ alerts: initialAlerts, users = [], investigations = [] }: AlertsPageProps) {
   // State
-  const [searchQuery, setSearchQuery] = useState('')
-  const [severityFilter, setSeverityFilter] = useState<string[]>([])
-  const [statusFilter, setStatusFilter] = useState<string[]>([])
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [assignedFilter, setAssignedFilter] = useState<string>('')
-  const [threatScoreMin, setThreatScoreMin] = useState<string>('')
-  const [threatScoreMax, setThreatScoreMax] = useState<string>('')
-  const [mitreTechniques, setMitreTechniques] = useState<string[]>([])
+  const [searchQuery, setSearchQuery] = useState(readAlertUrlParam('search'))
+  const [severityFilter, setSeverityFilter] = useState<string[]>(readAlertUrlListParam('severity'))
+  const [statusFilter, setStatusFilter] = useState<string[]>(readAlertUrlListParam('status'))
+  const [dateFrom, setDateFrom] = useState(readAlertUrlParam('date_from'))
+  const [dateTo, setDateTo] = useState(readAlertUrlParam('date_to'))
+  const [assignedFilter, setAssignedFilter] = useState<string>(readAlertUrlParam('assigned_to_id'))
+  const [agentFilter, setAgentFilter] = useState<string>(readAlertUrlParam('agent_id'))
+  const [threatScoreMin, setThreatScoreMin] = useState<string>(readAlertUrlParam('threat_score_min'))
+  const [threatScoreMax, setThreatScoreMax] = useState<string>(readAlertUrlParam('threat_score_max'))
+  const [mitreTechniques, setMitreTechniques] = useState<string[]>(readAlertUrlListParam('mitre_techniques'))
   const [sourceFilter, setSourceFilter] = useState<string>(readAlertUrlParam('source'))
+  const [categoryFilter, setCategoryFilter] = useState<string>(readAlertUrlParam('category'))
+  const [hasEvidenceFilter, setHasEvidenceFilter] = useState<string>(readAlertUrlParam('has_evidence'))
+  const [validationFilter, setValidationFilter] = useState<string>(readAlertUrlParam('validation') || 'exclude')
 
   // Selection state
   const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set())
@@ -166,18 +376,28 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
   // Pagination
-  const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState<number>(50)
+  const [currentPage, setCurrentPage] = useState(Math.max(1, Number(readAlertUrlParam('page')) || 1))
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const requested = Number(readAlertUrlParam('limit')) || 50
+    return PAGE_SIZE_OPTIONS.includes(requested as typeof PAGE_SIZE_OPTIONS[number]) ? requested : 50
+  })
+  const [serverTotal, setServerTotal] = useState<number>(initialAlerts?.length || 0)
+  const [serverTruncated, setServerTruncated] = useState(false)
+  const [serverHasMore, setServerHasMore] = useState(false)
+  const [serverAppliedFilters, setServerAppliedFilters] = useState<Record<string, unknown>>({})
 
   // Loading/Error states
   const [loading, setLoading] = useState(false)
   const [bulkActionLoading, setBulkActionLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastErrorStatus, setLastErrorStatus] = useState<number | null>(null)
 
   // Data
+  const [serverAlerts, setServerAlerts] = useState<Alert[]>(() => (initialAlerts || []).map(normalizeAlert))
   const [filterPresets, setFilterPresets] = useState<FilterPreset[]>([])
   const [exclusionRules, setExclusionRules] = useState<ExclusionRule[]>([])
   const [assignableUsers, setAssignableUsers] = useState<User[]>(users)
+  const [agents, setAgents] = useState<Agent[]>([])
 
   // WebSocket
   const { connectionState, alerts: wsAlerts, acknowledgeAlert } = useAlertChannel()
@@ -221,15 +441,15 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
   // Merge: use WS alerts to update/add to the prop-based alerts
   const allAlerts = useMemo(() => {
-    if (wsAlerts.length === 0) return initialAlerts || []
-    const alertMap = new Map((initialAlerts || []).map(a => [a.id, a]))
+    if (wsAlerts.length === 0) return serverAlerts || []
+    const alertMap = new Map((serverAlerts || []).map(a => [a.id, a]))
     wsAlerts.forEach(a => alertMap.set(a.id, { ...alertMap.get(a.id), ...a } as Alert))
     return Array.from(alertMap.values()).sort((a, b) => {
-      const timeA = new Date((a as Record<string, unknown>).createdAt as string || (a as Record<string, unknown>).created_at as string || 0).getTime()
-      const timeB = new Date((b as Record<string, unknown>).createdAt as string || (b as Record<string, unknown>).created_at as string || 0).getTime()
+      const timeA = new Date((a as unknown as Record<string, unknown>).createdAt as string || (a as unknown as Record<string, unknown>).created_at as string || 0).getTime()
+      const timeB = new Date((b as unknown as Record<string, unknown>).createdAt as string || (b as unknown as Record<string, unknown>).created_at as string || 0).getTime()
       return timeB - timeA
     })
-  }, [initialAlerts, wsAlerts])
+  }, [serverAlerts, wsAlerts])
 
   // Mutable setter for local optimistic updates (bulk actions)
   const [localOverrides, setLocalOverrides] = useState<Map<string, Partial<Alert>>>(new Map())
@@ -248,7 +468,39 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     loadFilterPresets()
     loadExclusionRules()
     loadAssignableUsers()
+    loadAgents()
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      loadAlerts(controller.signal)
+    }, searchQuery ? 250 : 0)
+
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [
+    searchQuery,
+    severityFilter,
+    statusFilter,
+    dateFrom,
+    dateTo,
+    assignedFilter,
+    agentFilter,
+    threatScoreMin,
+    threatScoreMax,
+    mitreTechniques,
+    sourceFilter,
+    categoryFilter,
+    hasEvidenceFilter,
+    validationFilter,
+    sortBy,
+    sortOrder,
+    currentPage,
+    pageSize,
+  ])
 
   // ===========================================================================
   // Data Loading
@@ -290,6 +542,81 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     }
   }
 
+  const loadAgents = async () => {
+    try {
+      const res = await apiRequest('/api/v1/agents?limit=1000')
+      if (res.ok) {
+        const data = await res.json()
+        const values = Array.isArray(data.data) ? data.data : Array.isArray(data.agents) ? data.agents : []
+        setAgents(values as Agent[])
+      }
+    } catch (e) {
+      logger.error('Failed to load alert agent filters:', e)
+    }
+  }
+
+  const loadAlerts = async (signal?: AbortSignal) => {
+    setLoading(true)
+    setError(null)
+    setLastErrorStatus(null)
+    try {
+      const body: Record<string, unknown> = {
+        limit: pageSize,
+        offset: (currentPage - 1) * pageSize,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      }
+
+      if (searchQuery.trim()) body.search = searchQuery.trim()
+      if (severityFilter.length > 0) body.severity = severityFilter
+      if (statusFilter.length > 0) body.status = statusFilter
+      if (agentFilter) body.agent_id = agentFilter
+      if (assignedFilter) body.assigned_to_id = assignedFilter
+      if (dateFrom) body.date_from = dateFrom
+      if (dateTo) body.date_to = dateTo
+      if (threatScoreMin) body.threat_score_min = threatScoreMin
+      if (threatScoreMax) body.threat_score_max = threatScoreMax
+      if (mitreTechniques.length > 0) body.mitre_techniques = mitreTechniques
+      if (sourceFilter) body.source = sourceFilter
+      if (categoryFilter) body.category = categoryFilter
+      if (hasEvidenceFilter) body.has_evidence = hasEvidenceFilter
+      if (validationFilter) body.validation = validationFilter
+
+      const res = await apiRequest('/api/v1/alerts/search', {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      if (!res.ok) {
+        throw Object.assign(new Error(`Alert search failed with ${res.status}`), { status: res.status })
+      }
+
+      const data = await res.json() as AlertsApiResponse
+      setServerAlerts((data.data || []).map(normalizeAlert))
+      setServerTotal(Number(data.meta?.total || 0))
+      setServerTruncated(Boolean(data.meta?.truncated))
+      setServerHasMore(Boolean(data.meta?.has_more))
+      setServerAppliedFilters(data.meta?.applied_filters || {})
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        const status = (e as Error & { status?: number }).status || null
+        logger.error('Failed to load alerts:', e)
+        setLastErrorStatus(status)
+        setError(
+          status === 502
+            ? 'Alerts API returned 502 Bad Gateway. Existing results may be stale.'
+            : status
+              ? `Failed to load alerts. API returned ${status}.`
+              : 'Failed to load alerts'
+        )
+      }
+    } finally {
+      if (!signal?.aborted) setLoading(false)
+    }
+  }
+
   // ===========================================================================
   // Filtering
   // ===========================================================================
@@ -311,6 +638,8 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
       if (assignedFilter && assignedFilter !== 'unassigned') {
         if (alert.assignedToId !== assignedFilter) return false
       }
+
+      if (agentFilter && alert.agentId !== agentFilter) return false
 
       // Search
       if (searchQuery) {
@@ -346,7 +675,12 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
         if (!hasMatch) return false
       }
 
-      if (sourceFilter === 'ml' && !isMlAlert(alert)) return false
+      if (sourceFilter && normalizeAlertSource(alert) !== normalizeAlertSourceValue(sourceFilter)) return false
+      if (categoryFilter && alertCategory(alert) !== categoryFilter.toLowerCase()) return false
+      if (hasEvidenceFilter === 'true' && !alertHasEvidence(alert)) return false
+      if (hasEvidenceFilter === 'false' && alertHasEvidence(alert)) return false
+      if (validationFilter === 'exclude' && alertIsValidation(alert)) return false
+      if (validationFilter === 'only' && !alertIsValidation(alert)) return false
 
       return true
     })
@@ -371,23 +705,45 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
     return result
   }, [effectiveAlerts, severityFilter, statusFilter, searchQuery, dateFrom, dateTo,
-      threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, sourceFilter, sortBy, sortOrder])
+      threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, agentFilter, sourceFilter, categoryFilter, hasEvidenceFilter, validationFilter, sortBy, sortOrder])
 
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1)
-  }, [severityFilter, statusFilter, searchQuery, dateFrom, dateTo, threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, sourceFilter])
+  }, [severityFilter, statusFilter, searchQuery, dateFrom, dateTo, threatScoreMin, threatScoreMax, mitreTechniques, assignedFilter, agentFilter, sourceFilter, categoryFilter, hasEvidenceFilter, validationFilter])
 
   useEffect(() => {
-    replaceAlertUrlState({ source: sourceFilter })
-  }, [sourceFilter])
+    replaceAlertUrlState({
+      search: searchQuery,
+      severity: severityFilter.join(','),
+      status: statusFilter.join(','),
+      date_from: dateFrom,
+      date_to: dateTo,
+      assigned_to_id: assignedFilter,
+      agent_id: agentFilter,
+      source: sourceFilter,
+      category: categoryFilter,
+      has_evidence: hasEvidenceFilter,
+      validation: validationFilter !== 'exclude' ? validationFilter : '',
+      threat_score_min: threatScoreMin,
+      threat_score_max: threatScoreMax,
+      mitre_techniques: mitreTechniques.join(','),
+      page: currentPage > 1 ? String(currentPage) : '',
+      limit: pageSize !== 50 ? String(pageSize) : '',
+    })
+  }, [
+    searchQuery, severityFilter, statusFilter, dateFrom, dateTo, assignedFilter, agentFilter,
+    sourceFilter, categoryFilter, hasEvidenceFilter, validationFilter, threatScoreMin, threatScoreMax,
+    mitreTechniques, currentPage, pageSize,
+  ])
 
   // Pagination
-  const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / pageSize))
-  const paginatedAlerts = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return filteredAlerts.slice(start, start + pageSize)
-  }, [filteredAlerts, currentPage, pageSize])
+  const totalPages = Math.max(1, Math.ceil(serverTotal / pageSize))
+  const paginatedAlerts = filteredAlerts
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages)
+  }, [currentPage, totalPages])
 
   // ===========================================================================
   // Selection
@@ -397,10 +753,10 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     if (selectAll) {
       setSelectedAlerts(new Set())
     } else {
-      setSelectedAlerts(new Set(filteredAlerts.map(a => a.id)))
+      setSelectedAlerts(new Set(paginatedAlerts.map(a => a.id)))
     }
     setSelectAll(!selectAll)
-  }, [selectAll, filteredAlerts])
+  }, [selectAll, paginatedAlerts])
 
   const toggleSelectAlert = useCallback((alertId: string) => {
     setSelectedAlerts(prev => {
@@ -416,8 +772,8 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
   // Update selectAll state when selection changes
   useEffect(() => {
-    setSelectAll(selectedAlerts.size === filteredAlerts.length && filteredAlerts.length > 0)
-  }, [selectedAlerts.size, filteredAlerts.length])
+    setSelectAll(selectedAlerts.size === paginatedAlerts.length && paginatedAlerts.length > 0)
+  }, [selectedAlerts.size, paginatedAlerts.length])
 
   // ===========================================================================
   // Bulk Actions
@@ -455,20 +811,25 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
         })
 
         if (!res.ok) throw new Error('Failed to execute bulk action')
-
-        const data = await res.json()
+        await res.json().catch(() => undefined)
 
         // Optimistic local overrides
-        if (action === 'resolve' || action === 'close') {
+        if (action === 'resolve') {
           setLocalOverrides(prev => {
             const next = new Map(prev)
             alertIds.forEach(id => next.set(id, { ...prev.get(id), status: 'resolved' as const }))
             return next
           })
+        } else if (action === 'close') {
+          setLocalOverrides(prev => {
+            const next = new Map(prev)
+            alertIds.forEach(id => next.set(id, { ...prev.get(id), status: 'closed' as const }))
+            return next
+          })
         } else if (action === 'acknowledge') {
           setLocalOverrides(prev => {
             const next = new Map(prev)
-            alertIds.forEach(id => next.set(id, { ...prev.get(id), status: 'investigating' as const }))
+            alertIds.forEach(id => next.set(id, { ...prev.get(id), status: 'acknowledged' as const }))
             return next
           })
           // Also fire WebSocket acknowledge for each alert
@@ -488,7 +849,6 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
 
       // Clear selection
       setSelectedAlerts(new Set())
-      setShowBulkActions(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Action failed')
     } finally {
@@ -517,11 +877,23 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             severity: severityFilter.length > 0 ? severityFilter : undefined,
             status: statusFilter.length > 0 ? statusFilter : undefined,
             search: searchQuery || undefined,
+            agent_id: agentFilter || undefined,
+            assigned_to_id: assignedFilter || undefined,
+            source: sourceFilter || undefined,
+            category: categoryFilter || undefined,
             date_from: dateFrom || undefined,
-            date_to: dateTo || undefined
+            date_to: dateTo || undefined,
+            threat_score_min: threatScoreMin || undefined,
+            threat_score_max: threatScoreMax || undefined,
+            mitre_techniques: mitreTechniques.length > 0 ? mitreTechniques : undefined,
+            has_evidence: hasEvidenceFilter || undefined
           } : {})
         })
       })
+
+      if (!res.ok) {
+        throw new Error(`Export failed with ${res.status}`)
+      }
 
       if (format === 'csv') {
         const blob = await res.blob()
@@ -543,7 +915,6 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
       setError('Export failed')
     } finally {
       setLoading(false)
-      setShowExportOptions(false)
     }
   }
 
@@ -586,7 +957,6 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     if (filters.assigned_to_id) {
       setAssignedFilter(filters.assigned_to_id as string)
     }
-    setShowFilterPresets(false)
   }
 
   const clearFilters = () => {
@@ -596,10 +966,14 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
     setDateFrom('')
     setDateTo('')
     setAssignedFilter('')
+    setAgentFilter('')
     setThreatScoreMin('')
     setThreatScoreMax('')
     setMitreTechniques([])
     setSourceFilter('')
+    setCategoryFilter('')
+    setHasEvidenceFilter('')
+    setValidationFilter('exclude')
   }
 
   // ===========================================================================
@@ -607,13 +981,17 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
   // ===========================================================================
 
   const stats = useMemo(() => ({
-    total: filteredAlerts.length,
-    open: filteredAlerts.filter(a => a.status === 'open' || a.status === 'new').length,
-    critical: filteredAlerts.filter(a => a.severity === 'critical' && a.status !== 'resolved').length,
-    high: filteredAlerts.filter(a => a.severity === 'high' && a.status !== 'resolved').length,
-    filtered: filteredAlerts.length,
+    total: serverTotal,
+    currentPageOpen: filteredAlerts.filter(a => ['new', 'open', 'acknowledged', 'triaged', 'investigating'].includes(a.status)).length,
+    currentPageCritical: filteredAlerts.filter(a => a.severity === 'critical' && !['resolved', 'false_positive', 'closed'].includes(a.status)).length,
+    currentPageHigh: filteredAlerts.filter(a => a.severity === 'high' && !['resolved', 'false_positive', 'closed'].includes(a.status)).length,
+    needsTriage: filteredAlerts.filter(a => resolveOperationalTriage(a).state === 'needs_triage').length,
+    needsEvidence: filteredAlerts.filter(a => resolveOperationalTriage(a).state === 'needs_evidence').length,
+    readyForResponse: filteredAlerts.filter(a => resolveOperationalTriage(a).state === 'ready_for_response').length,
+    fpCandidates: filteredAlerts.filter(a => resolveOperationalTriage(a).state === 'false_positive_candidate').length,
+    currentPageCount: filteredAlerts.length,
     selected: selectedAlerts.size
-  }), [filteredAlerts, selectedAlerts])
+  }), [filteredAlerts, selectedAlerts, serverTotal])
 
   // An alert is "new" if it recently arrived via WebSocket (within the 5s highlight window)
   const isNewAlert = (alertId: string) => recentWsAlertIds.has(alertId)
@@ -642,14 +1020,15 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             <ConnectionStatus state={connectionState} showText={true} />
 
             <div className="flex items-center gap-2">
-              <StatBadge label="Open" value={stats.open} severity="critical" />
-              <StatBadge label="Critical" value={stats.critical} severity="critical" />
-              <StatBadge label="High" value={stats.high} severity="high" />
+              <StatBadge label="Total" value={stats.total} severity="info" />
+              <StatBadge label="Page open" value={stats.currentPageOpen} severity="critical" />
+              <StatBadge label="Page critical" value={stats.currentPageCritical} severity="critical" />
+              <StatBadge label="Page high" value={stats.currentPageHigh} severity="high" />
+              <StatBadge label="Needs evidence" value={stats.needsEvidence} severity="critical" />
+              <StatBadge label="Ready response" value={stats.readyForResponse} severity="high" />
+              <StatBadge label="FP candidates" value={stats.fpCandidates} severity="info" />
               {sourceFilter === 'ml' && (
-                <StatBadge label="Agent ML" value={stats.filtered} severity="info" />
-              )}
-              {stats.filtered !== stats.total && (
-                <StatBadge label="Filtered" value={stats.filtered} severity="info" />
+                <StatBadge label="Page ML" value={stats.currentPageCount} severity="info" />
               )}
             </div>
           </div>
@@ -707,7 +1086,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
         {/* Error message */}
         {error && (
           <div
-            className="px-4 py-3 rounded-lg flex items-center justify-between"
+            className="px-4 py-3 rounded-lg flex items-center justify-between gap-3"
             style={{
               background: 'var(--crit-bg)',
               border: '1px solid rgba(240, 80, 110, 0.3)',
@@ -715,7 +1094,18 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             }}
           >
             <span>{error}</span>
-            <button onClick={() => setError(null)} className="hover:opacity-70"><X className="h-4 w-4" /></button>
+            <div className="flex items-center gap-2">
+              {lastErrorStatus === 502 && (
+                <button
+                  onClick={() => loadAlerts()}
+                  className="btn-sentinel btn-sentinel-secondary btn-sentinel-sm"
+                  disabled={loading}
+                >
+                  Retry
+                </button>
+              )}
+              <button onClick={() => setError(null)} className="hover:opacity-70"><X className="h-4 w-4" /></button>
+            </div>
           </div>
         )}
 
@@ -730,7 +1120,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
           showAdvanced={showAdvancedFilters}
           setShowAdvanced={setShowAdvancedFilters}
           onClear={clearFilters}
-          hasFilters={Boolean(searchQuery || severityFilter.length || statusFilter.length || dateFrom || dateTo || sourceFilter)}
+          hasFilters={Boolean(searchQuery || severityFilter.length || statusFilter.length || dateFrom || dateTo || assignedFilter || agentFilter || sourceFilter || categoryFilter || hasEvidenceFilter || validationFilter !== 'exclude' || threatScoreMin || threatScoreMax || mitreTechniques.length)}
         />
 
         {/* Advanced Filters */}
@@ -742,11 +1132,24 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             setDateTo={setDateTo}
             assignedFilter={assignedFilter}
             setAssignedFilter={setAssignedFilter}
+            agentFilter={agentFilter}
+            setAgentFilter={setAgentFilter}
+            sourceFilter={sourceFilter}
+            setSourceFilter={setSourceFilter}
+            categoryFilter={categoryFilter}
+            setCategoryFilter={setCategoryFilter}
+            hasEvidenceFilter={hasEvidenceFilter}
+            setHasEvidenceFilter={setHasEvidenceFilter}
+            validationFilter={validationFilter}
+            setValidationFilter={setValidationFilter}
             threatScoreMin={threatScoreMin}
             setThreatScoreMin={setThreatScoreMin}
             threatScoreMax={threatScoreMax}
             setThreatScoreMax={setThreatScoreMax}
+            mitreTechniques={mitreTechniques}
+            setMitreTechniques={setMitreTechniques}
             users={assignableUsers}
+            agents={agents}
           />
         )}
 
@@ -799,6 +1202,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
               }}
               width="w-24"
             />
+            <div className="w-32">Queue</div>
             <div className="w-28">Status</div>
             <SortableHeader
               label="Score"
@@ -861,7 +1265,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
                     // Optimistic local update
                     setLocalOverrides(prev => {
                       const next = new Map(prev)
-                      next.set(alert.id, { ...prev.get(alert.id), status: 'investigating' as const })
+                      next.set(alert.id, { ...prev.get(alert.id), status: 'acknowledged' as const })
                       return next
                     })
                   }}
@@ -871,7 +1275,7 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
           )}
 
           {/* Pagination */}
-          {filteredAlerts.length > 0 && (
+          {serverTotal > 0 && (
             <div
               className="flex items-center justify-between px-4 py-3"
               style={{
@@ -881,9 +1285,15 @@ export default function Alerts({ alerts: initialAlerts, users = [], investigatio
             >
               <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--muted)' }}>
                 <span>
-                  Showing {((currentPage - 1) * pageSize) + 1}--{Math.min(currentPage * pageSize, filteredAlerts.length)} of {filteredAlerts.length}
-                  {filteredAlerts.length !== effectiveAlerts.length && ` (${effectiveAlerts.length} total)`}
+                  Showing {((currentPage - 1) * pageSize) + 1}--{Math.min((currentPage - 1) * pageSize + filteredAlerts.length, serverTotal)} of {serverTotal}
+                  {loading && ' (refreshing...)'}
+                  {!loading && serverTruncated && (serverHasMore ? ' (more results available)' : ' (final page)')}
                 </span>
+                {Object.keys(serverAppliedFilters).length > 0 && (
+                  <span aria-label="Server-applied alert filters">
+                    {Object.keys(serverAppliedFilters).length} filter{Object.keys(serverAppliedFilters).length === 1 ? '' : 's'} applied
+                  </span>
+                )}
                 <Select
                   value={String(pageSize)}
                   onValueChange={(v) => { setPageSize(Number(v)); setCurrentPage(1) }}
@@ -1027,7 +1437,7 @@ function FilterBar({
           placeholder="Search alerts..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="input-sentinel pl-10 pr-4"
+          className="input-sentinel input-sentinel-icon-left pr-4"
         />
       </div>
 
@@ -1145,9 +1555,15 @@ function MultiSelect({
 function AdvancedFilters({
   dateFrom, setDateFrom, dateTo, setDateTo,
   assignedFilter, setAssignedFilter,
+  agentFilter, setAgentFilter,
+  sourceFilter, setSourceFilter,
+  categoryFilter, setCategoryFilter,
+  hasEvidenceFilter, setHasEvidenceFilter,
+  validationFilter, setValidationFilter,
   threatScoreMin, setThreatScoreMin,
   threatScoreMax, setThreatScoreMax,
-  users
+  mitreTechniques, setMitreTechniques,
+  users, agents
 }: {
   dateFrom: string
   setDateFrom: (v: string) => void
@@ -1155,12 +1571,27 @@ function AdvancedFilters({
   setDateTo: (v: string) => void
   assignedFilter: string
   setAssignedFilter: (v: string) => void
+  agentFilter: string
+  setAgentFilter: (v: string) => void
+  sourceFilter: string
+  setSourceFilter: (v: string) => void
+  categoryFilter: string
+  setCategoryFilter: (v: string) => void
+  hasEvidenceFilter: string
+  setHasEvidenceFilter: (v: string) => void
+  validationFilter: string
+  setValidationFilter: (v: string) => void
   threatScoreMin: string
   setThreatScoreMin: (v: string) => void
   threatScoreMax: string
   setThreatScoreMax: (v: string) => void
+  mitreTechniques: string[]
+  setMitreTechniques: (v: string[]) => void
   users: User[]
+  agents: Agent[]
 }) {
+  const mitreValue = mitreTechniques.join(', ')
+
   return (
     <div className="card-sentinel">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1206,6 +1637,70 @@ function AdvancedFilters({
             value={threatScoreMax}
             onChange={(e) => setThreatScoreMax(e.target.value)}
             placeholder="100"
+            className="input-sentinel"
+          />
+        </div>
+
+        {/* Endpoint */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Endpoint</label>
+          <Select value={agentFilter} onValueChange={setAgentFilter} placeholder="All endpoints" fullWidth>
+            <SelectItem value="">All endpoints</SelectItem>
+            {agents.map(agent => (
+              <SelectItem key={agent.id} value={agent.id}>
+                {agent.hostname || agent.id}
+              </SelectItem>
+            ))}
+          </Select>
+        </div>
+
+        {/* Source */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Source</label>
+          <Select value={sourceFilter} onValueChange={setSourceFilter} placeholder="All sources" fullWidth>
+            {SOURCE_OPTIONS.map(option => (
+              <SelectItem key={option.value || 'all'} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </Select>
+        </div>
+
+        {/* Category */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Category</label>
+          <Select value={categoryFilter} onValueChange={setCategoryFilter} placeholder="All categories" fullWidth>
+            {CATEGORY_OPTIONS.map(option => (
+              <SelectItem key={option.value || 'all'} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </Select>
+        </div>
+
+        {/* Evidence */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Evidence</label>
+          <Select value={hasEvidenceFilter} onValueChange={setHasEvidenceFilter} placeholder="Any evidence" fullWidth>
+            {EVIDENCE_OPTIONS.map(option => (
+              <SelectItem key={option.value || 'any'} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </Select>
+        </div>
+
+        {/* Validation */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>Validation</label>
+          <Select value={validationFilter} onValueChange={setValidationFilter} placeholder="Hide validation" fullWidth>
+            {VALIDATION_OPTIONS.map(option => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </Select>
+        </div>
+
+        {/* MITRE */}
+        <div className="col-span-2">
+          <label className="block text-xs mb-1" style={{ color: 'var(--muted)' }}>MITRE Techniques</label>
+          <input
+            value={mitreValue}
+            onChange={(e) => setMitreTechniques(e.target.value.split(',').map(v => v.trim()).filter(Boolean))}
+            placeholder="T1059, T1110"
             className="input-sentinel"
           />
         </div>
@@ -1619,12 +2114,195 @@ function getAlertScoreVersion(alert: Alert): string {
   )
 }
 
+function alertClaimStrength(alert: Alert): string {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  return String(metadata.alert_claim_strength || metadata.alertClaimStrength || '').trim()
+}
+
+function alertNeedsFpReview(alert: Alert): boolean {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  return Boolean(metadata.fp_review_required ?? metadata.fpReviewRequired)
+}
+
+function alertCorrelationReady(alert: Alert): boolean | null {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  const value = metadata.correlation_ready ?? metadata.correlationReady
+  return typeof value === 'boolean' ? value : null
+}
+
+function resolveOperationalTriage(alert: Alert): OperationalTriage {
+  const record = asRecord(alert)
+  const fromServer = asRecord(record.operationalTriage ?? record.operational_triage)
+  if (fromServer.state) {
+    return {
+      state: normalizeOperationalQueueState(fromServer.state),
+      label: asString(fromServer.label, operationalQueueLabel(normalizeOperationalQueueState(fromServer.state))),
+      priority: asString(fromServer.priority, 'normal'),
+      queue: asString(fromServer.queue, asString(fromServer.state)),
+      nextAction: asString(fromServer.nextAction ?? fromServer.next_action),
+      reasons: safeStringArray(fromServer.reasons),
+      evidenceQuality: asString(fromServer.evidenceQuality ?? fromServer.evidence_quality),
+      claimable: typeof fromServer.claimable === 'boolean' ? fromServer.claimable : undefined,
+      terminal: typeof fromServer.terminal === 'boolean' ? fromServer.terminal : undefined,
+    }
+  }
+
+  const status = safeStatus(alert.status)
+  const evidenceQuality = asRecord(alert.evidenceQuality ?? record.evidence_quality)
+  const quality = asString(evidenceQuality.quality)
+  const missing = safeStringArray(evidenceQuality.missing)
+  const claimable = evidenceQuality.claimable === true
+  const metadata = asRecord(alert.detectionMetadata)
+  const fpReview = Boolean(metadata.fp_review_required ?? metadata.fpReviewRequired)
+  const claimStrength = asString(metadata.alert_claim_strength ?? metadata.alertClaimStrength)
+  const score = Number(alert.threatScore || 0)
+  const normalizedScore = score <= 1 ? score * 100 : score
+  const weakEvidence = ['missing', 'synthetic'].includes(quality) || claimable === false
+
+  if (status === 'false_positive') {
+    return {
+      state: 'false_positive_candidate',
+      label: operationalQueueLabel('false_positive_candidate'),
+      priority: 'review',
+      nextAction: 'Confirm tuning or preserve suppression evidence',
+      reasons: ['marked false positive'],
+      evidenceQuality: quality,
+      claimable,
+      terminal: true,
+    }
+  }
+
+  if ((fpReview || ['triage_only', 'weak'].includes(claimStrength)) && weakEvidence && normalizedScore < 50) {
+    return {
+      state: 'false_positive_candidate',
+      label: operationalQueueLabel('false_positive_candidate'),
+      priority: 'review',
+      nextAction: 'Review source telemetry before response',
+      reasons: [fpReview ? 'fp review required' : '', claimStrength ? `claim strength ${claimStrength}` : '', ...missing].filter(Boolean),
+      evidenceQuality: quality,
+      claimable,
+    }
+  }
+
+  if (weakEvidence && ['new', 'open', 'acknowledged', 'triaged', 'investigating'].includes(status)) {
+    return {
+      state: 'needs_evidence',
+      label: operationalQueueLabel('needs_evidence'),
+      priority: 'high',
+      nextAction: 'Collect missing telemetry before response',
+      reasons: [`evidence quality ${quality || 'unknown'}`, ...missing].slice(0, 5),
+      evidenceQuality: quality,
+      claimable,
+    }
+  }
+
+  if (['triaged', 'investigating'].includes(status)) {
+    return {
+      state: 'ready_for_response',
+      label: operationalQueueLabel('ready_for_response'),
+      priority: 'high',
+      nextAction: 'Review containment or remediation',
+      reasons: ['triage started'],
+      evidenceQuality: quality,
+      claimable,
+    }
+  }
+
+  if (['resolved', 'closed'].includes(status)) {
+    return {
+      state: 'triaged',
+      label: operationalQueueLabel('triaged'),
+      priority: 'normal',
+      nextAction: 'No queue action required',
+      reasons: ['alert closed'],
+      evidenceQuality: quality,
+      claimable,
+      terminal: true,
+    }
+  }
+
+  return {
+    state: 'needs_triage',
+    label: operationalQueueLabel('needs_triage'),
+    priority: 'normal',
+    nextAction: 'Assign analyst and validate evidence',
+    reasons: ['new or unassigned alert'],
+    evidenceQuality: quality,
+    claimable,
+  }
+}
+
+function normalizeOperationalQueueState(value: unknown): OperationalQueueState {
+  const normalized = String(value || '').toLowerCase()
+  if (['triaged', 'needs_evidence', 'ready_for_response', 'false_positive_candidate'].includes(normalized)) {
+    return normalized as OperationalQueueState
+  }
+  return 'needs_triage'
+}
+
+function operationalQueueLabel(state: OperationalQueueState): string {
+  switch (state) {
+    case 'needs_evidence': return 'Needs evidence'
+    case 'ready_for_response': return 'Ready response'
+    case 'false_positive_candidate': return 'FP candidate'
+    case 'triaged': return 'Triaged'
+    case 'needs_triage':
+    default: return 'Needs triage'
+  }
+}
+
+function operationalQueueStyle(state: OperationalQueueState): React.CSSProperties {
+  switch (state) {
+    case 'needs_evidence':
+      return { color: 'var(--crit)', borderColor: 'color-mix(in srgb, var(--crit) 48%, transparent)', backgroundColor: 'color-mix(in srgb, var(--crit) 10%, transparent)' }
+    case 'ready_for_response':
+      return { color: 'var(--high)', borderColor: 'color-mix(in srgb, var(--high) 48%, transparent)', backgroundColor: 'color-mix(in srgb, var(--high) 10%, transparent)' }
+    case 'false_positive_candidate':
+      return { color: 'var(--muted)', borderColor: 'var(--border)', backgroundColor: 'var(--surface-2)' }
+    case 'triaged':
+      return { color: 'var(--low)', borderColor: 'color-mix(in srgb, var(--low) 44%, transparent)', backgroundColor: 'color-mix(in srgb, var(--low) 10%, transparent)' }
+    case 'needs_triage':
+    default:
+      return { color: 'var(--med)', borderColor: 'color-mix(in srgb, var(--med) 48%, transparent)', backgroundColor: 'color-mix(in srgb, var(--med) 10%, transparent)' }
+  }
+}
+
+function claimStrengthLabel(value: string): string {
+  if (!value) return ''
+  return value.replace(/_/g, ' ')
+}
+
+function claimStrengthStyle(value: string): { color: string; borderColor: string; backgroundColor: string } {
+  switch (value) {
+    case 'evidence_supported':
+      return {
+        color: 'var(--emerald-400)',
+        borderColor: 'color-mix(in srgb, var(--emerald-400) 50%, transparent)',
+        backgroundColor: 'color-mix(in srgb, var(--emerald-400) 10%, transparent)',
+      }
+    case 'triage_only':
+    case 'weak':
+      return {
+        color: 'var(--crit)',
+        borderColor: 'color-mix(in srgb, var(--crit) 50%, transparent)',
+        backgroundColor: 'color-mix(in srgb, var(--crit) 10%, transparent)',
+      }
+    default:
+      return {
+        color: 'var(--med)',
+        borderColor: 'color-mix(in srgb, var(--med) 50%, transparent)',
+        backgroundColor: 'color-mix(in srgb, var(--med) 10%, transparent)',
+      }
+  }
+}
+
 function isMlAlert(alert: Alert): boolean {
   const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
   const source = String(alert.source || '').toLowerCase()
   const ruleName = String(metadata.rule_name || '').toUpperCase()
 
   return (
+    normalizeAlertSource(alert) === 'ml' ||
     source === 'ml' ||
     String(metadata.source || '').toLowerCase() === 'ml' ||
     String(metadata.detection_source || '').toLowerCase() === 'ml' ||
@@ -1647,6 +2325,50 @@ function isOnnxMlAlert(alert: Alert): boolean {
   )
 }
 
+function isParityTestAlert(alert: Alert): boolean {
+  const metadata = (alert.detectionMetadata || {}) as Record<string, unknown>
+  const rawEvent = (alert.rawEvent || alert.raw_event || {}) as Record<string, unknown>
+  const payload = ((rawEvent.payload as Record<string, unknown> | undefined) || {}) as Record<string, unknown>
+  const device = ((payload.device as Record<string, unknown> | undefined) || {}) as Record<string, unknown>
+  const evidence = ((payload.evidence as Record<string, unknown> | undefined) || {}) as Record<string, unknown>
+  const alertRecord = asRecord(alert)
+  const eventIds = safeStringArray(
+    alert.contributingEvents || alertRecord.eventIds || alertRecord.event_ids
+  )
+
+  const markers = [
+    alert.sourceEventId,
+    ...eventIds,
+    rawEvent.mobile_event_id,
+    rawEvent.event_id,
+    rawEvent.event_type,
+    payload.event_id,
+    payload.parity_run_id,
+    payload.validation_run_id,
+    payload.device_id,
+    device.device_id,
+    device.serial_number,
+    evidence.source,
+    evidence.parity_run_id,
+    evidence.validation_run_id,
+    metadata.rule_id,
+    metadata.device_id,
+    metadata.mobile_device_id,
+  ]
+
+  return markers.some(value => {
+    if (typeof value !== 'string') return false
+    const normalized = value.toLowerCase()
+    return (
+      normalized.startsWith('mobile-endpoint-parity-') ||
+      normalized.startsWith('agent-mobile-endpoint-parity-') ||
+      normalized.startsWith('parity-') ||
+      normalized.includes('_parity_') ||
+      normalized.includes('-parity-')
+    )
+  })
+}
+
 function AlertRow({
   alert, isNew, isSelected, onSelect, onCreateExclusion, onAcknowledge
 }: {
@@ -1665,6 +2387,12 @@ function AlertRow({
   const description = String(alert.description || '')
   const mlAlert = isMlAlert(alert)
   const onnxMlAlert = isOnnxMlAlert(alert)
+  const parityTestAlert = isParityTestAlert(alert)
+  const claimStrength = alertClaimStrength(alert)
+  const needsFpReview = alertNeedsFpReview(alert)
+  const correlationReady = alertCorrelationReady(alert)
+  const operationalTriage = resolveOperationalTriage(alert)
+  const operationalStyle = operationalQueueStyle(operationalTriage.state)
 
   return (
     <div
@@ -1722,6 +2450,61 @@ function AlertRow({
                 ONNX
               </span>
             )}
+            {parityTestAlert && (
+              <span
+                className="badge-sentinel badge-sentinel-pill font-semibold"
+                style={{
+                  color: 'var(--muted)',
+                  borderColor: 'var(--border)',
+                  backgroundColor: 'var(--surface-2)',
+                }}
+                title="Synthetic mobile parity validation event, not a production security incident"
+              >
+                PARITY TEST
+              </span>
+            )}
+            {claimStrength && (
+              <span
+                className="badge-sentinel badge-sentinel-pill font-semibold"
+                style={claimStrengthStyle(claimStrength)}
+                title={claimStrength === 'triage_only' ? 'Missing required telemetry; treat as triage until reviewed' : 'Alert evidence claim strength'}
+              >
+                {claimStrengthLabel(claimStrength)}
+              </span>
+            )}
+            {needsFpReview && (
+              <span
+                className="badge-sentinel badge-sentinel-pill font-semibold"
+                style={{
+                  color: 'var(--high)',
+                  borderColor: 'color-mix(in srgb, var(--high) 50%, transparent)',
+                  backgroundColor: 'color-mix(in srgb, var(--high) 10%, transparent)',
+                }}
+                title="Telemetry gaps require false-positive review before strong claim"
+              >
+                FP review
+              </span>
+            )}
+            {correlationReady === false && (
+              <span
+                className="badge-sentinel badge-sentinel-pill"
+                style={{
+                  color: 'var(--muted)',
+                  borderColor: 'var(--border)',
+                  backgroundColor: 'var(--surface-2)',
+                }}
+                title="Required correlation fields are missing"
+              >
+                not correlation-ready
+              </span>
+            )}
+            <span
+              className="badge-sentinel badge-sentinel-pill font-semibold"
+              style={operationalStyle}
+              title={[operationalTriage.nextAction, ...(operationalTriage.reasons || [])].filter(Boolean).join(' | ')}
+            >
+              {operationalTriage.label}
+            </span>
           </div>
           <p className="text-sm truncate" style={{ color: 'var(--muted)' }}>{description}</p>
           {mitreTechniques.length > 0 && (
@@ -1741,6 +2524,22 @@ function AlertRow({
         <span className={getSeverityBadgeClass(severity)}>
           {severity.toUpperCase()}
         </span>
+      </div>
+
+      {/* Operational Queue */}
+      <div className="w-32 min-w-0">
+        <span
+          className="inline-flex max-w-full rounded-full border px-2 py-0.5 text-[11px] font-medium"
+          style={operationalStyle}
+          title={[operationalTriage.nextAction, ...(operationalTriage.reasons || [])].filter(Boolean).join(' | ')}
+        >
+          <span className="truncate">{operationalTriage.label}</span>
+        </span>
+        {operationalTriage.nextAction && (
+          <div className="mt-1 truncate text-[10px]" style={{ color: 'var(--muted)' }} title={operationalTriage.nextAction}>
+            {operationalTriage.nextAction}
+          </div>
+        )}
       </div>
 
       {/* Status */}
@@ -1835,9 +2634,12 @@ function StatusBadge({ status }: { status: Alert['status'] | string | null | und
     switch (status) {
       case 'new': return 'badge-sentinel badge-sentinel-info'
       case 'open': return 'badge-sentinel badge-sentinel-error'
+      case 'acknowledged': return 'badge-sentinel badge-sentinel-warning'
+      case 'triaged': return 'badge-sentinel badge-sentinel-warning'
       case 'investigating': return 'badge-sentinel badge-sentinel-warning'
       case 'resolved': return 'badge-sentinel badge-sentinel-success'
       case 'false_positive': return 'badge-sentinel badge-sentinel-default'
+      case 'closed': return 'badge-sentinel badge-sentinel-success'
       default: return 'badge-sentinel badge-sentinel-default'
     }
   }

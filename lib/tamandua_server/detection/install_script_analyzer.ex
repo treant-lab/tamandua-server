@@ -13,7 +13,8 @@ defmodule TamanduaServer.Detection.InstallScriptAnalyzer do
   Returns risk scores using complement product formula for pattern weighting.
   """
 
-  @suspicious_patterns [
+  defp suspicious_patterns do
+    [
     # Base64 / obfuscation (weight: 0.8-0.9)
     {~r/FromBase64String|base64\s+-d|atob\(/i, :base64_decode, 0.8},
     {~r/\-enc(?:oded)?(?:command)?\b/i, :encoded_command, 0.9},
@@ -42,7 +43,8 @@ defmodule TamanduaServer.Detection.InstallScriptAnalyzer do
 
     # Persistence (weight: 0.85)
     {~r/crontab|schtasks|HKEY.*Run/i, :persistence_mechanism, 0.85}
-  ]
+    ]
+  end
 
   @doc """
   Analyze a single command line for suspicious patterns.
@@ -92,7 +94,7 @@ defmodule TamanduaServer.Detection.InstallScriptAnalyzer do
       [{:network_download, 0.7}, {:url_reference, 0.5}]
   """
   def extract_suspicious_patterns(content) when is_binary(content) do
-    @suspicious_patterns
+    suspicious_patterns()
     |> Enum.filter(fn {regex, _name, _weight} ->
       Regex.match?(regex, content)
     end)

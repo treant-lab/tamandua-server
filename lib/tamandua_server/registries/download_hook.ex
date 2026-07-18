@@ -12,7 +12,8 @@ defmodule TamanduaServer.Registries.DownloadHook do
   2. Spawn async scan task via Task.Supervisor
   3. Scan model using registry's scan_model callback
   4. Update provenance with scan results and risk score
-  5. Determine status: clean (< 0.1), suspicious (0.1-0.3), malicious (> 0.3)
+  5. Determine risk status: clean (< 0.1), suspicious (0.1-0.3), malicious (>= 0.3)
+     and record the Model Guard enforcement decision in scan_result.model_guard
   6. If malicious, create alert and broadcast to PubSub
   7. Broadcast scan completion event
 
@@ -33,6 +34,9 @@ defmodule TamanduaServer.Registries.DownloadHook do
   alias TamanduaServer.Alerts
   alias TamanduaServer.Repo
 
+  @suspicious_threshold 0.1
+  @block_threshold 0.3
+
   @doc """
   Handles a model download event.
 
@@ -49,7 +53,8 @@ defmodule TamanduaServer.Registries.DownloadHook do
   - `{:ok, provenance_id}` - Provenance record created, scan task started
   - `{:error, changeset}` - Failed to create provenance record
   """
-  @spec handle_download(String.t(), module(), map()) :: {:ok, String.t()} | {:error, Ecto.Changeset.t()}
+  @spec handle_download(String.t(), module(), map()) ::
+          {:ok, String.t()} | {:error, Ecto.Changeset.t()}
   def handle_download(model_id, registry, opts \\ %{}) do
     registry_name = registry_module_to_name(registry)
 
@@ -130,18 +135,20 @@ defmodule TamanduaServer.Registries.DownloadHook do
     # Perform scan
     case registry.scan_model(provenance.model_id, config) do
       {:ok, scan_result} ->
-        handle_scan_success(provenance, scan_result)
+        handle_scan_success(provenance, scan_result, config)
 
       {:error, reason} ->
-        handle_scan_error(provenance, reason)
+        handle_scan_error(provenance, reason, config)
     end
   end
 
   # Handles successful scan
-  defp handle_scan_success(provenance, scan_result) do
+  defp handle_scan_success(provenance, scan_result, config) do
     risk_score = scan_result.risk_score
     findings = scan_result[:findings] || []
     status = determine_status(risk_score)
+    model_guard = build_model_guard_evidence(provenance, scan_result, risk_score, findings, status, config)
+    scan_result = Map.put(scan_result, :model_guard, model_guard)
 
     # Update provenance with scan results
     {:ok, updated_provenance} =
@@ -171,13 +178,15 @@ defmodule TamanduaServer.Registries.DownloadHook do
   end
 
   # Handles scan error
-  defp handle_scan_error(provenance, reason) do
+  defp handle_scan_error(provenance, reason, config) do
     Logger.error("Scan failed for #{provenance.model_id}: #{inspect(reason)}")
+
+    model_guard = build_model_guard_error_evidence(provenance, reason, config)
 
     provenance
     |> ModelProvenance.update_scan_result(%{
       scanned_at: DateTime.utc_now(),
-      scan_result: %{error: inspect(reason)},
+      scan_result: %{error: inspect(reason), model_guard: model_guard},
       status: "error"
     })
     |> Repo.update()
@@ -193,9 +202,180 @@ defmodule TamanduaServer.Registries.DownloadHook do
   end
 
   # Determines status from risk score
-  defp determine_status(risk_score) when risk_score < 0.1, do: "clean"
-  defp determine_status(risk_score) when risk_score < 0.3, do: "suspicious"
+  defp determine_status(risk_score) when risk_score < @suspicious_threshold, do: "clean"
+  defp determine_status(risk_score) when risk_score < @block_threshold, do: "suspicious"
   defp determine_status(_risk_score), do: "malicious"
+
+  defp build_model_guard_evidence(provenance, scan_result, risk_score, findings, status, config) do
+    enforcement = model_guard_enforcement(config)
+    decision = model_guard_decision(risk_score)
+    findings_count = length(findings)
+    package_findings = scan_result_value(scan_result, :package_findings, [])
+    external_model_scores = scan_result_value(scan_result, :external_model_scores, [])
+    model_consensus = scan_result_value(scan_result, :model_consensus, %{})
+
+    %{
+      decision: decision,
+      enforcement: enforcement,
+      action: model_guard_action(decision, enforcement),
+      status: status,
+      thresholds: %{
+        suspicious: @suspicious_threshold,
+        block: @block_threshold
+      },
+      fp_rationale: fp_rationale(decision, findings_count),
+      evidence: %{
+        model_id: provenance.model_id,
+        registry: provenance.registry,
+        risk_score: risk_score,
+        findings_count: findings_count,
+        highest_severity: highest_severity(findings),
+        finding_types: finding_types(findings),
+        package_findings: package_findings,
+        package_findings_count: evidence_count(package_findings),
+        package_scanner: package_scanner_state(package_findings),
+        external_model_scores: external_model_scores,
+        external_model_scores_count: evidence_count(external_model_scores),
+        model_consensus: model_consensus,
+        model_consensus_state: model_consensus_state(model_consensus),
+        enforcement_note: enforcement_note(enforcement)
+      }
+    }
+  end
+
+  defp model_guard_enforcement(config) do
+    value =
+      config[:model_guard_enforcement] ||
+        config["model_guard_enforcement"] ||
+        Application.get_env(:tamandua_server, :model_guard_enforcement, :enforced)
+
+    case value do
+      :decision_only -> "decision_only"
+      "decision_only" -> "decision_only"
+      _ -> "enforced"
+    end
+  end
+
+  defp build_model_guard_error_evidence(provenance, reason, config) do
+    status = model_guard_error_status(reason)
+    enforcement = model_guard_enforcement(config)
+
+    %{
+      decision: "block",
+      enforcement: enforcement,
+      action: model_guard_action("block", enforcement),
+      status: status,
+      thresholds: %{
+        suspicious: @suspicious_threshold,
+        block: @block_threshold
+      },
+      fp_rationale:
+        "Model Guard could not inspect the artifact; loading fails closed until a clean scan exists.",
+      evidence: %{
+        model_id: provenance.model_id,
+        registry: provenance.registry,
+        error: inspect(reason),
+        requested_enforcement: model_guard_enforcement(config),
+        package_scanner: "not_collected",
+        package_findings: [],
+        package_findings_count: 0,
+        external_model_scores: [],
+        external_model_scores_count: 0,
+        model_consensus: %{},
+        model_consensus_state: "not_collected",
+        enforcement_note: "Model Guard scan did not complete; no package scanner or external model consensus evidence was collected."
+      }
+    }
+  end
+
+  defp model_guard_error_status(reason)
+       when reason in [:unsupported, :unsupported_registry, :unsupported_platform],
+       do: "unsupported"
+
+  defp model_guard_error_status(reason) when is_tuple(reason) do
+    reason
+    |> Tuple.to_list()
+    |> Enum.any?(&(&1 in [:unsupported, :unsupported_registry, :unsupported_platform]))
+    |> case do
+      true -> "unsupported"
+      false -> "failed"
+    end
+  end
+
+  defp model_guard_error_status(_), do: "failed"
+
+  defp scan_result_value(scan_result, key, default) when is_map(scan_result) do
+    Map.get(scan_result, key) || Map.get(scan_result, to_string(key)) || default
+  end
+
+  defp scan_result_value(_, _key, default), do: default
+
+  defp package_scanner_state(package_findings) when is_list(package_findings) do
+    if Enum.empty?(package_findings), do: "not_collected", else: "collected"
+  end
+
+  defp package_scanner_state(_), do: "not_collected"
+
+  defp evidence_count(items) when is_list(items), do: length(items)
+  defp evidence_count(items) when is_map(items), do: map_size(items)
+  defp evidence_count(_), do: 0
+
+  defp model_consensus_state(consensus) when is_map(consensus) and map_size(consensus) > 0 do
+    consensus[:state] || consensus["state"] || consensus[:verdict] || consensus["verdict"] || "collected"
+  end
+
+  defp model_consensus_state(_), do: "not_collected"
+
+  defp enforcement_note("decision_only"),
+    do: "Model Guard is decision-only; findings are recorded as evidence and no load block is enforced."
+
+  defp enforcement_note("enforced"), do: "Model Guard enforcement is enabled for block decisions."
+  defp enforcement_note(_), do: "Model Guard enforcement state is unavailable."
+
+  defp model_guard_decision(risk_score) when risk_score < @suspicious_threshold, do: "allow"
+  defp model_guard_decision(risk_score) when risk_score < @block_threshold, do: "review"
+  defp model_guard_decision(_risk_score), do: "block"
+
+  defp model_guard_action("block", "enforced"), do: "block_load"
+  defp model_guard_action("block", "decision_only"), do: "report_only"
+  defp model_guard_action("review", _enforcement), do: "allow_with_review"
+  defp model_guard_action("allow", _enforcement), do: "allow"
+
+  defp fp_rationale("block", 0),
+    do: "High risk score without discrete findings; review model lineage before permanent block."
+
+  defp fp_rationale("block", _findings_count),
+    do:
+      "High risk score meets enforced block threshold; validate findings before closing as true positive."
+
+  defp fp_rationale("review", _findings_count),
+    do:
+      "Intermediate risk band is review-only to reduce false positives from weak or contextual signals."
+
+  defp fp_rationale("allow", _findings_count),
+    do: "Below suspicious threshold; no Model Guard action required."
+
+  defp highest_severity(findings) do
+    findings
+    |> Enum.map(&severity/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&severity_rank/1, fn -> nil end)
+  end
+
+  defp severity(finding), do: finding[:severity] || finding["severity"]
+
+  defp severity_rank("critical"), do: 4
+  defp severity_rank("high"), do: 3
+  defp severity_rank("medium"), do: 2
+  defp severity_rank("low"), do: 1
+  defp severity_rank(_), do: 0
+
+  defp finding_types(findings) do
+    findings
+    |> Enum.map(fn finding -> finding[:type] || finding["type"] end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
 
   @doc """
   Creates an alert for a malicious model.
@@ -225,12 +405,20 @@ defmodule TamanduaServer.Registries.DownloadHook do
         registry: provenance.registry,
         risk_score: risk_score,
         findings_count: length(findings),
-        provenance_id: provenance.id
+        provenance_id: provenance.id,
+        model_guard: scan_result[:model_guard] || scan_result["model_guard"],
+        package_findings: scan_result[:package_findings] || scan_result["package_findings"] || [],
+        external_model_scores: scan_result[:external_model_scores] || scan_result["external_model_scores"] || [],
+        model_consensus: scan_result[:model_consensus] || scan_result["model_consensus"] || %{}
       },
       detection_metadata: %{
         source: "model_registry",
         registry: provenance.registry,
-        scan_result: scan_result
+        scan_result: scan_result,
+        model_guard: scan_result[:model_guard] || scan_result["model_guard"],
+        package_findings: scan_result[:package_findings] || scan_result["package_findings"] || [],
+        external_model_scores: scan_result[:external_model_scores] || scan_result["external_model_scores"] || [],
+        model_consensus: scan_result[:model_consensus] || scan_result["model_consensus"] || %{}
       }
     }
 
@@ -249,7 +437,10 @@ defmodule TamanduaServer.Registries.DownloadHook do
         {:ok, alert}
 
       {:error, changeset} ->
-        Logger.error("Failed to create alert for #{provenance.model_id}: #{inspect(changeset.errors)}")
+        Logger.error(
+          "Failed to create alert for #{provenance.model_id}: #{inspect(changeset.errors)}"
+        )
+
         {:error, changeset}
     end
   end
@@ -263,13 +454,16 @@ defmodule TamanduaServer.Registries.DownloadHook do
   defp build_alert_description(provenance, findings) when is_list(findings) do
     finding_count = length(findings)
 
-    base = "Model scan detected #{finding_count} security finding(s) with risk score #{Float.round(provenance.risk_score, 2)}."
+    base =
+      "Model scan detected #{finding_count} security finding(s) with risk score #{Float.round(provenance.risk_score, 2)}."
 
     if finding_count > 0 do
       finding_summary =
         findings
         |> Enum.take(3)
-        |> Enum.map(fn f -> "- #{f[:type] || "Unknown"}: #{f[:description] || "No description"}" end)
+        |> Enum.map(fn f ->
+          "- #{f[:type] || "Unknown"}: #{f[:description] || "No description"}"
+        end)
         |> Enum.join("\n")
 
       "#{base}\n\nFindings:\n#{finding_summary}"
@@ -312,7 +506,9 @@ defmodule TamanduaServer.Registries.DownloadHook do
   defp registry_module_to_name(TamanduaServer.Registries.MLflow), do: "mlflow"
   defp registry_module_to_name(TamanduaServer.Registries.WandB), do: "wandb"
   defp registry_module_to_name(TamanduaServer.Registries.Ollama), do: "ollama"
-  defp registry_module_to_name(module), do: module |> to_string() |> String.split(".") |> List.last() |> String.downcase()
+
+  defp registry_module_to_name(module),
+    do: module |> to_string() |> String.split(".") |> List.last() |> String.downcase()
 
   # Helper to conditionally put values in map
   defp maybe_put(map, _key, nil), do: map

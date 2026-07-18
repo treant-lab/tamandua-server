@@ -15,6 +15,7 @@ defmodule TamanduaServer.Agents.Worker do
   alias TamanduaServer.Agents.{Registry, Agent, OrgLookup, AgentCommand}
   alias TamanduaServer.Agents
   alias TamanduaServer.Accounts.Organization
+  alias TamanduaServer.Alerts
   alias TamanduaServer.Telemetry.Ingestor
   alias TamanduaServer.Detection.Engine
   alias TamanduaServer.Repo
@@ -27,10 +28,10 @@ defmodule TamanduaServer.Agents.Worker do
   @heartbeat_timeout :timer.seconds(180)
   @db_heartbeat_throttle :timer.seconds(30)
   @presence_tick_interval :timer.seconds(30)
-  @command_stale_timeout :timer.seconds(45)
 
   # Default batch size for (re)delivering queued commands on connect/notify.
   @pending_command_batch_limit 50
+  @command_result_statuses ~w(ok degraded unsupported failed)
 
   defstruct [
     :agent_id,
@@ -113,55 +114,60 @@ defmodule TamanduaServer.Agents.Worker do
     agent_id = Keyword.fetch!(opts, :agent_id)
     socket_pid = Keyword.fetch!(opts, :socket_pid)
     agent_info = Keyword.fetch!(opts, :agent_info)
-    organization_id = persist_agent_to_db(agent_id, agent_info)
-    agent_info =
-      Map.put(agent_info, :organization_id, organization_id || agent_info[:organization_id])
 
-    state = %__MODULE__{
-      agent_id: agent_id,
-      socket_pid: socket_pid,
-      hostname: agent_info[:hostname],
-      organization_id: agent_info[:organization_id],
-      os_type: agent_info[:os_type],
-      config: agent_info[:config] || %{},
-      connected_at: System.system_time(:millisecond),
-      last_heartbeat: System.system_time(:millisecond),
-      last_db_heartbeat: System.system_time(:millisecond)
-    }
+    with {:ok, organization_id} <- authenticated_organization_id(agent_info),
+         :ok <- persist_agent_to_db(agent_id, agent_info, organization_id),
+         :ok <- Registry.register(agent_id, Map.put(agent_info, :worker_pid, self())) do
+      state = %__MODULE__{
+        agent_id: agent_id,
+        socket_pid: socket_pid,
+        hostname: agent_info[:hostname],
+        organization_id: organization_id,
+        os_type: agent_info[:os_type],
+        config: agent_info[:config] || %{},
+        connected_at: System.system_time(:millisecond),
+        last_heartbeat: System.system_time(:millisecond),
+        last_db_heartbeat: System.system_time(:millisecond)
+      }
 
-    # Monitor the socket process
-    Process.monitor(socket_pid)
+      # Monitor the socket process only after persistence and registration succeed.
+      Process.monitor(socket_pid)
 
-    # Register in the agent registry
-    Registry.register(agent_id, Map.put(agent_info, :worker_pid, self()))
+      schedule_heartbeat_check()
+      schedule_presence_tick()
 
-    # Schedule heartbeat check
-    schedule_heartbeat_check()
-    schedule_presence_tick()
+      # Avoid blocking channel join on database latency during worker init.
+      # In the light lab environment, the first boot can be DB-heavy.
+      Process.send_after(self(), :send_pending_commands, 0)
 
-    # Avoid blocking channel join on database latency during worker init.
-    # In the light lab environment, the first boot can be DB-heavy.
-    Process.send_after(self(), :send_pending_commands, 0)
-
-    Logger.info("Worker started for agent #{agent_id}")
-    {:ok, state}
+      Logger.info("Worker started for agent #{agent_id}")
+      {:ok, state}
+    else
+      {:error, reason} ->
+        Logger.warning("Worker rejected for agent #{agent_id}: #{inspect(reason)}")
+        {:stop, reason}
+    end
   end
 
-  defp persist_agent_to_db(agent_id, agent_info) do
-    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+  defp authenticated_organization_id(agent_info) do
+    organization_id = agent_info[:organization_id]
 
-    # Get organization_id from agent info, OrgLookup cache, or generate a dev fallback
-    org_id =
-      agent_info[:organization_id]
-      |> ensure_valid_org_id()
-      |> case do
-        nil -> ensure_valid_org_id(OrgLookup.get_org_id(agent_id))
-        valid -> valid
-      end
+    cond do
+      not Registry.canonical_organization_id?(organization_id) ->
+        {:error, :invalid_organization_id}
 
-    unless org_id do
-      Logger.warning("No organization_id found for agent #{agent_id}; agent will have nil org_id until assigned")
+      match?(%Organization{id: ^organization_id}, Repo.get(Organization, organization_id)) ->
+        {:ok, organization_id}
+
+      true ->
+        {:error, :organization_not_found}
     end
+  rescue
+    error -> {:error, {:organization_lookup_failed, error}}
+  end
+
+  defp persist_agent_to_db(agent_id, agent_info, organization_id) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     # Generate a machine_id from agent_id if not provided
     machine_id = agent_info[:machine_id] || :crypto.hash(:sha256, agent_id)
@@ -183,7 +189,7 @@ defmodule TamanduaServer.Agents.Worker do
       status: "online",
       last_seen_at: now,
       config: config,
-      organization_id: org_id,
+      organization_id: organization_id,
       inserted_at: now,
       updated_at: now
     }
@@ -198,7 +204,6 @@ defmodule TamanduaServer.Agents.Worker do
       :os_type,
       :os_version,
       :agent_version,
-      :organization_id,
       :status,
       :last_seen_at,
       :config,
@@ -206,37 +211,55 @@ defmodule TamanduaServer.Agents.Worker do
     ]
 
     # Add certificate fields to update list if present
-    update_fields = if agent_info[:certificate_fingerprint] do
-      [:certificate_fingerprint, :certificate_subject, :certificate_valid_until | update_fields]
-    else
-      update_fields
-    end
+    update_fields =
+      if agent_info[:certificate_fingerprint] do
+        [:certificate_fingerprint, :certificate_subject, :certificate_valid_until | update_fields]
+      else
+        update_fields
+      end
 
-    # Upsert: insert or update on conflict
-    case Repo.insert_all(
-      Agent,
-      [attrs],
-      on_conflict: {:replace, update_fields},
-      conflict_target: :id
-    ) do
-      {1, _} ->
+    case Repo.transaction(fn ->
+           with :ok <- lock_agent_identity(agent_id),
+                :ok <- ensure_agent_tenant_matches(agent_id, organization_id),
+                {count, _} when count in [0, 1] <-
+                  Repo.insert_all(
+                    Agent,
+                    [attrs],
+                    on_conflict: {:replace, update_fields},
+                    conflict_target: :id
+                  ),
+                :ok <- ensure_agent_tenant_matches(agent_id, organization_id) do
+             :ok
+           else
+             {:error, reason} -> Repo.rollback(reason)
+             error -> Repo.rollback({:agent_persistence_failed, error})
+           end
+         end) do
+      {:ok, :ok} ->
+        OrgLookup.put(agent_id, organization_id)
         Logger.debug("Agent #{agent_id} persisted to database")
-        if org_id, do: OrgLookup.put(agent_id, org_id)
-        org_id
+        :ok
 
-      {0, _} ->
-        Logger.debug("Agent #{agent_id} already exists, updated")
-        if org_id, do: OrgLookup.put(agent_id, org_id)
-        org_id
-
-      error ->
-        Logger.error("Failed to persist agent #{agent_id}: #{inspect(error)}")
-        org_id
+      {:error, reason} ->
+        {:error, reason}
     end
   rescue
-    e ->
-      Logger.error("Error persisting agent to database: #{inspect(e)}")
-      agent_info[:organization_id]
+    error -> {:error, {:agent_persistence_failed, error}}
+  end
+
+  defp lock_agent_identity(agent_id) do
+    case Repo.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [agent_id]) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, {:agent_lock_failed, reason}}
+    end
+  end
+
+  defp ensure_agent_tenant_matches(agent_id, organization_id) do
+    case Repo.get(Agent, agent_id) do
+      nil -> :ok
+      %Agent{organization_id: ^organization_id} -> :ok
+      %Agent{} -> {:error, :agent_tenant_mismatch}
+    end
   end
 
   defp put_reported_agent_runtime(config, agent_info) do
@@ -253,19 +276,6 @@ defmodule TamanduaServer.Agents.Worker do
 
   defp maybe_put_config(config, _key, value) when value in [nil, [], %{}], do: config
   defp maybe_put_config(config, key, value), do: Map.put(config, key, value)
-
-  defp ensure_valid_org_id(nil), do: nil
-  defp ensure_valid_org_id(org_id) do
-    case Repo.get(Organization, org_id) do
-      nil ->
-        Logger.warning("Organization #{org_id} missing for agent persistence; falling back to nil org_id")
-        nil
-      _org ->
-        org_id
-    end
-  rescue
-    _ -> nil
-  end
 
   defp maybe_add_cert_fields(attrs, agent_info) do
     if agent_info[:certificate_fingerprint] do
@@ -337,13 +347,27 @@ defmodule TamanduaServer.Agents.Worker do
 
       {:existing, cmd} ->
         # Idempotency-key hit: a UI/API retry of an already-created command.
-        # Do not insert or re-dispatch; return the existing command.
+        # Do not insert or re-dispatch. Terminal rows replay their persisted
+        # result; in-flight rows attach this caller to the original command so
+        # they cannot be mistaken for a successful execution.
         Logger.info(
           "Idempotent send_command replay for agent #{state.agent_id}: " <>
             "key=#{inspect(idempotency_key)} existing command #{cmd.id} (#{cmd.status})"
         )
 
-        {:reply, {:ok, cmd}, state}
+        case cmd.status do
+          "completed" ->
+            {:reply, {:ok, cmd.result || %{command_id: cmd.id, status: "completed"}}, state}
+
+          "failed" ->
+            {:reply, {:error, cmd.error || :command_failed}, state}
+
+          status when status in ["pending", "sent", "acknowledged"] ->
+            {:reply, {:error, {:command_in_progress, cmd.id}}, state}
+
+          status ->
+            {:reply, {:error, {:command_state_unknown, cmd.id, status}}, state}
+        end
 
       {:error, changeset} ->
         Logger.error("Failed to insert command: #{inspect(changeset.errors)}")
@@ -356,9 +380,11 @@ defmodule TamanduaServer.Agents.Worker do
     # Count pending commands from database
     pending_count =
       Repo.one(
-        from c in AgentCommand,
-        where: c.agent_id == ^state.agent_id and c.status in ["pending", "sent", "acknowledged"],
-        select: count(c.id)
+        from(c in AgentCommand,
+          where:
+            c.agent_id == ^state.agent_id and c.status in ["pending", "sent", "acknowledged"],
+          select: count(c.id)
+        )
       )
 
     info = %{
@@ -405,15 +431,20 @@ defmodule TamanduaServer.Agents.Worker do
   def handle_cast({:command_response, response}, state) do
     # Phoenix Channel payloads use string keys from JSON
     command_id = response["command_id"] || response[:command_id]
-    success = response["success"] || response[:success]
+    success = command_response_success(response)
+    result_status = command_response_result_status(response)
+    response_command_type = response["command_type"] || response[:command_type]
 
-    status =
-      response["status"] ||
-        response[:status] ||
-        if(success == false, do: "failed", else: "completed")
+    status = command_response_lifecycle_status(response, success, result_status)
 
-    result = response["result"] || response[:result] || response["result_data"] || response[:result_data]
-    error = response["error"] || response[:error] || response["error_message"] || response[:error_message]
+    result =
+      response
+      |> command_response_result()
+      |> audit_command_result(response_command_type, result_status, response)
+
+    error =
+      response["error"] || response[:error] || response["error_message"] ||
+        response[:error_message]
 
     cond do
       realtime_command_id?(command_id) ->
@@ -433,9 +464,31 @@ defmodule TamanduaServer.Agents.Worker do
   end
 
   defp handle_persisted_command_response(command_id, status, result, error, response, state) do
-    case Repo.get(AgentCommand, command_id) do
+    case Repo.get_by(AgentCommand, id: command_id, agent_id: state.agent_id) do
       nil ->
-        Logger.warning("Received response for unknown command: #{inspect(command_id)}")
+        Logger.warning(
+          "Received response for unknown command or wrong agent: command=#{inspect(command_id)} agent=#{state.agent_id}"
+        )
+
+        {:noreply, state}
+
+      %AgentCommand{status: terminal} when terminal in ["completed", "failed"] ->
+        Logger.debug(
+          "Ignoring duplicate terminal response for command #{command_id} on agent #{state.agent_id}"
+        )
+
+        {from, state} = pop_command_callback(state, command_id)
+
+        if from do
+          reply =
+            if terminal == "completed" do
+              {:ok, result || response}
+            else
+              {:error, error || command_failed_error(result) || "Command failed"}
+            end
+
+          GenServer.reply(from, reply)
+        end
 
         {:noreply, state}
 
@@ -443,10 +496,21 @@ defmodule TamanduaServer.Agents.Worker do
         # Update command status in database
         changeset =
           case status do
-            "acknowledged" -> AgentCommand.mark_acknowledged(cmd)
-            "completed" -> AgentCommand.mark_completed(cmd, result)
-            "failed" -> AgentCommand.mark_failed(cmd, error || "Unknown error")
-            _ -> AgentCommand.mark_completed(cmd, result)
+            "acknowledged" ->
+              AgentCommand.mark_acknowledged(cmd)
+
+            "completed" ->
+              AgentCommand.mark_completed(cmd, result)
+
+            "failed" ->
+              mark_command_failed(
+                cmd,
+                error || command_failed_error(result) || "Unknown error",
+                result
+              )
+
+            _ ->
+              AgentCommand.mark_completed(cmd, result)
           end
 
         case Repo.update(changeset) do
@@ -459,19 +523,134 @@ defmodule TamanduaServer.Agents.Worker do
             )
         end
 
-        # Reply to the caller if they're still waiting
-        {from, state} = pop_command_callback(state, command_id)
+        if status == "acknowledged" do
+          # ACK means the endpoint accepted the command, not that the response
+          # action completed. Keep the original caller attached until a
+          # completed/failed response or timeout arrives.
+          {:noreply, state}
+        else
+          {from, state} = pop_command_callback(state, command_id)
 
-        case from do
-          nil ->
-            Logger.debug("No callback waiting for command #{command_id}")
+          case from do
+            nil ->
+              Logger.debug("No callback waiting for command #{command_id}")
 
-          from ->
-            GenServer.reply(from, {:ok, result || response})
+            from when status == "completed" ->
+              GenServer.reply(from, {:ok, result || response})
+
+            from ->
+              GenServer.reply(
+                from,
+                {:error, error || command_failed_error(result) || "Command failed"}
+              )
+          end
+
+          {:noreply, state}
         end
-
-        {:noreply, state}
     end
+  end
+
+  defp command_response_success(response) when is_map(response) do
+    cond do
+      Map.has_key?(response, "success") -> Map.get(response, "success")
+      Map.has_key?(response, :success) -> Map.get(response, :success)
+      true -> nil
+    end
+  end
+
+  defp command_response_result(response) when is_map(response) do
+    response["result"] || response[:result] || response["result_data"] || response[:result_data]
+  end
+
+  defp command_response_result_status(response) when is_map(response) do
+    response["result_status"] || response[:result_status]
+  end
+
+  defp command_response_lifecycle_status(response, success, result_status) do
+    explicit_status = response["status"] || response[:status]
+
+    case explicit_status && String.downcase(to_string(explicit_status)) do
+      "acknowledged" ->
+        "acknowledged"
+
+      status when status in ["failed", "error"] ->
+        "failed"
+
+      status when status in ["completed", "complete", "success", "ok"] ->
+        "completed"
+
+      _ ->
+        cond do
+          success == false -> "failed"
+          normalize_result_status(result_status) == "failed" -> "failed"
+          true -> "completed"
+        end
+    end
+  end
+
+  defp audit_command_result(result, command_type, result_status, response) do
+    normalized_status = normalize_result_status(result_status)
+
+    result
+    |> result_map()
+    |> maybe_put_audit_value("command_type", command_type)
+    |> maybe_put_audit_value("result_status", normalized_status)
+    |> maybe_put_audit_value("executed_at", response["executed_at"] || response[:executed_at])
+    |> maybe_put_command_delivery_audit(response, normalized_status)
+  end
+
+  defp result_map(nil), do: %{}
+  defp result_map(%{} = result), do: result
+  defp result_map(result), do: %{"value" => result}
+
+  defp maybe_put_audit_value(result, _key, nil), do: result
+  defp maybe_put_audit_value(result, _key, ""), do: result
+  defp maybe_put_audit_value(result, key, value), do: Map.put_new(result, key, value)
+
+  defp maybe_put_command_delivery_audit(result, response, normalized_status) do
+    existing = result["command_delivery"] || result[:command_delivery]
+
+    if is_map(existing) do
+      result
+    else
+      audit = %{
+        "schema_version" => "tamandua.command_delivery_audit/v1",
+        "received_by_server_at" =>
+          DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+        "executed_at" => response["executed_at"] || response[:executed_at],
+        "agent_reported_status" => normalized_status,
+        "agent_response_audit" => result["response_audit"] || result[:response_audit]
+      }
+
+      Map.put(result, "command_delivery", audit)
+    end
+  end
+
+  defp normalize_result_status(status) when is_atom(status),
+    do: status |> Atom.to_string() |> normalize_result_status()
+
+  defp normalize_result_status(status) when is_binary(status) do
+    normalized = status |> String.trim() |> String.downcase()
+
+    if normalized in @command_result_statuses do
+      normalized
+    else
+      nil
+    end
+  end
+
+  defp normalize_result_status(_status), do: nil
+
+  defp command_failed_error(%{} = result) do
+    result["error"] || result[:error] || result["message"] || result[:message]
+  end
+
+  defp command_failed_error(_result), do: nil
+
+  defp mark_command_failed(command, error, result) do
+    command
+    |> AgentCommand.mark_failed(error)
+    |> Ecto.Changeset.change(result: result)
   end
 
   @impl true
@@ -495,6 +674,7 @@ defmodule TamanduaServer.Agents.Worker do
 
     if elapsed > @heartbeat_timeout do
       Logger.warning("Agent #{state.agent_id} heartbeat timeout")
+      create_agent_blinded_alert(state, elapsed)
       unregister_and_mark_offline_if_current(state)
       {:stop, :heartbeat_timeout, state}
     else
@@ -562,9 +742,7 @@ defmodule TamanduaServer.Agents.Worker do
         :ok
 
       {event, payload} ->
-        Logger.warning(
-          "Realtime command #{command_id} #{event} timed out for #{state.agent_id}"
-        )
+        Logger.warning("Realtime command #{command_id} #{event} timed out for #{state.agent_id}")
 
         maybe_broadcast_realtime_timeout(state.agent_id, event, payload)
     end
@@ -636,6 +814,65 @@ defmodule TamanduaServer.Agents.Worker do
     Process.send_after(self(), :persist_presence_tick, @presence_tick_interval)
   end
 
+  defp create_agent_blinded_alert(state, elapsed_ms) do
+    attrs = %{
+      severity: "high",
+      title: "Agent heartbeat lost without clean shutdown",
+      description:
+        "Tamandua stopped receiving heartbeats from #{state.hostname || state.agent_id} while its agent socket was still registered. Treat as possible agent blinding, tamper, or BYOVD activity until proven otherwise.",
+      agent_id: state.agent_id,
+      organization_id: state.organization_id,
+      mitre_tactics: ["defense-evasion"],
+      mitre_techniques: ["T1562"],
+      threat_score: 0.82,
+      dedup_key: "agent_blinded:#{state.agent_id}",
+      raw_event: %{
+        "event_type" => "agent_blinded",
+        "source" => "agent_runtime",
+        "agent_id" => state.agent_id,
+        "hostname" => state.hostname,
+        "os_type" => state.os_type,
+        "elapsed_ms" => elapsed_ms,
+        "heartbeat_timeout_ms" => @heartbeat_timeout,
+        "connected_at_ms" => state.connected_at,
+        "last_heartbeat_ms" => state.last_heartbeat
+      },
+      detection_metadata: %{
+        "source" => "agent_runtime",
+        "category" => "agent_self_protection",
+        "detection_type" => "agent_blinded",
+        "rule_id" => "agent_blinded_heartbeat_timeout_v1",
+        "clean_shutdown_observed" => false,
+        "containment" => "server_side_alert_only"
+      },
+      evidence: %{
+        "agent" => %{
+          "id" => state.agent_id,
+          "hostname" => state.hostname,
+          "os_type" => state.os_type,
+          "last_heartbeat_ms" => state.last_heartbeat,
+          "elapsed_ms" => elapsed_ms
+        }
+      },
+      recommended_response:
+        "Verify endpoint health from network/identity telemetry and investigate recent driver-load or tamper indicators before trusting endpoint-only absence of alerts.",
+      false_positive_notes:
+        "Expected during host sleep, network loss, server failover, or controlled agent restart if no clean shutdown signal is wired yet."
+    }
+
+    case Alerts.create_alert(attrs) do
+      {:ok, _alert} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to create agent blinded alert for #{state.agent_id}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
   defp maybe_persist_online_heartbeat(state, now) do
     if now - state.last_db_heartbeat >= @db_heartbeat_throttle do
       case Agents.mark_agent_online(state.agent_id, state.organization_id) do
@@ -656,7 +893,8 @@ defmodule TamanduaServer.Agents.Worker do
       Registry.unregister(state.agent_id)
 
       case Agents.mark_agent_offline(state.agent_id, state.organization_id) do
-        :ok -> :ok
+        :ok ->
+          :ok
 
         {:error, reason} ->
           Logger.debug("Failed to mark #{state.agent_id} offline: #{inspect(reason)}")
@@ -744,9 +982,11 @@ defmodule TamanduaServer.Agents.Worker do
     timeout_ms =
       if cmd.expires_at do
         diff = DateTime.diff(cmd.expires_at, DateTime.utc_now(), :millisecond)
-        max(diff, 1000)  # At least 1 second
+        # At least 1 second
+        max(diff, 1000)
       else
-        3600 * 1000  # Default 1 hour
+        # Default 1 hour
+        3600 * 1000
       end
 
     # Schedule timeout
@@ -808,7 +1048,9 @@ defmodule TamanduaServer.Agents.Worker do
   defp realtime_command_type("shell:input", _payload), do: "shell_input"
   defp realtime_command_type("shell:resize", _payload), do: "shell_resize"
   defp realtime_command_type("shell:terminate", _payload), do: "shell_terminate"
-  defp realtime_command_type(event, _payload), do: event |> to_string() |> String.replace(":", "_")
+
+  defp realtime_command_type(event, _payload),
+    do: event |> to_string() |> String.replace(":", "_")
 
   defp handle_realtime_command_response(command_id, status, error, response, context, state) do
     Logger.info(
@@ -909,12 +1151,14 @@ defmodule TamanduaServer.Agents.Worker do
     events = telemetry_batch[:events] || []
 
     Enum.each(events, fn event ->
-      case event[:event_type] do
-        :honeyfile_access ->
+      event_type = event[:event_type] || event["event_type"]
+
+      case event_type do
+        type when type in [:honeyfile_access, "honeyfile_access"] ->
           # Honeyfile triggered - immediate response
           Engine.handle_critical_event(state.agent_id, event)
 
-        :process_inject ->
+        type when type in [:process_inject, "process_inject"] ->
           # Process injection detected
           Engine.handle_critical_event(state.agent_id, event)
 

@@ -15,9 +15,7 @@ defmodule TamanduaServer.Streaming.StreamManager do
 
   alias TamanduaServer.Streaming.StreamSubscription
 
-  @max_events_per_sec 1000
   @max_queue_size 10_000
-  @slow_consumer_threshold_ms 10_000
   @cleanup_interval 60_000
 
   # Client API

@@ -34,7 +34,6 @@ defmodule TamanduaServer.Alerts.Assignment do
   alias TamanduaServer.Alerts.{Alert, AlertAssignment, AnalystWorkload, AutoAssignmentRule}
   alias TamanduaServer.Accounts.User
 
-  @assignment_types ~w(manual auto_round_robin auto_least_busy auto_expertise auto_random)
 
   # Severity weights for workload calculation
   @severity_weights %{
@@ -119,7 +118,7 @@ defmodule TamanduaServer.Alerts.Assignment do
     if is_nil(alert.assigned_to_id) do
       {:error, :not_assigned}
     else
-      now = DateTime.utc_now()
+      _now = DateTime.utc_now()
 
       Ecto.Multi.new()
       |> Ecto.Multi.update(:alert, change(alert, %{assigned_to_id: nil, assigned_at: nil}))

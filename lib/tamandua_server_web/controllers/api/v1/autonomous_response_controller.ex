@@ -12,11 +12,58 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
 
   use TamanduaServerWeb, :controller
 
-  alias TamanduaServer.Response.{DecisionEngine, AutonomousRules, AnalystLearning, AutonomousEngine}
-  alias TamanduaServer.Assets.Criticality
-  alias TamanduaServer.Alerts
+  alias TamanduaServer.Response.{
+    DecisionEngine,
+    AutonomousRules,
+    AnalystLearning,
+    AutonomousEngine
+  }
 
-  action_fallback TamanduaServerWeb.FallbackController
+  alias TamanduaServer.Assets.Criticality
+  alias TamanduaServer.{Agents, Alerts}
+
+  @sync_approval_timeout_ms 20_000
+  @approval_poll_interval_ms 500
+
+  action_fallback(TamanduaServerWeb.FallbackController)
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_approve
+    when action in [:approve_recommendation, :reject_recommendation, :recommendation_status]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_execute
+    when action in [:engine_set_criticality]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_approve
+    when action in [:engine_feedback, :engine_update_thresholds]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_approve
+    when action in [
+           :update_settings,
+           :emergency_enable,
+           :create_rule,
+           :update_rule,
+           :delete_rule,
+           :toggle_rule,
+           :clone_template
+         ]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_contain
+    when action in [:emergency_disable]
+  )
 
   # ============================================================================
   # Decision Engine Endpoints
@@ -69,8 +116,19 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   """
   def emergency_disable(conn, %{"reason" => reason}) do
     org_id = get_org_id(conn)
-    DecisionEngine.emergency_disable(org_id, reason)
-    json(conn, %{success: true, message: "Autonomous responses disabled"})
+
+    case DecisionEngine.emergency_disable(org_id, reason) do
+      :ok ->
+        json(conn, %{success: true, message: "Autonomous responses disabled"})
+
+      {:error, _reason} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          success: false,
+          error: "Could not disable autonomous responses"
+        })
+    end
   end
 
   @doc """
@@ -79,11 +137,29 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   """
   def emergency_enable(conn, _params) do
     org_id = get_org_id(conn)
-    user = conn.assigns[:current_user]
-    approver_id = if user, do: user.id, else: "system"
 
-    DecisionEngine.emergency_enable(org_id, approver_id)
-    json(conn, %{success: true, message: "Autonomous responses re-enabled"})
+    case conn.assigns[:current_user] do
+      %{id: approver_id} when is_binary(approver_id) and approver_id != "" ->
+        case DecisionEngine.emergency_enable(org_id, approver_id) do
+          :ok ->
+            json(conn, %{success: true, message: "Autonomous responses re-enabled"})
+
+          {:error, :autonomous_response_locked} ->
+            conn
+            |> put_status(:locked)
+            |> json(%{success: false, error: "Autonomous response remains locked"})
+
+          {:error, _reason} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{success: false, error: "Could not enable autonomous responses"})
+        end
+
+      _ ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{success: false, error: "Authenticated approver required"})
+    end
   end
 
   # ============================================================================
@@ -100,11 +176,12 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
 
     case DecisionEngine.get_pending_recommendations(org_id) do
       {:ok, recommendations} ->
-        filtered = if status do
-          Enum.filter(recommendations, & &1.status == status)
-        else
-          recommendations
-        end
+        filtered =
+          if status do
+            Enum.filter(recommendations, &(&1.status == status))
+          else
+            recommendations
+          end
 
         json(conn, %{
           recommendations: filtered,
@@ -119,25 +196,26 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   end
 
   @doc """
-  Approve a pending recommendation.
-  POST /api/v1/autonomous/recommendations/:id/approve
+  Get durable execution status for a recommendation.
+  GET /api/v1/autonomous/recommendations/:id/status
   """
-  def approve_recommendation(conn, %{"id" => recommendation_id}) do
-    user = conn.assigns[:current_user]
-    approver_id = if user, do: user.id, else: "system"
-
-    case DecisionEngine.approve_recommendation(recommendation_id, approver_id) do
-      {:ok, result} ->
-        json(conn, %{
-          success: true,
-          message: "Recommendation approved and executed",
-          result: result
-        })
+  def recommendation_status(conn, %{"id" => recommendation_id}) do
+    case DecisionEngine.get_recommendation_status(recommendation_id, response_scope(conn)) do
+      {:ok, status} ->
+        json(conn, %{success: true, recommendation: format_recommendation_status(status)})
 
       {:error, :not_found} ->
         conn
         |> put_status(404)
         |> json(%{success: false, error: "Recommendation not found"})
+
+      {:error, :tenant_required} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{success: false, error: "Organization context required"})
+
+      {:error, :persistence_failed} ->
+        persistence_error(conn)
 
       {:error, reason} ->
         conn
@@ -147,31 +225,94 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   end
 
   @doc """
+  Approve a pending recommendation.
+  POST /api/v1/autonomous/recommendations/:id/approve
+  """
+  def approve_recommendation(conn, %{"id" => recommendation_id}) do
+    with {:ok, approver_id, scope} <- authenticated_actor(conn) do
+      case DecisionEngine.approve_recommendation(recommendation_id, approver_id, scope) do
+        {:ok, result} ->
+          if respond_async?(conn) do
+            render_accepted_approval(conn, recommendation_id, result)
+          else
+            await_approval(conn, recommendation_id, scope, result)
+          end
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(404)
+          |> json(%{success: false, error: "Recommendation not found"})
+
+        {:error, :already_processed} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{
+            success: false,
+            error: "Recommendation already processed",
+            code: "already_processed",
+            retryable: false
+          })
+
+        {:error, {:execution_state_unknown, _reason}} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{
+            success: false,
+            error: "Actions were dispatched but their final state could not be persisted",
+            code: "execution_state_unknown",
+            retryable: false
+          })
+
+        {:error, :persistence_failed} ->
+          persistence_error(conn)
+
+        {:error, reason} ->
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: inspect(reason)})
+      end
+    end
+  end
+
+  @doc """
   Reject a pending recommendation.
   POST /api/v1/autonomous/recommendations/:id/reject
   """
   def reject_recommendation(conn, %{"id" => recommendation_id} = params) do
-    user = conn.assigns[:current_user]
-    rejector_id = if user, do: user.id, else: "system"
     reason = params["reason"] || "No reason provided"
 
-    case DecisionEngine.reject_recommendation(recommendation_id, rejector_id, reason) do
-      {:ok, result} ->
-        json(conn, %{
-          success: true,
-          message: "Recommendation rejected",
-          result: result
-        })
+    with {:ok, rejector_id, scope} <- authenticated_actor(conn) do
+      case DecisionEngine.reject_recommendation(recommendation_id, rejector_id, reason, scope) do
+        {:ok, result} ->
+          json(conn, %{
+            success: true,
+            message: "Recommendation rejected",
+            result: result
+          })
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(404)
-        |> json(%{success: false, error: "Recommendation not found"})
+        {:error, :not_found} ->
+          conn
+          |> put_status(404)
+          |> json(%{success: false, error: "Recommendation not found"})
 
-      {:error, reason} ->
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+        {:error, :already_processed} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{
+            success: false,
+            error: "Recommendation already processed",
+            code: "already_processed",
+            retryable: false
+          })
+
+        {:error, :persistence_failed} ->
+          persistence_error(conn)
+
+        {:error, reason} ->
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: inspect(reason)})
+      end
     end
   end
 
@@ -515,9 +656,10 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   PUT /api/v1/autonomous/assets/:agent_id/criticality
   """
   def set_asset_criticality(conn, %{"agent_id" => agent_id} = params) do
-    attrs = params
-    |> Map.drop(["agent_id"])
-    |> atomize_keys()
+    attrs =
+      params
+      |> Map.drop(["agent_id"])
+      |> atomize_keys()
 
     case Criticality.set_criticality(agent_id, attrs) do
       {:ok, criticality} ->
@@ -548,14 +690,16 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
     level = params["level"]
 
     opts = [organization_id: org_id]
-    opts = if level do
-      case safe_to_existing_atom(level, ~w(low medium high critical)) do
-        nil -> opts
-        level_atom -> Keyword.put(opts, :level, level_atom)
+
+    opts =
+      if level do
+        case safe_to_existing_atom(level, ~w(low medium high critical)) do
+          nil -> opts
+          level_atom -> Keyword.put(opts, :level, level_atom)
+        end
+      else
+        opts
       end
-    else
-      opts
-    end
 
     assets = Criticality.list_assets(opts)
 
@@ -725,9 +869,23 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   POST /api/v1/autonomous-response/feedback
   """
   def engine_feedback(conn, %{"alert_id" => alert_id, "verdict" => verdict} = params) do
-    metadata = Map.drop(params, ["alert_id", "verdict"])
-    AutonomousEngine.record_outcome(alert_id, verdict, metadata)
-    json(conn, %{success: true, message: "Feedback recorded"})
+    org_id = get_org_id(conn)
+
+    case Alerts.get_alert_for_org(org_id, alert_id) do
+      {:ok, _alert} ->
+        metadata =
+          params
+          |> Map.drop(["alert_id", "verdict"])
+          |> Map.put("organization_id", org_id)
+
+        AutonomousEngine.record_outcome(alert_id, verdict, metadata)
+        json(conn, %{success: true, message: "Feedback recorded"})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Alert not found"})
+    end
   end
 
   @doc """
@@ -753,8 +911,24 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   GET /api/v1/autonomous-response/asset-criticality/:agent_id
   """
   def engine_get_criticality(conn, %{"agent_id" => agent_id}) do
-    criticality = AutonomousEngine.get_asset_criticality(agent_id)
-    json(conn, %{agent_id: agent_id, criticality: criticality})
+    case get_org_id(conn) do
+      org_id when is_binary(org_id) and org_id != "" ->
+        case Agents.get_agent_for_org(org_id, agent_id) do
+          {:ok, _agent} ->
+            criticality = AutonomousEngine.get_asset_criticality(agent_id)
+            json(conn, %{agent_id: agent_id, criticality: criticality})
+
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Agent not found"})
+        end
+
+      _missing_organization ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "Organization context required"})
+    end
   end
 
   @doc """
@@ -762,10 +936,26 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
   PUT /api/v1/autonomous-response/asset-criticality/:agent_id
   """
   def engine_set_criticality(conn, %{"agent_id" => agent_id} = params) do
-    attrs = Map.drop(params, ["agent_id"])
-    :ok = AutonomousEngine.set_asset_criticality(agent_id, atomize_keys(attrs))
-    criticality = AutonomousEngine.get_asset_criticality(agent_id)
-    json(conn, %{success: true, agent_id: agent_id, criticality: criticality})
+    case get_org_id(conn) do
+      org_id when is_binary(org_id) and org_id != "" ->
+        case Agents.get_agent_for_org(org_id, agent_id) do
+          {:ok, _agent} ->
+            attrs = Map.drop(params, ["agent_id"])
+            :ok = AutonomousEngine.set_asset_criticality(agent_id, atomize_keys(attrs))
+            criticality = AutonomousEngine.get_asset_criticality(agent_id)
+            json(conn, %{success: true, agent_id: agent_id, criticality: criticality})
+
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "Agent not found"})
+        end
+
+      _missing_organization ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "Organization context required"})
+    end
   end
 
   @doc """
@@ -798,22 +988,168 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
 
   defp get_org_id(conn) do
     case conn.assigns do
+      %{current_organization_id: org_id} when is_binary(org_id) and org_id != "" -> org_id
       %{current_organization: org} when not is_nil(org) -> org.id
       %{current_user: user} when not is_nil(user) -> user.organization_id
       _ -> nil
     end
   end
 
+  defp response_scope(conn) do
+    case get_org_id(conn) do
+      org_id when is_binary(org_id) and org_id != "" -> {:organization, org_id}
+      _ -> nil
+    end
+  end
+
+  defp authenticated_actor(conn) do
+    case {conn.assigns[:current_user], response_scope(conn)} do
+      {%{id: user_id}, {:organization, organization_id} = scope}
+      when is_binary(user_id) and user_id != "" and is_binary(organization_id) ->
+        {:ok, user_id, scope}
+
+      _missing_identity_or_tenant ->
+        {:error, :unauthorized}
+    end
+  end
+
+  defp approval_message(%{status: :execution_failed}) do
+    "Recommendation approved, but one or more response actions failed"
+  end
+
+  defp approval_message(_result), do: "Recommendation approved and executed"
+
+  defp respond_async?(conn) do
+    conn
+    |> get_req_header("prefer")
+    |> Enum.any?(&String.contains?(String.downcase(&1), "respond-async"))
+  end
+
+  defp render_accepted_approval(conn, recommendation_id, result) do
+    status_url = "/api/v1/autonomous/recommendations/#{recommendation_id}/status"
+
+    conn
+    |> put_status(:accepted)
+    |> put_resp_header("location", status_url)
+    |> put_resp_header("retry-after", "2")
+    |> json(%{
+      success: true,
+      message: "Recommendation approved; execution queued",
+      result: result,
+      status_url: status_url,
+      retry_after_ms: 2_000
+    })
+  end
+
+  defp await_approval(conn, recommendation_id, scope, accepted) do
+    deadline = System.monotonic_time(:millisecond) + @sync_approval_timeout_ms
+
+    case poll_approval_status(recommendation_id, scope, deadline) do
+      {:ok, result} ->
+        json(conn, %{success: true, message: approval_message(result), result: result})
+
+      {:error, {:execution_state_unknown, _reason}} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          success: false,
+          error: "Actions were dispatched but their final state is unknown",
+          code: "execution_state_unknown",
+          retryable: false
+        })
+
+      {:error, :timeout} ->
+        render_accepted_approval(conn, recommendation_id, accepted)
+
+      {:error, :persistence_failed} ->
+        persistence_error(conn)
+
+      {:error, reason} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{success: false, error: inspect(reason), retryable: false})
+    end
+  end
+
+  defp poll_approval_status(recommendation_id, scope, deadline) do
+    case DecisionEngine.get_recommendation_status(recommendation_id, scope) do
+      {:ok, %{status: status} = recommendation} when status in ["queued", "executing"] ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          Process.sleep(@approval_poll_interval_ms)
+          poll_approval_status(recommendation_id, scope, deadline)
+        end
+
+      {:ok, %{status: "approved"} = recommendation} ->
+        {:ok, approval_result(recommendation, :executed)}
+
+      {:ok, %{status: "failed"} = recommendation} ->
+        {:ok, approval_result(recommendation, :execution_failed)}
+
+      {:ok, %{status: "execution_unknown"}} ->
+        {:error, {:execution_state_unknown, :worker_interrupted}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:already_processed, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp approval_result(recommendation, status) do
+    persisted_result = recommendation.result || %{}
+
+    %{
+      status: status,
+      results: persisted_result["results"] || persisted_result[:results] || [],
+      approved_by: recommendation.approved_by,
+      executed_at: recommendation.executed_at
+    }
+  end
+
+  defp format_recommendation_status(recommendation) do
+    %{
+      id: recommendation.id,
+      status: recommendation.status,
+      result: recommendation.result,
+      approved_by: recommendation.approved_by,
+      executed_at: format_datetime(recommendation.executed_at),
+      updated_at: format_datetime(recommendation.updated_at)
+    }
+  end
+
+  defp format_datetime(nil), do: nil
+  defp format_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp format_datetime(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp format_datetime(value), do: to_string(value)
+
+  defp persistence_error(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      success: false,
+      error: "Could not persist recommendation decision",
+      code: "persistence_failed",
+      retryable: true
+    })
+  end
+
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
       {k, v} when is_binary(k) ->
-        key = try do
-          String.to_existing_atom(k)
-        rescue
-          ArgumentError -> k
-        end
+        key =
+          try do
+            String.to_existing_atom(k)
+          rescue
+            ArgumentError -> k
+          end
+
         {key, atomize_keys(v)}
-      {k, v} -> {k, atomize_keys(v)}
+
+      {k, v} ->
+        {k, atomize_keys(v)}
     end)
   end
 
@@ -828,12 +1164,13 @@ defmodule TamanduaServerWeb.API.V1.AutonomousResponseController do
 
   defp parse_int(nil, default), do: default
   defp parse_int(value, _default) when is_integer(value), do: value
+
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int
       :error -> default
     end
   end
-  defp parse_int(_, default), do: default
 
+  defp parse_int(_, default), do: default
 end

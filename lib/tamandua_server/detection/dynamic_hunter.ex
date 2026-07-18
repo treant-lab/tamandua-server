@@ -27,7 +27,7 @@ defmodule TamanduaServer.Detection.DynamicHunter do
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts
   alias TamanduaServer.Telemetry.Event
-  alias TamanduaServer.Detection.{Engine, Correlator, Evidence}
+  alias TamanduaServer.Detection.{Correlator, Evidence}
   alias TamanduaServer.Agents.OrgLookup
 
   import Ecto.Query
@@ -47,7 +47,10 @@ defmodule TamanduaServer.Detection.DynamicHunter do
   @hunt_results_table :dynamic_hunter_results
 
   # Known attack TTP patterns organized by MITRE ATT&CK
-  @attack_patterns %{
+  # Build Regex values at runtime. OTP 28 no longer allows Regex structs to be
+  # escaped through module attributes when the module bytecode is generated.
+  defp attack_patterns do
+    %{
     # T1059 - Command and Scripting Interpreter
     command_execution: [
       %{
@@ -174,7 +177,8 @@ defmodule TamanduaServer.Detection.DynamicHunter do
         mitre: ["T1071.004"]
       }
     ]
-  }
+    }
+  end
 
   # State structure
   defstruct [
@@ -283,7 +287,9 @@ defmodule TamanduaServer.Detection.DynamicHunter do
       active_investigations: %{}
     }
 
-    Logger.info("Dynamic Threat Hunter started with #{map_size(@attack_patterns)} pattern categories")
+    Logger.info(
+      "Dynamic Threat Hunter started with #{map_size(attack_patterns())} pattern categories"
+    )
     {:ok, state}
   end
 
@@ -1083,7 +1089,7 @@ defmodule TamanduaServer.Detection.DynamicHunter do
   end
 
   defp load_patterns do
-    Enum.each(@attack_patterns, fn {category, patterns} ->
+    Enum.each(attack_patterns(), fn {category, patterns} ->
       :ets.insert(@ttp_patterns_table, {category, patterns})
     end)
   end
@@ -1315,7 +1321,7 @@ defmodule TamanduaServer.Detection.DynamicHunter do
     end)
   end
 
-  defp calculate_chain_depth(tree, pid, depth) when depth > 10, do: depth
+  defp calculate_chain_depth(_tree, _pid, depth) when depth > 10, do: depth
 
   defp calculate_chain_depth(tree, pid, depth) do
     case Map.get(tree, pid) do

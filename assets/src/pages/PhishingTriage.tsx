@@ -13,6 +13,7 @@ import {
   Link as LinkIcon,
   Paperclip,
   Brain,
+  CheckCircle,
 } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { Select, SelectItem } from '@/components/ui/baseui'

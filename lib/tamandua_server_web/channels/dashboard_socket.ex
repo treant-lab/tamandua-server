@@ -79,37 +79,6 @@ defmodule TamanduaServerWeb.DashboardSocket do
     end
   end
 
-  defp authenticate_api_token(token, socket, ip_address, user_agent) do
-    with {:error, _} <- TamanduaServer.CLIAuth.verify_token(token),
-         nil <- TamanduaServer.Accounts.get_user_by_api_token(token) do
-      :error
-    else
-      {:ok, user} ->
-        socket =
-          socket
-          |> assign(:user_id, user.id)
-          |> assign(:current_user, user)
-          |> assign(:ip_address, ip_address)
-          |> assign(:user_agent, user_agent)
-          |> assign(:connected_at, System.system_time(:millisecond))
-
-        log_socket_connect(user, ip_address, user_agent)
-        {:ok, socket}
-
-      user ->
-        socket =
-          socket
-          |> assign(:user_id, user.id)
-          |> assign(:current_user, user)
-          |> assign(:ip_address, ip_address)
-          |> assign(:user_agent, user_agent)
-          |> assign(:connected_at, System.system_time(:millisecond))
-
-        log_socket_connect(user, ip_address, user_agent)
-        {:ok, socket}
-    end
-  end
-
   def connect(_params, socket, connect_info) do
     case maybe_allow_lab_light_socket(socket, connect_info) do
           {:ok, socket} ->
@@ -152,6 +121,37 @@ defmodule TamanduaServerWeb.DashboardSocket do
 
   @impl true
   def id(socket), do: "dashboard:#{socket.assigns[:user_id] || "anon"}"
+
+  defp authenticate_api_token(token, socket, ip_address, user_agent) do
+    with {:error, _} <- TamanduaServer.CLIAuth.verify_token(token),
+         nil <- TamanduaServer.Accounts.get_user_by_api_token(token) do
+      :error
+    else
+      {:ok, user} ->
+        socket =
+          socket
+          |> assign(:user_id, user.id)
+          |> assign(:current_user, user)
+          |> assign(:ip_address, ip_address)
+          |> assign(:user_agent, user_agent)
+          |> assign(:connected_at, System.system_time(:millisecond))
+
+        log_socket_connect(user, ip_address, user_agent)
+        {:ok, socket}
+
+      user ->
+        socket =
+          socket
+          |> assign(:user_id, user.id)
+          |> assign(:current_user, user)
+          |> assign(:ip_address, ip_address)
+          |> assign(:user_agent, user_agent)
+          |> assign(:connected_at, System.system_time(:millisecond))
+
+        log_socket_connect(user, ip_address, user_agent)
+        {:ok, socket}
+    end
+  end
 
   # ===========================================================================
   # Connection Info Extraction

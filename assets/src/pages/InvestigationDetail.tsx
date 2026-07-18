@@ -133,7 +133,7 @@ export default function InvestigationDetail({
           <div className="card-sentinel rounded-xl p-6">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => router.visit('/app/analyst')}
+                onClick={() => router.visit('/app/ai-assistant')}
                 className="p-2 hover:bg-[var(--surface-alt)] rounded-lg transition-colors"
               >
                 <ArrowLeft className="h-5 w-5 text-[var(--muted)]" />
@@ -163,7 +163,7 @@ export default function InvestigationDetail({
           <div className="card-sentinel rounded-xl p-6">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => router.visit('/app/analyst')}
+                onClick={() => router.visit('/app/ai-assistant')}
                 className="p-2 hover:bg-[var(--surface-alt)] rounded-lg transition-colors"
               >
                 <ArrowLeft className="h-5 w-5 text-[var(--muted)]" />
@@ -198,7 +198,7 @@ export default function InvestigationDetail({
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => router.visit('/app/analyst')}
+                onClick={() => router.visit('/app/ai-assistant')}
                 className="p-2 hover:bg-[var(--surface-alt)] rounded-lg transition-colors"
               >
                 <ArrowLeft className="h-5 w-5 text-[var(--muted)]" />

@@ -6,20 +6,27 @@ defmodule TamanduaServerWeb.InertiaController do
   require Logger
 
   alias TamanduaServer.Agents
+  alias TamanduaServer.Agents.AgentCommand
+  alias TamanduaServer.Agents.PlatformCapabilities
+  alias TamanduaServer.Agents.RuntimeIntegrityPreview
   alias TamanduaServer.Alerts
+  alias TamanduaServer.Alerts.EvidenceQuality
   alias TamanduaServer.Bounties
   alias TamanduaServer.Response
+  alias TamanduaServer.Response.ResponseActor
   alias TamanduaServer.Detection
   alias TamanduaServer.Forensics.Collector, as: ForensicsCollector
   alias TamanduaServer.ThreatIntel
   alias TamanduaServer.Inventory.AssetManager
+  alias TamanduaServer.LiveResponse.ScreenCapturePolicy
+  alias TamanduaServer.Repo.MultiTenant
 
   alias TamanduaServer.AISecurity.{
-    AIGateway,
     AIInventory,
     AttackSurface,
     AgentPosture,
     AgenticAnalyst,
+    Enforcement,
     PredictiveShield
   }
 
@@ -203,11 +210,107 @@ defmodule TamanduaServerWeb.InertiaController do
 
     render_inertia(conn, "Agents", %{
       agents: agents,
+      mobileProjectionSummary: mobile_projection_summary(org_id),
       # The React page refreshes data-source coverage asynchronously via
       # /api/v1/agents/data-sources/health. Keeping the initial Inertia payload
       # lean prevents the Agents page from blocking on telemetry aggregation.
       dataSourceHealth: %{}
     })
+  end
+
+  defp mobile_projection_summary(nil) do
+    %{
+      status: "unavailable",
+      total_devices_v2: 0,
+      projected_agents: 0,
+      projection_gap_count: 0,
+      unprojected_devices: [],
+      reason: "organization_unavailable",
+      claim_boundary:
+        "Mobile projection summary is diagnostic only. A mobile endpoint appears in Agents only after the DeviceV2 to Agent projection exists."
+    }
+  end
+
+  defp mobile_projection_summary(org_id) do
+    alias TamanduaServer.Agents.Agent
+    alias TamanduaServer.Mobile.DeviceV2
+    alias TamanduaServer.Repo
+    import Ecto.Query
+
+    try do
+      device_query = from(d in DeviceV2, where: d.organization_id == ^org_id)
+
+      total_devices = Repo.aggregate(device_query, :count, :id)
+
+      projected_agents =
+        Repo.aggregate(
+          from(d in DeviceV2,
+            join: a in Agent,
+            on: a.organization_id == d.organization_id and a.machine_id == d.device_id,
+            where: d.organization_id == ^org_id
+          ),
+          :count,
+          :id
+        )
+
+      projection_gap_count = max(total_devices - projected_agents, 0)
+
+      unprojected_devices =
+        from(d in DeviceV2,
+          left_join: a in Agent,
+          on: a.organization_id == d.organization_id and a.machine_id == d.device_id,
+          where: d.organization_id == ^org_id and is_nil(a.id),
+          order_by: [desc: d.updated_at],
+          limit: 5,
+          select: %{
+            id: d.id,
+            device_id: d.device_id,
+            device_name: d.device_name,
+            platform: d.platform,
+            model: d.model,
+            last_seen_at: d.last_seen_at,
+            updated_at: d.updated_at
+          }
+        )
+        |> Repo.all()
+        |> Enum.map(fn device ->
+          %{
+            id: device.id,
+            device_id: device.device_id,
+            device_name: device.device_name,
+            platform: device.platform,
+            model: device.model,
+            last_seen_at: format_datetime(device.last_seen_at),
+            updated_at: format_datetime(device.updated_at)
+          }
+        end)
+
+      %{
+        status: if(projection_gap_count > 0, do: "projection_gap", else: "ok"),
+        total_devices_v2: total_devices,
+        projected_agents: projected_agents,
+        projection_gap_count: projection_gap_count,
+        unprojected_devices: unprojected_devices,
+        claim_boundary:
+          "Mobile projection summary is diagnostic only. A mobile endpoint appears in Agents only after the DeviceV2 to Agent projection exists."
+      }
+    rescue
+      e ->
+        Logger.warning(
+          "[Agents] Failed to build mobile projection summary for org #{org_id}: #{Exception.message(e)}"
+        )
+
+        %{
+          status: "unavailable",
+          total_devices_v2: 0,
+          projected_agents: 0,
+          projection_gap_count: 0,
+          unprojected_devices: [],
+          reason: "query_failed",
+          claim_boundary:
+            "Mobile projection summary is diagnostic only. A mobile endpoint appears in Agents only after the DeviceV2 to Agent projection exists."
+        }
+    end
   end
 
   def deploy_agent(conn, _params) do
@@ -254,6 +357,15 @@ defmodule TamanduaServerWeb.InertiaController do
       agents: agents,
       solanaEnabled: TamanduaServer.Solana.Client.enabled?()
     })
+  end
+
+  def health_hub(conn, _params) do
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+
+    conn
+    |> assign(:page_title, "Health Hub")
+    |> render_inertia("HealthHub", TamanduaServer.HealthHub.summary(org_id))
   end
 
   @doc """
@@ -350,20 +462,11 @@ defmodule TamanduaServerWeb.InertiaController do
           |> Map.put(:status, live_status)
           |> Map.put(:ip_address, Map.get(agent, :ip_address, ""))
 
-        # Fetch recent events for this agent
-        events =
+        # Fetch the bounded recent-event list once for the timeline and
+        # collector summary. Runtime Preview has its own tenant-bound query.
+        agent_events =
           try do
             TamanduaServer.Telemetry.list_events_for_agent(agent_id, 50)
-            |> Enum.map(fn e ->
-              %{
-                id: e.id || Ecto.UUID.generate(),
-                event_type: e.event_type,
-                timestamp: format_datetime(e.timestamp || e.inserted_at),
-                severity: Map.get(e, :severity, "info"),
-                summary: Map.get(e, :summary, "#{e.event_type} event"),
-                payload: Map.get(e, :payload, %{})
-              }
-            end)
           rescue
             e ->
               Logger.warning(
@@ -372,6 +475,8 @@ defmodule TamanduaServerWeb.InertiaController do
 
               []
           end
+
+        events = Enum.map(agent_events, &serialize_agent_event/1)
 
         # Fetch recent alerts for this agent
         alerts =
@@ -388,18 +493,30 @@ defmodule TamanduaServerWeb.InertiaController do
               []
           end
 
-        # Derive collector info from recent events
-        collectors =
+        collectors = derive_collectors(agent_events, Map.get(agent, :config) || %{})
+
+        runtime_integrity_preview =
           try do
-            agent_events = TamanduaServer.Telemetry.list_events_for_agent(agent_id, 500)
-            derive_collectors(agent_events, Map.get(agent, :config) || %{})
+            case TamanduaServer.Telemetry.latest_runtime_integrity_preview_event_for_agent(
+                   org_id,
+                   agent_id
+                 ) do
+              nil ->
+                nil
+
+              event ->
+                case RuntimeIntegrityPreview.project(event) do
+                  {:ok, projection} -> projection
+                  {:error, :invalid_contract} -> nil
+                end
+            end
           rescue
             e ->
               Logger.warning(
-                "Failed to derive collectors for agent #{agent_id}: #{Exception.message(e)}"
+                "Failed to project runtime integrity for agent #{agent_id}: #{Exception.message(e)}"
               )
 
-              derive_collectors([], Map.get(agent, :config) || %{})
+              nil
           end
 
         # Health metrics from the dedicated health ETS table (populated by agent
@@ -446,13 +563,31 @@ defmodule TamanduaServerWeb.InertiaController do
             _ -> agent.config || %{}
           end
 
+        screen_capture_policy = ScreenCapturePolicy.resolve(agent_id)
+
+        platform_capabilities =
+          PlatformCapabilities.for_agent(agent,
+            status: live_status,
+            health: health || %{},
+            config: config,
+            collectors: collectors,
+            runtime_integrity_preview: runtime_integrity_preview,
+            screen_capture_policy: screen_capture_policy
+          )
+
+        serialized_agent =
+          serialized_agent
+          |> Map.put(:platform_capabilities, platform_capabilities)
+          |> Map.put(:platformCapabilities, platform_capabilities)
+
         render_inertia(conn, "AgentDetail", %{
           agent: serialized_agent,
           collectors: collectors,
           health: health,
           events: events,
           alerts: alerts,
-          config: config
+          config: config,
+          runtime_integrity_preview: runtime_integrity_preview
         })
     end
   end
@@ -460,7 +595,7 @@ defmodule TamanduaServerWeb.InertiaController do
   defp derive_collectors(events, config) do
     event_collectors =
       events
-      |> Enum.group_by(&to_string(&1.event_type))
+      |> Enum.group_by(&collector_name_for_event/1)
       |> Enum.map(fn {event_type, evts} ->
         latest = List.first(evts)
 
@@ -508,6 +643,38 @@ defmodule TamanduaServerWeb.InertiaController do
     |> Enum.sort_by(&{-(&1.events_collected || 0), &1.name})
   end
 
+  defp serialize_agent_event(event) do
+    payload =
+      case RuntimeIntegrityPreview.project(event) do
+        {:ok, projection} ->
+          projection
+
+        {:error, :invalid_contract} ->
+          if RuntimeIntegrityPreview.runtime_integrity_envelope?(event),
+            do: %{},
+            else: Map.get(event, :payload, %{})
+      end
+
+    %{
+      id: Map.get(event, :id) || Ecto.UUID.generate(),
+      event_type: Map.get(event, :event_type),
+      timestamp: format_datetime(Map.get(event, :timestamp) || Map.get(event, :inserted_at)),
+      severity: Map.get(event, :severity, "info"),
+      summary: Map.get(event, :summary, "#{Map.get(event, :event_type, "unknown")} event"),
+      payload: payload
+    }
+  end
+
+  defp collector_name_for_event(event) do
+    case RuntimeIntegrityPreview.project(event) do
+      {:ok, _projection} ->
+        "runtime_integrity"
+
+      {:error, :invalid_contract} ->
+        to_string(Map.get(event, :event_type) || Map.get(event, "event_type") || "unknown")
+    end
+  end
+
   defp normalize_collector_name(name) when is_binary(name) do
     name
     |> String.trim()
@@ -517,31 +684,8 @@ defmodule TamanduaServerWeb.InertiaController do
   defp normalize_collector_name(name), do: to_string(name)
 
   def alerts(conn, _params) do
-    current_user = conn.assigns[:current_user]
-    org_id = current_user && current_user.organization_id
-
-    alerts =
-      try do
-        # CRITICAL: Filter alerts by organization to prevent cross-tenant data leakage
-        if org_id do
-          Alerts.list_alerts_for_org(org_id, limit: 100)
-          |> Enum.map(&serialize_alert/1)
-        else
-          Logger.warning("No organization_id for user - returning empty alerts")
-          []
-        end
-      rescue
-        e ->
-          Logger.warning("Failed to load alerts page data: #{Exception.message(e)}")
-          []
-      catch
-        _kind, _reason ->
-          Logger.warning("Failed to load alerts page data due to unavailable runtime dependency")
-          []
-      end
-
     render_inertia(conn, "Alerts", %{
-      alerts: alerts
+      alerts: []
     })
   end
 
@@ -604,69 +748,123 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp get_alert_related_events(alert, time_window_minutes) do
-    # Get correlated events with correlation scores and reasons
-    # The Correlator.get_related_events function now properly handles fallback internally
-    try do
-      Detection.Correlator.get_related_events(
-        alert.agent_id,
-        alert.source_event_id,
-        time_window_minutes
-      )
-      |> Enum.map(fn event ->
-        payload = event[:payload] || event.payload || %{}
+    linked_alert_events = get_linked_alert_events(alert)
 
-        %{
-          id: event[:id] || event[:event_id] || UUID.uuid4(),
-          event_type: event[:event_type] || event.event_type || "unknown",
-          timestamp: format_alert_timestamp(event[:timestamp] || event.timestamp),
-          summary: build_event_summary(event),
-          pid: payload["pid"] || payload[:pid] || payload["process_id"],
-          process_name: payload["name"] || payload[:name] || payload["process_name"],
-          severity: event[:severity] || event.severity || "info",
-          payload: payload,
-          correlation_score: event[:correlation_score] || 0,
-          correlation_reason: event[:correlation_reason] || "",
-          correlation_kind: related_event_kind(event),
-          score_explanation: related_event_score_explanation(event)
-        }
-      end)
-    rescue
-      e ->
-        Logger.warning(
-          "Failed to get correlated events for alert #{alert.id}: #{Exception.message(e)}"
+    if linked_alert_events != [] do
+      linked_alert_events
+    else
+      # Get correlated events with correlation scores and reasons
+      # The Correlator.get_related_events function now properly handles fallback internally
+      try do
+        Detection.Correlator.get_related_events(
+          alert.agent_id,
+          alert.source_event_id,
+          time_window_minutes
         )
+        |> Enum.map(fn event ->
+          payload = event[:payload] || event.payload || %{}
 
-        # Fallback: get recent events from same agent
-        if alert.agent_id do
-          try do
-            TamanduaServer.Telemetry.list_events_for_agent(alert.agent_id, 20)
-            |> Enum.map(fn event ->
-              payload = event.payload || %{}
+          %{
+            id: event[:id] || event[:event_id] || UUID.uuid4(),
+            event_type: event[:event_type] || event.event_type || "unknown",
+            timestamp: format_alert_timestamp(event[:timestamp] || event.timestamp),
+            summary: build_event_summary(event),
+            pid: payload["pid"] || payload[:pid] || payload["process_id"],
+            process_name: payload["name"] || payload[:name] || payload["process_name"],
+            severity: event[:severity] || event.severity || "info",
+            payload: payload,
+            correlation_score: event[:correlation_score] || 0,
+            correlation_reason: event[:correlation_reason] || "",
+            correlation_kind: related_event_kind(event),
+            score_explanation: related_event_score_explanation(event)
+          }
+        end)
+      rescue
+        e ->
+          Logger.warning(
+            "Failed to get correlated events for alert #{alert.id}: #{Exception.message(e)}"
+          )
 
-              %{
-                id: event.id,
-                event_type: event.event_type || "unknown",
-                timestamp: format_alert_timestamp(event.timestamp),
-                summary: build_event_summary(event.event_type, payload),
-                pid: payload["pid"] || payload["process_id"],
-                process_name: payload["name"] || payload["process_name"],
-                severity: to_string(Map.get(event, :severity, "info")),
-                payload: payload,
-                correlation_score: 0,
-                correlation_reason: "Fallback: recent event from same agent",
-                correlation_kind: "fallback",
-                score_explanation: "No engine score; shown as recent same-agent context"
-              }
-            end)
-          rescue
-            e ->
-              Logger.warning("Failed to serialize related events: #{Exception.message(e)}")
-              []
+          # Fallback: get recent events from same agent
+          if alert.agent_id do
+            try do
+              TamanduaServer.Telemetry.list_events_for_agent(alert.agent_id, 20)
+              |> Enum.map(fn event ->
+                payload = event.payload || %{}
+
+                %{
+                  id: event.id,
+                  event_type: event.event_type || "unknown",
+                  timestamp: format_alert_timestamp(event.timestamp),
+                  summary: build_event_summary(event.event_type, payload),
+                  pid: payload["pid"] || payload["process_id"],
+                  process_name: payload["name"] || payload["process_name"],
+                  severity: to_string(Map.get(event, :severity, "info")),
+                  payload: payload,
+                  correlation_score: 0,
+                  correlation_reason: "Fallback: recent event from same agent",
+                  correlation_kind: "fallback",
+                  score_explanation: "No engine score; shown as recent same-agent context"
+                }
+              end)
+            rescue
+              e ->
+                Logger.warning("Failed to serialize related events: #{Exception.message(e)}")
+                []
+            end
+          else
+            []
           end
-        else
-          []
+      end
+    end
+  end
+
+  defp get_linked_alert_events(alert) do
+    ids =
+      [alert.source_event_id | alert.event_ids || []]
+      |> Kernel.++(alert.contributing_events || [])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
+
+    cond do
+      ids == [] or is_nil(alert.agent_id) ->
+        []
+
+      true ->
+        try do
+          alert.agent_id
+          |> TamanduaServer.Telemetry.list_events_for_agent(200)
+          |> Enum.filter(&(to_string(&1.id) in ids))
+          |> Enum.map(&serialize_linked_alert_event/1)
+        rescue
+          e ->
+            Logger.warning(
+              "Failed to get linked events for alert #{alert.id}: #{Exception.message(e)}"
+            )
+
+            []
         end
     end
+  end
+
+  defp serialize_linked_alert_event(event) do
+    payload = event.payload || %{}
+
+    %{
+      id: event.id,
+      event_type: event.event_type || "unknown",
+      timestamp: format_alert_timestamp(event.timestamp),
+      summary: build_event_summary(event.event_type, payload),
+      pid: payload["pid"] || payload["process_id"],
+      process_name: payload["name"] || payload["process_name"],
+      severity: to_string(Map.get(event, :severity, "info")),
+      payload: payload,
+      correlation_score: 100,
+      correlation_reason: "Linked directly from alert source/event ids",
+      correlation_kind: "linked",
+      score_explanation: "Direct source_event_id/event_ids/contributing_events match"
+    }
   end
 
   defp related_event_kind(event) do
@@ -2232,7 +2430,8 @@ defmodule TamanduaServerWeb.InertiaController do
             %{
               id: org.id,
               name: org.name,
-              slug: Map.get(org, :slug) || String.downcase(String.replace(org.name, ~r/\s+/, "-")),
+              slug:
+                Map.get(org, :slug) || String.downcase(String.replace(org.name, ~r/\s+/, "-")),
               domain: Map.get(org, :domain) || Map.get(org_settings, "domain"),
               status: if(Map.get(org, :is_active, true), do: "active", else: "inactive"),
               plan: Map.get(org, :plan) || Map.get(org, :license_tier, "free") |> to_string(),
@@ -2328,6 +2527,23 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def response(conn, _params) do
+    authorize_or_render_inertia_page(
+      conn,
+      [
+        :response_view,
+        :response_execute,
+        :response_contain,
+        :response_remediate,
+        :response_approve,
+        :response_rollback
+      ],
+      fn ->
+        response_authorized(conn)
+      end
+    )
+  end
+
+  defp response_authorized(conn) do
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -2342,14 +2558,24 @@ defmodule TamanduaServerWeb.InertiaController do
       end)
 
     recent_actions =
-      TamanduaServer.Response.list_actions(%{})
-      |> Enum.take(20)
-      |> Enum.map(&serialize_response_action/1)
+      case org_id do
+        org_id when is_binary(org_id) and org_id != "" ->
+          TamanduaServer.Response.list_actions(%{organization_id: org_id})
+          |> Enum.take(20)
+          |> Enum.map(&serialize_response_page_action/1)
+
+        _missing_organization ->
+          []
+      end
 
     render_inertia(conn, "Response", %{
       agents: agents,
       recentActions: recent_actions
     })
+  end
+
+  def fleet_queries(conn, _params) do
+    render_inertia(conn, "FleetQueries", %{})
   end
 
   # Timeline / Attack Storyline
@@ -2396,11 +2622,17 @@ defmodule TamanduaServerWeb.InertiaController do
                 [serialize_incident(incident, alert_cluster)]
               rescue
                 e ->
-                  Logger.warning("Timeline incident serialization failed: #{Exception.message(e)}")
+                  Logger.warning(
+                    "Timeline incident serialization failed: #{Exception.message(e)}"
+                  )
+
                   []
               catch
                 :exit, reason ->
-                  Logger.warning("Timeline incident serialization failed: exit #{inspect(reason)}")
+                  Logger.warning(
+                    "Timeline incident serialization failed: exit #{inspect(reason)}"
+                  )
+
                   []
               end
             end)
@@ -2432,7 +2664,11 @@ defmodule TamanduaServerWeb.InertiaController do
         alias TamanduaServer.Telemetry
 
         timeline_filters = %{limit: 25, skip_agent_lookup: true}
-        timeline_filters = if org_id, do: Map.put(timeline_filters, :organization_id, org_id), else: timeline_filters
+
+        timeline_filters =
+          if org_id,
+            do: Map.put(timeline_filters, :organization_id, org_id),
+            else: timeline_filters
 
         Telemetry.list_events(timeline_filters)
         |> Enum.map(fn event ->
@@ -2668,18 +2904,36 @@ defmodule TamanduaServerWeb.InertiaController do
 
   def storyline(conn, %{"alert_id" => alert_id} = params) do
     layout = Map.get(params, "layout", "timeline")
+    current_user = conn.assigns[:current_user]
+
+    org_id =
+      conn.assigns[:current_organization_id] || (current_user && current_user.organization_id)
 
     alias TamanduaServer.Storyline.Engine
 
-    case safe_storyline_result(fn -> Engine.generate_for_alert(alert_id, layout: layout) end) do
+    result =
+      if org_id do
+        safe_storyline_result(fn ->
+          Engine.generate_for_alert(alert_id,
+            layout: layout,
+            organization_id: org_id
+          )
+        end)
+      else
+        {:error, :alert_not_found}
+      end
+
+    case result do
       {:ok, storyline} ->
-        analysis = safe_storyline_analysis(storyline)
+        analysis = safe_storyline_analysis(storyline, org_id)
+        response_actions = get_alert_response_actions(org_id, alert_id)
 
         render_inertia(conn, "Storyline", %{
           page_title: "Attack Storyline",
           alert_id: alert_id,
           storyline: serialize_storyline_for_inertia(storyline),
           analysis: serialize_storyline_analysis(analysis),
+          responseActions: response_actions,
           layout: layout,
           error: nil
         })
@@ -2709,6 +2963,10 @@ defmodule TamanduaServerWeb.InertiaController do
   def storyline_process(conn, %{"agent_id" => agent_id, "pid" => pid_str} = params) do
     layout = Map.get(params, "layout", "timeline")
     parsed_pid = parse_positive_integer(pid_str)
+    current_user = conn.assigns[:current_user]
+
+    org_id =
+      conn.assigns[:current_organization_id] || (current_user && current_user.organization_id)
 
     if is_nil(parsed_pid) do
       render_inertia(conn, "Storyline", %{
@@ -2723,18 +2981,32 @@ defmodule TamanduaServerWeb.InertiaController do
       })
     else
       pid = parsed_pid
-      time_window = parse_positive_integer(Map.get(params, "time_window_minutes") || Map.get(params, "time_window")) || 60
+
+      time_window =
+        parse_positive_integer(
+          Map.get(params, "time_window_minutes") || Map.get(params, "time_window")
+        ) || 60
 
       alias TamanduaServer.Storyline.Engine
 
-      case safe_storyline_result(fn ->
-             Engine.generate_from_process(agent_id, pid,
-               time_window_minutes: time_window,
-               layout: layout
-             )
-           end) do
+      result =
+        if org_id do
+          safe_storyline_result(fn ->
+            with {:ok, _agent} <- Agents.get_agent_for_org(org_id, agent_id) do
+              Engine.generate_from_process(agent_id, pid,
+                time_window_minutes: time_window,
+                layout: layout,
+                organization_id: org_id
+              )
+            end
+          end)
+        else
+          {:error, :agent_not_found}
+        end
+
+      case result do
         {:ok, storyline} ->
-          analysis = safe_storyline_analysis(storyline)
+          analysis = safe_storyline_analysis(storyline, org_id)
 
           render_inertia(conn, "Storyline", %{
             page_title: "Process Investigation",
@@ -2786,10 +3058,10 @@ defmodule TamanduaServerWeb.InertiaController do
       {:error, reason}
   end
 
-  defp safe_storyline_analysis(storyline) do
+  defp safe_storyline_analysis(storyline, organization_id) do
     alias TamanduaServer.Storyline.Engine
 
-    case Engine.analyze_storyline(storyline) do
+    case Engine.analyze_storyline(storyline, organization_id: organization_id) do
       {:ok, analysis} -> analysis
       {:error, reason} -> fallback_storyline_analysis(storyline, reason)
       other -> fallback_storyline_analysis(storyline, other)
@@ -2815,7 +3087,12 @@ defmodule TamanduaServerWeb.InertiaController do
         (Map.get(storyline, :mitre_techniques, []) || [])
         |> Enum.map(fn
           value when is_binary(value) ->
-            %{id: value, name: value, tactic: "unknown", description: "Technique observed in storyline telemetry"}
+            %{
+              id: value,
+              name: value,
+              tactic: "unknown",
+              description: "Technique observed in storyline telemetry"
+            }
 
           value when is_map(value) ->
             value
@@ -2884,7 +3161,7 @@ defmodule TamanduaServerWeb.InertiaController do
     org_id = current_user && current_user.organization_id
 
     # Get hunting suggestions from QueryInterface
-    suggestions = QueryInterface.get_hunting_suggestions(nil)
+    suggestions = QueryInterface.get_hunting_suggestions(org_id)
 
     # Format suggested queries based on threat hunting templates
     suggested_queries = [
@@ -2924,11 +3201,16 @@ defmodule TamanduaServerWeb.InertiaController do
     # Build real environment context from system state
     active_agents =
       try do
-        list_agents_for_dashboard(org_id)
-        |> Enum.count(fn a -> to_string(a.status) == "online" end)
+        if org_id do
+          org_id
+          |> Agents.list_agents_for_org(status: :online, limit: 100)
+          |> length()
+        else
+          0
+        end
       rescue
         e ->
-          Logger.warning("Failed to count active agents: \#{Exception.message(e)}")
+          Logger.warning("Failed to count active agents: #{Exception.message(e)}")
           0
       end
 
@@ -2937,7 +3219,7 @@ defmodule TamanduaServerWeb.InertiaController do
         Alerts.count_active_for_org(org_id)
       rescue
         e ->
-          Logger.warning("Failed to count open alerts: \#{Exception.message(e)}")
+          Logger.warning("Failed to count open alerts: #{Exception.message(e)}")
           0
       end
 
@@ -2946,7 +3228,7 @@ defmodule TamanduaServerWeb.InertiaController do
         TamanduaServer.Telemetry.count_events_today_for_org(org_id)
       rescue
         e ->
-          Logger.warning("Failed to count events today: \#{Exception.message(e)}")
+          Logger.warning("Failed to count events today: #{Exception.message(e)}")
           0
       end
 
@@ -2996,15 +3278,21 @@ defmodule TamanduaServerWeb.InertiaController do
   def playbooks(conn, _params) do
     alias TamanduaServer.Response.Playbook
 
+    organization_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+
+    scope = {:organization, organization_id}
+
     playbooks =
       try do
-        case Playbook.list_playbooks() do
+        case Playbook.list_playbooks(%{}, scope) do
           {:ok, list} when is_list(list) -> Enum.map(list, &serialize_playbook/1)
           _ -> []
         end
       catch
         kind, reason ->
-          Logger.warning("Playbook.list_playbooks failed: \#{kind} \#{inspect(reason)}")
+          Logger.warning("Playbook.list_playbooks failed: #{kind} #{inspect(reason)}")
           []
       end
 
@@ -3026,20 +3314,20 @@ defmodule TamanduaServerWeb.InertiaController do
         end)
       catch
         kind, reason ->
-          Logger.warning("Failed to load playbook templates: \#{kind} \#{inspect(reason)}")
+          Logger.warning("Failed to load playbook templates: #{kind} #{inspect(reason)}")
           []
       end
 
     # Frontend expects executions as an array of PlaybookExecution objects
     executions =
       try do
-        case Playbook.list_recent_executions(limit: 20) do
+        case Playbook.list_recent_executions(limit: 20, scope: scope) do
           {:ok, list} when is_list(list) -> Enum.map(list, &serialize_playbook_execution/1)
           _ -> []
         end
       catch
         kind, reason ->
-          Logger.warning("Playbook.list_recent_executions failed: \#{kind} \#{inspect(reason)}")
+          Logger.warning("Playbook.list_recent_executions failed: #{kind} #{inspect(reason)}")
           []
       end
 
@@ -3054,11 +3342,17 @@ defmodule TamanduaServerWeb.InertiaController do
   def playbook_detail(conn, %{"id" => id}) do
     alias TamanduaServer.Response.Playbook
 
-    case Playbook.get_playbook(id) do
+    organization_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
+
+    scope = {:organization, organization_id}
+
+    case Playbook.get_playbook(id, scope) do
       {:ok, playbook} ->
         # Get execution history for this playbook
         execution_history =
-          case Playbook.get_execution_history(id) do
+          case Playbook.get_execution_history(id, [], scope) do
             {:ok, history} -> Enum.map(history, &serialize_playbook_execution/1)
             _ -> []
           end
@@ -3239,7 +3533,7 @@ defmodule TamanduaServerWeb.InertiaController do
           _ -> []
         end
       catch
-        kind, reason ->
+        _kind, _reason ->
           Logger.warning(
             "ForensicsCollector.list_collections failed: \#{kind} \#{inspect(reason)}"
           )
@@ -3254,7 +3548,7 @@ defmodule TamanduaServerWeb.InertiaController do
           _ -> []
         end
       catch
-        kind, reason ->
+        _kind, _reason ->
           Logger.warning(
             "ForensicsCollector.list_collections(pending) failed: \#{kind} \#{inspect(reason)}"
           )
@@ -3294,7 +3588,7 @@ defmodule TamanduaServerWeb.InertiaController do
           other -> {:ok, other}
         end
       catch
-        kind, reason ->
+        _kind, _reason ->
           Logger.warning("ForensicsCollector.get_collection failed: \#{kind} \#{inspect(reason)}")
           {:error, :service_unavailable}
       end
@@ -3313,7 +3607,7 @@ defmodule TamanduaServerWeb.InertiaController do
                   _ -> serialize_forensic_artifact(artifact)
                 end
               catch
-                kind, reason ->
+                _kind, _reason ->
                   Logger.warning(
                     "ForensicsCollector.get_artifact failed: \#{kind} \#{inspect(reason)}"
                   )
@@ -3385,6 +3679,16 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Live Response Shell
   def live_response(conn, _params) do
+    authorize_or_render_inertia_page(
+      conn,
+      [:live_response_access, :live_response_shell, :response_execute],
+      fn ->
+        live_response_authorized(conn)
+      end
+    )
+  end
+
+  defp live_response_authorized(conn) do
     current_user = conn.assigns[:current_user]
     org_id = current_user && current_user.organization_id
 
@@ -3413,7 +3717,7 @@ defmodule TamanduaServerWeb.InertiaController do
     # expects the ShellSession shape, not audit-log metadata.
     recentSessions =
       try do
-        list_recent_shell_sessions()
+        list_recent_shell_sessions(organization_id: org_id)
       rescue
         _ -> []
       end
@@ -3427,11 +3731,27 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def live_response_agent(conn, %{"agent_id" => agent_id}) do
+    authorize_or_render_inertia_page(
+      conn,
+      [:live_response_access, :live_response_shell, :response_execute],
+      fn ->
+        live_response_agent_authorized(conn, agent_id)
+      end
+    )
+  end
+
+  defp live_response_agent_authorized(conn, agent_id) do
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+
     # Get the specific agent
     agent =
       try do
-        case Agents.get_agent(agent_id) do
-          {:ok, a} ->
+        case get_agent_for_org(org_id, agent_id) do
+          nil ->
+            nil
+
+          a ->
             %{
               id: a.id,
               hostname: a.hostname || "Unknown",
@@ -3441,12 +3761,6 @@ defmodule TamanduaServerWeb.InertiaController do
               status: to_string(a.status || "unknown"),
               last_seen: format_datetime(a.last_seen_at)
             }
-
-          {:error, :not_found} ->
-            nil
-
-          nil ->
-            nil
         end
       rescue
         e ->
@@ -3461,7 +3775,7 @@ defmodule TamanduaServerWeb.InertiaController do
         agentId: agent_id,
         # Just the selected agent
         agents: [agent],
-        recentSessions: list_recent_shell_sessions(agent_id: agent_id),
+        recentSessions: list_recent_shell_sessions(agent_id: agent_id, organization_id: org_id),
         builtinCommands: get_builtin_commands()
       })
     else
@@ -3478,7 +3792,17 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp list_recent_shell_sessions(opts \\ []) do
-    TamanduaServer.ShellSessions.list_sessions(Keyword.put_new(opts, :limit, 10))
+    organization_id = Keyword.get(opts, :organization_id)
+    limit = Keyword.get(opts, :limit, 10)
+    agent_ids = scoped_shell_session_agent_ids(organization_id)
+
+    session_opts =
+      opts
+      |> Keyword.delete(:organization_id)
+      |> Keyword.put(:agent_ids, MapSet.to_list(agent_ids))
+      |> Keyword.put(:limit, limit)
+
+    TamanduaServer.ShellSessions.list_sessions(session_opts)
     |> Enum.map(fn session ->
       %{
         id: session.id,
@@ -3496,6 +3820,15 @@ defmodule TamanduaServerWeb.InertiaController do
     e ->
       Logger.warning("Failed to list recent shell sessions: #{Exception.message(e)}")
       []
+  end
+
+  defp scoped_shell_session_agent_ids(nil), do: MapSet.new()
+
+  defp scoped_shell_session_agent_ids(organization_id) do
+    organization_id
+    |> list_agents_for_dashboard()
+    |> Enum.map(fn agent -> Map.get(agent, :id) || Map.get(agent, :agent_id) end)
+    |> MapSet.new()
   end
 
   defp iso8601_or_nil(nil), do: nil
@@ -3630,7 +3963,8 @@ defmodule TamanduaServerWeb.InertiaController do
             type: "host",
             userRiskScore: user_risk,
             hostRiskScore: host_risk,
-            lastSeen: format_datetime(Map.get(agent, :last_seen_at) || Map.get(agent, :updated_at))
+            lastSeen:
+              format_datetime(Map.get(agent, :last_seen_at) || Map.get(agent, :updated_at))
           }
         end)
 
@@ -3687,20 +4021,20 @@ defmodule TamanduaServerWeb.InertiaController do
         {:ok, score} when is_number(score) -> score
         _ -> 0
       end
-    catch
-      :exit, _ -> 0
     rescue
       _ -> 0
+    catch
+      :exit, _ -> 0
     end
   end
 
   defp safe_behavioral_alerts(org_id) do
     try do
       Alerts.list_alerts_for_org(org_id, limit: 75)
-    catch
-      :exit, _ -> []
     rescue
       _ -> []
+    catch
+      :exit, _ -> []
     end
   end
 
@@ -3970,7 +4304,7 @@ defmodule TamanduaServerWeb.InertiaController do
     stats =
       try do
         global_finding_stats = Finding.global_statistics()
-        policy_stats = PolicyEngine.statistics()
+        _policy_stats = PolicyEngine.statistics()
 
         total_resources =
           Enum.reduce(accounts, 0, fn a, acc -> acc + (a.resources_count || 0) end)
@@ -4409,6 +4743,18 @@ defmodule TamanduaServerWeb.InertiaController do
     })
   end
 
+  def emerging_threats(conn, _params) do
+    org_id =
+      conn.assigns[:current_organization_id] ||
+        (conn.assigns[:current_user] && conn.assigns.current_user.organization_id)
+
+    props = TamanduaServer.ThreatIntel.EmergingCenter.summary(org_id, limit: 100)
+
+    conn
+    |> assign(:page_title, "Emerging Threats")
+    |> render_inertia("EmergingThreats", props)
+  end
+
   defp extract_ioc_type_from_alert(alert) do
     title = String.downcase(alert.title || "")
 
@@ -4737,25 +5083,34 @@ defmodule TamanduaServerWeb.InertiaController do
   defp build_recommendations(_), do: build_recommendations([])
 
   def shadow_ai(conn, _params) do
-    # Get shadow AI detections from AttackSurface module
-    shadow_ai_detections =
-      try do
-        case AttackSurface.get_shadow_ai_detections(limit: 100) do
-          list when is_list(list) -> list
-          _ -> []
+    case ResponseActor.from_user_scope(
+           conn.assigns[:current_user],
+           conn.assigns[:current_organization_id]
+         ) do
+      {:ok, %{organization_id: organization_id}} ->
+        try do
+          MultiTenant.with_organization(organization_id, fn ->
+            authorize_or_render_inertia_page(conn, [:ai_investigate], fn ->
+              shadow_ai_for_organization(conn, organization_id)
+            end)
+          end)
+        rescue
+          _ -> forbidden_inertia_page(conn)
         end
-      catch
-        kind, reason ->
-          Logger.warning(
-            "AttackSurface.get_shadow_ai_detections failed: #{kind} #{inspect(reason)}"
-          )
 
-          []
-      end
+      _ ->
+        forbidden_inertia_page(conn)
+    end
+  end
+
+  defp shadow_ai_for_organization(conn, organization_id) do
+    # AttackSurface and AIGateway still expose organization-less read APIs.
+    # Keep those projections unavailable until their read contracts are tenant-bound.
+    shadow_ai_detections = []
 
     inventory_components =
       try do
-        case AIInventory.list_inventory(limit: 250) do
+        case AIInventory.list_inventory(organization_id, limit: 250) do
           {:ok, list} when is_list(list) -> list
           _ -> []
         end
@@ -4765,47 +5120,9 @@ defmodule TamanduaServerWeb.InertiaController do
           []
       end
 
-    ai_usage_events =
-      try do
-        case AttackSurface.get_recent_events(limit: 250) do
-          list when is_list(list) -> list
-          _ -> []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AttackSurface.get_recent_events failed: #{kind} #{inspect(reason)}")
-          []
-      end
-
-    gateway_usage_events =
-      try do
-        case AIGateway.list_usage(limit: 250) do
-          {:ok, list} when is_list(list) -> list
-          _ -> []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AIGateway.list_usage failed: #{kind} #{inspect(reason)}")
-          []
-      end
-
-    gateway_health =
-      try do
-        AIGateway.health()
-      catch
-        kind, reason ->
-          Logger.warning("AIGateway.health failed: #{kind} #{inspect(reason)}")
-          %{status: "unsupported", event_count: 0, last_seen: nil}
-      end
-
-    gateway_policy =
-      try do
-        AIGateway.get_policy()
-      catch
-        kind, reason ->
-          Logger.warning("AIGateway.get_policy failed: #{kind} #{inspect(reason)}")
-          %{}
-      end
+    ai_usage_events = []
+    gateway_usage_events = []
+    gateway_policy = %{}
 
     # Map detections to frontend format - discoveredServices array
     shadow_services =
@@ -4849,7 +5166,9 @@ defmodule TamanduaServerWeb.InertiaController do
 
     usage_services =
       ai_usage_events
-      |> Enum.group_by(fn event -> {event[:agent_id], event[:domain] || event[:remote_domain]} end)
+      |> Enum.group_by(fn event ->
+        {event[:agent_id], event[:domain] || event[:remote_domain]}
+      end)
       |> Enum.map(fn {{agent_id, domain}, events} ->
         latest =
           Enum.reduce(events, %{}, fn event, acc ->
@@ -4921,6 +5240,8 @@ defmodule TamanduaServerWeb.InertiaController do
         "#{service[:agentId]}:#{service[:domain] || service[:name]}:#{service[:source] || "shadow"}"
       end)
 
+    model_observations = model_observations_for_inventory(inventory_components)
+
     # Frontend expects unapprovedModels as array of UnapprovedModel objects (not just strings)
     unapproved_models =
       shadow_ai_detections
@@ -4944,30 +5265,8 @@ defmodule TamanduaServerWeb.InertiaController do
         }
       end)
 
-    # Get attack surface analysis for data flow risks
-    analysis =
-      try do
-        case AttackSurface.analyze(%{include_data_flows: true}) do
-          {:ok, result} -> result
-          _ -> %{}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AttackSurface.analyze(data_flows) failed: #{kind} #{inspect(reason)}")
-          %{}
-      end
-
-    stats_raw =
-      try do
-        case AttackSurface.get_stats() do
-          s when is_map(s) -> s
-          _ -> %{}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AttackSurface.get_stats failed: #{kind} #{inspect(reason)}")
-          %{}
-      end
+    analysis = %{}
+    stats_raw = %{}
 
     # Get data exfiltration risks from high-risk data flows in the analysis
     data_flows_info = analysis[:data_flows] || %{}
@@ -4976,7 +5275,7 @@ defmodule TamanduaServerWeb.InertiaController do
     # Get alerts related to data exfiltration
     data_exfiltration_risks =
       try do
-        Alerts.list_alerts(%{})
+        Alerts.list_alerts(%{organization_id: organization_id})
         |> Enum.filter(fn alert ->
           title = String.downcase(alert.title || "")
           description = String.downcase(alert.description || "")
@@ -5029,6 +5328,8 @@ defmodule TamanduaServerWeb.InertiaController do
     gateway_usage =
       gateway_usage_events
       |> Enum.map(fn event ->
+        enforcement = ai_gateway_enforcement_summary(event)
+
         %{
           id: event[:id],
           agentId: event[:agent_id] || event[:user_id] || event[:tenant_id],
@@ -5041,6 +5342,12 @@ defmodule TamanduaServerWeb.InertiaController do
           policyStatus: event[:policy_decision] || "unknown",
           policyReasons: event[:policy_reasons] || [],
           policyEnforced: event[:policy_enforced] == true,
+          enforcementRequested: enforcement[:requested],
+          enforcementStatus: enforcement[:status],
+          enforcementActionId: enforcement[:action_id],
+          enforcementReason: enforcement[:reason],
+          enforcementMode: enforcement[:mode],
+          enforcement: enforcement,
           effectiveRiskScore: event[:effective_risk_score] || event[:risk_score] || 0,
           provider: event[:provider],
           domain: event[:domain],
@@ -5134,23 +5441,26 @@ defmodule TamanduaServerWeb.InertiaController do
           coverage: "local processes, packages, IDE extensions, model files, MCP/config artifacts"
         },
         aiUsage: %{
-          status: if(Enum.empty?(ai_usage_events), do: "no_data", else: "active"),
+          status: "unavailable",
           eventCount: length(ai_usage_events),
           lastSeen: latest_usage_seen(ai_usage_events),
-          coverage: "DNS/network domain visibility only; prompt contents are not captured"
+          coverage: "Tenant-scoped AI usage projection is not available",
+          reason: "organization_scope_unavailable"
         },
         aiGateway: %{
-          status: gateway_health[:status] || "no_data",
-          eventCount: gateway_health[:event_count] || length(gateway_usage_events),
-          lastSeen: gateway_health[:last_seen],
-          coverage:
-            "Gateway/browser/proxy metadata; prompts and responses are rejected by the API",
-          persistenceStatus: get_in(gateway_health, [:persistence, :status]),
-          persistenceRetention: get_in(gateway_health, [:persistence, :retention]),
-          enforcementAvailable: get_in(gateway_health, [:enforcement, :available]) == true,
-          enforcementMode: get_in(gateway_health, [:enforcement, :mode]),
-          enforcementNote: get_in(gateway_health, [:enforcement, :note]),
-          inlineProxy: gateway_health[:inline_proxy] == true
+          status: "unavailable",
+          eventCount: 0,
+          lastSeen: nil,
+          coverage: "Tenant-scoped AI gateway projection is not available",
+          reason: "organization_scope_unavailable",
+          persistenceStatus: nil,
+          persistenceRetention: nil,
+          enforcementAvailable: false,
+          enforcementMode: nil,
+          enforcementNote: nil,
+          inlineProxy: false,
+          decisionSimulationAvailable: false,
+          dryRunAvailable: false
         },
         llmInterception: %{
           status: "unsupported",
@@ -5158,8 +5468,43 @@ defmodule TamanduaServerWeb.InertiaController do
             "Passive prompt/API interception is not implemented for Windows/macOS endpoint agents yet"
         }
       },
-      gatewayPolicy: gateway_policy
+      gatewayPolicy: gateway_policy,
+      modelObservations: model_observations
     })
+  end
+
+  defp model_observations_for_inventory(components) do
+    components
+    |> Enum.flat_map(fn component ->
+      (component[:model_observations] || component["model_observations"] || [])
+      |> Enum.map(fn observation ->
+        observation
+        |> Map.new(fn {key, value} -> {to_string(key), value} end)
+        |> Map.merge(%{
+          "agent_id" => component[:agent_id] || component["agent_id"],
+          "component_id" => component[:id] || component["id"],
+          "component_name" => component[:name] || component["name"],
+          "observed_at" => format_datetime(component[:last_seen_at] || component["last_seen_at"])
+        })
+      end)
+    end)
+    |> Enum.take(128)
+  end
+
+  defp ai_gateway_enforcement_summary(event) when is_map(event) do
+    Enforcement.summarize_event(event)
+  end
+
+  defp ai_gateway_enforcement_summary(_event) do
+    %{
+      requested: false,
+      status: "decision_only",
+      mode: "endpoint_action_bridge",
+      reason: "Invalid AI Gateway event",
+      inlineProxy: false,
+      resultTracked: false,
+      rollbackAvailable: false
+    }
   end
 
   defp latest_ai_activity([]), do: nil
@@ -5415,17 +5760,38 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Agentic Analyst (Purple AI)
   def agentic_analyst(conn, _params) do
+    organization_id =
+      conn.assigns[:current_organization_id] ||
+        case conn.assigns[:current_user] do
+          %{organization_id: organization_id} -> organization_id
+          user when is_map(user) -> user[:organization_id] || user["organization_id"]
+          _ -> nil
+        end
+
     # Get investigations from AgenticAnalyst module (keep raw for extracting recommendations)
     investigations_raw =
-      try do
-        case AgenticAnalyst.list_investigations(limit: 50) do
-          list when is_list(list) -> list
-          _ -> []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AgenticAnalyst.list_investigations failed: #{kind} #{inspect(reason)}")
+      case organization_id do
+        organization_id when organization_id in [nil, ""] ->
+          Logger.warning("AgenticAnalyst.list_investigations skipped: organization unavailable")
           []
+
+        organization_id ->
+          try do
+            case AgenticAnalyst.list_investigations(
+                   organization_id: organization_id,
+                   limit: 50
+                 ) do
+              list when is_list(list) -> list
+              _ -> []
+            end
+          catch
+            kind, reason ->
+              Logger.warning(
+                "AgenticAnalyst.list_investigations failed: #{kind} #{inspect(reason)}"
+              )
+
+              []
+          end
       end
 
     investigations =
@@ -5443,17 +5809,22 @@ defmodule TamanduaServerWeb.InertiaController do
         }
       end)
 
-    # Get stats for triage queue info
     stats =
-      try do
-        case AgenticAnalyst.get_stats() do
-          s when is_map(s) -> s
-          _ -> %{}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AgenticAnalyst.get_stats failed: #{kind} #{inspect(reason)}")
+      case organization_id do
+        organization_id when organization_id in [nil, ""] ->
           %{}
+
+        organization_id ->
+          try do
+            case AgenticAnalyst.get_stats(organization_id) do
+              stats when is_map(stats) -> stats
+              _ -> %{}
+            end
+          catch
+            kind, reason ->
+              Logger.warning("AgenticAnalyst.get_stats failed: #{kind} #{inspect(reason)}")
+              %{}
+          end
       end
 
     # Build triage queue from pending/triaging investigations
@@ -5504,55 +5875,66 @@ defmodule TamanduaServerWeb.InertiaController do
       |> Enum.sort_by(fn a -> a.confidence end, :desc)
       |> Enum.take(20)
 
-    # Frontend expects insights as an array of AIInsight objects
     insights =
-      try do
-        case AgenticAnalyst.get_insights() do
-          {:ok, list} when is_list(list) ->
-            Enum.map(list, fn insight ->
-              %{
-                id: insight[:id] || UUID.uuid4(),
-                type: insight[:type] || "observation",
-                title: insight[:title] || "Insight",
-                description: insight[:description] || "",
-                severity: insight[:severity] || "info",
-                confidence: insight[:confidence] || 0.0,
-                relatedInvestigations: insight[:related_investigations] || [],
-                createdAt: format_datetime(insight[:created_at])
-              }
-            end)
-
-          _ ->
-            []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AgenticAnalyst.get_insights failed: #{kind} #{inspect(reason)}")
+      case organization_id do
+        organization_id when organization_id in [nil, ""] ->
           []
+
+        organization_id ->
+          try do
+            case AgenticAnalyst.get_insights(organization_id: organization_id) do
+              {:ok, list} when is_list(list) ->
+                Enum.map(list, fn insight ->
+                  %{
+                    id: insight[:id] || UUID.uuid4(),
+                    type: insight[:type] || "observation",
+                    title: insight[:title] || "Insight",
+                    description: insight[:description] || "",
+                    severity: insight[:severity] || "info",
+                    confidence: insight[:confidence] || 0.0,
+                    timestamp: format_datetime(insight[:timestamp]),
+                    relatedEntities: insight[:related_entities] || []
+                  }
+                end)
+
+              _ ->
+                []
+            end
+          catch
+            kind, reason ->
+              Logger.warning("AgenticAnalyst.get_insights failed: #{kind} #{inspect(reason)}")
+              []
+          end
       end
 
-    # Frontend expects chatHistory as an array of ChatMessage objects
     chat_history =
-      try do
-        case AgenticAnalyst.get_chat_history() do
-          {:ok, list} when is_list(list) ->
-            Enum.map(list, fn msg ->
-              %{
-                id: msg[:id] || UUID.uuid4(),
-                role: msg[:role] || "assistant",
-                content: msg[:content] || "",
-                timestamp: format_datetime(msg[:timestamp]),
-                investigationId: msg[:investigation_id]
-              }
-            end)
-
-          _ ->
-            []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("AgenticAnalyst.get_chat_history failed: #{kind} #{inspect(reason)}")
+      case organization_id do
+        organization_id when organization_id in [nil, ""] ->
           []
+
+        organization_id ->
+          try do
+            case AgenticAnalyst.get_chat_history(organization_id: organization_id) do
+              {:ok, list} when is_list(list) ->
+                Enum.map(list, fn msg ->
+                  %{
+                    id: msg[:id] || UUID.uuid4(),
+                    role: msg[:role] || "assistant",
+                    content: msg[:content] || "",
+                    timestamp: format_datetime(msg[:timestamp]),
+                    investigationId: msg[:investigation_id]
+                  }
+                end)
+
+              _ ->
+                []
+            end
+          catch
+            kind, reason ->
+              Logger.warning("AgenticAnalyst.get_chat_history failed: #{kind} #{inspect(reason)}")
+
+              []
+          end
       end
 
     render_inertia(conn, "AgenticAnalyst", %{
@@ -5576,11 +5958,14 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   def investigation_detail(conn, %{"id" => id}) do
-    case AgenticAnalyst.get_investigation(id) do
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+
+    case AgenticAnalyst.get_investigation(id, organization_id: org_id) do
       {:ok, investigation} ->
         # Get explanation for this investigation
         explanation =
-          case AgenticAnalyst.explain_investigation(id) do
+          case AgenticAnalyst.explain_investigation(id, org_id) do
             {:ok, exp} -> exp
             _ -> nil
           end
@@ -5916,7 +6301,7 @@ defmodule TamanduaServerWeb.InertiaController do
       end
 
     # Calculate organization risk from real rankings
-    org_risk =
+    _org_risk =
       if Enum.empty?(risk_rankings) do
         %{score: 0.0, risk_level: "minimal", factors: []}
       else
@@ -6767,7 +7152,10 @@ defmodule TamanduaServerWeb.InertiaController do
         end
       catch
         kind, reason ->
-          Logger.warning("PredictiveShield.analyze_attack_paths failed: #{kind} #{inspect(reason)}")
+          Logger.warning(
+            "PredictiveShield.analyze_attack_paths failed: #{kind} #{inspect(reason)}"
+          )
+
           %{paths: []}
       end
 
@@ -6806,12 +7194,18 @@ defmodule TamanduaServerWeb.InertiaController do
             result
 
           other ->
-            Logger.warning("PredictiveShield.generate_hardening_recommendations returned #{inspect(other)}")
+            Logger.warning(
+              "PredictiveShield.generate_hardening_recommendations returned #{inspect(other)}"
+            )
+
             %{recommendations: []}
         end
       catch
         kind, reason ->
-          Logger.warning("PredictiveShield.generate_hardening_recommendations failed: #{kind} #{inspect(reason)}")
+          Logger.warning(
+            "PredictiveShield.generate_hardening_recommendations failed: #{kind} #{inspect(reason)}"
+          )
+
           %{recommendations: []}
       end
 
@@ -7953,6 +8347,7 @@ defmodule TamanduaServerWeb.InertiaController do
   defp serialize_ai_artifact_row(row) do
     data = Map.get(row, "data") || %{}
     matched_patterns = artifact_field(data, "matched_patterns", [])
+    risk_indicators = artifact_field(data, "risk_indicators", [])
     risk_score = Map.get(row, "risk_score") || 0
     risk_level = Map.get(row, "risk_level") || risk_level_from_score(risk_score)
 
@@ -7965,6 +8360,12 @@ defmodule TamanduaServerWeb.InertiaController do
       file_hash: artifact_field(data, "file_hash", nil),
       redacted_preview: artifact_field(data, "redacted_preview", nil),
       matched_patterns: matched_patterns,
+      risk_indicators: risk_indicators,
+      ai_network_risk: artifact_field(data, "ai_network_risk", nil),
+      ai_evidence_limit: artifact_field(data, "ai_evidence_limit", nil),
+      network_visibility_state: artifact_field(data, "network_visibility_state", nil),
+      tls_fingerprints_available: artifact_field(data, "tls_fingerprints_available", nil),
+      certificate_visibility: artifact_field(data, "certificate_visibility", nil),
       risk_score: risk_score,
       risk_level: risk_level,
       severity: ai_artifact_severity(risk_level, matched_patterns),
@@ -8071,7 +8472,9 @@ defmodule TamanduaServerWeb.InertiaController do
       end)
 
     tools = normalize_mcp_tools(tools_data || [])
-    tools = if tools == [] and catalog_tools != [], do: normalize_mcp_tools(catalog_tools), else: tools
+
+    tools =
+      if tools == [] and catalog_tools != [], do: normalize_mcp_tools(catalog_tools), else: tools
 
     # Get context providers
     {providers_data, providers_error} =
@@ -8117,7 +8520,9 @@ defmodule TamanduaServerWeb.InertiaController do
     successful_requests = stats[:successful_requests] || 0
     failed_requests = stats[:failed_requests] || 0
     actions_executed = stats[:actions_executed] || 0
-    health_errors = Enum.reject([tools_error, providers_error, stats_error, audit_error], &is_nil/1)
+
+    health_errors =
+      Enum.reject([tools_error, providers_error, stats_error, audit_error], &is_nil/1)
 
     mcp_status =
       cond do
@@ -8128,10 +8533,17 @@ defmodule TamanduaServerWeb.InertiaController do
 
     health_message =
       cond do
-        not mcp_alive? and tools != [] -> "MCPServer process is not running; showing static tool catalog"
-        not mcp_alive? -> "MCPServer process is not running in this boot profile"
-        health_errors != [] -> Enum.join(health_errors, "; ")
-        true -> "MCP server is running"
+        not mcp_alive? and tools != [] ->
+          "MCPServer process is not running; showing static tool catalog"
+
+        not mcp_alive? ->
+          "MCPServer process is not running in this boot profile"
+
+        health_errors != [] ->
+          Enum.join(health_errors, "; ")
+
+        true ->
+          "MCP server is running"
       end
 
     # Build server info (MCP is a single server endpoint)
@@ -8184,6 +8596,7 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp mcp_field(map, key, default \\ nil)
+
   defp mcp_field(map, key, default) when is_map(map) and is_atom(key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key)) || default
   end
@@ -8212,7 +8625,8 @@ defmodule TamanduaServerWeb.InertiaController do
         description: mcp_field(provider, :description),
         type: mcp_field(provider, :type),
         status: mcp_field(provider, :status),
-        resourceCount: mcp_field(provider, :resource_count) || mcp_field(provider, :resourceCount),
+        resourceCount:
+          mcp_field(provider, :resource_count) || mcp_field(provider, :resourceCount),
         parameters: mcp_field(provider, :parameters, %{})
       }
     end)
@@ -8255,11 +8669,13 @@ defmodule TamanduaServerWeb.InertiaController do
 
   # Phishing Triage
   def phishing_triage(conn, _params) do
+    organization_id = conn.assigns[:current_organization_id]
+
     # Get stats from PhishingTriage module
     stats =
       try do
-        case PhishingTriage.get_stats() do
-          s when is_map(s) -> s
+        case PhishingTriage.get_stats(organization_id) do
+          {:ok, s} when is_map(s) -> s
           _ -> %{}
         end
       catch
@@ -8274,7 +8690,7 @@ defmodule TamanduaServerWeb.InertiaController do
     # Frontend expects reportedEmails as an array of ReportedEmail objects.
     reported_emails =
       try do
-        case PhishingTriage.list_reported_emails(limit: 50) do
+        case PhishingTriage.list_reported_emails(organization_id: organization_id, limit: 50) do
           {:ok, list} when is_list(list) ->
             Enum.map(list, fn email ->
               sender = email[:sender] || "unknown@example.com"
@@ -8311,7 +8727,7 @@ defmodule TamanduaServerWeb.InertiaController do
     # Frontend expects classifications as an array of AIClassification objects
     classifications =
       try do
-        case PhishingTriage.list_classifications(limit: 50) do
+        case PhishingTriage.list_classifications(organization_id: organization_id, limit: 50) do
           {:ok, list} when is_list(list) ->
             Enum.map(list, fn cls ->
               %{
@@ -8349,7 +8765,8 @@ defmodule TamanduaServerWeb.InertiaController do
           reviewedBy: "phishing-triage",
           reviewedAt: classification.analyzedAt,
           actionsTaken: phishing_actions_for_verdict(classification.verdict),
-          notes: "Automated classification confidence #{round((classification.confidence || 0) * 100)}%"
+          notes:
+            "Automated classification confidence #{round((classification.confidence || 0) * 100)}%"
         }
       end)
 
@@ -8399,13 +8816,24 @@ defmodule TamanduaServerWeb.InertiaController do
   defp positive_count?(value) when is_integer(value), do: value > 0
   defp positive_count?(_), do: false
 
-  defp normalize_phishing_verdict(verdict) when verdict in [:phishing, "phishing", :malicious, "malicious"], do: "phishing"
+  defp normalize_phishing_verdict(verdict)
+       when verdict in [:phishing, "phishing", :malicious, "malicious"],
+       do: "phishing"
+
   defp normalize_phishing_verdict(verdict) when verdict in [:spam, "spam"], do: "spam"
-  defp normalize_phishing_verdict(verdict) when verdict in [:suspicious, "suspicious"], do: "suspicious"
-  defp normalize_phishing_verdict(verdict) when verdict in [:legitimate, "legitimate", :benign, "benign"], do: "legitimate"
+
+  defp normalize_phishing_verdict(verdict) when verdict in [:suspicious, "suspicious"],
+    do: "suspicious"
+
+  defp normalize_phishing_verdict(verdict)
+       when verdict in [:legitimate, "legitimate", :benign, "benign"],
+       do: "legitimate"
+
   defp normalize_phishing_verdict(_), do: "suspicious"
 
-  defp phishing_actions_for_verdict("phishing"), do: ["quarantined", "ioc_extracted", "user_notified"]
+  defp phishing_actions_for_verdict("phishing"),
+    do: ["quarantined", "ioc_extracted", "user_notified"]
+
   defp phishing_actions_for_verdict("spam"), do: ["marked_spam"]
   defp phishing_actions_for_verdict("suspicious"), do: ["queued_for_review"]
   defp phishing_actions_for_verdict(_), do: ["closed"]
@@ -8423,12 +8851,13 @@ defmodule TamanduaServerWeb.InertiaController do
   defp reporter_name(_), do: "Unknown"
 
   def email_security(conn, _params) do
+    organization_id = conn.assigns[:current_organization_id]
     alias TamanduaServer.EmailSecurity.{Microsoft365, GoogleWorkspace, EmailCorrelator}
 
     # Get integration statuses
     m365_status =
       safe_feature_call("Microsoft365.get_status", %{connected: false, enabled: false}, fn ->
-        case Microsoft365.get_status() do
+        case Microsoft365.get_status(organization_id) do
           {:ok, status} -> status
           _ -> %{connected: false, enabled: false}
         end
@@ -8436,7 +8865,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     google_status =
       safe_feature_call("GoogleWorkspace.get_status", %{connected: false, enabled: false}, fn ->
-        case GoogleWorkspace.get_status() do
+        case GoogleWorkspace.get_status(organization_id) do
           {:ok, status} -> status
           _ -> %{connected: false, enabled: false}
         end
@@ -8445,14 +8874,17 @@ defmodule TamanduaServerWeb.InertiaController do
     # Get correlator stats
     correlator_stats =
       safe_feature_call("EmailCorrelator.get_stats", %{}, fn ->
-        EmailCorrelator.get_stats()
+        case EmailCorrelator.get_stats(organization_id) do
+          {:ok, stats} -> stats
+          _ -> %{}
+        end
       end)
 
     # Get triage stats
     triage_stats =
       safe_feature_call("PhishingTriage.get_stats", %{}, fn ->
-        case PhishingTriage.get_stats() do
-          s when is_map(s) -> s
+        case PhishingTriage.get_stats(organization_id) do
+          {:ok, s} when is_map(s) -> s
           _ -> %{}
         end
       end)
@@ -8460,7 +8892,10 @@ defmodule TamanduaServerWeb.InertiaController do
     # Get recent attack chains
     attack_chains =
       safe_feature_call("EmailCorrelator.list_attack_chains", [], fn ->
-        case EmailCorrelator.list_attack_chains(limit: 10, min_severity: :medium) do
+        case EmailCorrelator.list_attack_chains(organization_id,
+               limit: 10,
+               min_severity: :medium
+             ) do
           {:ok, chains} -> Enum.map(chains, &serialize_attack_chain/1)
           _ -> []
         end
@@ -8581,6 +9016,10 @@ defmodule TamanduaServerWeb.InertiaController do
       status: status,
       health_status: health_status,
       isolated: Map.get(agent, :isolated, false) || status == "isolated",
+      projection_gap: Map.get(agent, :projection_gap, false),
+      projection_gap_reason: Map.get(agent, :projection_gap_reason),
+      mobile_device_id: Map.get(agent, :mobile_device_id),
+      mobile_device_row_id: Map.get(agent, :mobile_device_row_id),
       certificate_fingerprint: Map.get(agent, :certificate_fingerprint),
       certificate_subject: Map.get(agent, :certificate_subject),
       certificate_valid_until: format_datetime(Map.get(agent, :certificate_valid_until)),
@@ -8608,8 +9047,14 @@ defmodule TamanduaServerWeb.InertiaController do
   defp get_alert_response_actions(nil, _alert_id), do: []
 
   defp get_alert_response_actions(org_id, alert_id) do
-    Response.list_actions(%{organization_id: org_id, alert_id: alert_id})
-    |> Enum.map(&serialize_response_action/1)
+    host_actions =
+      Response.list_actions(%{organization_id: org_id, alert_id: alert_id})
+      |> Enum.map(&serialize_alert_response_action/1)
+
+    mobile_actions = get_alert_mobile_response_actions(org_id, alert_id)
+
+    (host_actions ++ mobile_actions)
+    |> Enum.sort_by(fn action -> action[:executed_at] || action[:created_at] || "" end, :desc)
   rescue
     e ->
       Logger.warning(
@@ -8619,7 +9064,34 @@ defmodule TamanduaServerWeb.InertiaController do
       []
   end
 
-  defp serialize_response_action(action) do
+  defp get_alert_mobile_response_actions(org_id, alert_id) do
+    import Ecto.Query
+
+    alert_id_string = to_string(alert_id)
+
+    TamanduaServer.Mobile.MDMCommand
+    |> TamanduaServer.Mobile.MDMCommand.by_organization(org_id)
+    |> where(
+      [c],
+      fragment("?->>'alert_id' = ?", c.payload, ^alert_id_string) or
+        fragment("?->>'alertId' = ?", c.payload, ^alert_id_string)
+    )
+    |> preload(:device)
+    |> TamanduaServer.Mobile.MDMCommand.latest_first()
+    |> TamanduaServer.Repo.all()
+    |> Enum.map(&serialize_mobile_response_action/1)
+  rescue
+    e ->
+      Logger.warning(
+        "Failed to list mobile response commands for alert #{alert_id}: #{Exception.message(e)}"
+      )
+
+      []
+  end
+
+  defp serialize_alert_response_action(action) do
+    command = response_action_command(action)
+
     %{
       id: action.id,
       action_type: action.action_type,
@@ -8629,16 +9101,232 @@ defmodule TamanduaServerWeb.InertiaController do
       error_message: action.error_message,
       executed_at: format_datetime(action.executed_at),
       created_at: format_datetime(action.inserted_at),
-      executed_by_id: action.executed_by_id
+      executed_by_id: action.executed_by_id,
+      command: command && serialize_response_command_summary(command),
+      rollback: rollback_summary_for_response_action(action, command)
     }
   end
+
+  defp serialize_mobile_response_action(command) do
+    result = command.result || %{}
+    device = Map.get(command, :device)
+
+    %{
+      id: command.id,
+      action_type: "mobile_#{command.command_type}",
+      status: mobile_response_status(command.status),
+      parameters:
+        (command.payload || %{})
+        |> Map.put_new("device_id", command.device_id)
+        |> Map.put_new("device_name", mobile_command_device_name(device)),
+      result: result,
+      error_message: mobile_command_error(result),
+      executed_at: format_datetime(command.completed_at || command.sent_at),
+      created_at: format_datetime(command.inserted_at),
+      executed_by_id: command.requested_by,
+      command: serialize_mobile_response_command_summary(command),
+      rollback: rollback_summary_for_mobile_response_action(command)
+    }
+  end
+
+  defp response_action_command(action) do
+    command_id = response_action_command_id(action)
+    idempotency_key = response_action_idempotency_key(action)
+
+    cond do
+      is_binary(command_id) and command_id != "" ->
+        TamanduaServer.Repo.get(AgentCommand, command_id)
+
+      is_binary(idempotency_key) and idempotency_key != "" and is_binary(action.agent_id) ->
+        import Ecto.Query
+
+        AgentCommand
+        |> where([c], c.agent_id == ^action.agent_id and c.idempotency_key == ^idempotency_key)
+        |> order_by([c], desc: c.inserted_at)
+        |> limit(1)
+        |> TamanduaServer.Repo.one()
+
+      true ->
+        nil
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "Failed to resolve response action command #{action.id}: #{Exception.message(e)}"
+      )
+
+      nil
+  end
+
+  defp response_action_command_id(action) do
+    result = action.result || %{}
+    params = action.parameters || %{}
+
+    first_non_empty([
+      result["command_id"],
+      result[:command_id],
+      result["commandId"],
+      get_in(result, ["command", "id"]),
+      get_in(result, ["command", "command_id"]),
+      get_in(result, [:command, :id]),
+      params["command_id"],
+      params[:command_id]
+    ])
+  end
+
+  defp response_action_idempotency_key(action) do
+    result = action.result || %{}
+    params = action.parameters || %{}
+
+    first_non_empty([
+      result["idempotency_key"],
+      result[:idempotency_key],
+      result["idempotencyKey"],
+      get_in(result, ["command", "idempotency_key"]),
+      get_in(result, [:command, :idempotency_key]),
+      params["idempotency_key"],
+      params[:idempotency_key]
+    ])
+  end
+
+  defp first_non_empty(values) do
+    Enum.find(values, fn
+      value when is_binary(value) -> String.trim(value) != ""
+      nil -> false
+      _ -> true
+    end)
+  end
+
+  defp serialize_response_command_summary(%AgentCommand{} = command) do
+    %{
+      id: command.id,
+      agent_id: command.agent_id,
+      command_type: command.command_type,
+      commandType: command.command_type,
+      status: command.status,
+      result: command.result || %{},
+      error: command.error,
+      idempotency_key: command.idempotency_key,
+      idempotencyKey: command.idempotency_key,
+      queued_at: format_datetime(command.inserted_at),
+      queuedAt: format_datetime(command.inserted_at),
+      sent_at: format_datetime(command.sent_at),
+      sentAt: format_datetime(command.sent_at),
+      acknowledged_at: format_datetime(command.acknowledged_at),
+      acknowledgedAt: format_datetime(command.acknowledged_at),
+      completed_at: format_datetime(command.completed_at),
+      completedAt: format_datetime(command.completed_at),
+      updated_at: format_datetime(command.updated_at),
+      updatedAt: format_datetime(command.updated_at)
+    }
+  end
+
+  defp serialize_mobile_response_command_summary(command) do
+    %{
+      id: command.id,
+      runtime: "mobile_mdm",
+      device_id: command.device_id,
+      command_type: command.command_type,
+      commandType: command.command_type,
+      status: command.status,
+      result: command.result || %{},
+      error: mobile_command_error(command.result || %{}),
+      queued_at: format_datetime(command.inserted_at),
+      queuedAt: format_datetime(command.inserted_at),
+      sent_at: format_datetime(command.sent_at),
+      sentAt: format_datetime(command.sent_at),
+      completed_at: format_datetime(command.completed_at),
+      completedAt: format_datetime(command.completed_at),
+      updated_at: format_datetime(command.updated_at),
+      updatedAt: format_datetime(command.updated_at)
+    }
+  end
+
+  defp rollback_summary_for_response_action(action, command) do
+    reversible = reversible_response_action?(action.action_type)
+    status = action.status
+
+    %{
+      available: reversible and status in ["success", "executing", "pending"],
+      action_type: rollback_action_type(action.action_type),
+      actionType: rollback_action_type(action.action_type),
+      reason:
+        cond do
+          not reversible ->
+            "No automated rollback is defined for this action type."
+
+          is_nil(command) ->
+            "Rollback is available from the response action audit, but no AgentCommand row is linked yet."
+
+          command.status == "completed" ->
+            "Command completed; rollback can be requested if the target still applies."
+
+          command.status in ["pending", "sent", "acknowledged"] ->
+            "Command is still active; rollback should wait for final execution status."
+
+          command.status == "failed" ->
+            "Original command failed; rollback is usually not required."
+
+          true ->
+            "Rollback depends on final command status."
+        end
+    }
+  end
+
+  defp rollback_summary_for_mobile_response_action(_command) do
+    %{
+      available: false,
+      action_type: nil,
+      actionType: nil,
+      reason: "Mobile command rollback is not exposed for this response action."
+    }
+  end
+
+  defp reversible_response_action?(action_type)
+       when action_type in [
+              "isolate_network",
+              "isolate",
+              "block_ip",
+              "block_domain",
+              "quarantine_file"
+            ],
+       do: true
+
+  defp reversible_response_action?(_), do: false
+
+  defp rollback_action_type("isolate_network"), do: "unisolate_network"
+  defp rollback_action_type("isolate"), do: "unisolate_network"
+  defp rollback_action_type("block_ip"), do: "unblock_ip"
+  defp rollback_action_type("block_domain"), do: "unblock_domain"
+  defp rollback_action_type("quarantine_file"), do: "restore_quarantined_file"
+  defp rollback_action_type(_), do: nil
+
+  defp mobile_response_status("completed"), do: "success"
+  defp mobile_response_status("sent"), do: "executing"
+  defp mobile_response_status(status) when status in ["pending", "failed"], do: status
+  defp mobile_response_status(_), do: "pending"
+
+  defp mobile_command_error(result) when is_map(result) do
+    result["error"] || result[:error] || result["reason"] || result[:reason]
+  end
+
+  defp mobile_command_error(_), do: nil
+
+  defp mobile_command_device_name(%{device_name: name}) when is_binary(name) and name != "",
+    do: name
+
+  defp mobile_command_device_name(%{device_id: device_id}) when is_binary(device_id),
+    do: device_id
+
+  defp mobile_command_device_name(_), do: nil
 
   # SECURITY: Return empty list if no org_id to prevent data leakage
   # In production, all routes should require authentication with org_id
   defp list_agents_for_dashboard(nil), do: []
 
   defp list_agents_for_dashboard(org_id) do
-    Agents.list_all_for_org(org_id)
+    agents = Agents.list_all_for_org(org_id)
+    agents ++ mobile_projection_gap_agents(org_id, agents)
   rescue
     e in [DBConnection.ConnectionError, Postgrex.Error] ->
       Logger.warning("Failed to list agents for dashboard: #{Exception.message(e)}")
@@ -8647,6 +9335,70 @@ defmodule TamanduaServerWeb.InertiaController do
     :exit, reason ->
       Logger.warning("Failed to list agents for dashboard: exit #{inspect(reason)}")
       []
+  end
+
+  defp mobile_projection_gap_agents(nil, _agents), do: []
+
+  defp mobile_projection_gap_agents(org_id, agents) do
+    alias TamanduaServer.Agents.Agent
+    alias TamanduaServer.Mobile.DeviceV2
+    alias TamanduaServer.Repo
+    import Ecto.Query
+
+    projected_machine_ids =
+      agents
+      |> Enum.map(&(Map.get(&1, :machine_id) || Map.get(&1, :device_id)))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    from(d in DeviceV2,
+      left_join: a in Agent,
+      on: a.organization_id == d.organization_id and a.machine_id == d.device_id,
+      where: d.organization_id == ^org_id and is_nil(a.id),
+      order_by: [desc: d.updated_at],
+      limit: 50
+    )
+    |> Repo.all()
+    |> Enum.reject(&MapSet.member?(projected_machine_ids, &1.device_id))
+    |> Enum.map(&mobile_projection_gap_agent/1)
+  rescue
+    e ->
+      Logger.warning(
+        "[Agents] Failed to list mobile projection gap rows for org #{org_id}: #{Exception.message(e)}"
+      )
+
+      []
+  end
+
+  defp mobile_projection_gap_agent(device) do
+    %{
+      id: "mobile-projection-gap-#{device.id}",
+      agent_id: "mobile-projection-gap-#{device.id}",
+      hostname: mobile_projection_gap_hostname(device),
+      ip_address: "",
+      os_type: device.platform || "android",
+      os_version: device.os_version,
+      agent_version: "mobile-v2-projection-gap",
+      machine_id: device.device_id,
+      status: :degraded,
+      last_seen_at: device.last_seen_at || device.updated_at,
+      organization_id: device.organization_id,
+      projection_gap: true,
+      projection_gap_reason: "mobile_device_v2_without_agent_projection",
+      mobile_device_id: device.device_id,
+      mobile_device_row_id: device.id
+    }
+  end
+
+  defp mobile_projection_gap_hostname(device) do
+    cond do
+      is_binary(device.device_name) and device.device_name != "" -> device.device_name
+      is_binary(device.model) and device.model != "" -> device.model
+      is_binary(device.device_id) and device.device_id != "" ->
+        "mobile-" <> String.slice(device.device_id, 0, 12)
+
+      true -> "mobile-projection-gap"
+    end
   end
 
   defp get_data_source_health_for_agents(agents) do
@@ -8760,6 +9512,9 @@ defmodule TamanduaServerWeb.InertiaController do
       Map.get(agent, :status) in [:isolated, "isolated"] ->
         :isolated
 
+      Map.get(agent, :status) in [:degraded, "degraded"] ->
+        :degraded
+
       Map.get(agent, :status) in [:offline, "offline"] ->
         :offline
 
@@ -8784,6 +9539,8 @@ defmodule TamanduaServerWeb.InertiaController do
   defp serialize_alert(alert) do
     detection_metadata = Map.get(alert, :detection_metadata) || %{}
     source = alert_source(alert, detection_metadata)
+    evidence_quality = EvidenceQuality.classify(alert)
+    evidence_quality_camel = camelize_evidence_quality(evidence_quality)
 
     %{
       id: alert.id,
@@ -8802,10 +9559,52 @@ defmodule TamanduaServerWeb.InertiaController do
       createdAt: format_datetime(alert.inserted_at),
       # Enhanced fields for correlation and investigation
       evidence: Map.get(alert, :evidence, %{}),
+      evidenceQuality: evidence_quality_camel,
+      evidence_quality: evidence_quality,
+      rawEvent: Map.get(alert, :raw_event) || %{},
+      raw_event: Map.get(alert, :raw_event) || %{},
       iocs: extract_alert_iocs(alert),
       processChain: serialize_process_chain(Map.get(alert, :process_chain, []))
     }
   end
+
+  defp camelize_evidence_quality(%{} = evidence_quality) do
+    %{
+      quality: Map.get(evidence_quality, :quality),
+      label: Map.get(evidence_quality, :label),
+      claimable: Map.get(evidence_quality, :claimable),
+      benchmarkEligible: Map.get(evidence_quality, :benchmark_eligible),
+      summary: Map.get(evidence_quality, :summary),
+      checks: camelize_map_keys(Map.get(evidence_quality, :checks) || %{}),
+      missing: Map.get(evidence_quality, :missing),
+      investigationContext:
+        camelize_investigation_context(Map.get(evidence_quality, :investigation_context) || %{}),
+      score: Map.get(evidence_quality, :score)
+    }
+  end
+
+  defp camelize_investigation_context(%{} = context) do
+    context
+    |> camelize_map_keys()
+    |> Map.put("fields", camelize_map_keys(Map.get(context, :fields) || %{}))
+  end
+
+  defp camelize_map_keys(%{} = map) do
+    Map.new(map, fn {key, value} -> {camelize_key(key), value} end)
+  end
+
+  defp camelize_key(key) when is_atom(key), do: key |> Atom.to_string() |> camelize_key()
+
+  defp camelize_key(key) when is_binary(key) do
+    key
+    |> String.split("_")
+    |> case do
+      [head | tail] -> head <> Enum.map_join(tail, "", &String.capitalize/1)
+      [] -> ""
+    end
+  end
+
+  defp camelize_key(key), do: key
 
   defp alert_source(alert, detection_metadata) do
     Map.get(alert, :source) ||
@@ -9228,7 +10027,15 @@ defmodule TamanduaServerWeb.InertiaController do
         pid: process_value(process, [:pid, "pid", :process_id, "process_id"]),
         ppid: process_value(process, [:ppid, "ppid", :parent_pid, "parent_pid"]),
         name: process_value(process, [:name, "name", :process_name, "process_name"]),
-        path: process_value(process, [:path, "path", :image_path, "image_path", :process_path, "process_path"]),
+        path:
+          process_value(process, [
+            :path,
+            "path",
+            :image_path,
+            "image_path",
+            :process_path,
+            "process_path"
+          ]),
         cmdline:
           process_value(process, [
             :cmdline,
@@ -9261,6 +10068,7 @@ defmodule TamanduaServerWeb.InertiaController do
   defp process_value(_, _), do: nil
 
   defp format_datetime(nil), do: nil
+  defp format_datetime(%Date{} = dt), do: Date.to_iso8601(dt)
   defp format_datetime(dt) when is_binary(dt), do: dt
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
@@ -9350,7 +10158,7 @@ defmodule TamanduaServerWeb.InertiaController do
     }
   end
 
-  defp serialize_response_action(action) do
+  defp serialize_response_page_action(action) do
     %{
       id: action.id,
       agentId: action.agent_id,
@@ -9530,7 +10338,8 @@ defmodule TamanduaServerWeb.InertiaController do
       triggerConditions: Map.keys(trigger_conditions),
       trigger: %{
         type: playbook.trigger_type || "manual",
-        conditions: Enum.map(trigger_conditions, fn {key, value} -> %{field: key, value: value} end)
+        conditions:
+          Enum.map(trigger_conditions, fn {key, value} -> %{field: key, value: value} end)
       },
       steps: playbook.steps || [],
       enabled: playbook.enabled,
@@ -9569,8 +10378,12 @@ defmodule TamanduaServerWeb.InertiaController do
     }
   end
 
-  defp workflow_trigger_conditions(%{"conditions" => conditions}) when is_list(conditions), do: conditions
-  defp workflow_trigger_conditions(config) when is_map(config), do: Enum.map(config, fn {key, value} -> "#{key}: #{inspect(value)}" end)
+  defp workflow_trigger_conditions(%{"conditions" => conditions}) when is_list(conditions),
+    do: conditions
+
+  defp workflow_trigger_conditions(config) when is_map(config),
+    do: Enum.map(config, fn {key, value} -> "#{key}: #{inspect(value)}" end)
+
   defp workflow_trigger_conditions(_), do: []
 
   defp serialize_vulnerability(vuln) do
@@ -9627,201 +10440,6 @@ defmodule TamanduaServerWeb.InertiaController do
       blockSensitiveFiles: policy.block_sensitive_files,
       notifyOnExternalShare: policy.notify_on_external_share
     }
-  end
-
-  # =============================================================================
-  # EDR Validation & Benchmark
-  # =============================================================================
-
-  def validation_dashboard(conn, _params) do
-    alias TamanduaServer.Validation.EDRTester
-    alias TamanduaServer.Agents.Registry
-
-    # Get available tests
-    tests =
-      try do
-        case EDRTester.get_available_tests() do
-          {:ok, list} when is_list(list) ->
-            list
-
-          other ->
-            Logger.warning("EDRTester.get_available_tests returned unexpected: #{inspect(other)}")
-            []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("EDRTester.get_available_tests failed: #{kind} #{inspect(reason)}")
-          []
-      end
-
-    # Get stats
-    stats =
-      try do
-        case EDRTester.get_stats() do
-          {:ok, s} when is_map(s) ->
-            s
-
-          other ->
-            Logger.warning("EDRTester.get_stats returned unexpected: #{inspect(other)}")
-            %{}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("EDRTester.get_stats failed: #{kind} #{inspect(reason)}")
-          %{}
-      end
-
-    # Get connected agents
-    agents =
-      try do
-        case Registry.list_all() do
-          list when is_list(list) ->
-            Enum.map(list, fn a ->
-              %{
-                id: a.agent_id,
-                hostname: a.hostname,
-                status: a.status,
-                os: a[:os_type],
-                lastSeen: format_datetime(a[:last_seen_at] || a[:last_seen])
-              }
-            end)
-
-          other ->
-            Logger.warning("Registry.list_all returned unexpected: #{inspect(other)}")
-            []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("Registry.list_all failed: #{kind} #{inspect(reason)}")
-          []
-      end
-
-    # Group tests by category
-    tests_by_category =
-      tests
-      |> Enum.group_by(& &1.category)
-      |> Enum.map(fn {cat, items} ->
-        %{
-          category: cat,
-          categoryName: category_display_name(cat),
-          tests: items,
-          count: length(items)
-        }
-      end)
-
-    render_inertia(conn, "ValidationDashboard", %{
-      page_title: "EDR Validation",
-      tests: tests,
-      testsByCategory: tests_by_category,
-      agents: agents,
-      stats: %{
-        totalTestsRun: stats[:total_tests_run] || 0,
-        totalDetections: stats[:total_detections] || 0,
-        agentsTested: stats[:agents_tested_count] || 0,
-        detectionRate: stats[:detection_rate] || 0.0,
-        techniquesAvailable: stats[:techniques_available] || 0,
-        lastTestRun: format_datetime(stats[:last_test_run])
-      },
-      priorityLevels: [
-        %{id: "critical", name: "Critical", color: "#ef4444"},
-        %{id: "high", name: "High", color: "#f97316"},
-        %{id: "medium", name: "Medium", color: "#eab308"},
-        %{id: "low", name: "Low", color: "#22c55e"}
-      ]
-    })
-  end
-
-  def validation_benchmark(conn, _params) do
-    alias TamanduaServer.Validation.EDRTester
-
-    # Get benchmark comparison
-    comparison =
-      try do
-        case EDRTester.get_benchmark_comparison() do
-          {:ok, c} when is_map(c) ->
-            c
-
-          other ->
-            Logger.warning(
-              "EDRTester.get_benchmark_comparison returned unexpected: #{inspect(other)}"
-            )
-
-            %{}
-        end
-      catch
-        kind, reason ->
-          Logger.warning("EDRTester.get_benchmark_comparison failed: #{kind} #{inspect(reason)}")
-          %{}
-      end
-
-    competitors =
-      try do
-        case EDRTester.get_industry_baselines() do
-          {:ok, baselines} when is_list(baselines) and length(baselines) > 0 -> baselines
-          _ -> []
-        end
-      catch
-        kind, reason ->
-          Logger.warning("EDRTester.get_industry_baselines failed: #{kind} #{inspect(reason)}")
-          []
-      end
-
-    # Tamandua's current rates (from testing)
-    tamandua_rates = comparison[:tamandua] || %{}
-
-    tamandua = %{
-      id: "tamandua",
-      name: "Tamandua EDR",
-      overall: calculate_overall_rate(tamandua_rates),
-      categories:
-        Enum.map(tamandua_rates, fn {k, v} -> {k, Float.round(v * 100, 1)} end) |> Enum.into(%{})
-    }
-
-    render_inertia(conn, "ValidationBenchmark", %{
-      page_title: "Detection Benchmark",
-      tamandua: tamandua,
-      competitors: competitors,
-      strengths: comparison[:strengths] || [],
-      weaknesses: comparison[:weaknesses] || [],
-      recommendations: comparison[:recommendations] || [],
-      categories: [
-        %{id: "execution", name: "Execution", mitreTacticId: "TA0002"},
-        %{id: "persistence", name: "Persistence", mitreTacticId: "TA0003"},
-        %{id: "defense_evasion", name: "Defense Evasion", mitreTacticId: "TA0005"},
-        %{id: "credential_access", name: "Credential Access", mitreTacticId: "TA0006"},
-        %{id: "discovery", name: "Discovery", mitreTacticId: "TA0007"},
-        %{id: "lateral_movement", name: "Lateral Movement", mitreTacticId: "TA0008"},
-        %{id: "collection", name: "Collection", mitreTacticId: "TA0009"},
-        %{id: "command_control", name: "Command & Control", mitreTacticId: "TA0011"},
-        %{id: "exfiltration", name: "Exfiltration", mitreTacticId: "TA0010"},
-        %{id: "impact", name: "Impact", mitreTacticId: "TA0040"}
-      ]
-    })
-  end
-
-  defp category_display_name(:execution), do: "Execution"
-  defp category_display_name(:persistence), do: "Persistence"
-  defp category_display_name(:privilege_escalation), do: "Privilege Escalation"
-  defp category_display_name(:defense_evasion), do: "Defense Evasion"
-  defp category_display_name(:credential_access), do: "Credential Access"
-  defp category_display_name(:discovery), do: "Discovery"
-  defp category_display_name(:lateral_movement), do: "Lateral Movement"
-  defp category_display_name(:collection), do: "Collection"
-  defp category_display_name(:command_control), do: "Command & Control"
-  defp category_display_name(:exfiltration), do: "Exfiltration"
-  defp category_display_name(:impact), do: "Impact"
-  defp category_display_name(other), do: to_string(other) |> String.capitalize()
-
-  defp calculate_overall_rate(rates) when map_size(rates) == 0, do: 0.0
-
-  defp calculate_overall_rate(rates) do
-    values = Map.values(rates)
-
-    if length(values) > 0 do
-      Float.round(Enum.sum(values) / length(values) * 100, 1)
-    else
-      0.0
-    end
   end
 
   # Case Investigations Hub (for manual investigation cases)
@@ -10208,6 +10826,545 @@ defmodule TamanduaServerWeb.InertiaController do
     })
   end
 
+  def browser_guard(conn, _params) do
+    current_user = conn.assigns[:current_user]
+    org_id = current_user && current_user.organization_id
+    payload = build_browser_guard_payload(org_id)
+
+    render_inertia(conn, "BrowserGuard", %{
+      page_title: "Browser Guard",
+      data_source: payload.data_source,
+      degradation_notes: payload.degradation_notes,
+      health: payload.health,
+      managed_policies: payload.managed_policies,
+      native_bridge: payload.native_bridge,
+      dnr_rules: payload.dnr_rules,
+      extension_inventory: payload.extension_inventory,
+      bypasses: payload.bypasses,
+      browser_events: payload.browser_events
+    })
+  end
+
+  defp build_browser_guard_payload(org_id) do
+    agents = list_agents_for_dashboard(org_id)
+
+    agent_names =
+      agents
+      |> Enum.map(fn agent ->
+        agent_id = map_value(agent, :id) || map_value(agent, :agent_id)
+        hostname = map_value(agent, :hostname) || map_value(agent, :name) || "host unknown"
+        {agent_id, hostname}
+      end)
+      |> Enum.reject(fn {agent_id, _hostname} -> is_nil(agent_id) end)
+      |> Map.new()
+
+    recent_events = recent_browser_guard_events(org_id)
+    extension_events = Enum.filter(recent_events, &browser_extension_event?/1)
+    bridge_events = Enum.filter(recent_events, &native_bridge_event?/1)
+    dnr_events = Enum.filter(recent_events, &dnr_event?/1)
+    inventory = build_browser_extension_inventory(recent_events, agent_names)
+
+    %{
+      data_source: if(recent_events == [] and inventory == [], do: "degraded", else: "backend"),
+      degradation_notes:
+        browser_guard_degradation_notes(
+          recent_events,
+          extension_events,
+          bridge_events,
+          dnr_events,
+          inventory
+        ),
+      health:
+        browser_guard_health(
+          recent_events,
+          extension_events,
+          bridge_events,
+          dnr_events,
+          inventory
+        ),
+      managed_policies: build_browser_managed_policies(recent_events),
+      native_bridge: build_browser_native_bridge(bridge_events),
+      dnr_rules: build_browser_dnr_rules(dnr_events),
+      extension_inventory: inventory,
+      bypasses: build_browser_bypasses(recent_events),
+      browser_events:
+        Enum.map(Enum.take(recent_events, 25), &serialize_browser_guard_event(&1, agent_names))
+    }
+  end
+
+  defp recent_browser_guard_events(org_id) do
+    since = DateTime.utc_now() |> DateTime.add(-7 * 24 * 60 * 60, :second)
+
+    try do
+      TamanduaServer.Telemetry.list_events(%{
+        organization_id: org_id,
+        since: since,
+        limit: 500,
+        skip_agent_lookup: true
+      })
+      |> Enum.filter(&browser_guard_related_event?/1)
+    rescue
+      e ->
+        Logger.warning("Failed to load Browser Guard telemetry: #{Exception.message(e)}")
+        []
+    catch
+      :exit, reason ->
+        Logger.warning("Failed to load Browser Guard telemetry: exit #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp browser_guard_related_event?(event) do
+    event_type = event.event_type |> to_string() |> String.downcase()
+    payload = event.payload || %{}
+
+    String.contains?(event_type, "browser") or
+      String.contains?(event_type, "extension") or
+      (String.contains?(event_type, "credential_access") and browser_credential_payload?(payload)) or
+      payload_present?(payload, [
+        "browser",
+        "browser_name",
+        "browser_extension_id",
+        "extension_id",
+        "extension_inventory",
+        "dnr_rule_id",
+        "native_bridge_status",
+        "native_host_status",
+        "browser_guard"
+      ])
+  end
+
+  defp browser_credential_payload?(payload) do
+    browser = payload_value(payload, ["browser"])
+
+    fingerprint =
+      "#{payload_value(payload, ["data_file"])} #{payload_value(payload, ["data_type"])} #{payload_value(payload, ["profile_path"])}"
+
+    browser not in [nil, ""] or String.contains?(String.downcase(fingerprint), "browser")
+  end
+
+  defp browser_extension_event?(event) do
+    event_type = event.event_type |> to_string() |> String.downcase()
+    payload = event.payload || %{}
+
+    String.contains?(event_type, "extension") or
+      String.contains?(event_type, "browser_guard") or
+      payload_present?(payload, [
+        "browser_extension_id",
+        "extension_id",
+        "extension_inventory",
+        "extension_name"
+      ])
+  end
+
+  defp native_bridge_event?(event) do
+    payload = event.payload || %{}
+
+    payload_present?(payload, [
+      "native_bridge_status",
+      "native_host_status",
+      "native_bridge_version",
+      "native_host_version",
+      "native_messaging_host",
+      "bridge_heartbeat"
+    ])
+  end
+
+  defp dnr_event?(event) do
+    payload = event.payload || %{}
+
+    payload_present?(payload, [
+      "dnr_rule_id",
+      "dnr_rule",
+      "dnr_action",
+      "dnr_condition",
+      "declarative_net_request"
+    ])
+  end
+
+  defp browser_guard_degradation_notes(
+         recent_events,
+         extension_events,
+         bridge_events,
+         dnr_events,
+         inventory
+       ) do
+    [
+      if(recent_events == [],
+        do: "No tenant-scoped browser telemetry was found in the last 7 days.",
+        else: nil
+      ),
+      if(extension_events == [],
+        do:
+          "Browser extension heartbeat/inventory events are not wired or have not reported yet.",
+        else: nil
+      ),
+      if(bridge_events == [],
+        do: "Native messaging bridge health is not reporting from a real installed host.",
+        else: nil
+      ),
+      if(dnr_events == [],
+        do: "DNR rule hit counters are unavailable; no rule enforcement claim is made.",
+        else: nil
+      ),
+      if(inventory == [],
+        do: "Extension inventory is empty because no endpoint reported extension details.",
+        else: nil
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp browser_guard_health(recent_events, extension_events, bridge_events, dnr_events, inventory) do
+    [
+      %{
+        label: "Agent browser protection telemetry",
+        status: if(recent_events == [], do: "warning", else: "healthy"),
+        detail:
+          if(recent_events == [],
+            do: "No browser-related endpoint events in the last 7 days",
+            else: "#{length(recent_events)} browser-related events in the last 7 days"
+          ),
+        last_seen: latest_event_seen(recent_events)
+      },
+      %{
+        label: "Extension heartbeat",
+        status: if(extension_events == [], do: "warning", else: "healthy"),
+        detail:
+          if(extension_events == [],
+            do: "No Browser Guard extension heartbeat reported",
+            else: "#{length(extension_events)} extension/inventory events reported"
+          ),
+        last_seen: latest_event_seen(extension_events)
+      },
+      %{
+        label: "Native messaging bridge",
+        status: if(bridge_events == [], do: "warning", else: latest_bridge_status(bridge_events)),
+        detail:
+          if(bridge_events == [],
+            do: "Native host telemetry is not available",
+            else: "Native bridge telemetry is present"
+          ),
+        last_seen: latest_event_seen(bridge_events)
+      },
+      %{
+        label: "DNR enforcement telemetry",
+        status: if(dnr_events == [], do: "warning", else: "healthy"),
+        detail:
+          if(dnr_events == [],
+            do: "No DNR rule hit events reported",
+            else: "#{length(dnr_events)} DNR rule events reported"
+          ),
+        last_seen: latest_event_seen(dnr_events)
+      },
+      %{
+        label: "Extension inventory",
+        status: if(inventory == [], do: "warning", else: "healthy"),
+        detail:
+          if(inventory == [],
+            do: "No managed or user extension inventory reported",
+            else: "#{length(inventory)} extensions inventoried"
+          )
+      }
+    ]
+  end
+
+  defp build_browser_managed_policies(events) do
+    events
+    |> Enum.flat_map(fn event ->
+      payload = event.payload || %{}
+
+      case payload_value(payload, ["managed_policies", "browser_policies", "policies"]) do
+        policies when is_list(policies) ->
+          Enum.map(policies, &browser_policy_from_payload(&1, event))
+
+        _ ->
+          if payload_value(payload, ["policy_name", "managed_policy", "policy"]) do
+            [browser_policy_from_payload(payload, event)]
+          else
+            []
+          end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(fn policy -> {policy.browser, policy.name, policy.scope} end)
+  end
+
+  defp browser_policy_from_payload(policy, event) when is_map(policy) do
+    %{
+      name: payload_value(policy, ["name", "policy_name", "policy"]) || "Managed browser policy",
+      browser:
+        payload_value(policy, ["browser", "browser_name"]) ||
+          payload_value(event.payload || %{}, ["browser"]) || "Browser",
+      status: normalize_browser_status(payload_value(policy, ["status", "state"]) || "healthy"),
+      value:
+        payload_value(policy, ["value", "decision", "setting"]) ||
+          "Policy reported by endpoint telemetry",
+      scope: payload_value(policy, ["scope"]) || "endpoint",
+      updated_at: format_datetime(event.timestamp)
+    }
+  end
+
+  defp browser_policy_from_payload(_, _event), do: nil
+
+  defp build_browser_native_bridge(events) do
+    latest = List.first(events)
+
+    if latest do
+      payload = latest.payload || %{}
+
+      %{
+        host:
+          payload_value(payload, ["native_messaging_host", "native_host", "host"]) ||
+            "com.tamandua.browser_guard",
+        status: latest_bridge_status(events),
+        version:
+          payload_value(payload, ["native_bridge_version", "native_host_version", "version"]) ||
+            "not reported",
+        agents:
+          events |> Enum.map(& &1.agent_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> length(),
+        last_heartbeat: latest_event_seen(events)
+      }
+    else
+      %{
+        host: "com.tamandua.browser_guard",
+        status: "warning",
+        version: "not reported",
+        agents: 0,
+        last_heartbeat: "not reported"
+      }
+    end
+  end
+
+  defp build_browser_dnr_rules(events) do
+    events
+    |> Enum.group_by(fn event ->
+      payload = event.payload || %{}
+      payload_value(payload, ["dnr_rule_id", "dnr_rule", "rule_id", "id"]) || "dnr-rule"
+    end)
+    |> Enum.map(fn {rule_id, grouped} ->
+      latest = List.first(grouped)
+      payload = latest.payload || %{}
+
+      hits =
+        grouped
+        |> Enum.map(&(payload_value(&1.payload || %{}, ["hits", "hit_count", "matches"]) || 1))
+        |> Enum.map(&safe_int/1)
+        |> Enum.sum()
+
+      %{
+        id: to_string(rule_id),
+        name: payload_value(payload, ["rule_name", "name"]) || to_string(rule_id),
+        action: payload_value(payload, ["dnr_action", "action"]) || "reported",
+        condition:
+          payload_value(payload, ["dnr_condition", "condition", "url_filter", "domain"]) ||
+            "condition not reported",
+        enabled: payload_value(payload, ["enabled"]) != false,
+        hits: hits,
+        severity:
+          normalize_browser_severity(latest.severity || payload_value(payload, ["severity"]))
+      }
+    end)
+  end
+
+  defp build_browser_extension_inventory(events, agent_names) do
+    events
+    |> Enum.flat_map(fn event ->
+      payload = event.payload || %{}
+
+      case payload_value(payload, ["extension_inventory", "extensions"]) do
+        extensions when is_list(extensions) ->
+          Enum.map(extensions, &browser_inventory_from_payload(&1, event, agent_names))
+
+        _ ->
+          if payload_present?(payload, ["browser_extension_id", "extension_id", "extension_name"]) do
+            [browser_inventory_from_payload(payload, event, agent_names)]
+          else
+            []
+          end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(fn item -> {item.browser, item.id, item.hosts} end)
+  end
+
+  defp browser_inventory_from_payload(item, event, agent_names) when is_map(item) do
+    extension_id = payload_value(item, ["id", "extension_id", "browser_extension_id"])
+
+    if extension_id do
+      %{
+        id: to_string(extension_id),
+        name: payload_value(item, ["name", "extension_name"]) || to_string(extension_id),
+        browser:
+          payload_value(item, ["browser", "browser_name"]) ||
+            payload_value(event.payload || %{}, ["browser"]) || "Browser",
+        version: payload_value(item, ["version"]) || "unknown",
+        publisher: payload_value(item, ["publisher", "author"]),
+        install_type:
+          payload_value(item, ["install_type", "installType", "managed"]) || "not reported",
+        risk: normalize_browser_severity(payload_value(item, ["risk", "severity"]) || "info"),
+        hosts: [Map.get(agent_names, event.agent_id, "host unknown")],
+        permissions: payload_value(item, ["permissions"]) || [],
+        last_seen: format_datetime(event.timestamp)
+      }
+    end
+  end
+
+  defp browser_inventory_from_payload(_, _event, _agent_names), do: nil
+
+  defp build_browser_bypasses(events) do
+    events
+    |> Enum.flat_map(fn event ->
+      payload = event.payload || %{}
+
+      case payload_value(payload, ["bypasses", "browser_bypasses", "policy_bypasses"]) do
+        bypasses when is_list(bypasses) ->
+          Enum.map(bypasses, &browser_bypass_from_payload(&1, event))
+
+        _ ->
+          if payload_present?(payload, ["bypass_target", "bypass_reason"]) do
+            [browser_bypass_from_payload(payload, event)]
+          else
+            []
+          end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp browser_bypass_from_payload(item, event) when is_map(item) do
+    target = payload_value(item, ["target", "bypass_target", "domain", "url"])
+
+    if target do
+      %{
+        id: payload_value(item, ["id"]) || "bypass-#{:erlang.phash2({target, event.id})}",
+        target: target,
+        reason: payload_value(item, ["reason", "bypass_reason"]) || "reason not reported",
+        owner: payload_value(item, ["owner", "user"]),
+        expires_at: payload_value(item, ["expires_at", "expiresAt"]) || "not reported",
+        status: normalize_browser_status(payload_value(item, ["status"]) || "warning")
+      }
+    end
+  end
+
+  defp browser_bypass_from_payload(_, _event), do: nil
+
+  defp serialize_browser_guard_event(event, agent_names) do
+    payload = event.payload || %{}
+
+    %{
+      id: event.id,
+      timestamp: format_datetime(event.timestamp),
+      severity:
+        normalize_browser_severity(event.severity || payload_value(payload, ["severity"])),
+      browser: payload_value(payload, ["browser", "browser_name"]) || "Browser telemetry",
+      host: Map.get(agent_names, event.agent_id, "host unknown"),
+      title: browser_guard_event_title(event, payload),
+      detail: browser_guard_event_detail(event, payload)
+    }
+  end
+
+  defp browser_guard_event_title(event, payload) do
+    payload_value(payload, ["title", "rule_name", "event_name", "operation"]) ||
+      case event.event_type do
+        "credential_access" -> "Browser credential/data access"
+        type -> type |> to_string() |> String.replace("_", " ") |> String.capitalize()
+      end
+  end
+
+  defp browser_guard_event_detail(_event, payload) do
+    payload_value(payload, ["description", "detail", "message", "process_cmdline"]) ||
+      [
+        payload_value(payload, ["process_name"]),
+        payload_value(payload, ["data_type"]),
+        payload_value(payload, ["data_file"])
+      ]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join(" / ")
+  end
+
+  defp latest_event_seen([]), do: "not reported"
+  defp latest_event_seen([event | _]), do: format_datetime(event.timestamp)
+
+  defp latest_bridge_status(events) do
+    events
+    |> Enum.find_value(fn event ->
+      payload = event.payload || %{}
+      payload_value(payload, ["native_bridge_status", "native_host_status", "status"])
+    end)
+    |> normalize_browser_status()
+  end
+
+  defp payload_present?(payload, keys) do
+    Enum.any?(keys, fn key ->
+      value = payload_value(payload, [key])
+      value not in [nil, "", []]
+    end)
+  end
+
+  defp payload_value(payload, keys) when is_map(payload) do
+    Enum.find_value(keys, fn key -> map_value(payload, key) end)
+  end
+
+  defp payload_value(_, _), do: nil
+
+  defp map_value(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, existing_atom_key(key))
+  end
+
+  defp map_value(_, _), do: nil
+
+  defp existing_atom_key(key) when is_binary(key) do
+    try do
+      String.to_existing_atom(key)
+    rescue
+      ArgumentError -> nil
+    end
+  end
+
+  defp normalize_browser_status(value) do
+    case value |> to_string() |> String.downcase() do
+      status
+      when status in ["healthy", "ok", "online", "connected", "enabled", "active", "success"] ->
+        "healthy"
+
+      status when status in ["critical", "error", "failed", "blocked"] ->
+        "critical"
+
+      status when status in ["offline", "disconnected"] ->
+        "offline"
+
+      status when status in ["warning", "degraded", "pending", "unknown", "needs_data"] ->
+        "warning"
+
+      _ ->
+        "warning"
+    end
+  end
+
+  defp normalize_browser_severity(value) do
+    case value |> to_string() |> String.downcase() do
+      severity when severity in ["critical", "high", "medium", "low", "info"] -> severity
+      "warning" -> "medium"
+      _ -> "info"
+    end
+  end
+
+  defp safe_int(value) when is_integer(value), do: value
+
+  defp safe_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> 0
+    end
+  end
+
+  defp safe_int(_), do: 0
   # RBAC Management Pages
   def rbac_roles(conn, _params) do
     authorize_or_render_inertia_page(
@@ -10635,14 +11792,16 @@ defmodule TamanduaServerWeb.InertiaController do
       description: alert.description,
       prediction: metadata_field(metadata, "prediction") || prediction_from_ml_title(alert.title),
       malware_family: metadata_field(metadata, "malware_family"),
-      confidence: metadata_field(metadata, "confidence") || metadata_field(metadata, "ml_confidence"),
+      confidence:
+        metadata_field(metadata, "confidence") || metadata_field(metadata, "ml_confidence"),
       threat_score: alert.threat_score,
       model_runtime: model_runtime,
       model_name:
         metadata_field(metadata, "ml_model") || metadata_field(metadata, "model_name") ||
           if(model_runtime == "onnx", do: "agent-onnx", else: "ml-service"),
       model_version:
-        metadata_field(metadata, "model_version") || metadata_field(metadata, "onnx_model_version"),
+        metadata_field(metadata, "model_version") ||
+          metadata_field(metadata, "onnx_model_version"),
       file_path:
         ml_detection_field(metadata, evidence, [
           "file_path",
@@ -10698,11 +11857,11 @@ defmodule TamanduaServerWeb.InertiaController do
       where:
         a.organization_id == ^org_id and
           (like(a.title, "ML Detection:%") or
-          like(a.title, "Malware detected:%") or
-          like(a.title, "Agent detection: OFFLINE_ML%") or
-          fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
-          fragment("?->>'source' = ?", a.detection_metadata, "ml") or
-          fragment("?->>'detection_source' = ?", a.detection_metadata, "ml")),
+             like(a.title, "Malware detected:%") or
+             like(a.title, "Agent detection: OFFLINE_ML%") or
+             fragment("?->>'detection_type' = ?", a.detection_metadata, "ml") or
+             fragment("?->>'source' = ?", a.detection_metadata, "ml") or
+             fragment("?->>'detection_source' = ?", a.detection_metadata, "ml")),
       order_by: [desc: a.inserted_at],
       limit: ^limit
     )
@@ -10736,11 +11895,14 @@ defmodule TamanduaServerWeb.InertiaController do
         source: "ml",
         prediction: metadata_field(metadata, "prediction") || prediction_from_ml_title(title),
         malware_family: metadata_field(metadata, "malware_family"),
-        model_version: metadata_field(metadata, "model_version") || metadata_field(metadata, "onnx_model_version"),
+        model_version:
+          metadata_field(metadata, "model_version") ||
+            metadata_field(metadata, "onnx_model_version"),
         model_runtime: ml_model_runtime(metadata),
         confidence: metadata_field(metadata, "confidence"),
         threat_score: alert[:threat_score] || alert["threat_score"],
-        timestamp: alert[:created_at] || alert["created_at"] || alert[:inserted_at] || alert["inserted_at"]
+        timestamp:
+          alert[:created_at] || alert["created_at"] || alert[:inserted_at] || alert["inserted_at"]
       }
     end)
   end
@@ -10753,9 +11915,17 @@ defmodule TamanduaServerWeb.InertiaController do
 
   defp ml_model_runtime(metadata) when is_map(metadata) do
     cond do
-      present_metadata?(metadata, "onnx_model_version") -> "onnx"
-      metadata_field(metadata, "ml_model") |> to_string() |> String.downcase() |> String.contains?("onnx") -> "onnx"
-      true -> "ml"
+      present_metadata?(metadata, "onnx_model_version") ->
+        "onnx"
+
+      metadata_field(metadata, "ml_model")
+      |> to_string()
+      |> String.downcase()
+      |> String.contains?("onnx") ->
+        "onnx"
+
+      true ->
+        "ml"
     end
   end
 
@@ -11036,7 +12206,8 @@ defmodule TamanduaServerWeb.InertiaController do
     alias TamanduaServer.Identity.RiskScoring
     alias TamanduaServer.Identity.AzureAD
 
-    stats_result = safe_identity_call("Identity risk statistics", fn -> RiskScoring.get_statistics() end)
+    stats_result =
+      safe_identity_call("Identity risk statistics", fn -> RiskScoring.get_statistics() end)
 
     stats =
       case stats_result do
@@ -11211,7 +12382,11 @@ defmodule TamanduaServerWeb.InertiaController do
       )
       |> Map.put(
         :serviceAccounts,
-        identity_count_or_default(service_accounts_result, service_accounts, stats.serviceAccounts)
+        identity_count_or_default(
+          service_accounts_result,
+          service_accounts,
+          stats.serviceAccounts
+        )
       )
 
     identity_availability = %{
@@ -11275,6 +12450,7 @@ defmodule TamanduaServerWeb.InertiaController do
   end
 
   defp identity_field(value, key, default \\ nil)
+
   defp identity_field(value, key, default) when is_map(value) and is_atom(key) do
     Map.get(value, key) || Map.get(value, Atom.to_string(key)) || default
   end
@@ -11285,7 +12461,10 @@ defmodule TamanduaServerWeb.InertiaController do
   defp identity_text(value, _default) when is_binary(value), do: value
   defp identity_text(value, _default) when is_atom(value), do: Atom.to_string(value)
   defp identity_text(value, _default) when is_number(value), do: to_string(value)
-  defp identity_text(%{} = value, default), do: if(map_size(value) == 0, do: default, else: inspect(value))
+
+  defp identity_text(%{} = value, default),
+    do: if(map_size(value) == 0, do: default, else: inspect(value))
+
   defp identity_text(nil, default), do: default
   defp identity_text(value, _default), do: inspect(value)
 
@@ -11325,7 +12504,8 @@ defmodule TamanduaServerWeb.InertiaController do
       id: identity_text(sign_in["id"], "azure-signin-#{System.unique_integer([:positive])}"),
       userPrincipalName: identity_text(sign_in["userPrincipalName"], "unknown-user"),
       userId: identity_text(sign_in["userId"], "unknown-user"),
-      timestamp: identity_text(sign_in["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      timestamp:
+        identity_text(sign_in["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
       ipAddress: identity_text(sign_in["ipAddress"], "unknown"),
       location: %{
         city: identity_text(get_in(sign_in, ["location", "city"]), nil),
@@ -11334,14 +12514,16 @@ defmodule TamanduaServerWeb.InertiaController do
       },
       appDisplayName: identity_text(sign_in["appDisplayName"], "Unknown application"),
       clientAppUsed: identity_text(sign_in["clientAppUsed"], "unknown"),
-      riskLevelDuringSignIn: normalize_identity_risk_level(sign_in["riskLevelDuringSignIn"] || "none"),
+      riskLevelDuringSignIn:
+        normalize_identity_risk_level(sign_in["riskLevelDuringSignIn"] || "none"),
       riskState: identity_text(sign_in["riskState"], "unknown"),
       riskDetail: identity_text(sign_in["riskDetail"], nil),
       statusErrorCode: identity_number(status_error_code, 0),
       statusFailureReason: identity_text(get_in(sign_in, ["status", "failureReason"]), nil),
       deviceDetail: %{
         browser: identity_text(get_in(sign_in, ["deviceDetail", "browser"]), "Unknown"),
-        operatingSystem: identity_text(get_in(sign_in, ["deviceDetail", "operatingSystem"]), "Unknown"),
+        operatingSystem:
+          identity_text(get_in(sign_in, ["deviceDetail", "operatingSystem"]), "Unknown"),
         deviceId: identity_text(get_in(sign_in, ["deviceDetail", "deviceId"]), nil)
       },
       conditionalAccessStatus: identity_text(sign_in["conditionalAccessStatus"], "unknown"),
@@ -11352,7 +12534,8 @@ defmodule TamanduaServerWeb.InertiaController do
   defp serialize_azure_ad_audit(audit) do
     %{
       id: identity_text(audit["id"], "azure-audit-#{System.unique_integer([:positive])}"),
-      timestamp: identity_text(audit["activityDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      timestamp:
+        identity_text(audit["activityDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
       activity: identity_text(audit["activityDisplayName"], "Directory audit event"),
       category: identity_text(audit["category"], "unknown"),
       initiatedBy: %{
@@ -11366,12 +12549,14 @@ defmodule TamanduaServerWeb.InertiaController do
 
   defp serialize_service_principal(principal) do
     %{
-      id: identity_text(principal["id"], "service-principal-#{System.unique_integer([:positive])}"),
+      id:
+        identity_text(principal["id"], "service-principal-#{System.unique_integer([:positive])}"),
       displayName: identity_text(principal["displayName"], "Unnamed service principal"),
       appId: identity_text(principal["appId"], "unknown"),
       servicePrincipalType: identity_text(principal["servicePrincipalType"], "unknown"),
       accountEnabled: principal["accountEnabled"] == true,
-      createdDateTime: identity_text(principal["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
+      createdDateTime:
+        identity_text(principal["createdDateTime"], DateTime.utc_now() |> DateTime.to_iso8601()),
       signInActivity: normalize_service_principal_sign_in(principal["signInActivity"]),
       riskLevel: nil,
       permissionGrantsCount: identity_list_length(principal["oauth2PermissionGrants"])
@@ -11381,7 +12566,8 @@ defmodule TamanduaServerWeb.InertiaController do
   defp normalize_identity_actor(actor) when is_map(actor) do
     %{
       "displayName" => identity_text(actor["displayName"], actor[:displayName] || "Unknown"),
-      "userPrincipalName" => identity_text(actor["userPrincipalName"], actor[:userPrincipalName] || nil)
+      "userPrincipalName" =>
+        identity_text(actor["userPrincipalName"], actor[:userPrincipalName] || nil)
     }
   end
 
@@ -11390,9 +12576,18 @@ defmodule TamanduaServerWeb.InertiaController do
   defp normalize_identity_targets(targets) when is_list(targets) do
     Enum.map(targets, fn target ->
       %{
-        "displayName" => identity_text(identity_field(target, :displayName) || identity_field(target, :display_name), "Unknown"),
+        "displayName" =>
+          identity_text(
+            identity_field(target, :displayName) || identity_field(target, :display_name),
+            "Unknown"
+          ),
         "type" => identity_text(identity_field(target, :type), "unknown"),
-        "userPrincipalName" => identity_text(identity_field(target, :userPrincipalName) || identity_field(target, :user_principal_name), nil)
+        "userPrincipalName" =>
+          identity_text(
+            identity_field(target, :userPrincipalName) ||
+              identity_field(target, :user_principal_name),
+            nil
+          )
       }
     end)
   end
@@ -11599,13 +12794,13 @@ defmodule TamanduaServerWeb.InertiaController do
                   (encrypted_stats[:alerts_created] || 0)
             }
           }
-        catch
-          kind, reason ->
-            Logger.warning("NDR stats failed: #{kind} #{inspect(reason)}")
-            default_ndr_stats()
         rescue
           e ->
             Logger.warning("NDR stats failed: #{Exception.message(e)}")
+            default_ndr_stats()
+        catch
+          kind, reason ->
+            Logger.warning("NDR stats failed: #{kind} #{inspect(reason)}")
             default_ndr_stats()
         end
       else
@@ -11617,10 +12812,10 @@ defmodule TamanduaServerWeb.InertiaController do
       if include_details? do
         try do
           FlowAnalyzer.get_flow_stats(time_range: :hour)
-        catch
-          _kind, _reason -> %{}
         rescue
           _ -> %{}
+        catch
+          _kind, _reason -> %{}
         end
       else
         %{}
@@ -11641,10 +12836,10 @@ defmodule TamanduaServerWeb.InertiaController do
               connection_count: t[:connection_count] || 0
             }
           end)
-        catch
-          _kind, _reason -> []
         rescue
           _ -> []
+        catch
+          _kind, _reason -> []
         end
       else
         []
@@ -11655,10 +12850,10 @@ defmodule TamanduaServerWeb.InertiaController do
       if include_details? do
         try do
           FlowAnalyzer.get_protocol_distribution([])
-        catch
-          _kind, _reason -> []
         rescue
           _ -> []
+        catch
+          _kind, _reason -> []
         end
       else
         []
@@ -11681,10 +12876,10 @@ defmodule TamanduaServerWeb.InertiaController do
               timestamp: format_datetime(m[:timestamp])
             }
           end)
-        catch
-          _kind, _reason -> []
         rescue
           _ -> []
+        catch
+          _kind, _reason -> []
         end
       else
         []
@@ -11707,10 +12902,10 @@ defmodule TamanduaServerWeb.InertiaController do
               last_seen: format_datetime(s[:last_seen])
             }
           end)
-        catch
-          _kind, _reason -> []
         rescue
           _ -> []
+        catch
+          _kind, _reason -> []
         end
       else
         []
@@ -11721,10 +12916,10 @@ defmodule TamanduaServerWeb.InertiaController do
       if include_details? do
         try do
           FlowAnalyzer.get_topology([])
-        catch
-          _kind, _reason -> %{nodes: [], edges: [], summary: %{}}
         rescue
           _ -> %{nodes: [], edges: [], summary: %{}}
+        catch
+          _kind, _reason -> %{nodes: [], edges: [], summary: %{}}
         end
       else
         %{nodes: [], edges: [], summary: %{}}
@@ -11970,7 +13165,7 @@ defmodule TamanduaServerWeb.InertiaController do
 
     # Fetch executive summary data
     now = DateTime.utc_now()
-    thirty_days_ago = DateTime.add(now, -30, :day)
+    _thirty_days_ago = DateTime.add(now, -30, :day)
 
     # Get high-level metrics (multi-tenant scoped)
     total_agents =
@@ -12273,7 +13468,8 @@ defmodule TamanduaServerWeb.InertiaController do
     })
   end
 
-  defp authorize_or_render_inertia_page(conn, permissions, render_fun) when is_list(permissions) do
+  defp authorize_or_render_inertia_page(conn, permissions, render_fun)
+       when is_list(permissions) do
     if inertia_page_authorized?(conn.assigns[:current_user], permissions) do
       render_fun.()
     else

@@ -250,7 +250,8 @@ defmodule TamanduaServerWeb.LogsChannel do
     # Filter to only agents that belong to the user's organization
     if Enum.empty?(agent_ids) do
       # No specific agents requested - get all for org
-      TamanduaServer.Agents.list_agent_ids_for_organization(organization_id)
+      TamanduaServer.Agents.list_agents_for_org(organization_id)
+      |> Enum.map(& &1.id)
     else
       # Validate each agent belongs to org
       agent_ids

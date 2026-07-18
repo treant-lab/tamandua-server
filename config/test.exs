@@ -23,10 +23,21 @@ config :phoenix, :plug_init_mode, :runtime
 
 # Configure Ecto for tests
 config :tamandua_server, TamanduaServer.Repo,
-  database: "tamandua_test",
-  pool_size: 10,
-  ownership_timeout: 15_000,
-  start_owner: true
+  username: System.get_env("TEST_DB_USER", "postgres"),
+  password: System.get_env("TEST_DB_PASS", "postgres"),
+  hostname: System.get_env("TEST_DB_HOST", "localhost"),
+  port: String.to_integer(System.get_env("TEST_DB_PORT", "5432")),
+  database:
+    System.get_env(
+      "TEST_DB_NAME",
+      "tamandua_server_test#{System.get_env("MIX_TEST_PARTITION")}"
+    ),
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: String.to_integer(System.get_env("TEST_DB_POOL_SIZE", "10")),
+  timeout: String.to_integer(System.get_env("TEST_DB_TIMEOUT", "15000")),
+  ownership_timeout: String.to_integer(System.get_env("TEST_DB_OWNERSHIP_TIMEOUT", "15000")),
+  queue_target: String.to_integer(System.get_env("TEST_DB_QUEUE_TARGET", "50")),
+  queue_interval: String.to_integer(System.get_env("TEST_DB_QUEUE_INTERVAL", "1000"))
 
 # Configure Oban for tests
 config :tamandua_server, Oban,

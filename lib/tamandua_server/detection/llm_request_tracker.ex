@@ -285,7 +285,7 @@ defmodule TamanduaServer.Detection.LLMRequestTracker do
   defp normalize_provider("huggingface"), do: :huggingface
   defp normalize_provider(_), do: :other
 
-  defp should_include_request?(request, nil, nil), do: true
+  defp should_include_request?(_request, nil, nil), do: true
   defp should_include_request?(request, provider_filter, nil) when not is_nil(provider_filter) do
     request.api_provider == provider_filter
   end

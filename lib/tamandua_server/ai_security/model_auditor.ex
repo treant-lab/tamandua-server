@@ -33,7 +33,6 @@ defmodule TamanduaServer.AISecurity.ModelAuditor do
   @cusum_threshold 5.0
   @drift_z_threshold 2.5
   @baseline_min_samples 50
-  @baseline_max_samples 10_000
 
   # Sliding windows
   @recent_window_size 100
@@ -365,7 +364,7 @@ defmodule TamanduaServer.AISecurity.ModelAuditor do
   end
 
   # Welford's online algorithm for running mean and variance
-  defp welford_update(mean, m2, n, nil), do: {mean, m2}
+  defp welford_update(mean, m2, _n, nil), do: {mean, m2}
   defp welford_update(mean, m2, n, value) when is_number(value) do
     delta = value - mean
     new_mean = mean + delta / max(n, 1)

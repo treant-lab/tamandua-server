@@ -198,7 +198,7 @@ defmodule TamanduaServer.Detection.Rules.Falco do
 
   defp expand_macros(macros, lists) do
     # Recursively expand macro references within macros
-    macro_names = Map.keys(macros)
+    _macro_names = Map.keys(macros)
 
     Enum.reduce(macros, %{}, fn {name, condition}, acc ->
       expanded = expand_condition(condition, acc, macros, lists, MapSet.new([name]))

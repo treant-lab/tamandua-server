@@ -16,8 +16,7 @@ defmodule TamanduaServer.Agents.PolicyManager do
     PolicyAssignment,
     PolicyGroupAssignment,
     PolicyHistory,
-    Agent,
-    Group
+    Agent
   }
 
   @doc """

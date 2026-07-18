@@ -195,7 +195,7 @@ defmodule TamanduaServerWeb.P2PChannel do
 
   @impl true
   def handle_in(event, _params, socket) do
-    Logger.warn("Unknown P2P event: #{event}")
+    Logger.warning("Unknown P2P event: #{event}")
     {:reply, {:error, %{reason: :unknown_event}}, socket}
   end
 

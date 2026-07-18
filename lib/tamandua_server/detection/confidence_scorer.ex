@@ -237,7 +237,7 @@ defmodule TamanduaServer.Detection.ConfidenceScorer do
   end
 
   @impl true
-  def handle_cast({:record_feedback, feedback_type, detection, context}, state) do
+  def handle_cast({:record_feedback, feedback_type, detection, _context}, state) do
     feedback_key = build_feedback_key(detection)
 
     current = case :ets.lookup(@ets_feedback, feedback_key) do
@@ -323,7 +323,7 @@ defmodule TamanduaServer.Detection.ConfidenceScorer do
     end
   end
 
-  defp corroboration_factor(detection, context) do
+  defp corroboration_factor(_detection, context) do
     # Check for corroborating detections
     # This would integrate with the Correlator module in a full implementation
     agent_id = context[:agent_id]

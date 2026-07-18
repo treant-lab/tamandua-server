@@ -319,7 +319,7 @@ defmodule TamanduaServer.Detection.TokenAnomalyDetector do
   end
 
   # Welford's online algorithm for mean and variance
-  defp welford_update(mean, variance, new_value, count) when count <= 1 do
+  defp welford_update(_mean, _variance, new_value, count) when count <= 1 do
     {new_value * 1.0, 0.0}
   end
 

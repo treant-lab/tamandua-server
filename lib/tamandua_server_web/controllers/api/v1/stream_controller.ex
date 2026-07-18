@@ -18,7 +18,6 @@ defmodule TamanduaServerWeb.API.V1.StreamController do
   require Logger
 
   alias TamanduaServer.Streaming.StreamManager
-  alias TamanduaServer.Streaming.SSEConnection
 
   @heartbeat_interval 30_000
 
@@ -97,9 +96,13 @@ defmodule TamanduaServerWeb.API.V1.StreamController do
       {:ok, conn} = chunk(conn, sse_comment("Stream started: #{stream_type}"))
 
       # If resuming, send resume confirmation
-      if last_event_id do
-        {:ok, conn} = chunk(conn, sse_comment("Resuming from event: #{last_event_id}"))
-      end
+      conn =
+        if last_event_id do
+          {:ok, conn} = chunk(conn, sse_comment("Resuming from event: #{last_event_id}"))
+          conn
+        else
+          conn
+        end
 
       # Register stream with StreamManager
       :ok = StreamManager.register_stream(stream_id, self(), filters, %{})
@@ -181,7 +184,7 @@ defmodule TamanduaServerWeb.API.V1.StreamController do
     filters
   end
 
-  defp maybe_add_filter(filters, key, nil), do: filters
+  defp maybe_add_filter(filters, _key, nil), do: filters
   defp maybe_add_filter(filters, key, value) when is_binary(value) do
     # Handle comma-separated values
     values = String.split(value, ",") |> Enum.map(&String.trim/1)

@@ -28,7 +28,6 @@ defmodule TamanduaServer.Agents.HealthAnalyzer do
   @z_score_threshold 3.0
   @iqr_multiplier 1.5
   @rate_of_change_threshold 50.0  # 50% change
-  @moving_average_window 20
   @memory_leak_detection_window 60  # minutes
   @memory_growth_threshold 5.0  # MB/min
 
@@ -245,7 +244,7 @@ defmodule TamanduaServer.Agents.HealthAnalyzer do
     latest = hd(metrics)
 
     # IQR outlier detection
-    lower_bound = q1 - @iqr_multiplier * iqr
+    _lower_bound = q1 - @iqr_multiplier * iqr
     upper_bound = q3 + @iqr_multiplier * iqr
 
     if latest.disk_usage > upper_bound do
@@ -292,7 +291,7 @@ defmodule TamanduaServer.Agents.HealthAnalyzer do
   end
 
   defp detect_event_processing_anomalies(anomalies, metrics) do
-    dropped_events = Enum.map(metrics, & &1.events_dropped)
+    _dropped_events = Enum.map(metrics, & &1.events_dropped)
 
     latest = hd(metrics)
 

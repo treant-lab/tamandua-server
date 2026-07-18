@@ -26,11 +26,12 @@ defmodule TamanduaServer.Telemetry.Enrichment.ThreatIntel do
   @spec enrich_event(map()) :: map()
   def enrich_event(event) do
     iocs = extract_iocs_from_event(event)
+    organization_id = authoritative_organization_id(event)
 
     if Enum.empty?(iocs) do
       event
     else
-      matches = lookup_iocs(iocs)
+      matches = lookup_iocs(iocs, organization_id)
 
       if matches != %{} do
         enrichment = Map.get(event, :enrichment, %{})
@@ -194,11 +195,11 @@ defmodule TamanduaServer.Telemetry.Enrichment.ThreatIntel do
   # IOC Lookup
   # ──────────────────────────────────────────────────────────────────
 
-  defp lookup_iocs(observables) do
+  defp lookup_iocs(observables, organization_id) do
     # Batch lookup from IOC database
     ioc_matches = observables
     |> Enum.map(fn {type, value} -> {to_string(type), value} end)
-    |> IOCs.match_batch()
+    |> IOCs.match_batch_for_organization(organization_id)
     |> Enum.map(&format_ioc_match/1)
     |> Enum.group_by(& &1.type)
 
@@ -214,6 +215,31 @@ defmodule TamanduaServer.Telemetry.Enrichment.ThreatIntel do
 
     # Merge both sources
     Map.merge(ioc_matches, ti_matches, fn _k, v1, v2 -> v1 ++ v2 end)
+  end
+
+  defp authoritative_organization_id(event) do
+    agent_id = event[:agent_id] || event["agent_id"]
+    claimed = event[:organization_id] || event["organization_id"]
+    authoritative = TamanduaServer.Agents.OrgLookup.get_org_id(agent_id)
+
+    cond do
+      not is_binary(authoritative) or authoritative == "" ->
+        Logger.debug("Telemetry IOC enrichment restricted to global catalog: agent organization unavailable",
+          agent_id: agent_id
+        )
+
+        nil
+
+      is_nil(claimed) or claimed == authoritative ->
+        authoritative
+
+      true ->
+        Logger.warning("Telemetry IOC enrichment restricted to global catalog: organization claim mismatch",
+          agent_id: agent_id
+        )
+
+        nil
+    end
   end
 
   defp format_ioc_match(ioc) do

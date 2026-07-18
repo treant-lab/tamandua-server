@@ -15,7 +15,7 @@ defmodule TamanduaServer.Cost.Optimizer do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Cost.{CostEntry, CostRecommendation, Tracker}
+  alias TamanduaServer.Cost.{CostEntry, CostRecommendation}
   alias TamanduaServer.Agents
   import Ecto.Query
 

@@ -119,6 +119,7 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
     "memory_yara_scan" => %{agent_command_type: "memory_scan", required: []},
     "memory_strings" => %{agent_command_type: "memory_strings", required: [:pid]},
     "list_loaded_modules" => %{agent_command_type: "list_loaded_modules", required: [:pid]},
+    "osquery_query" => %{agent_command_type: "osquery_query", required: [:query]},
     "shell_execute" => %{agent_command_type: "shell_execute", required: [:command]},
     # Evidence collection
     "collect_artifacts" => %{agent_command_type: "collect_artifact", required: [:artifacts]}
@@ -151,12 +152,21 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
   def execute(session_id, command, args \\ %{}, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     user_role = Keyword.get(opts, :user_role, :analyst)
+    organization_id = Keyword.get(opts, :organization_id)
+    requester_id = Keyword.get(opts, :user_id)
+    supervise? = Keyword.get(opts, :supervise, false)
 
     with :ok <- validate_command(command),
          :ok <- check_blocked(command),
          :ok <- check_authorization(command, user_role),
          :ok <- validate_args(command, args),
-         {:ok, session} <- SessionManager.get_session(session_id),
+         {:ok, session} <-
+           SessionManager.get_session_for_access(
+             session_id,
+             organization_id,
+             requester_id,
+             supervise?
+           ),
          :ok <- validate_session_active(session),
          {:ok, agent_id} <- {:ok, session.agent_id} do
       # Execute the command
@@ -274,7 +284,9 @@ defmodule TamanduaServer.LiveResponse.CommandExecutor do
   """
   @spec execute_direct_for_agent(Agent.t() | map(), String.t(), map(), keyword()) ::
           {:ok, map()} | {:error, atom() | String.t()}
-  def execute_direct_for_agent(%{id: agent_id}, command, args \\ %{}, opts \\ [])
+  def execute_direct_for_agent(agent, command, args \\ %{}, opts \\ [])
+
+  def execute_direct_for_agent(%{id: agent_id}, command, args, opts)
       when is_binary(agent_id) do
     execute_direct_unsafe(agent_id, command, args, opts)
   end

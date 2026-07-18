@@ -35,7 +35,7 @@ defmodule TamanduaServerWeb.AgentLogsLive do
     organization_id = user && user.organization_id
 
     # Get list of agents for filter
-    agents = if organization_id, do: Agents.list_agents_for_organization(organization_id), else: []
+    agents = if organization_id, do: Agents.list_agents_for_org(organization_id), else: []
 
     socket =
       socket

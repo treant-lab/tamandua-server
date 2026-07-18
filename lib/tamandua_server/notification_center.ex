@@ -11,7 +11,6 @@ defmodule TamanduaServer.NotificationCenter do
     Notification,
     UserPreference,
     EscalationPolicy,
-    EscalationInstance,
     NotificationTemplate,
     NotificationWebhook,
     NotificationDelivery,

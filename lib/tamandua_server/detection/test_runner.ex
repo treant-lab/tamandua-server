@@ -502,7 +502,7 @@ defmodule TamanduaServer.Detection.TestRunner do
     end
   end
 
-  defp execute_yara_rule(rule_path, event) do
+  defp execute_yara_rule(_rule_path, event) do
     # For YARA, we need binary content
     # Extract file path from event if present
     file_path = get_in(event, ["payload", "path"]) || get_in(event, [:payload, :path])
@@ -524,7 +524,7 @@ defmodule TamanduaServer.Detection.TestRunner do
     end
   end
 
-  defp run_tests_parallel(test_files, opts) do
+  defp run_tests_parallel(test_files, _opts) do
     test_files
     |> Task.async_stream(
       fn file ->
@@ -576,8 +576,8 @@ defmodule TamanduaServer.Detection.TestRunner do
 
   defp filter_by_tags(results, nil), do: results
 
-  defp filter_by_tags(results, tags) do
-    Enum.filter(results, fn result ->
+  defp filter_by_tags(results, _tags) do
+    Enum.filter(results, fn _result ->
       # Would need to load test case again to check tags
       # For now, return all
       true

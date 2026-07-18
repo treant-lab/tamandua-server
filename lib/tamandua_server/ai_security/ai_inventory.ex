@@ -19,6 +19,7 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   require Logger
 
   alias TamanduaServer.Graph.KnowledgeGraph
+  alias TamanduaServer.AISecurity.ModelObservation
 
   @inventory_table :ai_inventory
   @policy_table :ai_inventory_policy
@@ -43,7 +44,8 @@ defmodule TamanduaServer.AISecurity.AIInventory do
     # Maximum number of LLM instances per device
     max_llm_per_device: 2,
     # Alert on model files over this size (bytes)
-    large_model_threshold_bytes: 10_737_418_240 # 10 GB
+    # 10 GB
+    large_model_threshold_bytes: 10_737_418_240
   }
 
   # Risk weights by component type
@@ -77,15 +79,22 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   @doc """
   Get all AI components for a specific agent.
   """
-  @spec get_agent_components(String.t()) :: {:ok, [map()]}
-  def get_agent_components(agent_id) do
-    components = :ets.tab2list(@inventory_table)
-    |> Enum.filter(fn {_key, comp} -> comp.agent_id == agent_id end)
-    |> Enum.map(fn {_key, comp} -> comp end)
-    |> Enum.sort_by(& &1.discovered_at, {:desc, DateTime})
+  @spec get_agent_components(String.t(), String.t()) :: {:ok, [map()]} | {:error, atom()}
+  def get_agent_components(organization_id, agent_id) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id) do
+      components =
+        :ets.tab2list(@inventory_table)
+        |> Enum.filter(fn {_key, comp} ->
+          comp.agent_id == agent_id and comp.organization_id == organization_id
+        end)
+        |> Enum.map(fn {_key, comp} -> comp end)
+        |> Enum.sort_by(& &1.discovered_at, {:desc, DateTime})
 
-    {:ok, components}
+      {:ok, components}
+    end
   end
+
+  def get_agent_components(_agent_id), do: {:error, :organization_scope_required}
 
   @doc """
   Get enterprise-wide AI inventory with optional filters.
@@ -96,39 +105,63 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   - `:shadow_only` - Only return unapproved/shadow AI (true/false)
   - `:limit` - Maximum results (default 500)
   """
-  @spec list_inventory(keyword()) :: {:ok, [map()]}
-  def list_inventory(opts \\ []) do
-    type_filter = Keyword.get(opts, :type)
-    risk_filter = Keyword.get(opts, :risk_level)
-    shadow_only = Keyword.get(opts, :shadow_only, false)
-    limit = Keyword.get(opts, :limit, 500)
+  @spec list_inventory(String.t(), keyword()) :: {:ok, [map()]} | {:error, atom()}
+  def list_inventory(organization_id, opts \\ []) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id) do
+      type_filter = Keyword.get(opts, :type)
+      risk_filter = Keyword.get(opts, :risk_level)
+      shadow_only = Keyword.get(opts, :shadow_only, false)
+      limit = opts |> Keyword.get(:limit, 500) |> max(1) |> min(500)
 
-    components = :ets.tab2list(@inventory_table)
-    |> Enum.map(fn {_key, comp} -> comp end)
-    |> maybe_filter_type(type_filter)
-    |> maybe_filter_risk(risk_filter)
-    |> maybe_filter_shadow(shadow_only)
-    |> Enum.sort_by(& &1.risk_score, :desc)
-    |> Enum.take(limit)
+      components =
+        :ets.tab2list(@inventory_table)
+        |> Enum.map(fn {_key, comp} -> comp end)
+        |> maybe_filter_organization(organization_id)
+        |> maybe_filter_type(type_filter)
+        |> maybe_filter_risk(risk_filter)
+        |> maybe_filter_shadow(shadow_only)
+        |> Enum.sort_by(& &1.risk_score, :desc)
+        |> Enum.take(limit)
 
-    {:ok, components}
+      {:ok, components}
+    end
   end
+
+  def list_inventory, do: {:error, :organization_scope_required}
 
   @doc """
   Get shadow AI detections (unapproved AI tools).
   """
-  @spec get_shadow_ai() :: {:ok, [map()]}
-  def get_shadow_ai do
-    list_inventory(shadow_only: true)
+  @spec get_shadow_ai(String.t()) :: {:ok, [map()]} | {:error, atom()}
+  def get_shadow_ai(organization_id) do
+    list_inventory(organization_id, shadow_only: true)
   end
+
+  def get_shadow_ai, do: {:error, :organization_scope_required}
 
   @doc """
   Get inventory statistics.
   """
-  @spec stats() :: map()
-  def stats do
-    GenServer.call(__MODULE__, :stats)
+  @spec stats(String.t()) :: {:ok, map()} | {:error, atom()}
+  def stats(organization_id) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id) do
+      components =
+        @inventory_table
+        |> :ets.tab2list()
+        |> Enum.map(fn {_key, component} -> component end)
+        |> maybe_filter_organization(organization_id)
+
+      {:ok,
+       %{
+         total_components: length(components),
+         components_by_type: Enum.frequencies_by(components, & &1.component_type),
+         shadow_ai_count: Enum.count(components, & &1.is_shadow),
+         computed_at: DateTime.utc_now()
+       }}
+    end
   end
+
+  def stats, do: {:error, :organization_scope_required}
 
   @doc """
   Update AI policy (allowlist/blocklist).
@@ -165,23 +198,31 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   @doc """
   Get risk assessment for a specific component.
   """
-  @spec assess_risk(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def assess_risk(component_id) do
-    case :ets.lookup(@inventory_table, component_id) do
-      [{^component_id, comp}] ->
-        {:ok, %{
-          component: comp,
-          risk_score: comp.risk_score,
-          risk_level: risk_level(comp.risk_score),
-          risk_factors: comp.risk_factors,
-          policy_status: comp.policy_status,
-          recommendations: generate_recommendations(comp)
-        }}
+  @spec assess_risk(String.t(), String.t()) :: {:ok, map()} | {:error, atom()}
+  def assess_risk(organization_id, component_id) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id) do
+      case :ets.lookup(@inventory_table, component_id) do
+        [{^component_id, %{organization_id: ^organization_id} = comp}] ->
+          {:ok,
+           %{
+             component: comp,
+             risk_score: comp.risk_score,
+             risk_level: risk_level(comp.risk_score),
+             risk_factors: comp.risk_factors,
+             policy_status: comp.policy_status,
+             recommendations: generate_recommendations(comp)
+           }}
 
-      [] ->
-        {:error, :not_found}
+        [] ->
+          {:error, :not_found}
+
+        _tenant_mismatch ->
+          {:error, :not_found}
+      end
     end
   end
+
+  def assess_risk(_component_id), do: {:error, :organization_scope_required}
 
   # ------------------------------------------------------------------
   # Server Callbacks
@@ -198,13 +239,17 @@ defmodule TamanduaServer.AISecurity.AIInventory do
     :ets.insert(@policy_table, {:current_policy, policy})
 
     # Initialize stats
-    :ets.insert(@stats_table, {:counters, %{
-      total_ingested: 0,
-      total_components: 0,
-      shadow_ai_count: 0,
-      alerts_created: 0,
-      policy_violations: 0
-    }})
+    :ets.insert(
+      @stats_table,
+      {:counters,
+       %{
+         total_ingested: 0,
+         total_components: 0,
+         shadow_ai_count: 0,
+         alerts_created: 0,
+         policy_violations: 0
+       }}
+    )
 
     # Subscribe to AI discovery events
     Phoenix.PubSub.subscribe(TamanduaServer.PubSub, "telemetry:events")
@@ -233,9 +278,11 @@ defmodule TamanduaServer.AISecurity.AIInventory do
         :ets.insert(@inventory_table, {component_id, updated})
 
         # Add to allowlist
-        new_policy = Map.update!(state.policy, :allowlist, fn list ->
-          [comp.name | list] |> Enum.uniq()
-        end)
+        new_policy =
+          Map.update!(state.policy, :allowlist, fn list ->
+            [comp.name | list] |> Enum.uniq()
+          end)
+
         :ets.insert(@policy_table, {:current_policy, new_policy})
         {:noreply, %{state | policy: new_policy}}
 
@@ -252,9 +299,11 @@ defmodule TamanduaServer.AISecurity.AIInventory do
         :ets.insert(@inventory_table, {component_id, updated})
 
         # Add to blocklist
-        new_policy = Map.update!(state.policy, :blocklist, fn list ->
-          [comp.name | list] |> Enum.uniq()
-        end)
+        new_policy =
+          Map.update!(state.policy, :blocklist, fn list ->
+            [comp.name | list] |> Enum.uniq()
+          end)
+
         :ets.insert(@policy_table, {:current_policy, new_policy})
         {:noreply, %{state | policy: new_policy}}
 
@@ -265,15 +314,17 @@ defmodule TamanduaServer.AISecurity.AIInventory do
 
   @impl true
   def handle_call(:stats, _from, state) do
-    counters = case :ets.lookup(@stats_table, :counters) do
-      [{:counters, c}] -> c
-      [] -> %{}
-    end
+    counters =
+      case :ets.lookup(@stats_table, :counters) do
+        [{:counters, c}] -> c
+        [] -> %{}
+      end
 
-    type_counts = :ets.tab2list(@inventory_table)
-    |> Enum.group_by(fn {_key, comp} -> comp.component_type end)
-    |> Enum.map(fn {type, entries} -> {type, length(entries)} end)
-    |> Map.new()
+    type_counts =
+      :ets.tab2list(@inventory_table)
+      |> Enum.group_by(fn {_key, comp} -> comp.component_type end)
+      |> Enum.map(fn {type, entries} -> {type, length(entries)} end)
+      |> Map.new()
 
     stats = %{
       counters: counters,
@@ -311,21 +362,26 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   def handle_info({:telemetry_event, event}, state) do
     # Check if this is an AI discovery event
     payload = event[:payload] || event["payload"] || %{}
+
     if payload[:ai_discovery] || payload["ai_discovery"] do
       agent_id = event[:agent_id] || event["agent_id"]
+
       if agent_id do
         process_discovery(agent_id, event, state.policy)
       end
     end
+
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:ai_component_discovered, component}, state) do
     agent_id = component[:agent_id]
+
     if agent_id do
       process_single_component(agent_id, component, state.policy)
     end
+
     {:noreply, state}
   end
 
@@ -375,7 +431,10 @@ defmodule TamanduaServer.AISecurity.AIInventory do
 
   defp process_single_component(agent_id, component, policy) do
     name = component[:name] || component["name"] || "unknown"
-    comp_type = component[:component_type] || component["component_type"] || component[:type] || component["type"] || "unknown"
+
+    comp_type =
+      component[:component_type] || component["component_type"] || component[:type] ||
+        component["type"] || "unknown"
 
     component_id = generate_component_id(agent_id, name, comp_type)
 
@@ -411,7 +470,11 @@ defmodule TamanduaServer.AISecurity.AIInventory do
       is_shadow: is_shadow,
       discovered_at: DateTime.utc_now(),
       last_seen_at: DateTime.utc_now(),
-      hostname: get_agent_hostname(agent_id)
+      hostname: get_agent_hostname(agent_id),
+      model_observations:
+        ModelObservation.project_many(
+          component[:model_observations] || component["model_observations"]
+        )
     }
 
     :ets.insert(@inventory_table, {component_id, inventory_entry})
@@ -446,7 +509,12 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   # ------------------------------------------------------------------
 
   defp calculate_risk(component, _agent_id) do
-    comp_type = to_string(component[:component_type] || component["component_type"] || component[:type] || component["type"] || "unknown")
+    comp_type =
+      to_string(
+        component[:component_type] || component["component_type"] || component[:type] ||
+          component["type"] || "unknown"
+      )
+
     risk_indicators = component[:risk_indicators] || component["risk_indicators"] || []
     endpoints = component[:network_endpoints] || component["network_endpoints"] || []
 
@@ -454,23 +522,31 @@ defmodule TamanduaServer.AISecurity.AIInventory do
     factors = []
 
     # Risk from indicators
-    {indicator_risk, indicator_factors} = Enum.reduce(risk_indicators, {0, []}, fn indicator, {r, f} ->
-      indicator_str = to_string(indicator)
-      cond do
-        String.contains?(indicator_str, "admin") or String.contains?(indicator_str, "elevated") ->
-          {r + 20, ["elevated_privileges" | f]}
-        String.contains?(indicator_str, "all_interfaces") or String.contains?(indicator_str, "network_exposed") ->
-          {r + 25, ["network_exposed" | f]}
-        String.contains?(indicator_str, "auth") ->
-          {r + 30, ["no_authentication" | f]}
-        String.contains?(indicator_str, "api_key") or String.contains?(indicator_str, "KEY") ->
-          {r + 15, ["exposed_credentials" | f]}
-        String.contains?(indicator_str, "large_model") ->
-          {r + 5, ["large_model_file" | f]}
-        true ->
-          {r + 5, [indicator_str | f]}
-      end
-    end)
+    {indicator_risk, indicator_factors} =
+      Enum.reduce(risk_indicators, {0, []}, fn indicator, {r, f} ->
+        indicator_str = to_string(indicator)
+
+        cond do
+          String.contains?(indicator_str, "admin") or String.contains?(indicator_str, "elevated") ->
+            {r + 20, ["elevated_privileges" | f]}
+
+          String.contains?(indicator_str, "all_interfaces") or
+              String.contains?(indicator_str, "network_exposed") ->
+            {r + 25, ["network_exposed" | f]}
+
+          String.contains?(indicator_str, "auth") ->
+            {r + 30, ["no_authentication" | f]}
+
+          String.contains?(indicator_str, "api_key") or String.contains?(indicator_str, "KEY") ->
+            {r + 15, ["exposed_credentials" | f]}
+
+          String.contains?(indicator_str, "large_model") ->
+            {r + 5, ["large_model_file" | f]}
+
+          true ->
+            {r + 5, [indicator_str | f]}
+        end
+      end)
 
     # Risk from network exposure
     network_risk = if length(endpoints) > 0, do: 10, else: 0
@@ -529,10 +605,11 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   # ------------------------------------------------------------------
 
   defp update_knowledge_graph(entry) do
-    node_type = case entry.component_type do
-      "mcp_server" -> :mcp_server
-      _ -> :ai_model
-    end
+    node_type =
+      case entry.component_type do
+        "mcp_server" -> :mcp_server
+        _ -> :ai_model
+      end
 
     KnowledgeGraph.upsert_node(node_type, entry.id, %{
       name: entry.name,
@@ -579,7 +656,8 @@ defmodule TamanduaServer.AISecurity.AIInventory do
       source: "ai_inventory",
       mitre_tactics: ["execution"],
       mitre_techniques: ["T1518"],
-      threat_score: entry.risk_score / 100.0
+      threat_score: entry.risk_score / 100.0,
+      detection_metadata: model_observation_alert_metadata(entry)
     })
 
     update_counter(:alerts_created, 1)
@@ -607,7 +685,8 @@ defmodule TamanduaServer.AISecurity.AIInventory do
       source: "ai_inventory",
       mitre_tactics: ["collection", "exfiltration"],
       mitre_techniques: ["T1567"],
-      threat_score: entry.risk_score / 100.0
+      threat_score: entry.risk_score / 100.0,
+      detection_metadata: model_observation_alert_metadata(entry)
     })
 
     update_counter(:alerts_created, 1)
@@ -622,11 +701,12 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   defp cleanup_stale_components do
     now = DateTime.utc_now()
 
-    stale_keys = :ets.tab2list(@inventory_table)
-    |> Enum.filter(fn {_key, comp} ->
-      DateTime.diff(now, comp.last_seen_at, :second) > @stale_threshold_seconds
-    end)
-    |> Enum.map(fn {key, _comp} -> key end)
+    stale_keys =
+      :ets.tab2list(@inventory_table)
+      |> Enum.filter(fn {_key, comp} ->
+        DateTime.diff(now, comp.last_seen_at, :second) > @stale_threshold_seconds
+      end)
+      |> Enum.map(fn {key, _comp} -> key end)
 
     Enum.each(stale_keys, fn key -> :ets.delete(@inventory_table, key) end)
 
@@ -638,33 +718,57 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   defp persist_inventory do
     Task.Supervisor.start_child(TamanduaServer.TaskSupervisor, fn ->
       try do
-        components = :ets.tab2list(@inventory_table)
-        |> Enum.map(fn {_key, comp} -> comp end)
+        components =
+          :ets.tab2list(@inventory_table)
+          |> Enum.map(fn {_key, comp} -> comp end)
 
         # Persist to database (upsert)
         now = DateTime.utc_now()
-        records = Enum.map(components, fn comp ->
-          %{
-            id: comp.id,
-            agent_id: comp.agent_id,
-            organization_id: Map.get(comp, :organization_id),
-            name: comp.name,
-            component_type: comp.component_type,
-            version: comp.version,
-            install_path: comp.install_path,
-            risk_score: comp.risk_score,
-            risk_level: comp.risk_level,
-            policy_status: to_string(comp.policy_status),
-            is_shadow: comp.is_shadow,
-            data: Map.drop(comp, [:id, :agent_id, :organization_id, :name, :component_type, :version, :install_path]),
-            inserted_at: now,
-            updated_at: now
-          }
-        end)
+
+        records =
+          Enum.map(components, fn comp ->
+            %{
+              id: comp.id,
+              agent_id: comp.agent_id,
+              organization_id: Map.get(comp, :organization_id),
+              name: comp.name,
+              component_type: comp.component_type,
+              version: comp.version,
+              install_path: comp.install_path,
+              risk_score: comp.risk_score,
+              risk_level: comp.risk_level,
+              policy_status: to_string(comp.policy_status),
+              is_shadow: comp.is_shadow,
+              data:
+                Map.drop(comp, [
+                  :id,
+                  :agent_id,
+                  :organization_id,
+                  :name,
+                  :component_type,
+                  :version,
+                  :install_path
+                ]),
+              inserted_at: now,
+              updated_at: now
+            }
+          end)
 
         if length(records) > 0 do
           TamanduaServer.Repo.insert_all("ai_inventory", records,
-            on_conflict: {:replace, [:organization_id, :name, :version, :risk_score, :risk_level, :policy_status, :is_shadow, :data, :updated_at]},
+            on_conflict:
+              {:replace,
+               [
+                 :organization_id,
+                 :name,
+                 :version,
+                 :risk_score,
+                 :risk_level,
+                 :policy_status,
+                 :is_shadow,
+                 :data,
+                 :updated_at
+               ]},
             conflict_target: [:id]
           )
         end
@@ -681,9 +785,11 @@ defmodule TamanduaServer.AISecurity.AIInventory do
   # ------------------------------------------------------------------
 
   defp generate_component_id(agent_id, name, type) do
-    hash = :crypto.hash(:sha256, "#{agent_id}:#{name}:#{type}")
-    |> Base.encode16(case: :lower)
-    |> String.slice(0, 16)
+    hash =
+      :crypto.hash(:sha256, "#{agent_id}:#{name}:#{type}")
+      |> Base.encode16(case: :lower)
+      |> String.slice(0, 16)
+
     "ai_#{hash}"
   end
 
@@ -702,38 +808,71 @@ defmodule TamanduaServer.AISecurity.AIInventory do
     _ -> nil
   end
 
+  defp maybe_filter_organization(components, nil), do: components
+
+  defp maybe_filter_organization(components, organization_id) do
+    Enum.filter(components, &(Map.get(&1, :organization_id) == organization_id))
+  end
+
+  defp model_observation_alert_metadata(entry) do
+    observations = Map.get(entry, :model_observations, [])
+
+    if observations == [] do
+      %{}
+    else
+      %{
+        model_observations: observations,
+        model_observation_claim_boundary: ModelObservation.claim_boundary()
+      }
+    end
+  end
+
+  defp canonical_organization_id(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, canonical} -> {:ok, canonical}
+      :error -> {:error, :organization_scope_required}
+    end
+  end
+
+  defp canonical_organization_id(_value), do: {:error, :organization_scope_required}
+
   defp generate_recommendations(comp) do
     recs = []
 
-    recs = if comp.is_shadow do
-      ["Review this AI component and either approve or block it via policy" | recs]
-    else
-      recs
-    end
+    recs =
+      if comp.is_shadow do
+        ["Review this AI component and either approve or block it via policy" | recs]
+      else
+        recs
+      end
 
-    recs = if comp.risk_score > 50 do
-      ["This component has a high risk score - consider restricting access" | recs]
-    else
-      recs
-    end
+    recs =
+      if comp.risk_score > 50 do
+        ["This component has a high risk score - consider restricting access" | recs]
+      else
+        recs
+      end
 
-    recs = if "no_authentication" in (comp.risk_factors || []) do
-      ["Enable authentication for this AI service" | recs]
-    else
-      recs
-    end
+    recs =
+      if "no_authentication" in (comp.risk_factors || []) do
+        ["Enable authentication for this AI service" | recs]
+      else
+        recs
+      end
 
-    recs = if "network_exposed" in (comp.risk_factors || []) do
-      ["Restrict network binding to localhost only" | recs]
-    else
-      recs
-    end
+    recs =
+      if "network_exposed" in (comp.risk_factors || []) do
+        ["Restrict network binding to localhost only" | recs]
+      else
+        recs
+      end
 
-    recs = if "elevated_privileges" in (comp.risk_factors || []) do
-      ["Run this AI component with reduced privileges" | recs]
-    else
-      recs
-    end
+    recs =
+      if "elevated_privileges" in (comp.risk_factors || []) do
+        ["Run this AI component with reduced privileges" | recs]
+      else
+        recs
+      end
 
     if Enum.empty?(recs), do: ["No immediate action required"], else: recs
   end
@@ -743,22 +882,26 @@ defmodule TamanduaServer.AISecurity.AIInventory do
       [{:counters, counters}] ->
         updated = Map.update(counters, key, increment, &(&1 + increment))
         :ets.insert(@stats_table, {:counters, updated})
+
       [] ->
         :ets.insert(@stats_table, {:counters, %{key => increment}})
     end
   end
 
   defp maybe_filter_type(components, nil), do: components
+
   defp maybe_filter_type(components, type) do
     Enum.filter(components, &(&1.component_type == type))
   end
 
   defp maybe_filter_risk(components, nil), do: components
+
   defp maybe_filter_risk(components, level) do
     Enum.filter(components, &(&1.risk_level == level))
   end
 
   defp maybe_filter_shadow(components, false), do: components
+
   defp maybe_filter_shadow(components, true) do
     Enum.filter(components, &(&1.is_shadow == true))
   end

@@ -545,7 +545,7 @@ defmodule TamanduaServer.ASM.RiskScoring do
   end
 
   defp calculate_internet_exposure_score(asset, exposure_data) do
-    base_score = 0
+    _base_score = 0
 
     # Check if any ports are exposed
     open_ports = exposure_data[:open_ports] || []

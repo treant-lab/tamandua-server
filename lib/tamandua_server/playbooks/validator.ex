@@ -374,7 +374,7 @@ defmodule TamanduaServer.Playbooks.Validator do
     end
   end
 
-  defp validate_has_param_or_context(errors, action, param_name, position) do
+  defp validate_has_param_or_context(errors, action, param_name, _position) do
     # Check if the parameter is provided directly or can be inferred from context
     action_params = Map.get(action, Map.keys(action) |> List.first(), %{})
 

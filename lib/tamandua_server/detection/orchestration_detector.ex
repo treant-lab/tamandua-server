@@ -54,7 +54,6 @@ defmodule TamanduaServer.Detection.OrchestrationDetector do
   @similarity_threshold 0.7  # Cosine similarity for prompt laundering
   @privilege_escalation_threshold 2  # Level difference to flag
   @extraction_token_threshold 50_000  # Cumulative tokens for extraction alert
-  @prompt_drift_threshold 0.5  # System prompt change threshold
 
   # ============================================================================
   # Types

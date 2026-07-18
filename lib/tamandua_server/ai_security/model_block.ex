@@ -32,6 +32,7 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
   """
 
   import Ecto.Query
+  alias TamanduaServer.Agents
   alias TamanduaServer.Repo
   alias TamanduaServer.AISecurity.ModelBlock.BlockEntry
 
@@ -53,20 +54,26 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
     * `{:error, %Ecto.Changeset{}}` - Validation failed
   """
   def create_block(model_id, file_hash, user_id, opts \\ []) do
-    attrs = %{
-      model_id: model_id,
-      file_hash: file_hash,
-      file_path: Keyword.get(opts, :file_path),
-      agent_id: Keyword.get(opts, :agent_id),
-      reason: Keyword.get(opts, :reason, "Blocked by user"),
-      blocked_by_id: user_id,
-      organization_id: Keyword.fetch!(opts, :organization_id),
-      status: "active"
-    }
+    with {:ok, organization_id} <- canonical_uuid(Keyword.get(opts, :organization_id)),
+         {:ok, agent_id} <- canonical_uuid(Keyword.get(opts, :agent_id)),
+         {:ok, _agent} <- Agents.get_agent_for_org(organization_id, agent_id) do
+      attrs = %{
+        model_id: model_id,
+        file_hash: file_hash,
+        file_path: Keyword.get(opts, :file_path),
+        agent_id: agent_id,
+        reason: Keyword.get(opts, :reason, "Blocked by user"),
+        blocked_by_id: user_id,
+        organization_id: organization_id,
+        status: "active"
+      }
 
-    %BlockEntry{}
-    |> BlockEntry.changeset(attrs)
-    |> Repo.insert()
+      %BlockEntry{}
+      |> BlockEntry.changeset(attrs)
+      |> Repo.insert()
+    else
+      _ -> {:error, :organization_scope_required}
+    end
   end
 
   @doc """
@@ -80,12 +87,18 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
     * `{:error, :not_found}` - No active block found
   """
   def remove_block(model_id, organization_id) do
-    case get_block(model_id, organization_id) do
-      nil -> {:error, :not_found}
-      block ->
-        block
-        |> BlockEntry.changeset(%{status: "removed"})
-        |> Repo.update()
+    with {:ok, organization_id} <- canonical_uuid(organization_id) do
+      case get_block(model_id, organization_id) do
+        nil ->
+          {:error, :not_found}
+
+        block ->
+          block
+          |> BlockEntry.changeset(%{status: "removed"})
+          |> Repo.update()
+      end
+    else
+      _ -> {:error, :organization_scope_required}
     end
   end
 
@@ -95,10 +108,14 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
   Returns `nil` if no active block exists.
   """
   def get_block(model_id, organization_id) do
-    BlockEntry
-    |> where([b], b.model_id == ^model_id and b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> Repo.one()
+    with {:ok, organization_id} <- canonical_uuid(organization_id) do
+      BlockEntry
+      |> where([b], b.model_id == ^model_id and b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> Repo.one()
+    else
+      _ -> nil
+    end
   end
 
   @doc """
@@ -109,10 +126,14 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
     * `false` - Model is not blocked
   """
   def is_blocked?(model_id, organization_id) do
-    BlockEntry
-    |> where([b], b.model_id == ^model_id and b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> Repo.exists?()
+    with {:ok, organization_id} <- canonical_uuid(organization_id) do
+      BlockEntry
+      |> where([b], b.model_id == ^model_id and b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> Repo.exists?()
+    else
+      _ -> false
+    end
   end
 
   @doc """
@@ -125,14 +146,18 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
     List of `%BlockEntry{}` structs, ordered by most recent first.
   """
   def list_blocked(organization_id, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 100)
+    with {:ok, organization_id} <- canonical_uuid(organization_id) do
+      limit = Keyword.get(opts, :limit, 100)
 
-    BlockEntry
-    |> where([b], b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> order_by([b], [desc: b.inserted_at])
-    |> limit(^limit)
-    |> Repo.all()
+      BlockEntry
+      |> where([b], b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> order_by([b], desc: b.inserted_at)
+      |> limit(^limit)
+      |> Repo.all()
+    else
+      _ -> []
+    end
   end
 
   @doc """
@@ -141,10 +166,15 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
   Used for synchronizing the block list to an agent.
   """
   def list_blocked_for_agent(agent_id, organization_id) do
-    BlockEntry
-    |> where([b], b.agent_id == ^agent_id and b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> Repo.all()
+    with {:ok, organization_id} <- canonical_uuid(organization_id),
+         {:ok, agent_id} <- canonical_uuid(agent_id) do
+      BlockEntry
+      |> where([b], b.agent_id == ^agent_id and b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> Repo.all()
+    else
+      _ -> []
+    end
   end
 
   @doc """
@@ -156,20 +186,32 @@ defmodule TamanduaServer.AISecurity.ModelBlock do
     List of `%{hash: string, path: string}`
   """
   def get_block_list_for_agent(agent_id, organization_id) do
-    BlockEntry
-    |> where([b], b.agent_id == ^agent_id and b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> select([b], %{hash: b.file_hash, path: b.file_path})
-    |> Repo.all()
+    with {:ok, organization_id} <- canonical_uuid(organization_id),
+         {:ok, agent_id} <- canonical_uuid(agent_id) do
+      BlockEntry
+      |> where([b], b.agent_id == ^agent_id and b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> select([b], %{hash: b.file_hash, path: b.file_path})
+      |> Repo.all()
+    else
+      _ -> []
+    end
   end
 
   @doc """
   Counts active blocks for an organization.
   """
   def count_blocked(organization_id) do
-    BlockEntry
-    |> where([b], b.organization_id == ^organization_id)
-    |> where([b], b.status == "active")
-    |> Repo.aggregate(:count)
+    with {:ok, organization_id} <- canonical_uuid(organization_id) do
+      BlockEntry
+      |> where([b], b.organization_id == ^organization_id)
+      |> where([b], b.status == "active")
+      |> Repo.aggregate(:count)
+    else
+      _ -> 0
+    end
   end
+
+  defp canonical_uuid(value) when is_binary(value), do: Ecto.UUID.cast(value)
+  defp canonical_uuid(_), do: :error
 end

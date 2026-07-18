@@ -14,9 +14,7 @@ defmodule TamanduaServer.Hunting.QueryLibrary do
   alias TamanduaServer.Hunting.{
     SavedQuery,
     QueryRating,
-    QueryComment,
-    QuerySchedule,
-    QueryResultHistory
+    QueryComment
   }
 
   # ============================================================================
@@ -469,7 +467,7 @@ defmodule TamanduaServer.Hunting.QueryLibrary do
   @doc """
   Records query execution performance.
   """
-  def record_execution(query_id, execution_time_ms, result_count) do
+  def record_execution(query_id, execution_time_ms, _result_count) do
     case get_query(query_id) do
       nil ->
         {:error, :not_found}

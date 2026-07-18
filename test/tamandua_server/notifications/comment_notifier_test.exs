@@ -52,7 +52,11 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
       refute_email_sent()
     end
 
-    test "email contains comment content", %{author: author, mentioned: mentioned, comment: comment} do
+    test "email contains comment content", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
       CommentNotifier.update_preference(mentioned, "mention", true, "email")
 
       CommentNotifier.notify_mention(comment, mentioned, author)
@@ -69,6 +73,114 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
 
       assert_email_sent(fn email ->
         email.html_body =~ comment.alert.title
+      end)
+    end
+
+    test "renders comment, actor, and alert title as escaped plaintext", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+
+      comment = %{
+        comment
+        | content: ~s|<img src=x onerror="alert(1)">|,
+          alert: %{comment.alert | title: ~s|</strong><script>alert("title")</script>|}
+      }
+
+      author = %{author | name: ~s|Alice</strong><img src=x onerror="actor()">|}
+      CommentNotifier.notify_mention(comment, mentioned, author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" and
+          email.html_body =~ "Alice&lt;/strong&gt;&lt;img src=x onerror=&quot;actor()&quot;&gt;" and
+          email.html_body =~ "&lt;/strong&gt;&lt;script&gt;alert(" and
+          not String.contains?(email.html_body, "<script>") and
+          not String.contains?(email.html_body, ~s|onerror="|)
+      end)
+    end
+
+    test "does not turn dangerous Markdown links into HTML links", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+
+      payload = ~s|[javascript](javascript:alert(1)) [data](data:text/html," onmouseover="x)|
+      CommentNotifier.notify_mention(%{comment | content: payload}, mentioned, author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "[javascript](javascript:alert(1))" and
+          email.html_body =~ "&quot; onmouseover=&quot;x" and
+          not String.contains?(email.html_body, ~s|href="javascript:|) and
+          not String.contains?(email.html_body, ~s|href="data:|)
+      end)
+    end
+
+    test "bounds HTML comment rendering to 501 graphemes", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+      visible = String.duplicate("🛡️", 501)
+
+      CommentNotifier.notify_mention(
+        %{comment | content: visible <> "HTML_TAIL"},
+        mentioned,
+        author
+      )
+
+      assert_email_sent(fn email ->
+        email.html_body =~ visible and
+          not String.contains?(email.html_body, "HTML_TAIL") and
+          email.text_body =~ "HTML_TAIL"
+      end)
+    end
+
+    test "uses an escaped placeholder for nonbinary comment content", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+      CommentNotifier.notify_mention(%{comment | content: %{malformed: true}}, mentioned, author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "[comment unavailable]" and
+          email.text_body =~ "[comment unavailable]"
+      end)
+    end
+
+    test "uses a placeholder for invalid UTF-8 comment content", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+      CommentNotifier.notify_mention(%{comment | content: <<0xFF>>}, mentioned, author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "[comment unavailable]" and
+          email.text_body =~ "[comment unavailable]"
+      end)
+    end
+
+    test "keeps alert links on the fixed origin when an id is malformed", %{
+      author: author,
+      mentioned: mentioned,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(mentioned, "mention", true, "email")
+      alert = %{comment.alert | id: ~s|"> <a href="javascript:alert(1)|}
+
+      CommentNotifier.notify_mention(%{comment | alert: alert}, mentioned, author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ ~s|href="https://treantlab.org/alerts/unavailable"| and
+          not String.contains?(email.html_body, ~s|href="javascript:|)
       end)
     end
   end
@@ -124,6 +236,29 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
       assert_email_sent(fn email ->
         email.html_body =~ "This looks suspicious" &&
           email.html_body =~ "I agree, investigating now"
+      end)
+    end
+
+    test "escapes both parent and reply markup", %{
+      parent_author: parent_author,
+      reply_author: reply_author,
+      reply: reply
+    } do
+      CommentNotifier.update_preference(parent_author, "reply", true, "email")
+
+      reply = %{
+        reply
+        | content: ~s|<svg onload="reply()">|,
+          parent: %{reply.parent | content: ~s|<script>parent()</script>|}
+      }
+
+      CommentNotifier.notify_reply(reply, parent_author, reply_author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "&lt;script&gt;parent()&lt;/script&gt;" and
+          email.html_body =~ "&lt;svg onload=&quot;reply()&quot;&gt;" and
+          not String.contains?(email.html_body, "<script>") and
+          not String.contains?(email.html_body, "<svg")
       end)
     end
   end
@@ -183,6 +318,24 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
 
       refute_email_sent()
     end
+
+    test "escapes reactor and alert title breakouts", %{
+      comment_author: comment_author,
+      reactor: reactor,
+      comment: comment
+    } do
+      CommentNotifier.update_preference(comment_author, "reaction", true, "email")
+      reactor = %{reactor | name: ~s|Bob</strong><img src=x onerror="x">|}
+      comment = %{comment | alert: %{comment.alert | title: "<script>title()</script>"}}
+
+      CommentNotifier.notify_reaction(comment, "heart", reactor, comment_author)
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "Bob&lt;/strong&gt;&lt;img src=x onerror=&quot;x&quot;&gt;" and
+          email.html_body =~ "&lt;script&gt;title()&lt;/script&gt;" and
+          not String.contains?(email.html_body, "<script>")
+      end)
+    end
   end
 
   describe "send_daily_digest/0" do
@@ -203,7 +356,7 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
       insert(:comment_notification, user: user1, comment: comment1, alert: alert, is_read: false)
       insert(:comment_notification, user: user1, comment: comment2, alert: alert, is_read: false)
 
-      %{user1: user1, user2: user2}
+      %{user1: user1, user2: user2, alert: alert}
     end
 
     test "sends digest to users with unread notifications", %{user1: user1} do
@@ -235,6 +388,23 @@ defmodule TamanduaServer.Notifications.CommentNotifierTest do
       CommentNotifier.send_daily_digest()
 
       refute_email_sent()
+    end
+
+    test "escapes alert titles while preserving digest grouping and fixed links", %{
+      user1: user1,
+      alert: alert
+    } do
+      CommentNotifier.update_preference(user1, "digest", true, "email")
+      Repo.update!(Ecto.Changeset.change(alert, title: ~s|</a><img src=x onerror="digest()">|))
+
+      CommentNotifier.send_daily_digest()
+
+      assert_email_sent(fn email ->
+        email.html_body =~ "&lt;/a&gt;&lt;img src=x onerror=&quot;digest()&quot;&gt;" and
+          email.html_body =~ ~s|href="https://treantlab.org/alerts/#{alert.id}"| and
+          email.html_body =~ "2 new comments" and
+          not String.contains?(email.html_body, ~s|onerror="|)
+      end)
     end
   end
 

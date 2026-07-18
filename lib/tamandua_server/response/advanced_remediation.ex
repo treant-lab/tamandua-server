@@ -18,7 +18,6 @@ defmodule TamanduaServer.Response.AdvancedRemediation do
   require Logger
 
   alias TamanduaServer.Response.Executor
-  alias TamanduaServer.Agents.Registry
 
   # Remediation action timeout (ms)
   @action_timeout 30_000
@@ -407,7 +406,7 @@ defmodule TamanduaServer.Response.AdvancedRemediation do
     "rem_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
-  defp build_full_remediation_tasks(agent_id, context) do
+  defp build_full_remediation_tasks(_agent_id, context) do
     base_tasks = [
       %{name: "kill_malicious_processes", action: "kill_process", priority: 1, params: %{
         pid: context[:pid],

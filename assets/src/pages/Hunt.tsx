@@ -3,11 +3,11 @@ import { MainLayout } from '@/layouts/MainLayout'
 import {
   Search, Play, Clock, FileSearch, Code, Save, AlertCircle,
   Plus, X, ChevronDown, Filter, Cpu, Globe, File,
-  Server, Settings, Share2, Eye, Trash2, BookOpen, Zap,
-  FolderOpen, ChevronRight, Copy, CornerDownRight, AlertTriangle,
+  Server, Settings, Share2, Trash2, BookOpen, Zap,
+  FolderOpen, Copy, CornerDownRight, AlertTriangle,
   CheckCircle2, Layers, Terminal, HelpCircle, BarChart3
 } from 'lucide-react'
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { cn, safeRandomUUID } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { ExportDropdown } from '@/components/ExportDropdown'
@@ -30,6 +30,30 @@ interface HuntResult {
   remote_ip?: string
   domain?: string
   path?: string
+}
+
+interface HuntResultContext {
+  pid?: number
+  processName?: string
+  processPath?: string
+  commandLine?: string
+  parentPid?: number
+  parentName?: string
+  user?: string
+  sha256?: string
+  remoteIp?: string
+  remotePort?: number
+  localIp?: string
+  localPort?: number
+  protocol?: string
+  direction?: string
+  domain?: string
+  sni?: string
+  resolverLabel?: string
+  classification?: string
+  confidence?: 'confirmed' | 'candidate' | 'weak'
+  evidence: string[]
+  gaps: string[]
 }
 
 interface QueryCondition {
@@ -140,6 +164,15 @@ interface QueryTemplate {
   description: string
   category?: string
   use_count?: number
+  source?: 'database' | 'static' | string
+  static?: boolean
+  degraded?: boolean
+}
+
+interface TemplateCatalogMeta {
+  source: 'database' | 'static' | string
+  static: boolean
+  degraded: boolean
 }
 
 // Default field definitions (fallback if API fails)
@@ -225,8 +258,6 @@ const DEFAULT_MITRE_CATEGORIES = [
 // Query validation
 // ---------------------------------------------------------------------------
 
-const KNOWN_OPERATORS_REGEX = /:(>=|<=|!\s*in|in|\*|~|\^|\$|>|<|!)?/
-
 // Common natural language words that indicate user wants NL search
 const NL_INDICATOR_WORDS = [
   'find', 'show', 'search', 'get', 'list', 'display', 'hunt', 'look',
@@ -265,6 +296,51 @@ interface ValidationResult {
   isNaturalLanguage: boolean
 }
 
+function isQueryConnector(token: string): boolean {
+  return ['AND', 'OR', 'NOT'].includes(token.toUpperCase())
+}
+
+function looksLikeConditionStart(token: string): boolean {
+  const colonIndex = token.indexOf(':')
+  if (colonIndex <= 0) return false
+
+  const field = token.substring(0, colonIndex)
+  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(field)
+}
+
+function validationValueForType(valuePart: string): string {
+  return valuePart.replace(/^(>=|<=|>|<|!|~)/, '').trim()
+}
+
+function isPortField(field: string): boolean {
+  return ['network.remote_port', 'network.local_port', 'remote_port', 'local_port'].includes(field)
+}
+
+function isDomainField(field: string): boolean {
+  return ['dns.query', 'domain'].includes(field)
+}
+
+function splitQueryParts(segment: string): string[] {
+  const words = segment.split(/\s+/).filter(Boolean)
+  const parts: string[] = []
+
+  for (const word of words) {
+    if (isQueryConnector(word) || looksLikeConditionStart(word) || parts.length === 0) {
+      parts.push(word)
+      continue
+    }
+
+    const lastIndex = parts.length - 1
+    if (!isQueryConnector(parts[lastIndex]) && parts[lastIndex].includes(':')) {
+      parts[lastIndex] = `${parts[lastIndex]} ${word}`
+    } else {
+      parts.push(word)
+    }
+  }
+
+  return parts
+}
+
 function validateQuery(queryText: string): ValidationResult {
   const errors: ValidationError[] = []
   const trimmed = queryText.trim()
@@ -295,10 +371,9 @@ function validateQuery(queryText: string): ValidationResult {
     errors.push({ message: `${depth} unclosed parenthesis(es)` })
   }
 
-  // Tokenise: split on whitespace but respect parentheses
-  // We validate individual "field:value" tokens
+  // Tokenise: split on whitespace but keep value words after a field:value condition.
   const stripped = trimmed.replace(/\(|\)/g, ' ')
-  const tokens = stripped.split(/\s+/).filter(Boolean)
+  const tokens = splitQueryParts(stripped)
 
   let expectConnector = false
   for (let i = 0; i < tokens.length; i++) {
@@ -311,6 +386,10 @@ function validateQuery(queryText: string): ValidationResult {
       }
       expectConnector = false
       continue
+    }
+
+    if (expectConnector) {
+      errors.push({ message: `Missing connector before "${token}". Add AND or OR between field:value conditions.` })
     }
 
     // Should be a field:operator:value expression
@@ -327,11 +406,17 @@ function validateQuery(queryText: string): ValidationResult {
     }
 
     const valuePart = token.substring(colonIndex + 1)
-    // Strip operator prefix from value to check emptiness
-    const valueAfterOp = valuePart.replace(/^(>=|<=|!\s*in|in|\*|~|\^|\$|>|<|!)/, '')
     // For some operators the value may be part of them, check the raw value
     if (!valuePart) {
       errors.push({ message: `Missing value after ":" in "${token}"` })
+    } else {
+      const typedValue = validationValueForType(valuePart)
+      if (isPortField(fieldPart) && !/^\d+$/.test(typedValue)) {
+        errors.push({ message: `"${fieldPart}" expects a numeric port, e.g., ${fieldPart}:443` })
+      }
+      if (isDomainField(fieldPart) && /\s/.test(typedValue)) {
+        errors.push({ message: `"${fieldPart}" cannot contain spaces. Use NL Hunt for descriptive searches or dns.query:~regex for pattern matching.` })
+      }
     }
 
     expectConnector = true
@@ -423,16 +508,13 @@ function parseQueryToGroup(queryText: string): ConditionGroup {
   }
   if (current.trim()) tokens.push(current.trim())
 
-  // Now parse tokens into conditions
-  // We split each token by spaces to find AND/OR connectors and field:value pairs
-  let lastConnector: 'AND' | 'OR' = 'AND'
+  // Now parse tokens into conditions.
   const allParts: string[] = []
   for (const t of tokens) {
     if (t.startsWith('(') && t.endsWith(')')) {
       allParts.push(t)
     } else {
-      const words = t.split(/\s+/)
-      allParts.push(...words)
+      allParts.push(...splitQueryParts(t))
     }
   }
 
@@ -515,9 +597,6 @@ function getCurrentWord(text: string, cursorPos: number): { word: string; start:
   return { word: text.substring(start, end), start, end }
 }
 
-// Flatten default fields for static contexts (unused - see getAutocompleteSuggestionsFromFields in component)
-const DEFAULT_ALL_FIELDS = Object.values(DEFAULT_FIELD_DEFINITIONS).flat()
-
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -553,12 +632,6 @@ function ConditionRow({
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
-
-  const filteredFields = useMemo(() => {
-    if (!fieldSearch) return allFields
-    const s = fieldSearch.toLowerCase()
-    return allFields.filter(f => f.field.toLowerCase().includes(s) || f.label.toLowerCase().includes(s))
-  }, [fieldSearch, allFields])
 
   const selectedFieldDef = allFields.find(f => f.field === condition.field)
   const applicableOps = selectedFieldDef
@@ -896,7 +969,8 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
   const [operators, setOperators] = useState<Operator[]>(DEFAULT_OPERATORS)
   const [queryTemplates, setQueryTemplates] = useState<Record<string, QueryTemplate[]>>({})
   const [mitreCategories, setMitreCategories] = useState<string[]>(DEFAULT_MITRE_CATEGORIES)
-  const [schemaLoaded, setSchemaLoaded] = useState(false)
+  const [templateCatalogMeta, setTemplateCatalogMeta] = useState<TemplateCatalogMeta | null>(null)
+  const [, setSchemaLoaded] = useState(false)
   const [templatesLoaded, setTemplatesLoaded] = useState(false)
 
   // Computed from schema
@@ -1026,6 +1100,11 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
         const data = await response.json()
         if (data.data?.templates) {
           setQueryTemplates(data.data.templates)
+          setTemplateCatalogMeta({
+            source: data.data.source || 'unknown',
+            static: data.data.static === true || data.data.source === 'static',
+            degraded: data.data.degraded === true,
+          })
           if (data.data.categories) {
             setMitreCategories(data.data.categories)
           }
@@ -1104,6 +1183,8 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
     setResults([])
     setSelectedResults(new Set())
 
+    const startTime = Date.now()
+
     try {
       const response = await fetch('/api/v1/hunting/tql', {
         method: 'POST',
@@ -1135,9 +1216,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
       setTqlPage(page)
 
       // Record in history
-      if (data.meta?.execution_time_ms) {
-        recordQueryHistory(queryValue, resultData.length, data.meta.execution_time_ms)
-      }
+      recordQueryHistory(queryValue, resultData.length, data.meta?.execution_time_ms ?? Date.now() - startTime, 'tql')
     } catch (err: any) {
       setError(err.message || 'Failed to execute TQL query')
     } finally {
@@ -1220,7 +1299,12 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
     }
   }
 
-  const recordQueryHistory = async (queryValue: string, resultCount: number, executionTimeMs: number) => {
+  const recordQueryHistory = async (
+    queryValue: string,
+    resultCount: number,
+    executionTimeMs: number,
+    type: 'hunt' | 'tql' = 'hunt',
+  ) => {
     try {
       await fetch('/api/v1/queries/history', {
         method: 'POST',
@@ -1228,7 +1312,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
         credentials: 'include',
         body: JSON.stringify({
           query: queryValue,
-          type: 'hunt',
+          type,
           result_count: resultCount,
           execution_time_ms: executionTimeMs,
         }),
@@ -1306,6 +1390,30 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
   }
 
   const handleRunQuery = () => handleRunQueryWithValue(query)
+
+  const storedQueryMode = (type?: string): 'simple' | 'tql' => (
+    type === 'tql' ? 'tql' : 'simple'
+  )
+
+  const loadStoredQuery = (stored: { query: string; type?: string }) => {
+    const mode = storedQueryMode(stored.type)
+    setQueryMode(mode)
+    if (mode === 'tql') {
+      setTqlQuery(stored.query)
+    } else {
+      setQuery(stored.query)
+    }
+  }
+
+  const runStoredQuery = (stored: { query: string; type?: string }) => {
+    const mode = storedQueryMode(stored.type)
+    loadStoredQuery(stored)
+    if (mode === 'tql') {
+      void executeTqlQuery(stored.query, 1)
+    } else {
+      void handleRunQueryWithValue(stored.query)
+    }
+  }
 
   // -----------------------------------------------------------------------
   // Autocomplete handlers
@@ -1395,13 +1503,6 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
   // Visual builder <-> text query
   // -----------------------------------------------------------------------
 
-  const syncVisualToText = () => {
-    const built = groupToQuery(rootGroup)
-    if (built) {
-      setQuery(built)
-    }
-  }
-
   const syncTextToVisual = () => {
     const parsed = parseQueryToGroup(query)
     setRootGroup(parsed)
@@ -1463,8 +1564,9 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
   }
 
   const navigateToGraph = (result: HuntResult) => {
-    if (result.pid && result.agent_id) {
-      router.visit(`/app/investigation/${result.pid}?type=process&agent_id=${result.agent_id}`)
+    const pid = result.pid || result.payload?.pid || result.payload?.process_pid || result.payload?.process_id
+    if (pid && result.agent_id) {
+      router.visit(`/app/investigation/${pid}?type=process&agent_id=${result.agent_id}`)
     }
   }
 
@@ -1486,6 +1588,116 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
     if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
     if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
     return `${Math.floor(diff / 86400000)}d ago`
+  }
+
+  const payloadValue = (payload: Record<string, any>, keys: string[]) => {
+    for (const key of keys) {
+      const value = payload?.[key]
+      if (value !== undefined && value !== null && value !== '') return value
+    }
+    return undefined
+  }
+
+  const asText = (value: unknown): string | undefined => {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    return undefined
+  }
+
+  const asNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    return undefined
+  }
+
+  const isPlaceholderProcessName = (value?: string) => !value || /^pid:\d+$/i.test(value)
+
+  const publicResolverLabel = (ip?: string) => {
+    const resolvers: Record<string, string> = {
+      '8.8.8.8': 'Google Public DNS',
+      '8.8.4.4': 'Google Public DNS',
+      '1.1.1.1': 'Cloudflare DNS',
+      '1.0.0.1': 'Cloudflare DNS',
+      '9.9.9.9': 'Quad9 DNS',
+      '149.112.112.112': 'Quad9 DNS',
+      '208.67.222.222': 'OpenDNS',
+      '208.67.220.220': 'OpenDNS',
+    }
+    return ip ? resolvers[ip] : undefined
+  }
+
+  const buildResultContext = (result: HuntResult): HuntResultContext => {
+    const payload = result.payload || {}
+    const pid = asNumber(result.pid ?? payloadValue(payload, ['pid', 'process_pid', 'process_id']))
+    const rawProcessName = asText(result.process_name ?? payloadValue(payload, ['process_name', 'name', 'image', 'exe_name']))
+    const processName = isPlaceholderProcessName(rawProcessName) ? undefined : rawProcessName
+    const processPath = asText(result.path ?? payloadValue(payload, ['process_path', 'path', 'image_path', 'exe_path', 'executable_path']))
+    const commandLine = asText(payloadValue(payload, ['command_line', 'cmdline', 'command']))
+    const parentPid = asNumber(payloadValue(payload, ['ppid', 'parent_pid', 'parent_process_id']))
+    const parentName = asText(payloadValue(payload, ['parent_name', 'parent_process_name', 'parent_image']))
+    const user = asText(payloadValue(payload, ['user', 'username', 'user_name', 'account_name']))
+    const sha256 = asText(result.sha256 ?? payloadValue(payload, ['sha256', 'process_sha256', 'file_sha256', 'hash_sha256']))
+    const remoteIp = asText(result.remote_ip ?? payloadValue(payload, ['remote_ip', 'dst_ip', 'destination_ip']))
+    const remotePort = asNumber(payloadValue(payload, ['remote_port', 'dst_port', 'destination_port']))
+    const localIp = asText(payloadValue(payload, ['local_ip', 'src_ip', 'source_ip']))
+    const localPort = asNumber(payloadValue(payload, ['local_port', 'src_port', 'source_port']))
+    const protocol = asText(payloadValue(payload, ['protocol', 'transport']))
+    const direction = asText(payloadValue(payload, ['direction']))
+    const domain = asText(result.domain ?? payloadValue(payload, ['domain', 'query', 'remote_domain', 'host', 'hostname']))
+    const sni = asText(payloadValue(payload, ['sni', 'tls_sni', 'server_name']))
+    const resolverLabel = publicResolverLabel(remoteIp)
+    const isEncrypted = payloadValue(payload, ['is_encrypted']) === true || remotePort === 443
+    const isQuic = payloadValue(payload, ['is_quic']) === true || protocol?.toUpperCase() === 'QUIC'
+    const isNetwork = result.event_type.includes('network')
+    const isDohCandidate = isNetwork && remotePort === 443 && Boolean(resolverLabel || /dns|doh/i.test(domain || sni || ''))
+
+    const evidence: string[] = []
+    const gaps: string[] = []
+
+    if (remoteIp) evidence.push(`remote_ip=${remoteIp}`)
+    if (remotePort) evidence.push(`remote_port=${remotePort}`)
+    if (protocol) evidence.push(`protocol=${protocol}`)
+    if (isEncrypted) evidence.push('encrypted transport observed')
+    if (resolverLabel) evidence.push(`known resolver: ${resolverLabel}`)
+    if (domain) evidence.push(`domain=${domain}`)
+    if (sni) evidence.push(`sni=${sni}`)
+    if (processName) evidence.push(`process=${processName}`)
+    if (processPath) evidence.push('binary path present')
+    if (sha256) evidence.push('hash present')
+
+    if (isNetwork && !domain && !sni) gaps.push('no domain/SNI captured')
+    if (isNetwork && !processName) gaps.push(rawProcessName ? 'process name is PID-only' : 'process name missing')
+    if (isNetwork && !processPath) gaps.push('binary path missing')
+    if (isNetwork && !sha256) gaps.push('binary hash missing')
+    if (isNetwork && !parentPid && !parentName) gaps.push('parent process missing')
+    if (isDohCandidate && !domain && !sni) gaps.push('DoH is inferred from resolver IP/port, not confirmed')
+
+    return {
+      pid,
+      processName,
+      processPath,
+      commandLine,
+      parentPid,
+      parentName,
+      user,
+      sha256,
+      remoteIp,
+      remotePort,
+      localIp,
+      localPort,
+      protocol,
+      direction,
+      domain,
+      sni,
+      resolverLabel,
+      classification: isDohCandidate ? (isQuic ? 'Encrypted DNS candidate' : 'DoH candidate') : undefined,
+      confidence: isDohCandidate ? (domain || sni ? 'confirmed' : 'candidate') : undefined,
+      evidence,
+      gaps,
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1694,6 +1906,18 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+                    className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors"
+                    style={{
+                      background: showHistoryPanel ? 'var(--sol-magenta)' : 'var(--surface-2)',
+                      color: showHistoryPanel ? 'white' : 'var(--fg-2)',
+                    }}
+                  >
+                    <Clock className="h-4 w-4" />
+                    History
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => {
                       const currentQuery = queryMode === 'tql' ? tqlQuery : query
                       if (currentQuery.trim()) {
@@ -1714,12 +1938,12 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                   <button
                     type="button"
                     onClick={handleRunTqlQuery}
-                    disabled={isRunning || !tqlQuery.trim() || (tqlValidation && !tqlValidation.valid)}
+                    disabled={isRunning || !tqlQuery.trim() || Boolean(tqlValidation && !tqlValidation.valid)}
                     className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors"
                     style={{
-                      background: (isRunning || !tqlQuery.trim() || (tqlValidation && !tqlValidation.valid)) ? 'var(--surface-2)' : 'var(--sol-magenta)',
-                      color: (isRunning || !tqlQuery.trim() || (tqlValidation && !tqlValidation.valid)) ? 'var(--dim)' : 'white',
-                      cursor: (isRunning || !tqlQuery.trim() || (tqlValidation && !tqlValidation.valid)) ? 'not-allowed' : 'pointer',
+                      background: (isRunning || !tqlQuery.trim() || Boolean(tqlValidation && !tqlValidation.valid)) ? 'var(--surface-2)' : 'var(--sol-magenta)',
+                      color: (isRunning || !tqlQuery.trim() || Boolean(tqlValidation && !tqlValidation.valid)) ? 'var(--dim)' : 'white',
+                      cursor: (isRunning || !tqlQuery.trim() || Boolean(tqlValidation && !tqlValidation.valid)) ? 'not-allowed' : 'pointer',
                     }}
                   >
                     <Play className={cn('h-4 w-4', isRunning && 'animate-spin')} />
@@ -1786,6 +2010,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               <button
                 type="button"
                 onClick={() => setShowSavedQueriesPanel(!showSavedQueriesPanel)}
+                data-testid="hunt-saved-query-panel-button"
                 className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors"
                 style={{
                   background: showSavedQueriesPanel ? 'var(--emerald-600)' : 'var(--surface-2)',
@@ -1802,6 +2027,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                 type="button"
                 onClick={() => query.trim() && setShowSaveModal(true)}
                 disabled={!query.trim()}
+                data-testid="hunt-save-query-button"
                 className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors"
                 style={{
                   background: query.trim() ? 'var(--surface-2)' : 'var(--surface)',
@@ -1815,6 +2041,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               <button
                 type="button"
                 onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+                data-testid="hunt-history-button"
                 className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors"
                 style={{
                   background: showHistoryPanel ? 'var(--emerald-600)' : 'var(--surface-2)',
@@ -1890,10 +2117,36 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
           {/* ============================================================== */}
           {showTemplates && (
             <div className="mb-4 p-4 rounded-lg" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex flex-wrap items-center gap-2 mb-3">
                 <span className="text-sm" style={{ color: 'var(--muted)' }}>MITRE ATT&CK Templates</span>
                 {!templatesLoaded && <span className="text-xs" style={{ color: 'var(--dim)' }}>(loading...)</span>}
+                {templateCatalogMeta && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium"
+                    style={{
+                      background: templateCatalogMeta.degraded ? 'var(--high-bg)' : 'var(--emerald-glow)',
+                      color: templateCatalogMeta.degraded ? 'var(--high)' : 'var(--emerald-400)',
+                    }}
+                  >
+                    {templateCatalogMeta.source === 'database'
+                      ? 'Database catalog'
+                      : templateCatalogMeta.source === 'static'
+                        ? 'Static fallback'
+                        : 'Catalog source unknown'}
+                  </span>
+                )}
               </div>
+              {templateCatalogMeta?.degraded && (
+                <div
+                  className="mb-3 flex items-start gap-2 rounded p-3 text-xs"
+                  style={{ background: 'var(--high-bg)', border: '1px solid var(--high)', color: 'var(--fg-2)' }}
+                >
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--high)' }} />
+                  <span>
+                    Showing static fallback templates because no seeded database templates were returned. Treat this as degraded catalog coverage.
+                  </span>
+                </div>
+              )}
               <div className="flex flex-wrap gap-2 mb-3">
                 {mitreCategories.map(category => (
                   <button
@@ -1926,7 +2179,17 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                       className="flex flex-col items-start p-3 rounded-lg text-left transition-colors hover:opacity-80"
                       style={{ background: 'var(--surface)' }}
                     >
-                      <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{template.name}</span>
+                      <span className="flex w-full items-start justify-between gap-2">
+                        <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{template.name}</span>
+                        {(template.static || template.source === 'static' || template.degraded) && (
+                          <span
+                            className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                            style={{ background: 'var(--high-bg)', color: 'var(--high)' }}
+                          >
+                            Static
+                          </span>
+                        )}
+                      </span>
                       <span className="text-xs mt-1" style={{ color: 'var(--muted)' }}>{template.description}</span>
                       <span className="text-xs font-mono mt-2 truncate w-full" style={{ color: 'var(--dim)' }}>{template.query}</span>
                     </button>
@@ -1972,7 +2235,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                       <button
                         type="button"
                         onClick={() => {
-                          setQuery(sq.query)
+                          loadStoredQuery(sq)
                           setShowSavedQueriesPanel(false)
                         }}
                         className="flex-1 min-w-0 text-left"
@@ -1997,9 +2260,8 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                         <button
                           type="button"
                           onClick={() => {
-                            setQuery(sq.query)
                             setShowSavedQueriesPanel(false)
-                            handleRunQueryWithValue(sq.query)
+                            runStoredQuery(sq)
                           }}
                           className="p-1.5 transition-colors opacity-0 group-hover:opacity-100 hover:text-[var(--emerald-400)]"
                           style={{ color: 'var(--muted)' }}
@@ -2057,7 +2319,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                       key={entry.id || idx}
                       type="button"
                       onClick={() => {
-                        setQuery(entry.query)
+                        loadStoredQuery(entry)
                         setShowHistoryPanel(false)
                       }}
                       className="w-full flex items-center gap-3 p-2.5 rounded-lg text-left transition-colors group hover:opacity-80"
@@ -2091,6 +2353,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
           {/* ============================================================== */}
           {/* Text Query Input with Autocomplete                             */}
           {/* ============================================================== */}
+          {queryMode === 'simple' && (
           <div className="space-y-3">
             <div className="relative">
               <Code className="absolute left-4 top-4 h-5 w-5 z-10" style={{ color: 'var(--muted)' }} />
@@ -2104,6 +2367,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                   setTimeout(() => setShowAutocomplete(false), 200)
                 }}
                 placeholder='Enter query... (e.g., process.name:cmd.exe AND process.user:SYSTEM)  [Ctrl+Enter to run]'
+                data-testid="hunt-query-input"
                 className="w-full h-28 rounded-lg pl-12 pr-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 resize-none"
                 style={{
                   background: 'var(--bg)',
@@ -2191,7 +2455,12 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4 text-sm" style={{ color: 'var(--muted)' }}>
                 <span>Time Range:</span>
-                <Select value={timeRange} onValueChange={setTimeRange} placeholder="Time range">
+                <Select
+                  value={timeRange}
+                  onValueChange={setTimeRange}
+                  placeholder="Time range"
+                  data-testid="hunt-time-range-select"
+                >
                   <SelectItem value="1h">Last 1 hour</SelectItem>
                   <SelectItem value="6h">Last 6 hours</SelectItem>
                   <SelectItem value="24h">Last 24 hours</SelectItem>
@@ -2203,6 +2472,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                 type="button"
                 onClick={handleRunQuery}
                 disabled={isRunning || !query.trim()}
+                data-testid="hunt-run-query-button"
                 className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors"
                 style={{
                   background: (isRunning || !query.trim()) ? 'var(--surface-2)' : 'var(--emerald-600)',
@@ -2215,6 +2485,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               </button>
             </div>
           </div>
+          )}
         </div>
 
         {/* ================================================================ */}
@@ -2235,9 +2506,9 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                 key={idx}
                 type="button"
                 onClick={() => {
-                  setQuery(sample.query)
-                  handleRunQueryWithValue(sample.query)
+                  runStoredQuery(sample)
                 }}
+                data-testid="hunt-query-shortcut"
                 className="flex items-start gap-3 p-3 rounded-lg text-left transition-colors group hover:opacity-80"
                 style={{ background: 'var(--surface-2)' }}
               >
@@ -2341,11 +2612,12 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
               {results.map(result => {
                 const Icon = getEventIcon(result.event_type)
                 const isSelected = selectedResults.has(result.id)
-                const pid = result.pid || result.payload?.pid
-                const processName = result.process_name || result.payload?.process_name || result.payload?.name
-                const sha256 = result.sha256 || result.payload?.sha256
-                const remoteIp = result.remote_ip || result.payload?.remote_ip
-                const domain = result.domain || result.payload?.domain || result.payload?.query
+                const context = buildResultContext(result)
+                const destination = context.remoteIp
+                  ? `${context.remoteIp}${context.remotePort ? `:${context.remotePort}` : ''}`
+                  : context.domain || context.sni
+                const processLabel = context.processName || (context.pid ? `PID ${context.pid}` : undefined)
+                const canPivotProcess = Boolean(context.pid && result.agent_id)
 
                 return (
                   <div
@@ -2376,55 +2648,149 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                             {result.event_type}
                           </span>
                           <span className="text-sm" style={{ color: 'var(--muted)' }}>{result.agent_hostname}</span>
-                          {pid && <span className="text-xs" style={{ color: 'var(--dim)' }}>PID: {pid}</span>}
+                          {context.classification && (
+                            <span
+                              className="px-2 py-1 rounded text-xs font-medium"
+                              style={{ background: 'var(--med-bg)', color: 'var(--med)' }}
+                            >
+                              {context.classification}
+                            </span>
+                          )}
+                          {context.confidence && (
+                            <span className="text-xs capitalize" style={{ color: 'var(--dim)' }}>
+                              {context.confidence} confidence
+                            </span>
+                          )}
+                          {context.pid && <span className="text-xs" style={{ color: 'var(--dim)' }}>PID: {context.pid}</span>}
                           <span className="text-sm ml-auto" style={{ color: 'var(--dim)' }}>
                             {new Date(result.timestamp).toLocaleString()}
                           </span>
                         </div>
+
+                        <div className="mb-3 rounded-lg p-3" style={{ background: 'var(--bg)', border: '1px solid var(--hairline)' }}>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                              <div className="text-xs uppercase font-semibold mb-1" style={{ color: 'var(--dim)' }}>Flow</div>
+                              <div className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
+                                {destination || 'No network destination'}
+                              </div>
+                              <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                {[context.direction, context.protocol, context.localIp && context.localPort ? `${context.localIp}:${context.localPort}` : context.localIp].filter(Boolean).join(' / ') || 'network metadata unavailable'}
+                              </div>
+                              {context.resolverLabel && (
+                                <div className="text-xs mt-1" style={{ color: 'var(--emerald-400)' }}>
+                                  {context.resolverLabel}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase font-semibold mb-1" style={{ color: 'var(--dim)' }}>Process / Binary</div>
+                              <div className="text-sm font-medium truncate" style={{ color: context.processName ? 'var(--fg)' : 'var(--muted)' }}>
+                                {processLabel || 'Process identity missing'}
+                              </div>
+                              <div className="text-xs mt-1 truncate font-mono" style={{ color: context.processPath ? 'var(--fg-2)' : 'var(--dim)' }} title={context.processPath}>
+                                {context.processPath || 'binary path not captured'}
+                              </div>
+                              {context.commandLine && (
+                                <div className="text-xs mt-1 truncate font-mono" style={{ color: 'var(--muted)' }} title={context.commandLine}>
+                                  {context.commandLine}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase font-semibold mb-1" style={{ color: 'var(--dim)' }}>Lineage</div>
+                              <div className="text-sm" style={{ color: context.parentName || context.parentPid ? 'var(--fg)' : 'var(--muted)' }}>
+                                {context.parentName || context.parentPid ? `${context.parentName || 'parent'}${context.parentPid ? ` (${context.parentPid})` : ''}` : 'Parent process missing'}
+                              </div>
+                              <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                {context.user ? `user=${context.user}` : 'user context not captured'}
+                              </div>
+                              {context.sha256 && (
+                                <div className="text-xs mt-1 font-mono truncate" style={{ color: 'var(--high)' }} title={context.sha256}>
+                                  sha256={context.sha256}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {context.evidence.slice(0, 8).map(item => (
+                              <span
+                                key={item}
+                                className="px-2 py-1 rounded text-xs"
+                                style={{ background: 'var(--surface-2)', color: 'var(--fg-2)' }}
+                              >
+                                {item}
+                              </span>
+                            ))}
+                            {context.gaps.slice(0, 6).map(item => (
+                              <span
+                                key={item}
+                                className="px-2 py-1 rounded text-xs"
+                                style={{ background: 'var(--crit-bg)', color: 'var(--crit)' }}
+                              >
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
                         <div className="flex flex-wrap gap-2 mb-2">
-                          {processName && (
+                          {context.processName && (
                             <button
                               type="button"
-                              onClick={() => huntForValue('process.name', processName)}
+                              onClick={() => huntForValue('process.name', context.processName!)}
                               className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors hover:opacity-80"
                               style={{ background: 'var(--med-bg)', color: 'var(--med)' }}
                             >
                               <Cpu className="h-3 w-3" />
-                              {processName}
+                              {context.processName}
                             </button>
                           )}
-                          {remoteIp && (
+                          {context.processPath && (
                             <button
                               type="button"
-                              onClick={() => huntForValue('network.remote_ip', remoteIp)}
+                              onClick={() => huntForValue('process.path', context.processPath!)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors hover:opacity-80"
+                              style={{ background: 'var(--surface-2)', color: 'var(--fg-2)' }}
+                              title={context.processPath}
+                            >
+                              <File className="h-3 w-3" />
+                              Binary path
+                            </button>
+                          )}
+                          {context.remoteIp && (
+                            <button
+                              type="button"
+                              onClick={() => huntForValue('network.remote_ip', context.remoteIp!)}
                               className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors hover:opacity-80"
                               style={{ background: 'var(--emerald-glow)', color: 'var(--emerald-400)' }}
                             >
                               <Globe className="h-3 w-3" />
-                              {remoteIp}
+                              {context.remoteIp}
                             </button>
                           )}
-                          {domain && (
+                          {context.domain && (
                             <button
                               type="button"
-                              onClick={() => huntForValue('dns.query', domain)}
+                              onClick={() => huntForValue('dns.query', context.domain!)}
                               className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors hover:opacity-80"
                               style={{ background: 'rgba(217, 70, 239, 0.12)', color: 'var(--sol-magenta)' }}
                             >
                               <Server className="h-3 w-3" />
-                              {domain}
+                              {context.domain}
                             </button>
                           )}
-                          {sha256 && (
+                          {context.sha256 && (
                             <button
                               type="button"
-                              onClick={() => huntForValue('file.sha256', sha256)}
+                              onClick={() => huntForValue('file.sha256', context.sha256!)}
                               className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition-colors hover:opacity-80"
                               style={{ background: 'var(--high-bg)', color: 'var(--high)' }}
-                              title={sha256}
+                              title={context.sha256}
                             >
                               <File className="h-3 w-3" />
-                              {sha256.substring(0, 12)}...
+                              {context.sha256.substring(0, 12)}...
                             </button>
                           )}
                         </div>
@@ -2441,7 +2807,7 @@ export default function Hunt({ savedQueries: initialSavedQueries, initialQuery }
                         </details>
                       </div>
                       <div className="flex items-center gap-1">
-                        {pid && result.agent_id && (
+                        {canPivotProcess && (
                           <>
                             <button
                               type="button"

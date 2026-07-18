@@ -91,6 +91,8 @@ defmodule TamanduaServer.Agents do
   Creates an agent for an organization.
   """
   def create_agent_for_org(organization_id, attrs) do
+    attrs = Map.put(attrs, :organization_id, organization_id)
+
     %Agent{}
     |> Agent.changeset(attrs)
     |> TenantScope.put_tenant(organization_id)
@@ -176,6 +178,7 @@ defmodule TamanduaServer.Agents do
             os_type: a.os_type,
             os_version: a.os_version,
             agent_version: a.agent_version,
+            machine_id: a.machine_id,
             status: database_presence_status(a),
             last_seen_at: a.last_seen_at,
             organization_id: a.organization_id
@@ -478,6 +481,7 @@ defmodule TamanduaServer.Agents do
             os_type: a.os_type,
             os_version: a.os_version,
             agent_version: a.agent_version,
+            machine_id: a.machine_id,
             status: database_presence_status(a),
             last_seen_at: a.last_seen_at
           }
@@ -825,6 +829,32 @@ defmodule TamanduaServer.Agents do
         if Graph.has_vertex?(graph, pid) do
           ancestors = trace_ancestors(graph, pid, MapSet.new(), [])
           {:ok, ancestors}
+        else
+          {:error, :not_found}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Returns the current process plus ancestor context for a process PID.
+
+  This is used by hunt/event drilldowns to correlate sparse network events
+  (`agent_id` + `pid`) with process-create telemetry when available.
+  """
+  def get_process_context(agent_id, pid) when is_binary(agent_id) do
+    alias TamanduaServer.Detection.Correlator
+
+    case Correlator.get_process_tree(agent_id) do
+      {:ok, graph} ->
+        if Graph.has_vertex?(graph, pid) do
+          process = build_flat_process_node(graph, pid)
+          ancestors = trace_ancestors(graph, pid, MapSet.new(), [])
+
+          {:ok,
+           %{process: process, ancestors: ancestors, chain: Enum.reverse(ancestors) ++ [process]}}
         else
           {:error, :not_found}
         end
@@ -1367,12 +1397,15 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> revoke_agent_credential("abc123xyz", "compromised")
+      iex> revoke_agent_credential("abc123xyz", agent_id, organization_id, "compromised")
       {:ok, %AgentCredential{}}
   """
-  def revoke_agent_credential(jti, reason \\ "manual_revocation") do
-    Credentials.revoke(jti, reason)
+  def revoke_agent_credential(jti, agent_id, organization_id, reason \\ "manual_revocation") do
+    Credentials.revoke(jti, agent_id, organization_id, reason)
   end
+
+  def revoke_agent_credential(_jti), do: {:error, :organization_scope_required}
+  def revoke_agent_credential(_jti, _reason), do: {:error, :organization_scope_required}
 
   @doc """
   Revoke all credentials for an agent.
@@ -1381,12 +1414,18 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> revoke_all_agent_credentials(agent_id, "agent_decommissioned")
+      iex> revoke_all_agent_credentials(agent_id, organization_id, "agent_decommissioned")
       {:ok, 3}
   """
-  def revoke_all_agent_credentials(agent_id, reason \\ "agent_credentials_revoked") do
-    Credentials.revoke_all_for_agent(agent_id, reason)
+  def revoke_all_agent_credentials(
+        agent_id,
+        organization_id,
+        reason \\ "agent_credentials_revoked"
+      ) do
+    Credentials.revoke_all_for_agent(agent_id, organization_id, reason)
   end
+
+  def revoke_all_agent_credentials(_agent_id), do: {:error, :organization_scope_required}
 
   @doc """
   Revoke all credentials for an organization.
@@ -1400,7 +1439,7 @@ defmodule TamanduaServer.Agents do
       {:ok, 42}
   """
   def revoke_all_org_credentials(organization_id, reason \\ "organization_credentials_revoked") do
-    Credentials.revoke_all_for_organization(organization_id, reason)
+    Credentials.revoke_all_for_org(organization_id, reason)
   end
 
   @doc """
@@ -1408,12 +1447,14 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> list_agent_credentials(agent_id)
+      iex> list_agent_credentials(agent_id, organization_id)
       [%AgentCredential{}, ...]
   """
-  def list_agent_credentials(agent_id) do
-    Credentials.list_active_for_agent(agent_id)
+  def list_agent_credentials(agent_id, organization_id, opts \\ []) do
+    Credentials.list_active_for_agent(agent_id, organization_id, opts)
   end
+
+  def list_agent_credentials(_agent_id), do: {:error, :organization_scope_required}
 
   @doc """
   Get credential statistics for an agent.
@@ -1428,12 +1469,14 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> get_agent_credential_stats(agent_id)
+      iex> get_agent_credential_stats(agent_id, organization_id)
       %{total: 5, active: 1, revoked: 2, expired: 2, total_uses: 150, ...}
   """
-  def get_agent_credential_stats(agent_id) do
-    Credentials.get_stats(agent_id)
+  def get_agent_credential_stats(agent_id, organization_id) do
+    Credentials.get_stats(agent_id, organization_id)
   end
+
+  def get_agent_credential_stats(_agent_id), do: {:error, :organization_scope_required}
 
   @doc """
   Validate a credential by jti.
@@ -1457,15 +1500,17 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> credential_valid?("abc123xyz")
+      iex> credential_valid?("abc123xyz", agent_id, organization_id)
       true
 
-      iex> credential_valid?("nonexistent")
+      iex> credential_valid?("nonexistent", agent_id, organization_id)
       false
   """
-  def credential_valid?(jti) do
-    Credentials.valid?(jti)
+  def credential_valid?(jti, agent_id, organization_id) do
+    Credentials.valid?(jti, agent_id, organization_id)
   end
+
+  def credential_valid?(_jti), do: false
 
   @doc """
   Clean up expired credentials older than the specified days.
@@ -1474,10 +1519,59 @@ defmodule TamanduaServer.Agents do
 
   ## Examples
 
-      iex> cleanup_expired_credentials(30)
+      iex> cleanup_expired_credentials(organization_id, 30)
       {:ok, 15}
   """
-  def cleanup_expired_credentials(older_than_days \\ 30) do
-    Credentials.cleanup_expired(older_than_days)
+  def cleanup_expired_credentials(organization_id, older_than_days, opts \\ []) do
+    Credentials.cleanup_expired(organization_id, older_than_days, opts)
+  end
+
+  def cleanup_expired_credentials(), do: {:error, :organization_scope_required}
+  def cleanup_expired_credentials(_legacy_days), do: {:error, :organization_scope_required}
+
+  # ===========================================================================
+  # Autocomplete Helpers (hunting Query DSL)
+  # ===========================================================================
+
+  @doc """
+  Lists distinct agent hostnames matching a prefix, for autocomplete.
+
+  `organization_id` may be `nil` (no tenant filter — internal tooling); when
+  present the query is scoped to that organization. LIKE wildcards in the
+  prefix are escaped so user input is matched literally.
+
+  ## Examples
+
+      iex> list_agent_hostnames(org_id, "web-", 10)
+      ["web-01", "web-02"]
+  """
+  def list_agent_hostnames(organization_id, prefix, limit)
+      when is_binary(prefix) and is_integer(limit) and limit > 0 do
+    pattern = escape_like(prefix) <> "%"
+
+    Agent
+    |> where([a], not is_nil(a.hostname))
+    |> where([a], ilike(a.hostname, ^pattern))
+    |> maybe_scope_org(organization_id)
+    |> distinct([a], a.hostname)
+    |> order_by([a], asc: a.hostname)
+    |> limit(^limit)
+    |> select([a], a.hostname)
+    |> Repo.all()
+  end
+
+  def list_agent_hostnames(_organization_id, _prefix, _limit), do: []
+
+  defp maybe_scope_org(query, nil), do: query
+
+  defp maybe_scope_org(query, organization_id) do
+    where(query, [a], a.organization_id == ^organization_id)
+  end
+
+  defp escape_like(value) when is_binary(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
   end
 end

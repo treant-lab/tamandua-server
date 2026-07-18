@@ -34,7 +34,6 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   require Logger
 
   alias TamanduaServer.Response.Playbook
-  alias TamanduaServer.XDR.Correlator
   alias TamanduaServer.Agents
 
   # Built-in XDR playbook templates
@@ -972,9 +971,9 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   @doc """
   Create a custom XDR playbook from template.
   """
-  @spec create_from_template(String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def create_from_template(template_id, customizations) do
-    GenServer.call(__MODULE__, {:create_from_template, template_id, customizations})
+  @spec create_from_template(String.t(), map(), term()) :: {:ok, map()} | {:error, term()}
+  def create_from_template(template_id, customizations, scope \\ nil) do
+    GenServer.call(__MODULE__, {:create_from_template, template_id, customizations, scope})
   end
 
   # ============================================================================
@@ -1066,7 +1065,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   @impl true
-  def handle_call({:create_from_template, template_id, customizations}, _from, state) do
+  def handle_call({:create_from_template, template_id, customizations, scope}, _from, state) do
     case Enum.find(state.templates, & &1.id == template_id) do
       nil ->
         {:reply, {:error, :not_found}, state}
@@ -1079,7 +1078,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
         |> Map.put(:source_template, template_id)
 
         # Register with main playbook engine
-        case Playbook.create_playbook(convert_to_playbook_format(new_playbook)) do
+        case Playbook.create_playbook(convert_to_playbook_format(new_playbook), scope) do
           {:ok, playbook} -> {:reply, {:ok, playbook}, state}
           error -> {:reply, error, state}
         end
@@ -1251,7 +1250,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
     # Handle step failure based on on_failure policy
     case {result, step[:on_failure]} do
       {{:error, _reason}, "continue"} ->
-        Logger.warn("Step #{step[:name]} failed but continuing: #{inspect(result)}")
+        Logger.warning("Step #{step[:name]} failed but continuing: #{inspect(result)}")
         {:ok, :continued_after_failure}
       {{:error, reason}, _} ->
         Logger.error("Step #{step[:name]} failed: #{inspect(reason)}")
@@ -1289,40 +1288,47 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   defp execute_endpoint_action("isolate_host", config, context) do
     agent_ids = context[:agent_ids] || [context[:agent_id]]
     Enum.each(agent_ids, fn agent_id ->
-      Agents.send_command(agent_id, :isolate, config)
+      send_agent_command(agent_id, "isolate_network", config)
     end)
     {:ok, :isolated}
   end
 
   defp execute_endpoint_action("kill_process", config, context) do
     agent_id = context[:agent_id]
-    Agents.send_command(agent_id, :kill_process, config)
+    send_agent_command(agent_id, "kill_process", config)
     {:ok, :killed}
   end
 
   defp execute_endpoint_action("quarantine_file", config, context) do
     agent_id = context[:agent_id]
-    Agents.send_command(agent_id, :quarantine, config)
+    send_agent_command(agent_id, "quarantine_file", config)
     {:ok, :quarantined}
   end
 
   defp execute_endpoint_action("trigger_scan", config, context) do
     agent_ids = context[:agent_ids] || [context[:agent_id]]
     Enum.each(agent_ids, fn agent_id ->
-      Agents.send_command(agent_id, :scan, config)
+      send_agent_command(agent_id, "scan_path", config)
     end)
     {:ok, :scan_initiated}
   end
 
   defp execute_endpoint_action("collect_forensics", config, context) do
     agent_id = context[:agent_id]
-    Agents.send_command(agent_id, :collect_forensics, config)
+    send_agent_command(agent_id, "collect_forensics", config)
     {:ok, :forensics_collection_started}
   end
 
   defp execute_endpoint_action(action, _config, _context) do
-    Logger.warn("Unknown endpoint action: #{action}")
+    Logger.warning("Unknown endpoint action: #{action}")
     {:error, :unknown_action}
+  end
+
+  # Agents.send_command/2 expects the canonical command envelope
+  # (%{command_type: ..., payload: ...}) used across the agent protocol;
+  # command_type strings match the Response.Executor action vocabulary.
+  defp send_agent_command(agent_id, command_type, payload) do
+    Agents.send_command(agent_id, %{command_type: command_type, payload: payload})
   end
 
   defp execute_network_action("block_ip", config, _context) do
@@ -1357,7 +1363,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_network_action(action, _config, _context) do
-    Logger.warn("Unknown network action: #{action}")
+    Logger.warning("Unknown network action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1392,7 +1398,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_cloud_action(action, _config, _context) do
-    Logger.warn("Unknown cloud action: #{action}")
+    Logger.warning("Unknown cloud action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1427,7 +1433,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_identity_action(action, _config, _context) do
-    Logger.warn("Unknown identity action: #{action}")
+    Logger.warning("Unknown identity action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1447,7 +1453,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_email_action(action, _config, _context) do
-    Logger.warn("Unknown email action: #{action}")
+    Logger.warning("Unknown email action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1462,7 +1468,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_dlp_action(action, _config, _context) do
-    Logger.warn("Unknown DLP action: #{action}")
+    Logger.warning("Unknown DLP action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1477,7 +1483,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_threat_intel_action(action, _config, _context) do
-    Logger.warn("Unknown threat intel action: #{action}")
+    Logger.warning("Unknown threat intel action: #{action}")
     {:error, :unknown_action}
   end
 
@@ -1502,7 +1508,7 @@ defmodule TamanduaServer.XDR.XDRPlaybooks do
   end
 
   defp execute_integration_action(action, _config, _context) do
-    Logger.warn("Unknown integration action: #{action}")
+    Logger.warning("Unknown integration action: #{action}")
     {:error, :unknown_action}
   end
 

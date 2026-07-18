@@ -11,7 +11,7 @@ defmodule TamanduaServer.Telemetry.EventContract do
 
   @schema_version "telemetry-contract/v1"
 
-  @categories ~w(process file network dns registry driver auth module script ai_usage unknown)
+  @categories ~w(process file network dns registry driver auth identity module script ai_usage unknown)
 
   @required_fields %{
     "process" => ["process.pid", "process.name", "process.path", "process.ppid", "process.user"],
@@ -26,7 +26,8 @@ defmodule TamanduaServer.Telemetry.EventContract do
     "dns" => ["dns.domain", "process.pid", "process.name"],
     "registry" => ["process.pid", "process.name"],
     "driver" => ["process.pid", "process.name", "file.path"],
-    "auth" => ["process.user"],
+    "auth" => ["identity.baseline_key"],
+    "identity" => ["identity.baseline_key"],
     "module" => ["process.pid", "process.name", "file.path"],
     "script" => ["process.pid", "process.name", "file.path"],
     "ai_usage" => ["dns.domain", "network.remote_ip", "process.pid", "process.name"],
@@ -74,7 +75,10 @@ defmodule TamanduaServer.Telemetry.EventContract do
         "driver"
 
       String.contains?(normalized, "auth") or String.contains?(normalized, "login") ->
-        "auth"
+        "identity"
+
+      String.contains?(normalized, "identity") or String.contains?(normalized, "logon") ->
+        "identity"
 
       String.contains?(normalized, "module") or String.contains?(normalized, "dll") ->
         "module"
@@ -129,7 +133,7 @@ defmodule TamanduaServer.Telemetry.EventContract do
 
   defp correlation_ready?(_category, %{score: score}, entities) when score >= 40 do
     has_process_identity?(entities) or has_network_identity?(entities) or
-      has_file_identity?(entities)
+      has_file_identity?(entities) or has_identity?(entities)
   end
 
   defp correlation_ready?(_, _, _), do: false
@@ -147,6 +151,12 @@ defmodule TamanduaServer.Telemetry.EventContract do
 
   defp has_file_identity?(entities) do
     present?(get_in(entities, [:file, :sha256])) or present?(get_in(entities, [:file, :path]))
+  end
+
+  defp has_identity?(entities) do
+    present?(get_in(entities, [:identity, :baseline_key])) or
+      present?(get_in(entities, [:identity, :subject])) or
+      present?(get_in(entities, [:identity, :target]))
   end
 
   defp present?(value) when is_binary(value), do: String.trim(value) != ""

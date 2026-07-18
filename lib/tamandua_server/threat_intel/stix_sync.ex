@@ -20,10 +20,8 @@ defmodule TamanduaServer.ThreatIntel.StixSync do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.ThreatIntel.{StixConverter, StixTaxii, TaxiiPoller}
-  alias TamanduaServer.Detection.IOCs
+  alias TamanduaServer.ThreatIntel.{StixConverter, StixTaxii}
 
-  @python_ml_url Application.compile_env(:tamandua_server, :ml_service_url, "http://localhost:8000")
 
   # ── Oban Job Handler ────────────────────────────────────────────────────
 
@@ -422,7 +420,7 @@ defmodule TamanduaServer.ThreatIntel.StixSync do
     end
   end
 
-  defp store_stix_objects(collection, result) do
+  defp store_stix_objects(collection, _result) do
     # This would store STIX objects in the stix_objects table
     # For now, we rely on StixConverter.import_bundle which handles IOC conversion
     # In a full implementation, we would also store raw STIX objects and relationships

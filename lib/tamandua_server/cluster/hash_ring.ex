@@ -185,7 +185,7 @@ defmodule TamanduaServer.Cluster.HashRing do
     virtual_count = state.virtual_nodes * weight
 
     # Generate virtual node positions
-    virtual_positions = for i <- 1..virtual_count do
+    _virtual_positions = for i <- 1..virtual_count do
       key = "#{node_name}:#{i}"
       {hash_key(key), node_name}
     end

@@ -58,14 +58,16 @@ defmodule TamanduaServer.Bounties.SubmissionValidator do
   @min_org_observations 2
 
   # Private IP patterns for IOC validation
-  @private_ip_patterns [
-    ~r/^10\./,
-    ~r/^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-    ~r/^192\.168\./,
-    ~r/^127\./,
-    ~r/^0\./,
-    ~r/^169\.254\./
-  ]
+  defp private_ip_patterns do
+    [
+      ~r/^10\./,
+      ~r/^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+      ~r/^192\.168\./,
+      ~r/^127\./,
+      ~r/^0\./,
+      ~r/^169\.254\./
+    ]
+  end
 
   @private_domain_suffixes [".local", ".lan", ".internal", ".corp", ".home", ".localdomain"]
 
@@ -513,7 +515,7 @@ defmodule TamanduaServer.Bounties.SubmissionValidator do
   defp contains_private_data?(_type, value) when not is_binary(value), do: false
 
   defp contains_private_data?("ip", value) do
-    Enum.any?(@private_ip_patterns, &Regex.match?(&1, value))
+    Enum.any?(private_ip_patterns(), &Regex.match?(&1, value))
   end
 
   defp contains_private_data?("domain", value) do

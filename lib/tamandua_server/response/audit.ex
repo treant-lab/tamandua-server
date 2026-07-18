@@ -10,19 +10,19 @@ defmodule TamanduaServer.Response.Audit.AuditEntry do
   @foreign_key_type :binary_id
 
   schema "response_audit_trail" do
-    field :action_type, :string
-    field :details, :map, default: %{}
-    field :agent_id, :binary_id
-    field :organization_id, :binary_id
-    field :actor_type, :string
-    field :actor_id, :binary_id
-    field :performed_at, :utc_datetime_usec
+    field(:action_type, :string)
+    field(:details, :map, default: %{})
+    field(:agent_id, :binary_id)
+    field(:organization_id, :binary_id)
+    field(:actor_type, :string)
+    field(:actor_id, :binary_id)
+    field(:performed_at, :utc_datetime_usec)
 
     timestamps(type: :utc_datetime_usec)
   end
 
-  @required_fields ~w(action_type agent_id actor_type performed_at)a
-  @optional_fields ~w(details organization_id actor_id)a
+  @required_fields ~w(action_type agent_id organization_id actor_type performed_at)a
+  @optional_fields ~w(details actor_id)a
 
   def changeset(entry, attrs) do
     entry
@@ -52,8 +52,17 @@ defmodule TamanduaServer.Response.Audit do
   require Logger
   import Ecto.Query
 
+  alias TamanduaServer.Accounts.User
   alias TamanduaServer.Repo
+  alias TamanduaServer.Repo.MultiTenant
   alias TamanduaServer.Response.Audit.AuditEntry
+
+  @default_limit 100
+  @max_limit 500
+  @max_offset 10_000
+  @max_action_type_bytes 128
+  @max_search_field_bytes 64
+  @max_search_value_bytes 2_048
 
   @doc """
   Log an automated response action.
@@ -67,199 +76,384 @@ defmodule TamanduaServer.Response.Audit do
 
   ## Examples
 
-      iex> Audit.log_action(:quarantine_file, %{file_path: "C:\\malware.exe", sha256: "abc..."}, "agent-123", :system)
-      {:ok, %AuditEntry{}}
-
-      iex> Audit.log_action(:kill_process, %{pid: 1234}, "agent-123", "user-456")
-      {:ok, %AuditEntry{}}
+      iex> Audit.log_action(:quarantine_file, %{}, "agent-123", :system)
+      {:error, :organization_scope_required}
   """
   @spec log_action(atom() | String.t(), map(), String.t(), :system | String.t()) ::
           {:ok, AuditEntry.t()} | {:error, term()}
-  def log_action(action_type, details, agent_id, user_or_system) do
-    {actor_type, actor_id} =
-      case user_or_system do
-        :system -> {"system", nil}
-        user_id when is_binary(user_id) -> {"user", user_id}
-        _ -> {"system", nil}
+  def log_action(_action_type, _details, _agent_id, _user_or_system),
+    do: {:error, :organization_scope_required}
+
+  @doc """
+  Log a response action under an authoritative organization scope.
+
+  Callers that already authenticated an actor or resolved a target/alert must
+  pass that organization explicitly. Missing ownership fails closed; audit
+  rows are never inserted without a tenant.
+  """
+  @spec log_action(atom() | String.t(), map(), String.t(), :system | String.t(), String.t()) ::
+          {:ok, AuditEntry.t()} | {:error, term()}
+  def log_action(action_type, details, agent_id, user_or_system, organization_id)
+      when is_binary(organization_id) and organization_id != "" do
+    with {:ok, canonical_organization_id} <- canonical_uuid(organization_id),
+         {:ok, canonical_agent_id} <- canonical_uuid(agent_id),
+         {:ok, actor_type, actor_id} <- canonical_actor(user_or_system) do
+      attrs = %{
+        action_type: to_string(action_type),
+        details: details,
+        agent_id: canonical_agent_id,
+        organization_id: canonical_organization_id,
+        actor_type: actor_type,
+        actor_id: actor_id,
+        performed_at: DateTime.utc_now()
+      }
+
+      case create_audit_entry(attrs, canonical_organization_id, canonical_agent_id) do
+        {:ok, entry} ->
+          Logger.info(
+            "Audit: #{action_type} on agent #{canonical_agent_id} by #{actor_type}" <>
+              if(actor_id, do: " (#{actor_id})", else: "")
+          )
+
+          {:ok, entry}
+
+        {:error, reason} = error ->
+          Logger.error("Failed to create audit entry: #{inspect(reason)}")
+          error
       end
-
-    attrs = %{
-      action_type: to_string(action_type),
-      details: details,
-      agent_id: agent_id,
-      actor_type: actor_type,
-      actor_id: actor_id,
-      performed_at: DateTime.utc_now()
-    }
-
-    case create_audit_entry(attrs) do
-      {:ok, entry} ->
-        Logger.info(
-          "Audit: #{action_type} on agent #{agent_id} by #{actor_type}" <>
-            if(actor_id, do: " (#{actor_id})", else: "")
-        )
-
-        {:ok, entry}
-
-      {:error, reason} = error ->
-        Logger.error("Failed to create audit entry: #{inspect(reason)}")
-        error
     end
   end
 
-  @doc """
-  Get all audit actions for a specific agent.
+  def log_action(_action_type, _details, _agent_id, _user_or_system, _organization_id),
+    do: {:error, :organization_scope_required}
 
-  ## Options
+  @doc "Get audit actions for one agent under an explicit tenant scope."
+  @spec get_actions_for_agent(String.t(), String.t(), keyword()) ::
+          {:ok, [AuditEntry.t()]} | {:error, term()}
+  def get_actions_for_agent(organization_id, agent_id, opts) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id),
+         {:ok, agent_id} <- canonical_agent_id(agent_id),
+         {:ok, opts} <- normalize_read_opts(opts) do
+      limit = opts[:limit]
+      offset = opts[:offset]
 
-  - `:limit` - Maximum number of entries to return (default: 100)
-  - `:offset` - Number of entries to skip (default: 0)
-  - `:action_type` - Filter by action type
-  - `:from` - Start datetime for filtering
-  - `:to` - End datetime for filtering
-  - `:actor_type` - Filter by actor type ("system" or "user")
-
-  ## Examples
-
-      iex> Audit.get_actions_for_agent("agent-123", limit: 50)
-      [%AuditEntry{}, ...]
-
-      iex> Audit.get_actions_for_agent("agent-123", action_type: "quarantine_file")
-      [%AuditEntry{}, ...]
-  """
-  @spec get_actions_for_agent(String.t(), keyword()) :: [AuditEntry.t()]
-  def get_actions_for_agent(agent_id, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 100)
-    offset = Keyword.get(opts, :offset, 0)
-
-    query =
-      from(a in AuditEntry,
-        where: a.agent_id == ^agent_id,
-        order_by: [desc: a.performed_at],
-        limit: ^limit,
-        offset: ^offset
-      )
-
-    query = apply_filters(query, opts)
-
-    Repo.all(query)
-  rescue
-    e ->
-      Logger.error("Error fetching audit actions for agent #{agent_id}: #{inspect(e)}")
-      []
+      tenant_read(organization_id, fn ->
+        AuditEntry
+        |> where([a], a.organization_id == ^organization_id and a.agent_id == ^agent_id)
+        |> order_by([a], desc: a.performed_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> apply_filters(opts)
+        |> Repo.all()
+      end)
+    end
   end
 
-  @doc """
-  Get recent audit actions across all agents.
+  @spec get_actions_for_agent(term(), term()) :: {:error, :organization_scope_required}
+  def get_actions_for_agent(_agent_id, _opts), do: {:error, :organization_scope_required}
 
-  ## Options
+  @spec get_actions_for_agent(term()) :: {:error, :organization_scope_required}
+  def get_actions_for_agent(_agent_id), do: {:error, :organization_scope_required}
 
-  - `:limit` - Maximum number of entries to return (default: 100)
-  - `:offset` - Number of entries to skip (default: 0)
-  - `:action_type` - Filter by action type
-  - `:agent_id` - Filter by specific agent
-  - `:actor_type` - Filter by actor type ("system" or "user")
-  - `:from` - Start datetime for filtering
-  - `:to` - End datetime for filtering
-  - `:organization_id` - Filter by organization
+  @doc "Get recent audit actions under an explicit tenant scope."
+  @spec get_recent_actions(String.t(), keyword()) ::
+          {:ok, [AuditEntry.t()]} | {:error, term()}
+  def get_recent_actions(organization_id, opts) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id),
+         {:ok, opts} <- normalize_read_opts(opts) do
+      limit = opts[:limit]
+      offset = opts[:offset]
 
-  ## Examples
-
-      iex> Audit.get_recent_actions(limit: 50)
-      [%AuditEntry{}, ...]
-
-      iex> Audit.get_recent_actions(action_type: "kill_process", actor_type: "system")
-      [%AuditEntry{}, ...]
-  """
-  @spec get_recent_actions(keyword()) :: [AuditEntry.t()]
-  def get_recent_actions(opts \\ []) do
-    limit = Keyword.get(opts, :limit, 100)
-    offset = Keyword.get(opts, :offset, 0)
-
-    query =
-      from(a in AuditEntry,
-        order_by: [desc: a.performed_at],
-        limit: ^limit,
-        offset: ^offset
-      )
-
-    query = apply_filters(query, opts)
-
-    Repo.all(query)
-  rescue
-    e ->
-      Logger.error("Error fetching recent audit actions: #{inspect(e)}")
-      []
+      tenant_read(organization_id, fn ->
+        AuditEntry
+        |> where([a], a.organization_id == ^organization_id)
+        |> order_by([a], desc: a.performed_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> apply_filters(opts)
+        |> Repo.all()
+      end)
+    end
   end
+
+  @spec get_recent_actions(term()) :: {:error, :organization_scope_required}
+  def get_recent_actions(_opts), do: {:error, :organization_scope_required}
+
+  @spec get_recent_actions() :: {:error, :organization_scope_required}
+  def get_recent_actions, do: {:error, :organization_scope_required}
 
   @doc """
   Get audit action counts grouped by action type for a time range.
 
   ## Parameters
 
-  - `opts` - Options including :from, :to, :agent_id, :organization_id
+  - `organization_id` - Authoritative tenant UUID
+  - `opts` - Bounded filters including :from, :to, and :agent_id
 
   ## Returns
 
   A map of action types to counts.
   """
-  @spec get_action_counts(keyword()) :: map()
-  def get_action_counts(opts \\ []) do
-    query =
-      from(a in AuditEntry,
-        group_by: a.action_type,
-        select: {a.action_type, count(a.id)}
-      )
-
-    query = apply_filters(query, opts)
-
-    query
-    |> Repo.all()
-    |> Map.new()
-  rescue
-    e ->
-      Logger.error("Error fetching audit action counts: #{inspect(e)}")
-      %{}
+  @spec get_action_counts(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get_action_counts(organization_id, opts) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id),
+         {:ok, opts} <- normalize_count_opts(opts) do
+      tenant_read(organization_id, fn ->
+        AuditEntry
+        |> where([a], a.organization_id == ^organization_id)
+        |> apply_filters(opts)
+        |> group_by([a], a.action_type)
+        |> select([a], {a.action_type, count(a.id)})
+        |> Repo.all()
+        |> Map.new()
+      end)
+    end
   end
+
+  @spec get_action_counts(term()) :: {:error, :organization_scope_required}
+  def get_action_counts(_opts), do: {:error, :organization_scope_required}
+
+  @spec get_action_counts() :: {:error, :organization_scope_required}
+  def get_action_counts, do: {:error, :organization_scope_required}
 
   @doc """
   Get audit entries for a specific alert or related events.
   """
-  @spec get_actions_for_alert(String.t()) :: [AuditEntry.t()]
-  def get_actions_for_alert(alert_id) do
-    from(a in AuditEntry,
-      where: fragment("?->>'alert_id' = ?", a.details, ^alert_id),
-      order_by: [desc: a.performed_at]
-    )
-    |> Repo.all()
-  rescue
-    _ -> []
+  @spec get_actions_for_alert(String.t(), String.t(), keyword()) ::
+          {:ok, [AuditEntry.t()]} | {:error, term()}
+  def get_actions_for_alert(organization_id, alert_id, opts) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id),
+         {:ok, alert_id} <- canonical_alert_id(alert_id),
+         {:ok, opts} <- normalize_read_opts(opts) do
+      limit = opts[:limit]
+      offset = opts[:offset]
+
+      tenant_read(organization_id, fn ->
+        AuditEntry
+        |> where(
+          [a],
+          a.organization_id == ^organization_id and
+            fragment("?->>'alert_id' = ?", a.details, ^alert_id)
+        )
+        |> order_by([a], desc: a.performed_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> apply_filters(opts)
+        |> Repo.all()
+      end)
+    end
   end
+
+  @spec get_actions_for_alert(term(), term()) :: {:error, :organization_scope_required}
+  def get_actions_for_alert(_alert_id, _organization_id),
+    do: {:error, :organization_scope_required}
 
   @doc """
   Search audit entries by details content.
   """
-  @spec search_by_details(String.t(), String.t(), keyword()) :: [AuditEntry.t()]
-  def search_by_details(field, value, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 100)
+  @spec search_by_details(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, [AuditEntry.t()]} | {:error, term()}
+  def search_by_details(organization_id, field, value, opts) do
+    with {:ok, organization_id} <- canonical_organization_id(organization_id),
+         {:ok, field} <- canonical_search_field(field),
+         {:ok, value} <- canonical_search_value(value),
+         {:ok, opts} <- normalize_read_opts(opts) do
+      limit = opts[:limit]
+      offset = opts[:offset]
 
-    from(a in AuditEntry,
-      where: fragment("?->>? = ?", a.details, ^field, ^value),
-      order_by: [desc: a.performed_at],
-      limit: ^limit
-    )
-    |> Repo.all()
-  rescue
-    _ -> []
+      tenant_read(organization_id, fn ->
+        AuditEntry
+        |> where(
+          [a],
+          a.organization_id == ^organization_id and
+            fragment("?->>? = ?", a.details, ^field, ^value)
+        )
+        |> order_by([a], desc: a.performed_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> apply_filters(opts)
+        |> Repo.all()
+      end)
+    end
   end
+
+  @spec search_by_details(term(), term(), term()) :: {:error, :organization_scope_required}
+  def search_by_details(_field, _value, _opts), do: {:error, :organization_scope_required}
+
+  @spec search_by_details(term(), term()) :: {:error, :organization_scope_required}
+  def search_by_details(_field, _value), do: {:error, :organization_scope_required}
 
   # Private functions
 
-  defp create_audit_entry(attrs) do
-    %AuditEntry{}
-    |> AuditEntry.changeset(attrs)
-    |> Repo.insert()
+  defp create_audit_entry(attrs, organization_id, agent_id) do
+    TamanduaServer.Repo.MultiTenant.with_organization(organization_id, fn ->
+      with {:ok, _agent} <- validate_agent_scope(organization_id, agent_id),
+           :ok <- validate_actor_scope(attrs, organization_id) do
+        %AuditEntry{}
+        |> AuditEntry.changeset(attrs)
+        |> Repo.insert()
+      end
+    end)
+  rescue
+    ArgumentError -> {:error, :invalid_organization_scope}
+    error -> {:error, {:tenant_scope_failed, error}}
   end
+
+  defp validate_agent_scope(organization_id, agent_id) do
+    case TamanduaServer.Agents.get_agent_for_org(organization_id, agent_id) do
+      {:ok, agent} -> {:ok, agent}
+      {:error, :not_found} -> {:error, :agent_scope_mismatch}
+      {:error, reason} -> {:error, {:agent_scope_validation_failed, reason}}
+    end
+  end
+
+  defp validate_actor_scope(%{actor_type: "system"}, _organization_id), do: :ok
+
+  defp validate_actor_scope(%{actor_type: "user", actor_id: actor_id}, organization_id) do
+    if Repo.get_by(User, id: actor_id, organization_id: organization_id),
+      do: :ok,
+      else: {:error, :actor_scope_mismatch}
+  end
+
+  defp validate_actor_scope(_attrs, _organization_id), do: {:error, :invalid_actor}
+
+  defp canonical_uuid(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :invalid_tenant_identifier}
+    end
+  end
+
+  defp canonical_uuid(_value), do: {:error, :invalid_tenant_identifier}
+
+  defp canonical_organization_id(value) do
+    case canonical_uuid(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      {:error, _reason} -> {:error, :invalid_organization_id}
+    end
+  end
+
+  defp canonical_agent_id(value) do
+    case canonical_uuid(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      {:error, _reason} -> {:error, :invalid_agent_id}
+    end
+  end
+
+  defp canonical_alert_id(value) do
+    case canonical_uuid(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      {:error, _reason} -> {:error, :invalid_alert_id}
+    end
+  end
+
+  defp canonical_actor(:system), do: {:ok, "system", nil}
+
+  defp canonical_actor(user_id) when is_binary(user_id) do
+    case Ecto.UUID.cast(user_id) do
+      {:ok, canonical_user_id} -> {:ok, "user", canonical_user_id}
+      :error -> {:error, :invalid_actor}
+    end
+  end
+
+  defp canonical_actor(_user_or_system), do: {:error, :invalid_actor}
+
+  defp tenant_read(organization_id, fun) do
+    {:ok, MultiTenant.with_organization(organization_id, fun)}
+  rescue
+    error ->
+      Logger.error("Tenant-scoped response audit read failed: #{Exception.message(error)}")
+      {:error, :audit_query_failed}
+  end
+
+  defp normalize_read_opts(opts) do
+    with :ok <- valid_keyword_opts(opts),
+         {:ok, limit} <-
+           bounded_integer(Keyword.get(opts, :limit, @default_limit), 1, @max_limit),
+         {:ok, offset} <- bounded_integer(Keyword.get(opts, :offset, 0), 0, @max_offset),
+         {:ok, action_type} <-
+           optional_bounded_string(opts[:action_type], @max_action_type_bytes),
+         {:ok, agent_id} <- optional_agent_id(opts[:agent_id]),
+         {:ok, actor_type} <- optional_actor_type(opts[:actor_type]),
+         {:ok, from_datetime} <- optional_datetime(opts[:from]),
+         {:ok, to_datetime} <- optional_datetime(opts[:to]),
+         :ok <- valid_time_range(from_datetime, to_datetime) do
+      {:ok,
+       [
+         limit: limit,
+         offset: offset,
+         action_type: action_type,
+         agent_id: agent_id,
+         actor_type: actor_type,
+         from: from_datetime,
+         to: to_datetime
+       ]}
+    end
+  end
+
+  defp normalize_count_opts(opts) do
+    case normalize_read_opts(opts) do
+      {:ok, normalized} -> {:ok, Keyword.drop(normalized, [:limit, :offset])}
+      error -> error
+    end
+  end
+
+  defp valid_keyword_opts(opts) when is_list(opts) do
+    allowed = [:limit, :offset, :action_type, :agent_id, :actor_type, :from, :to]
+
+    if Keyword.keyword?(opts) and Enum.all?(Keyword.keys(opts), &(&1 in allowed)),
+      do: :ok,
+      else: {:error, :invalid_query_options}
+  end
+
+  defp valid_keyword_opts(_opts), do: {:error, :invalid_query_options}
+
+  defp bounded_integer(value, min, max) when is_integer(value) and value >= min and value <= max,
+    do: {:ok, value}
+
+  defp bounded_integer(_value, _min, _max), do: {:error, :invalid_pagination}
+
+  defp optional_bounded_string(nil, _max), do: {:ok, nil}
+
+  defp optional_bounded_string(value, max) when is_binary(value) and byte_size(value) in 1..max,
+    do: {:ok, value}
+
+  defp optional_bounded_string(_value, _max), do: {:error, :invalid_filter}
+
+  defp optional_agent_id(nil), do: {:ok, nil}
+  defp optional_agent_id(value), do: canonical_agent_id(value)
+
+  defp optional_actor_type(nil), do: {:ok, nil}
+  defp optional_actor_type(value) when value in ["system", "user"], do: {:ok, value}
+  defp optional_actor_type(_value), do: {:error, :invalid_actor_type}
+
+  defp optional_datetime(nil), do: {:ok, nil}
+  defp optional_datetime(%DateTime{} = value), do: {:ok, value}
+  defp optional_datetime(_value), do: {:error, :invalid_datetime}
+
+  defp valid_time_range(nil, _to), do: :ok
+  defp valid_time_range(_from, nil), do: :ok
+
+  defp valid_time_range(from_datetime, to_datetime) do
+    if DateTime.compare(from_datetime, to_datetime) in [:lt, :eq],
+      do: :ok,
+      else: {:error, :invalid_time_range}
+  end
+
+  defp canonical_search_field(value)
+       when is_binary(value) and byte_size(value) in 1..@max_search_field_bytes do
+    if Regex.match?(~r/\A[A-Za-z0-9_.-]+\z/, value),
+      do: {:ok, value},
+      else: {:error, :invalid_search_field}
+  end
+
+  defp canonical_search_field(_value), do: {:error, :invalid_search_field}
+
+  defp canonical_search_value(value)
+       when is_binary(value) and byte_size(value) in 1..@max_search_value_bytes,
+       do: {:ok, value}
+
+  defp canonical_search_value(_value), do: {:error, :invalid_search_value}
 
   defp apply_filters(query, opts) do
     query
@@ -268,7 +462,6 @@ defmodule TamanduaServer.Response.Audit do
     |> maybe_filter_actor_type(opts[:actor_type])
     |> maybe_filter_from(opts[:from])
     |> maybe_filter_to(opts[:to])
-    |> maybe_filter_organization(opts[:organization_id])
   end
 
   defp maybe_filter_action_type(query, nil), do: query
@@ -299,11 +492,5 @@ defmodule TamanduaServer.Response.Audit do
 
   defp maybe_filter_to(query, to_datetime) do
     from(a in query, where: a.performed_at <= ^to_datetime)
-  end
-
-  defp maybe_filter_organization(query, nil), do: query
-
-  defp maybe_filter_organization(query, organization_id) do
-    from(a in query, where: a.organization_id == ^organization_id)
   end
 end

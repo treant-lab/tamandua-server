@@ -480,13 +480,13 @@ export default function Contributions({
 
   const tabs = [
     { id: 'submissions' as const, label: 'Your Submissions', icon: FileCode },
-    { id: 'bounties' as const, label: 'Available Bounties', icon: Gift },
-    { id: 'leaderboard' as const, label: 'Leaderboard', icon: Trophy },
+    { id: 'bounties' as const, label: 'Contribution Queue', icon: Gift },
+    { id: 'leaderboard' as const, label: 'Review Queue', icon: Trophy },
   ]
 
   return (
-    <MainLayout title="Contributions & Bounties">
-      <Head title="Contributions & Bounties" />
+    <MainLayout title="Community Contributions">
+      <Head title="Community Contributions" />
 
       <div className="space-y-6">
         {/* Header */}
@@ -497,9 +497,9 @@ export default function Contributions({
                 <Award className="h-8 w-8" style={{ color: 'var(--emerald-400)' }} />
               </div>
               <div>
-                <h1 className="text-2xl font-semibold" style={{ color: 'var(--fg)' }}>Contributions & Bounties</h1>
+                <h1 className="text-2xl font-semibold" style={{ color: 'var(--fg)' }}>Community Contributions</h1>
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                  Submit detection rules and earn SOL rewards
+                  Submit detection content for internal review and validation
                 </p>
               </div>
             </div>

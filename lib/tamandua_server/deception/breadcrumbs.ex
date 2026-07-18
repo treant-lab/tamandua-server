@@ -15,10 +15,9 @@ defmodule TamanduaServer.Deception.Breadcrumbs do
   require Logger
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.CommandManager
-  alias TamanduaServer.Deception.{BreadcrumbGenerator, BreadcrumbDeployment, BreadcrumbAccessLog}
+  alias TamanduaServer.Deception.{BreadcrumbGenerator, BreadcrumbDeployment}
   alias TamanduaServer.Repo
 
-  import Ecto.Query
 
   # ============================================================================
   # Types
@@ -374,7 +373,7 @@ defmodule TamanduaServer.Deception.Breadcrumbs do
 
     # Rotate breadcrumbs for each agent
     new_state =
-      Enum.reduce(breadcrumbs_to_rotate, state, fn {agent_id, bcs}, acc_state ->
+      Enum.reduce(breadcrumbs_to_rotate, state, fn {_agent_id, bcs}, acc_state ->
         Enum.reduce(bcs, acc_state, fn bc, inner_state ->
           new_bc = generate_replacement_breadcrumb(bc)
 
@@ -599,48 +598,6 @@ defmodule TamanduaServer.Deception.Breadcrumbs do
   defp density_to_count(:low), do: 3
   defp density_to_count(:medium), do: 6
   defp density_to_count(:high), do: 12
-
-  defp deploy_breadcrumbs_to_agent(agent_id, breadcrumbs) do
-    # Convert to deployment command format
-    deployment_cmd = %{
-      action: "deploy_breadcrumbs",
-      breadcrumbs:
-        Enum.map(breadcrumbs, fn bc ->
-          %{
-            type: bc.type,
-            path: bc.path,
-            canary_token: bc.canary_token
-          }
-        end)
-    }
-
-    # Send to agent via WebSocket channel
-    case Agents.Registry.get(agent_id) do
-      {:ok, %{pid: pid}} ->
-        send(pid, {:command, deployment_cmd})
-        :ok
-
-      _ ->
-        # Queue for later deployment when agent connects
-        Logger.debug("Agent #{agent_id} not connected, queueing breadcrumb deployment")
-        :ok
-    end
-  end
-
-  defp deploy_rotation_to_agent(agent_id, old_breadcrumbs) do
-    rotation_cmd = %{
-      action: "rotate_breadcrumbs",
-      remove_tokens: Enum.map(old_breadcrumbs, & &1.canary_token)
-    }
-
-    case Agents.Registry.get(agent_id) do
-      {:ok, %{pid: pid}} ->
-        send(pid, {:command, rotation_cmd})
-
-      _ ->
-        Logger.debug("Agent #{agent_id} not connected, rotation queued")
-    end
-  end
 
   defp filter_breadcrumbs(breadcrumbs, opts) do
     breadcrumbs

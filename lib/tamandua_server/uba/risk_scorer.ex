@@ -175,7 +175,7 @@ defmodule TamanduaServer.UBA.RiskScorer do
     }
 
     # Calculate total risk score
-    risk_score = Enum.reduce(risk_factors, 0, fn {factor, value}, acc ->
+    risk_score = Enum.reduce(risk_factors, 0, fn {_factor, value}, acc ->
       acc + value
     end)
 
@@ -271,7 +271,7 @@ defmodule TamanduaServer.UBA.RiskScorer do
       a.anomaly_type == "statistical_outlier"
     end)
 
-    count = length(data_anomalies)
+    _count = length(data_anomalies)
     max_score = @risk_weights["excessive_data_access"]
 
     # Weight by severity
@@ -295,7 +295,7 @@ defmodule TamanduaServer.UBA.RiskScorer do
       a.anomaly_type == "statistical_outlier"
     end)
 
-    count = length(privilege_anomalies)
+    _count = length(privilege_anomalies)
     max_score = @risk_weights["privilege_escalation"]
 
     # Weight by severity
@@ -386,7 +386,7 @@ defmodule TamanduaServer.UBA.RiskScorer do
 
       case UBAAlert.changeset(%UBAAlert{}, attrs) |> Repo.insert() do
         {:ok, alert} ->
-          Logger.warn("UBA Alert created: High risk user #{risk_score_record.user_id} (score: #{risk_score_record.risk_score})")
+          Logger.warning("UBA Alert created: High risk user #{risk_score_record.user_id} (score: #{risk_score_record.risk_score})")
           {:ok, alert}
 
         {:error, changeset} ->

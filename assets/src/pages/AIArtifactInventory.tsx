@@ -14,6 +14,7 @@ import { MainLayout } from '@/layouts/MainLayout'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Select, SelectItem } from '@/components/ui/baseui'
 import { cn, formatDate, safeCapitalize } from '@/lib/utils'
+import AIEvidenceSummary from '@/components/AIEvidenceSummary'
 
 interface AIArtifact {
   id: string
@@ -24,6 +25,12 @@ interface AIArtifact {
   file_hash?: string | null
   redacted_preview?: string | null
   matched_patterns: string[]
+  risk_indicators: string[]
+  ai_network_risk?: string | null
+  ai_evidence_limit?: string | null
+  network_visibility_state?: string | null
+  tls_fingerprints_available?: boolean | string | null
+  certificate_visibility?: string | null
   risk_score: number
   risk_level: 'critical' | 'high' | 'medium' | 'low' | string
   severity: 'critical' | 'high' | 'medium' | 'low' | string
@@ -85,6 +92,9 @@ export default function AIArtifactInventory({ artifacts = [], stats, dataSource 
         artifact.install_path,
         artifact.config_path,
         artifact.matched_patterns.join(' '),
+        artifact.risk_indicators.join(' '),
+        artifact.ai_network_risk,
+        artifact.network_visibility_state,
       ].filter(Boolean).join(' ').toLowerCase()
 
       return matchesSource && matchesSeverity && (!q || haystack.includes(q))
@@ -211,6 +221,7 @@ function ArtifactTable({ artifacts }: { artifacts: AIArtifact[] }) {
                     <div className="mt-1 text-xs font-mono truncate" title={artifact.install_path || artifact.config_path || undefined} style={{ color: 'var(--muted)' }}>
                       {artifact.artifact_type || 'artifact'} {artifact.version ? `v${artifact.version}` : ''}
                     </div>
+                    <AIEvidenceSummary compact sources={artifact} />
                   </div>
                 </td>
                 <td className="p-4 align-top">
@@ -234,6 +245,11 @@ function ArtifactTable({ artifacts }: { artifacts: AIArtifact[] }) {
                     ) : artifact.matched_patterns.map((pattern) => (
                       <span key={pattern} className="rounded px-2 py-0.5 text-xs" style={{ background: 'var(--surface-2)', color: 'var(--fg-2)' }}>
                         {pattern.replace(/_/g, ' ')}
+                      </span>
+                    ))}
+                    {artifact.risk_indicators.map((indicator) => (
+                      <span key={`risk-${indicator}`} className="rounded bg-yellow-500/15 px-2 py-0.5 text-xs text-yellow-300">
+                        {indicator.replace(/_/g, ' ')}
                       </span>
                     ))}
                   </div>

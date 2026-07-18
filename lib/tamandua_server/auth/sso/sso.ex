@@ -37,7 +37,6 @@ defmodule TamanduaServer.Auth.SSO do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Auth.SSO.{SSOConfig, SSOSession, Provisioner}
-  alias TamanduaServer.Accounts
 
   import Ecto.Query
 

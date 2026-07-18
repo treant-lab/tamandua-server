@@ -77,22 +77,22 @@ defmodule TamanduaServerWeb.FallbackController do
     |> json(%{error: "Operation timed out", code: "timeout"})
   end
 
- @doc """
- Handle required parameter errors.
- """
- def call(conn, {:error, :missing_required_param, key}) when is_binary(key) or is_atom(key) do
- conn
- |> put_status(:bad_request)
- |> json(%{
- error: "Missing required parameter",
- code: "missing_required_param",
- parameter: to_string(key)
- })
- end
+  @doc """
+  Handle required parameter errors.
+  """
+  def call(conn, {:error, :missing_required_param, key}) when is_binary(key) or is_atom(key) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{
+      error: "Missing required parameter",
+      code: "missing_required_param",
+      parameter: to_string(key)
+    })
+  end
 
- @doc """
- Handle validation errors with details.
- """
+  @doc """
+  Handle validation errors with details.
+  """
   def call(conn, {:error, :invalid_params, details}) when is_map(details) do
     conn
     |> put_status(:bad_request)
@@ -129,6 +129,24 @@ defmodule TamanduaServerWeb.FallbackController do
     |> json(%{error: "Resource conflict", code: "conflict"})
   end
 
+  # Approval reconciliation is intentionally fail-closed, but malformed
+  # evidence and concurrent terminal transitions are expected client/domain
+  # outcomes rather than server faults. Keep messages generic so the API does
+  # not disclose command or execution state.
+  def call(conn, {:error, reason})
+      when reason in [:invalid_evidence_ref, :invalid_reconciliation] do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "Invalid reconciliation request", code: Atom.to_string(reason)})
+  end
+
+  def call(conn, {:error, reason})
+      when reason in [:unauthorized_or_invalid_transition, :evidence_already_used] do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "Reconciliation conflict", code: Atom.to_string(reason)})
+  end
+
   @doc """
   Handle service unavailable errors.
   """
@@ -142,6 +160,12 @@ defmodule TamanduaServerWeb.FallbackController do
     conn
     |> put_status(:service_unavailable)
     |> json(%{error: "Service unavailable", code: "service_unavailable"})
+  end
+
+  def call(conn, {:error, :persistence_unavailable}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "Service unavailable", code: "persistence_unavailable"})
   end
 
   @doc """

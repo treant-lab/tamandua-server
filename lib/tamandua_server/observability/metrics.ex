@@ -220,7 +220,7 @@ defmodule TamanduaServer.Observability.Metrics do
   end
 
   defp collect_system_metrics(state) do
-    now = System.system_time(:millisecond)
+    _now = System.system_time(:millisecond)
 
     # Collect agent metrics
     agent_stats = TamanduaServer.Agents.Registry.count_by_status()
@@ -252,7 +252,7 @@ defmodule TamanduaServer.Observability.Metrics do
   end
 
   defp format_prometheus(state) do
-    lines = []
+    _lines = []
 
     # Format counters
     counter_lines = Enum.flat_map(state.counters, fn {{metric, labels}, value} ->

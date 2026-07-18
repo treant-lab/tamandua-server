@@ -26,40 +26,46 @@ defmodule TamanduaServer.AI.QueryInterface do
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.Alert
 
+  @focused_intents ~w(activity_evidence process_responsible process_tree process_network process_files ai_exfil_evidence)
+  @activity_indicator_pattern "\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d{1,5})?\\b"
+  @sensitive_result_keys ~w(prompt prompts response responses completion completions messages
+    input inputs output outputs model_input model_output request request_body response_body content
+    api_key apikey authorization password secret token access_token refresh_token)
+
   # Query templates for common threat hunting scenarios
   @query_templates %{
     "powershell" => %{
-      pattern: ~r/powershell|script|encoded/i,
+      pattern: "powershell|script|encoded",
       query_fn: :query_powershell_activity,
       description: "PowerShell activity analysis"
     },
     "lateral_movement" => %{
-      pattern: ~r/lateral|movement|spread|remote|psexec|wmi|smb/i,
+      pattern: "lateral|movement|spread|remote|psexec|wmi|smb",
       query_fn: :query_lateral_movement,
       description: "Lateral movement detection"
     },
     "persistence" => %{
-      pattern: ~r/persist|startup|run\s*key|scheduled\s*task|service/i,
+      pattern: ~S(persist|startup|run\s*key|scheduled\s*task|service),
       query_fn: :query_persistence,
       description: "Persistence mechanism detection"
     },
     "credential_theft" => %{
-      pattern: ~r/credential|mimikatz|lsass|password|dump|hash/i,
+      pattern: "credential|mimikatz|lsass|password|dump|hash",
       query_fn: :query_credential_access,
       description: "Credential theft detection"
     },
     "exfiltration" => %{
-      pattern: ~r/exfil|data\s*theft|upload|transfer|large\s*file/i,
+      pattern: ~S(exfil|data\s*theft|upload|transfer|large\s*file),
       query_fn: :query_exfiltration,
       description: "Data exfiltration detection"
     },
     "ransomware" => %{
-      pattern: ~r/ransom|encrypt|crypto|locky|wannacry|lockbit/i,
+      pattern: "ransom|encrypt|crypto|locky|wannacry|lockbit",
       query_fn: :query_ransomware,
       description: "Ransomware activity detection"
     },
     "c2" => %{
-      pattern: ~r/c2|command.*control|beacon|callback|suspicious.*connection/i,
+      pattern: "c2|command.*control|beacon|callback|suspicious.*connection",
       query_fn: :query_c2_activity,
       description: "Command and control detection"
     }
@@ -79,12 +85,18 @@ defmodule TamanduaServer.AI.QueryInterface do
 
   @doc """
   Process a natural language query and return results.
+
+  Process-bound follow-ups accept either `:alert_id` or an `:entity` map with
+  `:agent_id` and `:pid`/`:entity_id`. They return `:needs_scope` without
+  running a broad search when that context is missing.
   """
   def process_query(query_text, opts \\ []) do
     organization_id = Keyword.get(opts, :organization_id)
     time_range = Keyword.get(opts, :time_range, "24h")
 
-    Logger.info("Processing AI query: #{query_text}")
+    # Never persist the analyst prompt in logs. The intent and scope identifiers
+    # below are sufficient to diagnose routing without leaking investigation data.
+    Logger.info("Processing AI query", organization_id: organization_id)
 
     # Parse the query intent
     intent = parse_query_intent(query_text)
@@ -92,13 +104,13 @@ defmodule TamanduaServer.AI.QueryInterface do
     # Extract time constraints
     time_constraint = extract_time_constraint(query_text, time_range)
 
-    # Execute appropriate query
-    results = execute_query(intent, organization_id, time_constraint)
-
-    # Generate response with explanation
-    response = generate_response(query_text, intent, results)
-
-    response
+    with {:ok, scope} <- resolve_query_scope(intent, organization_id, opts),
+         {:ok, scope} <- validate_query_scope(intent, scope) do
+      results = execute_query(intent, organization_id, time_constraint, scope)
+      generate_response(intent, results, scope)
+    else
+      {:needs_scope, reason, scope} -> needs_scope_response(intent, reason, scope)
+    end
   end
 
   @doc """
@@ -111,65 +123,72 @@ defmodule TamanduaServer.AI.QueryInterface do
     # Generate suggestions based on patterns
     suggestions = []
 
-    suggestions = if Enum.any?(recent_alerts, &(&1.type == :powershell)) do
-      suggestions ++ [
-        %{
-          query: "Show all encoded PowerShell commands in the last 48 hours",
-          reason: "Recent PowerShell activity detected",
-          priority: :high
-        }
-      ]
-    else
-      suggestions
-    end
+    suggestions =
+      if Enum.any?(recent_alerts, &(&1.type == :powershell)) do
+        suggestions ++
+          [
+            %{
+              query: "Show all encoded PowerShell commands in the last 48 hours",
+              reason: "Recent PowerShell activity detected",
+              priority: :high
+            }
+          ]
+      else
+        suggestions
+      end
 
-    suggestions = if Enum.any?(recent_alerts, &(&1.type == :credential_access)) do
-      suggestions ++ [
+    suggestions =
+      if Enum.any?(recent_alerts, &(&1.type == :credential_access)) do
+        suggestions ++
+          [
+            %{
+              query: "Find all processes that accessed LSASS memory",
+              reason: "Potential credential theft activity",
+              priority: :critical
+            },
+            %{
+              query: "Show authentication failures followed by successes",
+              reason: "Possible credential stuffing",
+              priority: :high
+            }
+          ]
+      else
+        suggestions
+      end
+
+    suggestions =
+      if Enum.any?(recent_alerts, &(&1.type == :network_anomaly)) do
+        suggestions ++
+          [
+            %{
+              query: "Find processes with unusual network destinations",
+              reason: "Potential C2 activity",
+              priority: :high
+            },
+            %{
+              query: "Show large data transfers to external IPs",
+              reason: "Potential data exfiltration",
+              priority: :medium
+            }
+          ]
+      else
+        suggestions
+      end
+
+    # Add general hunting suggestions
+    suggestions ++
+      [
         %{
-          query: "Find all processes that accessed LSASS memory",
-          reason: "Potential credential theft activity",
-          priority: :critical
+          query: "Show newly created services in the last 7 days",
+          reason: "Persistence monitoring",
+          priority: :medium
         },
         %{
-          query: "Show authentication failures followed by successes",
-          reason: "Possible credential stuffing",
-          priority: :high
-        }
-      ]
-    else
-      suggestions
-    end
-
-    suggestions = if Enum.any?(recent_alerts, &(&1.type == :network_anomaly)) do
-      suggestions ++ [
-        %{
-          query: "Find processes with unusual network destinations",
-          reason: "Potential C2 activity",
-          priority: :high
-        },
-        %{
-          query: "Show large data transfers to external IPs",
-          reason: "Potential data exfiltration",
+          query: "Find processes spawned by Office applications",
+          reason: "Macro/document malware detection",
           priority: :medium
         }
       ]
-    else
-      suggestions
-    end
-
-    # Add general hunting suggestions
-    suggestions ++ [
-      %{
-        query: "Show newly created services in the last 7 days",
-        reason: "Persistence monitoring",
-        priority: :medium
-      },
-      %{
-        query: "Find processes spawned by Office applications",
-        reason: "Macro/document malware detection",
-        priority: :medium
-      }
-    ]
   end
 
   @doc """
@@ -237,13 +256,19 @@ defmodule TamanduaServer.AI.QueryInterface do
   defp parse_query_intent(query_text) do
     query_lower = String.downcase(query_text)
 
-    # Check against known patterns
-    matched_template = @query_templates
-    |> Enum.find(fn {_name, template} ->
-      Regex.match?(template.pattern, query_lower)
-    end)
+    focused_intent = parse_focused_intent(query_lower)
 
-    case matched_template do
+    # Follow-up pivots must be checked before broad hunting templates. For
+    # example, "network connections from this process" must not become a
+    # tenant-wide network search.
+    matched_template =
+      query_templates()
+      |> Enum.find(fn {_name, template} -> Regex.match?(template.pattern, query_lower) end)
+
+    case focused_intent || matched_template do
+      %{type: _type} = intent ->
+        intent
+
       {name, template} ->
         %{
           type: name,
@@ -258,22 +283,146 @@ defmodule TamanduaServer.AI.QueryInterface do
     end
   end
 
+  defp query_templates do
+    Map.new(@query_templates, fn {name, template} ->
+      {name, %{template | pattern: Regex.compile!(template.pattern, "i")}}
+    end)
+  end
+
+  defp activity_indicator_regex, do: Regex.compile!(@activity_indicator_pattern)
+
+  @doc """
+  Returns whether a query is a focused investigation pivot that requires an
+  alert or entity scope.
+
+  Controllers use this to keep contextual follow-ups on the scoped tool path
+  instead of routing them through generic activity handlers.
+  """
+  def focused_query?(query_text) when is_binary(query_text) do
+    parse_query_intent(query_text).type in @focused_intents
+  end
+
+  def focused_query?(_query_text), do: false
+
+  defp parse_focused_intent(query) do
+    cond do
+      Regex.match?(activity_indicator_regex(), query) and
+          String.contains?(query, ["related", "find all", "resolver", "activity", "relacion"]) ->
+        focused_intent(
+          "activity_evidence",
+          :query_activity_evidence,
+          "Evidence related to the scoped activity"
+        )
+
+      contains_all_groups?(query, [
+        ["mcp", "ai", "llm", "model"],
+        ["exfil", "evidence", "leak", "upload", "transfer"]
+      ]) ->
+        focused_intent(
+          "ai_exfil_evidence",
+          :query_ai_exfil_evidence,
+          "Related MCP/AI exfiltration evidence"
+        )
+
+      String.contains?(query, [
+        "full process tree",
+        "complete process tree",
+        "entire process tree",
+        "process ancestry",
+        "árvore de processos",
+        "arvore de processos"
+      ]) ->
+        focused_intent("process_tree", :query_process_tree, "Full process tree")
+
+      contains_all_groups?(query, [
+        ["network", "connection", "dns", "socket"],
+        ["this process", "the process", "processo", "pid"]
+      ]) ->
+        focused_intent(
+          "process_network",
+          :query_process_network,
+          "Network connections from the scoped process"
+        )
+
+      contains_all_groups?(query, [
+        ["file", "files", "arquivo", "arquivos"],
+        ["access", "opened", "read", "wrote", "modified", "this process", "processo"]
+      ]) ->
+        focused_intent(
+          "process_files",
+          :query_process_files,
+          "Files accessed by the scoped process"
+        )
+
+      String.contains?(query, [
+        "process responsible",
+        "responsible process",
+        "which process",
+        "what process",
+        "processo responsável",
+        "processo responsavel"
+      ]) ->
+        focused_intent(
+          "process_responsible",
+          :query_process_responsible,
+          "Process responsible for the scoped alert"
+        )
+
+      true ->
+        nil
+    end
+  end
+
+  defp focused_intent(type, query_fn, description) do
+    %{
+      type: type,
+      query_fn: query_fn,
+      description: description,
+      confidence: :high,
+      tool_backed: true
+    }
+  end
+
+  defp contains_all_groups?(text, groups) do
+    Enum.all?(groups, &String.contains?(text, &1))
+  end
+
   defp infer_intent_from_keywords(query_lower) do
     cond do
       String.contains?(query_lower, ["process", "execution", "run"]) ->
-        %{type: "process", query_fn: :query_processes, description: "Process activity", confidence: :medium}
+        %{
+          type: "process",
+          query_fn: :query_processes,
+          description: "Process activity",
+          confidence: :medium
+        }
 
       String.contains?(query_lower, ["file", "created", "modified", "deleted"]) ->
         %{type: "file", query_fn: :query_files, description: "File activity", confidence: :medium}
 
       String.contains?(query_lower, ["network", "connection", "ip", "port"]) ->
-        %{type: "network", query_fn: :query_network, description: "Network activity", confidence: :medium}
+        %{
+          type: "network",
+          query_fn: :query_network,
+          description: "Network activity",
+          confidence: :medium
+        }
 
       String.contains?(query_lower, ["alert", "detection", "threat"]) ->
-        %{type: "alerts", query_fn: :query_alerts, description: "Alert search", confidence: :medium}
+        %{
+          type: "alerts",
+          query_fn: :query_alerts,
+          description: "Alert search",
+          confidence: :medium
+        }
 
       true ->
-        %{type: "general", query_fn: :query_general, description: "General search", confidence: :low}
+        %{
+          type: "general",
+          query_fn: :query_general,
+          description: "General search",
+          confidence: :low
+        }
     end
   end
 
@@ -281,12 +430,23 @@ defmodule TamanduaServer.AI.QueryInterface do
     query_lower = String.downcase(query_text)
 
     cond do
-      String.contains?(query_lower, "last hour") -> "1h"
-      String.contains?(query_lower, "last 24 hours") or String.contains?(query_lower, "today") -> "24h"
-      String.contains?(query_lower, "last 48 hours") -> "48h"
-      String.contains?(query_lower, "last week") or String.contains?(query_lower, "7 days") -> "7d"
-      String.contains?(query_lower, "last month") or String.contains?(query_lower, "30 days") -> "30d"
-      true -> default
+      String.contains?(query_lower, "last hour") ->
+        "1h"
+
+      String.contains?(query_lower, "last 24 hours") or String.contains?(query_lower, "today") ->
+        "24h"
+
+      String.contains?(query_lower, "last 48 hours") ->
+        "48h"
+
+      String.contains?(query_lower, "last week") or String.contains?(query_lower, "7 days") ->
+        "7d"
+
+      String.contains?(query_lower, "last month") or String.contains?(query_lower, "30 days") ->
+        "30d"
+
+      true ->
+        default
     end
   end
 
@@ -294,38 +454,228 @@ defmodule TamanduaServer.AI.QueryInterface do
   # Query Execution
   # ============================================================================
 
-  defp execute_query(intent, organization_id, time_range) do
+  defp execute_query(intent, organization_id, time_range, scope) do
     time_threshold = calculate_time_threshold(time_range)
 
     case intent.query_fn do
-      :query_powershell_activity -> query_powershell_activity(organization_id, time_threshold)
-      :query_lateral_movement -> query_lateral_movement(organization_id, time_threshold)
-      :query_persistence -> query_persistence(organization_id, time_threshold)
-      :query_credential_access -> query_credential_access(organization_id, time_threshold)
-      :query_exfiltration -> query_exfiltration(organization_id, time_threshold)
-      :query_ransomware -> query_ransomware(organization_id, time_threshold)
-      :query_c2_activity -> query_c2_activity(organization_id, time_threshold)
-      :query_processes -> query_processes(organization_id, time_threshold)
-      :query_files -> query_files(organization_id, time_threshold)
-      :query_network -> query_network(organization_id, time_threshold)
-      :query_alerts -> query_alerts(organization_id, time_threshold)
-      _ -> query_general(organization_id, time_threshold)
+      :query_powershell_activity ->
+        query_powershell_activity(organization_id, time_threshold)
+
+      :query_lateral_movement ->
+        query_lateral_movement(organization_id, time_threshold)
+
+      :query_persistence ->
+        query_persistence(organization_id, time_threshold)
+
+      :query_credential_access ->
+        query_credential_access(organization_id, time_threshold)
+
+      :query_exfiltration ->
+        query_exfiltration(organization_id, time_threshold)
+
+      :query_ransomware ->
+        query_ransomware(organization_id, time_threshold)
+
+      :query_c2_activity ->
+        query_c2_activity(organization_id, time_threshold)
+
+      :query_processes ->
+        query_processes(organization_id, time_threshold)
+
+      :query_files ->
+        query_files(organization_id, time_threshold)
+
+      :query_network ->
+        query_network(organization_id, time_threshold)
+
+      :query_alerts ->
+        query_alerts(organization_id, time_threshold)
+
+      :query_activity_evidence ->
+        query_scoped_events(scope, time_threshold, :activity_evidence)
+
+      :query_process_responsible ->
+        query_scoped_events(scope, time_threshold, :process_responsible)
+
+      :query_process_tree ->
+        query_scoped_events(scope, time_threshold, :process_tree)
+
+      :query_process_network ->
+        query_scoped_events(scope, time_threshold, :process_network)
+
+      :query_process_files ->
+        query_scoped_events(scope, time_threshold, :process_files)
+
+      :query_ai_exfil_evidence ->
+        query_scoped_events(scope, time_threshold, :ai_exfil_evidence)
+
+      _ ->
+        query_general(organization_id, time_threshold)
     end
   end
 
   defp calculate_time_threshold(time_range) do
     now = DateTime.utc_now()
 
-    seconds = case time_range do
-      "1h" -> 3600
-      "24h" -> 86400
-      "48h" -> 172800
-      "7d" -> 604800
-      "30d" -> 2592000
-      _ -> 86400
-    end
+    seconds =
+      case time_range do
+        "1h" -> 3600
+        "24h" -> 86400
+        "48h" -> 172_800
+        "7d" -> 604_800
+        "30d" -> 2_592_000
+        _ -> 86400
+      end
 
     DateTime.add(now, -seconds, :second)
+  end
+
+  defp resolve_query_scope(%{type: type}, organization_id, opts) when type in @focused_intents do
+    cond do
+      not (is_binary(organization_id) and organization_id != "") ->
+        {:needs_scope, :missing_tenant_context, %{}}
+
+      alert_id = option_value(opts, :alert_id) || current_alert_id(opts) ->
+        resolve_alert_scope(organization_id, alert_id)
+
+      entity =
+          option_value(opts, :entity) || option_value(opts, :current_entity) ||
+            entity_from_options(opts) ->
+        {:ok, normalize_entity_scope(entity, organization_id)}
+
+      true ->
+        {:needs_scope, :missing_alert_or_entity, %{organization_id: organization_id}}
+    end
+  end
+
+  defp resolve_query_scope(_intent, organization_id, _opts),
+    do: {:ok, compact_scope(%{organization_id: organization_id})}
+
+  defp resolve_alert_scope(organization_id, alert_id) do
+    case TamanduaServer.Alerts.get_alert_for_org(organization_id, to_string(alert_id)) do
+      {:ok, alert} ->
+        {:ok,
+         compact_scope(%{
+           organization_id: organization_id,
+           alert_id: alert.id,
+           agent_id: alert.agent_id,
+           entity_type: "process",
+           entity_id: alert_process_id(alert)
+         })}
+
+      _ ->
+        {:needs_scope, :alert_not_found, %{organization_id: organization_id}}
+    end
+  rescue
+    _ -> {:needs_scope, :alert_not_found, %{organization_id: organization_id}}
+  end
+
+  defp normalize_entity_scope(entity, organization_id) when is_map(entity) do
+    compact_scope(%{
+      organization_id: organization_id,
+      alert_id: map_value(entity, :alert_id),
+      agent_id: map_value(entity, :agent_id),
+      entity_type: map_value(entity, :type) || map_value(entity, :entity_type) || "process",
+      entity_id:
+        normalize_scope_id(
+          map_value(entity, :pid) || map_value(entity, :process_id) ||
+            map_value(entity, :process_pid) ||
+            map_value(entity, :entity_id) || map_value(entity, :id)
+        )
+    })
+  end
+
+  defp normalize_entity_scope(entity_id, organization_id) when is_binary(entity_id) do
+    compact_scope(%{
+      organization_id: organization_id,
+      entity_type: "process",
+      entity_id: entity_id
+    })
+  end
+
+  defp normalize_entity_scope(_, organization_id), do: %{organization_id: organization_id}
+
+  defp validate_query_scope(%{type: type}, scope) when type in @focused_intents do
+    cond do
+      is_nil(scope[:agent_id]) ->
+        {:needs_scope, :missing_agent, scope}
+
+      type in ~w(process_responsible process_tree process_network process_files) and
+          is_nil(scope[:entity_id]) ->
+        {:needs_scope, :missing_process_id, scope}
+
+      type == "activity_evidence" and scope[:entity_type] != "host" and is_nil(scope[:entity_id]) ->
+        {:needs_scope, :missing_entity_id, scope}
+
+      true ->
+        {:ok, scope}
+    end
+  end
+
+  defp validate_query_scope(_intent, scope), do: {:ok, scope}
+
+  defp option_value(opts, key) do
+    context = Keyword.get(opts, :context)
+
+    Keyword.get(opts, key) ||
+      if(is_map(context), do: map_value(context, key)) ||
+      if(is_map(context) and is_map(map_value(context, :scope)),
+        do: map_value(map_value(context, :scope), key)
+      )
+  end
+
+  defp current_alert_id(opts) do
+    case option_value(opts, :current_alert) do
+      alert when is_map(alert) -> map_value(alert, :id) || map_value(alert, :alert_id)
+      alert_id when is_binary(alert_id) -> alert_id
+      _ -> nil
+    end
+  end
+
+  defp entity_from_options(opts) do
+    entity = %{
+      agent_id: option_value(opts, :agent_id),
+      entity_id: option_value(opts, :entity_id),
+      pid: option_value(opts, :pid),
+      entity_type: option_value(opts, :entity_type)
+    }
+
+    if Enum.any?(entity, fn {_key, value} -> not is_nil(value) end), do: entity, else: nil
+  end
+
+  defp alert_process_id(alert) do
+    [
+      alert.evidence,
+      alert.raw_event,
+      alert.process_chain,
+      alert.enrichment,
+      alert.detection_metadata
+    ]
+    |> Enum.find_value(&find_process_id/1)
+    |> normalize_scope_id()
+  end
+
+  defp find_process_id(value) when is_map(value) do
+    Enum.find_value(~w(pid process_id process_pid source_pid target_pid), &map_value(value, &1)) ||
+      Enum.find_value(value, fn {_key, nested} -> find_process_id(nested) end)
+  end
+
+  defp find_process_id(value) when is_list(value), do: Enum.find_value(value, &find_process_id/1)
+  defp find_process_id(_), do: nil
+
+  defp normalize_scope_id(nil), do: nil
+  defp normalize_scope_id(value) when is_binary(value), do: value
+  defp normalize_scope_id(value) when is_integer(value), do: Integer.to_string(value)
+  defp normalize_scope_id(value), do: to_string(value)
+
+  defp compact_scope(scope) do
+    scope
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+    |> Map.new()
+  end
+
+  defp map_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, to_string(key))
   end
 
   # Specific query implementations
@@ -510,18 +860,122 @@ defmodule TamanduaServer.AI.QueryInterface do
     execute_raw_query(query, [organization_id, time_threshold])
   end
 
-  defp query_alerts(organization_id, time_threshold) do
-    base_query = from(a in Alert,
-      where: a.inserted_at >= ^time_threshold,
-      order_by: [desc: a.inserted_at],
-      limit: 100
+  defp query_scoped_events(scope, time_threshold, :process_tree) do
+    query = """
+    WITH RECURSIVE process_events AS (
+      SELECT DISTINCT ON (COALESCE(e.payload->>'pid', e.payload->>'process_id', e.payload->>'process_pid'))
+        e.id AS event_id,
+        COALESCE(e.payload->>'pid', e.payload->>'process_id', e.payload->>'process_pid') AS pid,
+        COALESCE(e.payload->>'ppid', e.payload->>'parent_pid', e.payload->>'parent_process_id') AS ppid
+      FROM events e
+      JOIN agents a ON e.agent_id = a.id
+      WHERE a.organization_id = $1::uuid
+        AND e.agent_id = $3::uuid
+        AND e.timestamp >= $2
+        AND lower(e.event_type) IN ('process', 'process_create', 'processcreate', 'process_exec', 'processexec')
+        AND COALESCE(e.payload->>'pid', e.payload->>'process_id', e.payload->>'process_pid') IS NOT NULL
+      ORDER BY COALESCE(e.payload->>'pid', e.payload->>'process_id', e.payload->>'process_pid'), e.timestamp DESC
+    ),
+    ancestors AS (
+      SELECT * FROM process_events WHERE pid = $4::text
+      UNION
+      SELECT parent.* FROM process_events parent JOIN ancestors child ON parent.pid = child.ppid
+    ),
+    descendants AS (
+      SELECT * FROM process_events WHERE pid = $4::text
+      UNION
+      SELECT child.* FROM process_events child JOIN descendants parent ON child.ppid = parent.pid
     )
+    SELECT e.*, a.hostname
+    FROM events e
+    JOIN agents a ON e.agent_id = a.id
+    WHERE e.id IN (SELECT event_id FROM ancestors UNION SELECT event_id FROM descendants)
+    ORDER BY e.timestamp ASC
+    LIMIT 200
+    """
 
-    query = if organization_id do
-      from(a in base_query, where: a.organization_id == ^organization_id)
-    else
-      base_query
-    end
+    execute_raw_query(query, scoped_query_params(scope, time_threshold))
+  end
+
+  defp query_scoped_events(scope, time_threshold, kind) do
+    filter =
+      case kind do
+        :activity_evidence ->
+          "TRUE"
+
+        :process_responsible ->
+          "lower(e.event_type) IN ('process', 'process_create', 'processcreate', 'process_exec', 'processexec')"
+
+        :process_network ->
+          "lower(e.event_type) IN ('network', 'network_connection', 'networkconnect', 'dns', 'dns_query')"
+
+        :process_files ->
+          "lower(e.event_type) IN ('file', 'file_create', 'filecreate', 'file_modify', 'filemodify', 'file_delete', 'filedelete', 'file_access', 'fileaccess')"
+
+        :ai_exfil_evidence ->
+          "(lower(e.event_type) ~ '(mcp|ai_|llm|model)' OR lower(e.payload::text) ~ '(mcp|llm|model)') " <>
+            "AND (lower(e.payload::text) ~ '(exfil|leak|upload|transfer)' " <>
+            "OR CASE WHEN e.payload->>'bytes_sent' ~ '^[0-9]+$' " <>
+            "THEN (e.payload->>'bytes_sent')::bigint ELSE 0 END > 10000000)"
+      end
+
+    entity_filter = scoped_entity_filter(scope)
+
+    query = """
+    SELECT e.*, a.hostname
+    FROM events e
+    JOIN agents a ON e.agent_id = a.id
+    WHERE a.organization_id = $1::uuid
+      AND e.timestamp >= $2
+      AND e.agent_id = $3::uuid
+      AND #{filter}
+      #{entity_filter}
+    ORDER BY e.timestamp DESC
+    LIMIT 50
+    """
+
+    params = scoped_query_params(scope, time_threshold)
+    execute_raw_query(query, if(entity_filter == "", do: Enum.take(params, 3), else: params))
+  end
+
+  defp scoped_entity_filter(%{entity_type: "process", entity_id: entity_id})
+       when not is_nil(entity_id) do
+    "AND COALESCE(e.payload->>'pid', e.payload->>'process_id', e.payload->>'process_pid', " <>
+      "e.payload->>'source_pid', e.payload->>'target_pid') = $4::text"
+  end
+
+  defp scoped_entity_filter(%{entity_type: type, entity_id: entity_id})
+       when type in ["network", "ip"] and not is_nil(entity_id) do
+    "AND COALESCE(e.payload->>'remote_ip', e.payload->>'destination_ip', " <>
+      "e.payload->>'dst_ip', e.payload->>'resolver_ip', e.payload->>'dns_resolver') = $4::text"
+  end
+
+  defp scoped_entity_filter(%{entity_type: "file", entity_id: entity_id})
+       when not is_nil(entity_id) do
+    "AND COALESCE(e.payload->>'file_path', e.payload->>'target_path', " <>
+      "e.payload->>'path', e.payload->>'sha256') = $4::text"
+  end
+
+  defp scoped_entity_filter(_scope), do: ""
+
+  defp scoped_query_params(scope, time_threshold) do
+    [scope.organization_id, time_threshold, scope.agent_id, scope[:entity_id]]
+  end
+
+  defp query_alerts(organization_id, time_threshold) do
+    base_query =
+      from(a in Alert,
+        where: a.inserted_at >= ^time_threshold,
+        order_by: [desc: a.inserted_at],
+        limit: 100
+      )
+
+    query =
+      if organization_id do
+        from(a in base_query, where: a.organization_id == ^organization_id)
+      else
+        base_query
+      end
 
     query
     |> Repo.all()
@@ -536,8 +990,13 @@ defmodule TamanduaServer.AI.QueryInterface do
     case Repo.query(query, normalize_raw_query_params(params)) do
       {:ok, result} ->
         columns = Enum.map(result.columns, &String.to_atom/1)
+
         Enum.map(result.rows, fn row ->
-          Enum.zip(columns, row) |> Enum.into(%{})
+          columns
+          |> Enum.zip(row)
+          |> Map.new(fn {column, value} ->
+            {column, normalize_raw_query_result(column, value)}
+          end)
         end)
 
       {:error, reason} ->
@@ -563,22 +1022,191 @@ defmodule TamanduaServer.AI.QueryInterface do
 
   defp normalize_raw_query_param(value), do: value
 
+  defp normalize_raw_query_result(column, value)
+       when is_binary(value) and byte_size(value) == 16 do
+    if String.ends_with?(to_string(column), "id") do
+      case Ecto.UUID.load(value) do
+        {:ok, uuid} -> uuid
+        :error -> value
+      end
+    else
+      value
+    end
+  end
+
+  defp normalize_raw_query_result(_column, value), do: value
+
   # ============================================================================
   # Response Generation
   # ============================================================================
 
-  defp generate_response(query_text, intent, results) do
+  defp generate_response(intent, raw_results, scope) do
+    results = sanitize_results(raw_results)
     result_count = length(results)
+    tool = tool_name(intent)
+    actions = structured_actions(intent, scope, results)
 
     %{
-      query: query_text,
+      status: :completed,
       intent: intent,
+      scope: scope,
       result_count: result_count,
       results: results,
+      tool_results: [
+        %{
+          tool: tool,
+          status: :completed,
+          scope: scope,
+          result_count: result_count,
+          results: results
+        }
+      ],
       summary: generate_result_summary(intent, results),
       follow_up_queries: suggest_follow_up_queries(intent, results),
+      actions: actions,
+      suggested_actions: actions,
       export_options: ["csv", "json", "pdf"]
     }
+  end
+
+  defp needs_scope_response(intent, reason, scope) do
+    action = %{
+      id: "select_investigation_scope",
+      type: "select_scope",
+      label: "Select an alert or process",
+      action: "Select an alert or process",
+      intent: intent.type,
+      scope: scope
+    }
+
+    %{
+      status: :needs_scope,
+      intent: intent,
+      scope: scope,
+      reason: reason,
+      result_count: 0,
+      results: [],
+      tool_results: [
+        %{
+          tool: tool_name(intent),
+          status: :not_run,
+          reason: reason,
+          scope: scope,
+          result_count: 0,
+          results: []
+        }
+      ],
+      summary: scope_error_summary(reason),
+      follow_up_queries: [],
+      actions: [action],
+      suggested_actions: [action],
+      export_options: []
+    }
+  end
+
+  defp scope_error_summary(:missing_tenant_context),
+    do: "Tenant context is required for this investigation."
+
+  defp scope_error_summary(:alert_not_found), do: "The scoped alert was not found in this tenant."
+
+  defp scope_error_summary(:missing_agent),
+    do: "The selected alert or entity is not associated with an endpoint."
+
+  defp scope_error_summary(:missing_process_id),
+    do: "The selected alert does not contain a process identifier for this pivot."
+
+  defp scope_error_summary(:missing_entity_id),
+    do: "The selected entity does not contain an identifier for this pivot."
+
+  defp scope_error_summary(_), do: "Select an alert or process before running this investigation."
+
+  defp tool_name(%{type: type}) when type in @focused_intents, do: type
+  defp tool_name(_), do: "event_search"
+
+  defp structured_actions(intent, scope, _results) do
+    case intent.type do
+      "activity_evidence" ->
+        pivot_actions(scope, [
+          {"show_process_responsible", "Show responsible process",
+           "Which process was responsible?", "process_responsible"}
+        ])
+
+      "process_responsible" ->
+        pivot_actions(scope, [
+          {"show_process_tree", "Show full process tree", "Show the full process tree",
+           "process_tree"},
+          {"show_process_network", "Show network connections",
+           "Show network connections from this process", "process_network"},
+          {"show_process_files", "Show files accessed", "Show files accessed by this process",
+           "process_files"}
+        ])
+
+      "process_tree" ->
+        pivot_actions(scope, [
+          {"show_process_network", "Show network connections",
+           "Show network connections from this process", "process_network"},
+          {"show_process_files", "Show files accessed", "Show files accessed by this process",
+           "process_files"}
+        ])
+
+      type when type in ~w(process_network process_files) ->
+        pivot_actions(scope, [
+          {"show_ai_exfil_evidence", "Check MCP/AI exfil evidence",
+           "Show related MCP or AI exfiltration evidence", "ai_exfil_evidence"}
+        ])
+
+      "ai_exfil_evidence" ->
+        pivot_actions(scope, [
+          {"show_process_tree", "Show full process tree", "Show the full process tree",
+           "process_tree"}
+        ])
+
+      _ ->
+        []
+    end
+  end
+
+  defp pivot_actions(scope, definitions) do
+    Enum.map(definitions, fn {id, label, query, intent} ->
+      %{
+        id: id,
+        type: "investigation",
+        label: label,
+        action: query,
+        query: query,
+        intent: intent,
+        scope: scope
+      }
+    end)
+  end
+
+  defp sanitize_results(results), do: Enum.map(results, &sanitize_result_value/1)
+
+  defp sanitize_result_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested} ->
+      if sensitive_result_key?(key) do
+        {key, "[REDACTED]"}
+      else
+        {key, sanitize_result_value(nested)}
+      end
+    end)
+  end
+
+  defp sanitize_result_value(value) when is_list(value),
+    do: Enum.map(value, &sanitize_result_value/1)
+
+  defp sanitize_result_value(value), do: value
+
+  defp sensitive_result_key?(key) do
+    normalized = key |> to_string() |> String.downcase()
+
+    normalized in @sensitive_result_keys or
+      String.ends_with?(normalized, "_secret") or
+      String.ends_with?(normalized, "_token") or
+      Enum.any?(
+        ~w(prompt response completion messages api_key apikey authorization password secret token),
+        &String.contains?(normalized, &1)
+      )
   end
 
   defp generate_result_summary(intent, results) do
@@ -586,10 +1214,12 @@ defmodule TamanduaServer.AI.QueryInterface do
 
     case intent.type do
       "powershell" ->
-        encoded_count = Enum.count(results, fn r ->
-          cmd = r[:command_line] || r["command_line"] || ""
-          String.contains?(String.downcase(cmd), "-enc")
-        end)
+        encoded_count =
+          Enum.count(results, fn r ->
+            cmd = r[:command_line] || r["command_line"] || ""
+            String.contains?(String.downcase(cmd), "-enc")
+          end)
+
         "Found #{count} PowerShell events. #{encoded_count} contain encoded commands."
 
       "credential_theft" ->
@@ -604,43 +1234,46 @@ defmodule TamanduaServer.AI.QueryInterface do
   end
 
   defp suggest_follow_up_queries(intent, results) do
-    base_suggestions = case intent.type do
-      "powershell" ->
-        [
-          "Show parent processes of these PowerShell executions",
-          "Find network connections from these PowerShell processes",
-          "Show file operations by these processes"
-        ]
+    base_suggestions =
+      case intent.type do
+        "powershell" ->
+          [
+            "Show parent processes of these PowerShell executions",
+            "Find network connections from these PowerShell processes",
+            "Show file operations by these processes"
+          ]
 
-      "credential_theft" ->
-        [
-          "Show authentication events after credential access",
-          "Find lateral movement from affected hosts",
-          "Show processes spawned by the accessing process"
-        ]
+        "credential_theft" ->
+          [
+            "Show authentication events after credential access",
+            "Find lateral movement from affected hosts",
+            "Show processes spawned by the accessing process"
+          ]
 
-      "ransomware" ->
-        [
-          "Show all file modifications on affected hosts",
-          "Find processes that deleted shadow copies",
-          "Show network connections before encryption started"
-        ]
+        "ransomware" ->
+          [
+            "Show all file modifications on affected hosts",
+            "Find processes that deleted shadow copies",
+            "Show network connections before encryption started"
+          ]
 
-      _ ->
-        ["Narrow search by time range", "Filter by specific host", "Add severity filter"]
-    end
+        _ ->
+          ["Narrow search by time range", "Filter by specific host", "Add severity filter"]
+      end
 
     # Add host-specific suggestions if results exist
     if length(results) > 0 do
-      hosts = results
-      |> Enum.map(fn r -> r[:hostname] || r["hostname"] end)
-      |> Enum.filter(& &1)
-      |> Enum.uniq()
-      |> Enum.take(3)
+      hosts =
+        results
+        |> Enum.map(fn r -> r[:hostname] || r["hostname"] end)
+        |> Enum.filter(& &1)
+        |> Enum.uniq()
+        |> Enum.take(3)
 
-      host_suggestions = Enum.map(hosts, fn host ->
-        "Show all activity on host #{host}"
-      end)
+      host_suggestions =
+        Enum.map(hosts, fn host ->
+          "Show all activity on host #{host}"
+        end)
 
       base_suggestions ++ host_suggestions
     else
@@ -661,23 +1294,34 @@ defmodule TamanduaServer.AI.QueryInterface do
 
   defp extract_ipv4(text) do
     # Proper IPv4 with octet validation (0-255)
-    Regex.scan(~r/\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b/, text)
+    Regex.scan(
+      ~r/\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b/,
+      text
+    )
     |> List.flatten()
     |> Enum.uniq()
   end
 
   defp extract_ipv6(text) do
     # Handle full, abbreviated, and mixed IPv6 forms
-    full_ipv6 = Regex.scan(~r/\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
+    full_ipv6 =
+      Regex.scan(~r/\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
 
     # Abbreviated IPv6 with :: (e.g., 2001:db8::1, ::1, fe80::1%eth0)
-    abbreviated_ipv6 = Regex.scan(~r/\b(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
+    abbreviated_ipv6 =
+      Regex.scan(~r/\b(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
 
     # :: prefix forms (e.g., ::ffff:192.0.2.1, ::1)
-    prefix_ipv6 = Regex.scan(~r/::(?:[A-Fa-f0-9]{1,4}:){0,5}[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
+    prefix_ipv6 =
+      Regex.scan(~r/::(?:[A-Fa-f0-9]{1,4}:){0,5}[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
 
     # Double-colon in middle (e.g., 2001:db8::8a2e:370:7334)
-    middle_ipv6 = Regex.scan(~r/\b[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4})*::(?:[A-Fa-f0-9]{1,4}:)*[A-Fa-f0-9]{1,4}\b/, text) |> List.flatten()
+    middle_ipv6 =
+      Regex.scan(
+        ~r/\b[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4})*::(?:[A-Fa-f0-9]{1,4}:)*[A-Fa-f0-9]{1,4}\b/,
+        text
+      )
+      |> List.flatten()
 
     (full_ipv6 ++ abbreviated_ipv6 ++ prefix_ipv6 ++ middle_ipv6)
     |> Enum.filter(&valid_ipv6?/1)
@@ -700,9 +1344,9 @@ defmodule TamanduaServer.AI.QueryInterface do
       tld = List.last(parts) |> String.downcase()
 
       # TLD must be valid and domain must have at least one non-numeric label
+      # Reject patterns that look like version numbers (e.g., v1.2.3, 2.0.1)
       tld in @valid_tlds and
         Enum.any?(parts, fn part -> not Regex.match?(~r/^\d+$/, part) end) and
-        # Reject patterns that look like version numbers (e.g., v1.2.3, 2.0.1)
         not Regex.match?(~r/^v?\d+\.\d+/, domain)
     end)
     |> Enum.uniq()
@@ -725,24 +1369,38 @@ defmodule TamanduaServer.AI.QueryInterface do
   defp extract_hashes(text) do
     # Exact length matching with word boundaries to avoid partial matches
     # MD5: exactly 32 hex chars (exclude if it's actually part of a longer hex string)
-    md5 = Regex.scan(~r/\b[a-fA-F0-9]{32}\b/, text)
+    md5 =
+      Regex.scan(~r/\b[a-fA-F0-9]{32}\b/, text)
       |> List.flatten()
       |> Enum.reject(fn h -> String.length(h) != 32 end)
 
     # SHA1: exactly 40 hex chars
-    sha1 = Regex.scan(~r/\b[a-fA-F0-9]{40}\b/, text)
+    sha1 =
+      Regex.scan(~r/\b[a-fA-F0-9]{40}\b/, text)
       |> List.flatten()
       |> Enum.reject(fn h -> String.length(h) != 40 end)
 
     # SHA256: exactly 64 hex chars
-    sha256 = Regex.scan(~r/\b[a-fA-F0-9]{64}\b/, text)
+    sha256 =
+      Regex.scan(~r/\b[a-fA-F0-9]{64}\b/, text)
       |> List.flatten()
       |> Enum.reject(fn h -> String.length(h) != 64 end)
 
     # Remove MD5 matches that are substrings of SHA1 matches, and
     # SHA1 matches that are substrings of SHA256 matches
-    md5 = md5 -- (sha1 ++ sha256 |> Enum.flat_map(fn h -> for i <- 0..(String.length(h) - 32), do: String.slice(h, i, 32) end))
-    sha1 = sha1 -- (sha256 |> Enum.flat_map(fn h -> for i <- 0..(String.length(h) - 40), do: String.slice(h, i, 40) end))
+    md5 =
+      md5 --
+        ((sha1 ++ sha256)
+         |> Enum.flat_map(fn h ->
+           for i <- 0..(String.length(h) - 32), do: String.slice(h, i, 32)
+         end))
+
+    sha1 =
+      sha1 --
+        (sha256
+         |> Enum.flat_map(fn h ->
+           for i <- 0..(String.length(h) - 40), do: String.slice(h, i, 40)
+         end))
 
     %{md5: Enum.uniq(md5), sha1: Enum.uniq(sha1), sha256: Enum.uniq(sha256)}
   end
@@ -769,30 +1427,30 @@ defmodule TamanduaServer.AI.QueryInterface do
       :ipv4 ->
         Enum.reject(values, fn ip ->
           # Filter out private/reserved IPs (RFC 1918, loopback, link-local, etc.)
-          String.starts_with?(ip, "10.") or
-          String.starts_with?(ip, "192.168.") or
-          String.starts_with?(ip, "127.") or
-          String.starts_with?(ip, "0.") or
-          String.starts_with?(ip, "169.254.") or
-          String.starts_with?(ip, "255.") or
-          ip == "0.0.0.0" or
           # 172.16.0.0/12 private range
-          is_private_172?(ip)
+          String.starts_with?(ip, "10.") or
+            String.starts_with?(ip, "192.168.") or
+            String.starts_with?(ip, "127.") or
+            String.starts_with?(ip, "0.") or
+            String.starts_with?(ip, "169.254.") or
+            String.starts_with?(ip, "255.") or
+            ip == "0.0.0.0" or
+            is_private_172?(ip)
         end)
 
       :domains ->
         Enum.reject(values, fn domain ->
           domain_lower = String.downcase(domain)
           # Filter out common benign/internal domains
-          String.ends_with?(domain_lower, ".local") or
-          String.ends_with?(domain_lower, ".internal") or
-          String.ends_with?(domain_lower, ".localhost") or
-          String.ends_with?(domain_lower, ".test") or
-          String.ends_with?(domain_lower, ".example") or
-          String.ends_with?(domain_lower, ".invalid") or
-          domain_lower in ["example.com", "example.org", "example.net", "localhost"] or
           # Reject pure numeric domains (likely version numbers or IPs)
-          Regex.match?(~r/^\d+\.\d+/, domain_lower)
+          String.ends_with?(domain_lower, ".local") or
+            String.ends_with?(domain_lower, ".internal") or
+            String.ends_with?(domain_lower, ".localhost") or
+            String.ends_with?(domain_lower, ".test") or
+            String.ends_with?(domain_lower, ".example") or
+            String.ends_with?(domain_lower, ".invalid") or
+            domain_lower in ["example.com", "example.org", "example.net", "localhost"] or
+            Regex.match?(~r/^\d+\.\d+/, domain_lower)
         end)
 
       :hashes ->
@@ -804,10 +1462,13 @@ defmodule TamanduaServer.AI.QueryInterface do
               sha1: Enum.reject(sha1, &trivial_hash?/1),
               sha256: Enum.reject(sha256, &trivial_hash?/1)
             }
-          _ -> values
+
+          _ ->
+            values
         end
 
-      _ -> values
+      _ ->
+        values
     end
   end
 
@@ -819,15 +1480,18 @@ defmodule TamanduaServer.AI.QueryInterface do
           {n, ""} when n >= 16 and n <= 31 -> true
           _ -> false
         end
-      _ -> false
+
+      _ ->
+        false
     end
   end
 
   # Reject trivially generated hashes (all zeros, all f's, etc.)
   defp trivial_hash?(hash) do
     hash_lower = String.downcase(hash)
+
     String.match?(hash_lower, ~r/^(.)\1+$/) or
-    hash_lower == String.duplicate("0", String.length(hash))
+      hash_lower == String.duplicate("0", String.length(hash))
   end
 
   # ============================================================================
@@ -835,45 +1499,63 @@ defmodule TamanduaServer.AI.QueryInterface do
   # ============================================================================
 
   defp get_recent_alert_patterns(organization_id) do
+    if is_nil(organization_id) do
+      []
+    else
+      get_recent_alert_patterns_for_org(organization_id)
+    end
+  end
+
+  defp get_recent_alert_patterns_for_org(organization_id) do
     # Get alerts from last 24 hours and categorize
     threshold = DateTime.add(DateTime.utc_now(), -86400, :second)
 
-    base_query = from(a in Alert,
-      where: a.inserted_at >= ^threshold
-    )
-
-    query = if organization_id do
-      from(a in base_query, where: a.organization_id == ^organization_id)
-    else
-      base_query
-    end
-
-    alerts = query
-    |> Repo.all()
+    alerts =
+      from(a in Alert,
+        where: a.inserted_at >= ^threshold,
+        where: a.organization_id == ^organization_id,
+        order_by: [desc: a.inserted_at],
+        limit: 50
+      )
+      |> Repo.all()
 
     Enum.map(alerts, fn alert ->
-      type = cond do
-        Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1059")) -> :powershell
-        Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1003")) -> :credential_access
-        Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1071")) -> :network_anomaly
-        true -> :other
-      end
+      type =
+        cond do
+          Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1059")) ->
+            :powershell
+
+          Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1003")) ->
+            :credential_access
+
+          Enum.any?(alert.mitre_techniques || [], &String.starts_with?(&1, "T1071")) ->
+            :network_anomaly
+
+          true ->
+            :other
+        end
 
       %{type: type, alert: alert}
     end)
   end
 
-  defp get_alert_events(%Alert{event_ids: event_ids}) when is_list(event_ids) and length(event_ids) > 0 do
+  defp get_alert_events(%Alert{event_ids: event_ids})
+       when is_list(event_ids) and length(event_ids) > 0 do
     query = "SELECT * FROM events WHERE id = ANY($1) ORDER BY timestamp"
+
     case Repo.query(query, [event_ids]) do
       {:ok, result} ->
         columns = Enum.map(result.columns, &String.to_atom/1)
+
         Enum.map(result.rows, fn row ->
           Enum.zip(columns, row) |> Enum.into(%{})
         end)
-      {:error, _} -> []
+
+      {:error, _} ->
+        []
     end
   end
+
   defp get_alert_events(_), do: []
 
   defp generate_alert_summary(alert, events) do
@@ -958,17 +1640,19 @@ defmodule TamanduaServer.AI.QueryInterface do
       "Find related alerts in the last 24 hours"
     ]
 
-    technique_queries = Enum.flat_map(techniques, fn tech ->
-      case tech do
-        t when t in ["T1059", "T1059.001"] ->
-          ["Show all PowerShell executions on this host"]
+    technique_queries =
+      Enum.flat_map(techniques, fn tech ->
+        case tech do
+          t when t in ["T1059", "T1059.001"] ->
+            ["Show all PowerShell executions on this host"]
 
-        t when t in ["T1003", "T1003.001"] ->
-          ["Find processes accessing LSASS", "Show credential-related events"]
+          t when t in ["T1003", "T1003.001"] ->
+            ["Find processes accessing LSASS", "Show credential-related events"]
 
-        _ -> []
-      end
-    end)
+          _ ->
+            []
+        end
+      end)
 
     base_queries ++ technique_queries
   end
@@ -1020,11 +1704,12 @@ defmodule TamanduaServer.AI.QueryInterface do
     # Reuse the robust private extraction helpers
     raw_iocs = extract_iocs_from_text(text)
 
-    ip_addresses = if include_private_ips do
-      raw_iocs.ipv4
-    else
-      filter_false_positives(:ipv4, raw_iocs.ipv4)
-    end
+    ip_addresses =
+      if include_private_ips do
+        raw_iocs.ipv4
+      else
+        filter_false_positives(:ipv4, raw_iocs.ipv4)
+      end
 
     hashes = raw_iocs.hashes
     hashes_md5 = if is_map(hashes), do: Map.get(hashes, :md5, []), else: []
@@ -1060,6 +1745,7 @@ defmodule TamanduaServer.AI.QueryInterface do
       filters: extract_entities_from_query(description),
       mitre_techniques: map_to_mitre_techniques(description)
     }
+
     {:ok, query}
   end
 
@@ -1094,16 +1780,23 @@ defmodule TamanduaServer.AI.QueryInterface do
 
   defp extract_entities_from_query(query_text) do
     %{
-      ip_addresses: Regex.scan(~r/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/, query_text) |> List.flatten(),
+      ip_addresses:
+        Regex.scan(
+          ~r/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/,
+          query_text
+        )
+        |> List.flatten(),
       processes: Regex.scan(~r/\b\w+\.exe\b/i, query_text) |> List.flatten()
     }
   end
 
   defp generate_alert_explanation(alert) do
-    detector = alert.title || get_in(alert.detection_metadata || %{}, ["rule_name"]) || alert.id || "unknown"
+    detector =
+      alert.title || get_in(alert.detection_metadata || %{}, ["rule_name"]) || alert.id ||
+        "unknown"
 
     "Detection triggered by '#{detector}'. " <>
-    "This alert indicates potential #{severity_description(alert.severity)} activity that requires investigation."
+      "This alert indicates potential #{severity_description(alert.severity)} activity that requires investigation."
   end
 
   defp severity_description("critical"), do: "critical threat"
@@ -1126,14 +1819,27 @@ defmodule TamanduaServer.AI.QueryInterface do
       }
     ]
 
-    severity_actions = case alert_severity(alert) do
-      s when s in ["critical", :critical] ->
-        [%{action: "isolate", description: "Consider isolating the affected system", priority: :critical} | base_actions]
-      s when s in ["high", :high] ->
-        [%{action: "contain", description: "Prepare containment measures", priority: :high} | base_actions]
-      _ ->
-        base_actions
-    end
+    severity_actions =
+      case alert_severity(alert) do
+        s when s in ["critical", :critical] ->
+          [
+            %{
+              action: "isolate",
+              description: "Consider isolating the affected system",
+              priority: :critical
+            }
+            | base_actions
+          ]
+
+        s when s in ["high", :high] ->
+          [
+            %{action: "contain", description: "Prepare containment measures", priority: :high}
+            | base_actions
+          ]
+
+        _ ->
+          base_actions
+      end
 
     severity_actions
   end

@@ -28,7 +28,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.DiscordWorker do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.NotificationCenter.{Notification, NotificationDelivery, NotificationWebhook}
+  alias TamanduaServer.NotificationCenter.{NotificationDelivery, NotificationWebhook}
 
   import Ecto.Query
 
@@ -89,9 +89,10 @@ defmodule TamanduaServer.NotificationCenter.Channels.DiscordWorker do
 
     case webhook do
       nil ->
-        # Fallback: try organization settings
-        case TamanduaServer.Settings.get_setting("discord_webhook_url", organization_id) do
-          {:ok, url} when is_binary(url) and url != "" -> url
+        # Fallback: Organization.settings (string-keyed map) is the org-scoped
+        # settings store; TamanduaServer.Settings is global-only.
+        case TamanduaServer.Accounts.get_organization(organization_id) do
+          %{settings: %{"discord_webhook_url" => url}} when is_binary(url) and url != "" -> url
           _ -> nil
         end
 

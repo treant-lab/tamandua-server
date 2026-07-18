@@ -13,7 +13,6 @@ defmodule TamanduaServer.Forensics.Collector do
 
   alias TamanduaServer.Agents
 
-  @collection_timeout 300_000  # 5 minutes
 
   # Client API
 

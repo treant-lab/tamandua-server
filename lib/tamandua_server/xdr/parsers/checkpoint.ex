@@ -253,7 +253,7 @@ defmodule TamanduaServer.XDR.Parsers.CheckPoint do
   defp parse_cef_format(raw_log) do
     # CEF:Version|Device Vendor|Device Product|Device Version|Signature ID|Name|Severity|Extension
     case String.split(raw_log, "|", parts: 8) do
-      ["CEF:" <> version, vendor, product, device_version, sig_id, name, severity | rest] ->
+      ["CEF:" <> version, _vendor, product, device_version, sig_id, name, severity | rest] ->
         extension = Enum.join(rest, "|")
         extension_map = parse_cef_extension(extension)
 
@@ -397,17 +397,7 @@ defmodule TamanduaServer.XDR.Parsers.CheckPoint do
       {unix_ts, ""} when unix_ts > 1_000_000_000_000 ->
         DateTime.from_unix!(div(unix_ts, 1000))
       _ ->
-        # Try other formats
-        Enum.find_value(formats, DateTime.utc_now(), fn format ->
-          case format do
-            :unix -> nil
-            fmt ->
-              case Timex.parse(timestamp_str, fmt) do
-                {:ok, datetime} -> datetime
-                _ -> nil
-              end
-          end
-        end)
+        TamanduaServer.DateTimeParser.parse_utc!(timestamp_str)
     end
   rescue
     _ -> DateTime.utc_now()

@@ -379,7 +379,7 @@ defmodule TamanduaServer.Agentic.LearningLoop do
   end
 
   @impl true
-  def handle_call({:reject_refinement, refinement_id, reason}, _from, state) do
+  def handle_call({:reject_refinement, refinement_id, _reason}, _from, state) do
     case :ets.lookup(@adjustments_table, refinement_id) do
       [{^refinement_id, refinement}] ->
         updated = %{refinement | status: :rejected}
@@ -409,7 +409,7 @@ defmodule TamanduaServer.Agentic.LearningLoop do
   # Execution & Feedback Recording
   # ============================================================================
 
-  defp do_record_execution(agent_id, agent_name, outcome, actions_taken, duration_ms) do
+  defp do_record_execution(agent_id, agent_name, _outcome, actions_taken, duration_ms) do
     now = DateTime.utc_now()
 
     metrics = case :ets.lookup(@metrics_table, agent_id) do

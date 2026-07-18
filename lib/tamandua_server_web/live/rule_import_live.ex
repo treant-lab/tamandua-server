@@ -788,12 +788,14 @@ defmodule TamanduaServerWeb.RuleImportLive do
       socket = assign(socket, :import_job, updated_job)
 
       # Continue polling if still processing
-      if updated_job.status == "processing" do
-        Process.send_after(self(), :poll_job, 1000)
-      else
-        # Reload recent jobs
-        socket = assign(socket, :recent_jobs, load_recent_jobs(socket.assigns.organization_id))
-      end
+      socket =
+        if updated_job.status == "processing" do
+          Process.send_after(self(), :poll_job, 1000)
+          socket
+        else
+          # Reload recent jobs
+          assign(socket, :recent_jobs, load_recent_jobs(socket.assigns.organization_id))
+        end
 
       {:noreply, socket}
     else

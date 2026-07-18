@@ -22,12 +22,10 @@ defmodule TamanduaServer.Integrations.AISIEM do
 
   alias TamanduaServer.{Repo, Alerts}
   alias TamanduaServer.Alerts.Alert
-  alias TamanduaServer.Detection.Engine, as: DetectionEngine
 
   # Configuration constants
   @pattern_mining_interval_ms 300_000  # 5 minutes
   @correlation_window_ms 60_000        # 1 minute correlation window
-  @noise_threshold 0.3                 # Below this score, suppress alert
   @auto_investigate_threshold 0.85     # Above this, auto-start investigation
   @max_pattern_cache_size 10_000
   @log_retention_days 90
@@ -35,7 +33,6 @@ defmodule TamanduaServer.Integrations.AISIEM do
   @warm_retention_days 30
 
   # Pattern types for discovery
-  @pattern_types [:temporal, :behavioral, :entity, :attack_chain]
 
   # Embedded structs for internal state management
 
@@ -284,7 +281,7 @@ defmodule TamanduaServer.Integrations.AISIEM do
         new_graph = update_entity_graph(state.entity_graph, enriched)
 
         # Check for auto-correlation
-        {correlations, updated_groups} = correlate_log(enriched, state)
+        {_correlations, updated_groups} = correlate_log(enriched, state)
 
         # Potentially trigger investigation
         if noise_score >= @auto_investigate_threshold do
@@ -346,8 +343,11 @@ defmodule TamanduaServer.Integrations.AISIEM do
     {:reply, {:ok, Map.values(patterns)}, state}
   end
 
+  # Alert ids are binary UUIDs. The guard keeps this clause from swallowing
+  # the map-based `{:get_correlations, opts}` calls issued by
+  # `alert_correlations/1`, which are handled by a later clause.
   @impl true
-  def handle_call({:get_correlations, alert_id}, _from, state) do
+  def handle_call({:get_correlations, alert_id}, _from, state) when is_binary(alert_id) do
     correlations = state.correlation_groups
     |> Map.values()
     |> Enum.filter(fn group ->
@@ -1276,10 +1276,9 @@ defmodule TamanduaServer.Integrations.AISIEM do
     %{graph | nodes: new_nodes, edges: graph.edges ++ new_edges}
   end
 
-  @doc """
-  Resolves context for an entity by querying related events.
-  Returns context map with related hosts, users, IPs, and recent events.
-  """
+  # Resolves context for an entity by querying related events.
+  # Returns context map with related hosts, users, IPs, and recent events.
+  # (Comment, not @doc: the compiler discards @doc on private functions.)
   defp resolve_entity_context(entry, graph) do
     import Ecto.Query
     alias TamanduaServer.Repo
@@ -1366,10 +1365,8 @@ defmodule TamanduaServer.Integrations.AISIEM do
     }
   end
 
-  @doc """
-  Calculates historical frequency of an event type for an entity.
-  Returns frequency stats for 24h, 7d, and 30d windows.
-  """
+  # Calculates historical frequency of an event type for an entity.
+  # Returns frequency stats for 24h, 7d, and 30d windows.
   defp calculate_historical_frequency(entry, _state) do
     import Ecto.Query
     alias TamanduaServer.Repo
@@ -1438,10 +1435,9 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end
   end
 
-  @doc """
-  Finds patterns matching the log entry using string similarity and signature matching.
-  """
-  defp find_matching_patterns(entry, patterns) when map_size(patterns) == 0, do: []
+  # Finds patterns matching the log entry using string similarity and
+  # signature matching.
+  defp find_matching_patterns(_entry, patterns) when map_size(patterns) == 0, do: []
   defp find_matching_patterns(entry, patterns) do
     entry_event_type = entry.event_type
     entry_hostname = entry.hostname
@@ -1493,7 +1489,7 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end
   end
 
-  defp calculate_pattern_confidence(pattern, entry) do
+  defp calculate_pattern_confidence(pattern, _entry) do
     base_confidence = pattern.confidence || 0.5
 
     # Boost confidence based on frequency
@@ -1519,9 +1515,7 @@ defmodule TamanduaServer.Integrations.AISIEM do
     min(base_confidence + freq_boost + recency_boost, 1.0)
   end
 
-  @doc """
-  Looks up threat intelligence for IOCs extracted from the log entry.
-  """
+  # Looks up threat intelligence for IOCs extracted from the log entry.
   defp lookup_threat_intel(entry) do
     alias TamanduaServer.ThreatIntel
 
@@ -1629,18 +1623,16 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end, fn -> nil end)
   end
 
-  @doc """
-  Generates vector embeddings for the log entry by sending its text
-  representation to the ML service via `TamanduaServer.Detection.ML.Client`.
-
-  The entry's key fields (event_type, hostname, user, process, severity)
-  are concatenated into a text string and forwarded to the ML encoder,
-  which returns a compact latent-space vector suitable for cosine-similarity
-  comparisons.
-
-  Returns a list of floats (the embedding vector) on success, or `nil`
-  if the ML service is unavailable.
-  """
+  # Generates vector embeddings for the log entry by sending its text
+  # representation to the ML service via `TamanduaServer.Detection.ML.Client`.
+  #
+  # The entry's key fields (event_type, hostname, user, process, severity)
+  # are concatenated into a text string and forwarded to the ML encoder,
+  # which returns a compact latent-space vector suitable for cosine-similarity
+  # comparisons.
+  #
+  # Returns a list of floats (the embedding vector) on success, or `nil`
+  # if the ML service is unavailable.
   defp generate_embeddings(entry) do
     alias TamanduaServer.Detection.ML.Client, as: MLClient
 
@@ -1750,10 +1742,8 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end
   end
 
-  @doc """
-  Calculates entity reputation score based on alert history.
-  Returns 0.0 (bad) to 1.0 (good) score.
-  """
+  # Calculates entity reputation score based on alert history.
+  # Returns 0.0 (bad) to 1.0 (good) score.
   defp calculate_entity_reputation_score(entry, graph) do
     import Ecto.Query
     alias TamanduaServer.Repo
@@ -1986,9 +1976,8 @@ defmodule TamanduaServer.Integrations.AISIEM do
     |> Enum.map(fn {entity, data} -> %{entity: entity, count: data.count} end)
   end
 
-  @doc """
-  Gathers context for an alert including preloaded associations and related events.
-  """
+  # Gathers context for an alert including preloaded associations and
+  # related events.
   defp gather_alert_context(alert_id, _state) do
     alias TamanduaServer.Alerts
     alias TamanduaServer.Telemetry
@@ -2045,10 +2034,8 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end
   end
 
-  @doc """
-  Builds a chronological investigation timeline from alert context.
-  Groups events by type and orders by timestamp.
-  """
+  # Builds a chronological investigation timeline from alert context.
+  # Groups events by type and orders by timestamp.
   defp build_investigation_timeline(context, _state) do
     import Ecto.Query
     alias TamanduaServer.Repo
@@ -2134,10 +2121,8 @@ defmodule TamanduaServer.Integrations.AISIEM do
     end
   end
 
-  @doc """
-  Identifies all affected entities from the alert and related events.
-  Returns deduplicated list of hosts, users, and IPs.
-  """
+  # Identifies all affected entities from the alert and related events.
+  # Returns deduplicated list of hosts, users, and IPs.
   defp identify_affected_entities(context, _state) do
     alert = context[:alert]
     related_events = context[:related_events] || []
@@ -2192,9 +2177,7 @@ defmodule TamanduaServer.Integrations.AISIEM do
   defp maybe_add_entity(entities, _type, ""), do: entities
   defp maybe_add_entity(entities, type, value), do: [{type, value} | entities]
 
-  @doc """
-  Calculates investigation risk score based on context and timeline.
-  """
+  # Calculates investigation risk score based on context and timeline.
   defp calculate_investigation_risk(context, timeline) do
     risk = 0.0
 
@@ -2231,9 +2214,7 @@ defmodule TamanduaServer.Integrations.AISIEM do
     min(risk, 1.0)
   end
 
-  @doc """
-  Generates investigation recommendations based on context and timeline.
-  """
+  # Generates investigation recommendations based on context and timeline.
   defp generate_investigation_recommendations(context, timeline) do
     recommendations = []
 

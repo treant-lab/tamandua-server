@@ -9,7 +9,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.SmsWorker do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.NotificationCenter.{Notification, NotificationDelivery}
+  alias TamanduaServer.NotificationCenter.{NotificationDelivery}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"delivery_id" => delivery_id}}) do

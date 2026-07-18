@@ -32,14 +32,15 @@ defmodule TamanduaServer.NDR.EventNormalizer do
 
   Accepted payload keys include:
   remote_ip, remote_port, protocol, pid, process_name, domain,
-  domain_candidates, is_encrypted, sni, tls_sni, tls_version, ja3, ja3s,
-  alpn, alpn_protocols, quic_version, http_version, encrypted_dns_transport,
-  certificate and certificate_risk.
+  domain_candidates, is_encrypted, visibility_level, visibility_gaps,
+  domain_source, bytes_source, tls_metadata_source, process_attribution_source,
+  sni, tls_sni, tls_version, ja3, ja3s, alpn, alpn_protocols, quic_version,
+  http_version, encrypted_dns_transport, certificate and certificate_risk.
   """
   def normalize_event(%{} = event) do
     if network_event?(event) do
       payload = get_field(event, :payload) || %{}
-      normalized_payload = normalize_payload(payload)
+      normalized_payload = normalize_payload(payload, event)
 
       event
       |> put_field(:payload, normalized_payload)
@@ -51,7 +52,12 @@ defmodule TamanduaServer.NDR.EventNormalizer do
 
   def normalize_event(event), do: event
 
-  def normalize_payload(payload) when is_map(payload) do
+  def normalize_payload(payload, event \\ %{})
+
+  def normalize_payload(payload, event) when is_map(payload) do
+    enrichment = get_field(payload, :enrichment) || %{}
+    metadata = get_field(event, :metadata) || %{}
+
     remote_port =
       payload
       |> first_present([:remote_port, :destination_port, :dest_port, :dst_port])
@@ -105,6 +111,17 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     domain_candidates = normalize_domain_candidates(get_field(payload, :domain_candidates), domain, sni, tls_sni)
     bytes_sent = first_present(payload, [:bytes_sent, :bytes_out, :sent_bytes, :tx_bytes])
     bytes_received = first_present(payload, [:bytes_received, :bytes_recv, :bytes_in, :received_bytes, :rx_bytes])
+    visibility_level = normalize_visibility_level(first_present_any([payload, enrichment, metadata], [:visibility_level, :network_visibility_level]))
+    visibility_gaps =
+      normalize_visibility_gaps(
+        first_present_any([payload, enrichment, metadata], [:visibility_gaps, :network_visibility_gaps]),
+        enrichment,
+        metadata
+      )
+    domain_source = first_present_any([payload, enrichment, metadata], [:domain_source, :network_domain_source])
+    bytes_source = first_present_any([payload, enrichment, metadata], [:bytes_source, :network_bytes_source])
+    tls_metadata_source = first_present_any([payload, enrichment, metadata], [:tls_metadata_source, :network_tls_source])
+    process_attribution_source = first_present_any([payload, enrichment, metadata], [:process_attribution_source, :network_process_source])
 
     remote_ip = first_present(payload, [:remote_ip, :destination_ip, :dest_ip, :dst_ip, :remote_address])
     local_ip = first_present(payload, [:local_ip, :source_ip, :src_ip, :local_address])
@@ -128,6 +145,15 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     |> put_field(:process_name, get_field(payload, :process_name) || get_field(payload, :name))
     |> put_field(:domain, domain || sni)
     |> put_field(:domain_candidates, domain_candidates)
+    |> put_if_present(:visibility_level, visibility_level)
+    |> put_if_present(:visibility_gaps, visibility_gaps)
+    |> put_if_present(:domain_source, normalize_source_label(domain_source))
+    |> put_if_present(:bytes_source, normalize_source_label(bytes_source))
+    |> put_if_present(:tls_metadata_source, normalize_source_label(tls_metadata_source))
+    |> put_if_present(
+      :process_attribution_source,
+      normalize_source_label(process_attribution_source)
+    )
     |> put_field(:sni, sni)
     |> put_field(:tls_sni, tls_sni || sni)
     |> put_if_present(:is_encrypted, is_encrypted)
@@ -148,7 +174,7 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     |> put_if_present(:certificate_risk, normalize_float(get_field(payload, :certificate_risk)))
   end
 
-  def normalize_payload(payload), do: payload
+  def normalize_payload(payload, _event), do: payload
 
   @doc "Builds the network context stored in NDR alert evidence."
   def network_context(event) do
@@ -164,6 +190,12 @@ defmodule TamanduaServer.NDR.EventNormalizer do
       protocol: get_field(payload, :protocol),
       domain: get_field(payload, :domain),
       domain_candidates: get_field(payload, :domain_candidates),
+      visibility_level: get_field(payload, :visibility_level),
+      visibility_gaps: get_field(payload, :visibility_gaps),
+      domain_source: get_field(payload, :domain_source),
+      bytes_source: get_field(payload, :bytes_source),
+      tls_metadata_source: get_field(payload, :tls_metadata_source),
+      process_attribution_source: get_field(payload, :process_attribution_source),
       sni: get_field(payload, :sni),
       tls_sni: get_field(payload, :tls_sni),
       tls_version: get_field(payload, :tls_version),
@@ -333,6 +365,12 @@ defmodule TamanduaServer.NDR.EventNormalizer do
     end)
   end
 
+  defp first_present_any(maps, keys) do
+    maps
+    |> Enum.reject(&is_nil/1)
+    |> Enum.find_value(&first_present(&1, keys))
+  end
+
   defp normalize_protocol(nil, _sni, _tls_version, _port, quic_version, _alpn, _alpn_protocols)
        when not is_nil(quic_version),
        do: "QUIC"
@@ -345,6 +383,8 @@ defmodule TamanduaServer.NDR.EventNormalizer do
        when not is_nil(sni),
        do: "TLS"
 
+  # Final nil-protocol clause: classifies by ALPN and falls back to "TCP",
+  # so no additional nil catch-all is needed after it.
   defp normalize_protocol(nil, _sni, _tls_version, _port, _quic_version, alpn, alpn_protocols) do
     cond do
       alpn_match?(alpn, alpn_protocols, ["h3", "h3-29", "h3-32"]) -> "QUIC"
@@ -354,8 +394,6 @@ defmodule TamanduaServer.NDR.EventNormalizer do
       true -> "TCP"
     end
   end
-
-  defp normalize_protocol(nil, _sni, _tls_version, _port, _quic_version, _alpn, _alpn_protocols), do: "TCP"
 
   defp normalize_protocol(protocol, _sni, _tls_version, _port, _quic_version, _alpn, _alpn_protocols),
     do: protocol |> to_string() |> String.upcase()
@@ -409,6 +447,52 @@ defmodule TamanduaServer.NDR.EventNormalizer do
   end
   defp normalize_list(value), do: [to_string(value)]
 
+  defp normalize_visibility_level(nil), do: nil
+  defp normalize_visibility_level(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_source_label(nil), do: nil
+  defp normalize_source_label(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_visibility_gaps(value, enrichment, metadata) do
+    explicit = normalize_list(value)
+    derived = derived_visibility_gaps(enrichment, metadata)
+
+    (explicit ++ derived)
+    |> Enum.map(&normalize_source_label/1)
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.uniq()
+  end
+
+  defp derived_visibility_gaps(enrichment, metadata) do
+    [
+      degraded_gap?(metadata, :network_bytes_degraded, "bytes_not_available"),
+      degraded_gap?(metadata, :network_tls_degraded, "tls_metadata_not_available"),
+      degraded_gap?(metadata, :network_sni_degraded, "sni_not_available"),
+      visibility_gap?(enrichment, [:visibility, :bytes, :degraded], "bytes_not_available"),
+      visibility_gap?(enrichment, [:visibility, :tls, :degraded], "tls_metadata_not_available"),
+      visibility_gap?(enrichment, [:visibility, :sni, :degraded], "sni_not_available")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp degraded_gap?(metadata, key, gap) do
+    if normalize_bool(get_field(metadata, key)) == true, do: gap
+  end
+
+  defp visibility_gap?(map, path, gap) do
+    if normalize_bool(get_path(map, path)) == true, do: gap
+  end
+
   defp normalize_encrypted_dns_transport(payload, remote_port, alpn, alpn_protocols, sni) do
     explicit = first_present(payload, [:encrypted_dns_transport, :dns_transport])
 
@@ -456,6 +540,17 @@ defmodule TamanduaServer.NDR.EventNormalizer do
   defp get_in_any(map, [key]) when is_map(map) do
     get_field(map, key)
   end
+
+  defp get_path(map, keys) when is_map(map) and is_list(keys) do
+    Enum.reduce_while(keys, map, fn key, acc ->
+      case get_field(acc, key) do
+        nil -> {:halt, nil}
+        value -> {:cont, value}
+      end
+    end)
+  end
+
+  defp get_path(_, _), do: nil
 
   defp geo_for_ip(_enrichment, nil), do: nil
   defp geo_for_ip(enrichment, ip) do

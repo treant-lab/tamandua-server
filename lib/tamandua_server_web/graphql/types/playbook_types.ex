@@ -177,6 +177,5 @@ defmodule TamanduaServerWeb.GraphQL.Types.PlaybookTypes do
   input_object :execute_playbook_input do
     field :playbook_id, non_null(:id)
     field :context, :json, description: "Execution context (agent_id, alert_id, etc.)"
-    field :skip_approval, :boolean, default_value: false, description: "Skip approval if normally required"
   end
 end

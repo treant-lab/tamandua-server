@@ -68,4 +68,25 @@ defmodule TamanduaServer.Agents.Agent do
     |> validate_inclusion(:status, ~w(registered online offline isolated))
     |> foreign_key_constraint(:organization_id)
   end
+
+  @doc """
+  Changeset for tenant API updates.
+
+  Runtime identity, tenant ownership, isolation state, presence and credential
+  fields are intentionally excluded. Those fields are maintained by trusted
+  enrollment/runtime paths through `changeset/2` and must not be mass assigned
+  by an authenticated API client.
+  """
+  def public_update_changeset(agent, attrs) do
+    agent
+    |> cast(attrs, [
+      :hostname,
+      :ip_address,
+      :os_type,
+      :os_version,
+      :agent_version,
+      :tags
+    ])
+    |> validate_required([:organization_id, :hostname, :os_type])
+  end
 end

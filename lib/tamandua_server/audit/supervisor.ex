@@ -47,6 +47,72 @@ defmodule TamanduaServer.Audit do
   end
 
   # ============================================================================
+  # Audit Write Facade
+  #
+  # Many callers treat `TamanduaServer.Audit` as the audit-writing facade
+  # (`Audit.log/1`, `Audit.log/2`, `Audit.log_event/1`, `Audit.log_event/4`).
+  # The real hash-chained writer is `TamanduaServer.AuditLog.log/1`, which
+  # normalizes attrs (defaults action_type/resource_type, maps metadata ->
+  # details) and skips tenant-scoped writes without an organization_id.
+  # These delegates translate the caller vocabularies (event_type -> action,
+  # actor_id -> user_id) onto that single entry point.
+  # ============================================================================
+
+  @doc """
+  Write an audit entry. Delegates to `TamanduaServer.AuditLog.log/1`.
+  """
+  def log(attrs) when is_map(attrs) do
+    AuditLog.log(attrs)
+  end
+
+  @doc """
+  Write an audit entry from an action name plus a details map.
+
+  Note: entries without an `organization_id` (e.g. system-level PKI events)
+  follow `AuditLog.log/1` policy and are skipped as tenant-scoped writes.
+  """
+  def log(action, details) when is_binary(action) and is_map(details) do
+    AuditLog.log(%{
+      action: action,
+      details: details,
+      organization_id: Map.get(details, :organization_id)
+    })
+  end
+
+  @doc """
+  Write an audit event given an event-style map.
+
+  Accepts `event_type` (alias of `action`) and `actor_id` (alias of
+  `user_id`); hoists `organization_id` out of `metadata` when the caller
+  only provided it there.
+  """
+  def log_event(attrs) when is_map(attrs) do
+    attrs
+    |> Map.put_new_lazy(:action, fn -> Map.get(attrs, :event_type) end)
+    |> Map.put_new_lazy(:user_id, fn -> Map.get(attrs, :actor_id) end)
+    |> Map.put_new_lazy(:organization_id, fn ->
+      case Map.get(attrs, :metadata) do
+        %{organization_id: org_id} -> org_id
+        _ -> nil
+      end
+    end)
+    |> AuditLog.log()
+  end
+
+  @doc """
+  Write an audit event from positional arguments.
+  """
+  def log_event(action, organization_id, actor_id, metadata)
+      when is_binary(action) and is_map(metadata) do
+    AuditLog.log(%{
+      action: action,
+      organization_id: organization_id,
+      user_id: actor_id,
+      details: metadata
+    })
+  end
+
+  # ============================================================================
   # Server Callbacks
   # ============================================================================
 

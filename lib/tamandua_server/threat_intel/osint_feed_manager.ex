@@ -274,7 +274,7 @@ defmodule TamanduaServer.ThreatIntel.OSINTFeedManager do
 
     # Schedule initial syncs for enabled feeds with staggered delays
     Enum.with_index(@feed_configs)
-    |> Enum.each(fn {{feed_name, config}, index} ->
+    |> Enum.each(fn {{feed_name, _config}, index} ->
       [{^feed_name, feed_state}] = :ets.lookup(:osint_feed_state, feed_name)
 
       if feed_state.enabled do
@@ -732,7 +732,7 @@ defmodule TamanduaServer.ThreatIntel.OSINTFeedManager do
   # Private Functions - Health & Stats
   # ============================================================================
 
-  defp do_health_check(state) do
+  defp do_health_check(_state) do
     Enum.each(@feed_configs, fn {feed_name, config} ->
       [{^feed_name, feed_state}] = :ets.lookup(:osint_feed_state, feed_name)
 
@@ -793,7 +793,7 @@ defmodule TamanduaServer.ThreatIntel.OSINTFeedManager do
   # ============================================================================
 
   defp parse_otx_pulses(pulses) do
-    Enum.flat_map(pulses, fn pulse ->
+    Enum.flat_map(pulses, fn _pulse ->
       # AlienVault pulses don't have indicators in the subscribed endpoint
       # Would need to fetch each pulse individually for full details
       # For now, just log and return empty

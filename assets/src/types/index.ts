@@ -25,7 +25,7 @@ export interface User {
   id: string
   name: string
   email: string
-  role: 'admin' | 'analyst' | 'viewer'
+  role: 'admin' | 'super_admin' | 'analyst' | 'viewer'
 }
 
 // Agent types
@@ -81,11 +81,63 @@ export interface Detection {
 
 // Evidence types for alerts
 export interface Evidence {
+  source?: string
+  provenance?: string
+  collector?: string
+  source_event_id?: string
+  sourceEventId?: string
+  evidence_snapshot?: MobileEvidenceSnapshot
+  evidenceSnapshot?: MobileEvidenceSnapshot
+  app_guard?: {
+    protected_app?: Record<string, unknown>
+    protectedApp?: Record<string, unknown>
+    app?: Record<string, unknown>
+    device?: Record<string, unknown>
+    risk?: Record<string, unknown>
+    session?: Record<string, unknown>
+    runtime?: Record<string, unknown>
+    network?: Record<string, unknown>
+    evidence?: Record<string, unknown>
+    evidence_snapshot?: MobileEvidenceSnapshot
+    evidenceSnapshot?: MobileEvidenceSnapshot
+    [key: string]: unknown
+  }
+  appGuard?: Record<string, unknown>
+  app?: Record<string, unknown>
+  device?: Record<string, unknown>
+  risk?: Record<string, unknown>
+  policy?: Record<string, unknown>
+  decision_trace?: Record<string, unknown>
+  decisionTrace?: Record<string, unknown>
+  runtime?: Record<string, unknown>
+  integrity?: Record<string, unknown>
+  network_hints?: Record<string, unknown>
+  networkHints?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  ai_network_risk?: string
+  ai_evidence_limit?: string
+  network_visibility_state?: string
+  tls_fingerprints_available?: boolean | string
+  certificate_visibility?: string
+  risk_indicators?: string[]
+  matched_patterns?: string[]
+  artifact_type?: string
+  redacted_preview?: string
+  iocs?: AlertIOC[]
+  file?: {
+    path?: string
+    name?: string
+    sha256?: string
+    sha1?: string
+    md5?: string
+    source?: string
+  }
   file_hashes?: Array<{
     sha256?: string
     sha1?: string
     md5?: string
     path?: string
+    source?: string
   }>
   network?: Array<{
     type: string
@@ -93,7 +145,27 @@ export interface Evidence {
     direction?: string
     port?: number
     resolved_ip?: string
-  }>
+  }> | {
+    type?: string
+    value?: string
+    direction?: string
+    port?: number
+    resolved_ip?: string
+    remote_ip?: string
+    remoteIp?: string
+    dst_ip?: string
+    dstIp?: string
+    destination_ip?: string
+    destinationIp?: string
+    host?: string
+    hostname?: string
+    domain?: string
+    url?: string
+    remote_port?: number
+    remotePort?: number
+    destination_port?: number
+    destinationPort?: number
+  }
   process?: {
     pid: number | string
     ppid?: number | string
@@ -107,7 +179,10 @@ export interface Evidence {
     is_elevated?: boolean
     is_signed?: boolean
     signer?: string
+    source?: string
   }
+  process_tree?: Array<Record<string, unknown>>
+  processTree?: Array<Record<string, unknown>>
   registry?: Array<{
     key: string
     value?: string
@@ -127,13 +202,187 @@ export interface Evidence {
 }
 
 export interface AlertIOC {
-  type: 'ip' | 'hash' | 'domain' | 'url' | 'email' | 'file_path'
+  type: 'ip' | 'hash' | 'domain' | 'url' | 'email' | 'file_path' | 'package' | 'app' | 'indicator'
   value: string
   source?: string
   confidence?: number
   tlp?: string
   blockable?: boolean
   redacted?: boolean
+}
+
+export interface MobileEvidenceSnapshot {
+  signals?: Array<string | Record<string, unknown>>
+  evidence_signals?: Array<string | Record<string, unknown>>
+  findings?: Array<string | Record<string, unknown>>
+  policy?: Record<string, unknown>
+  decision?: Record<string, unknown> | string
+  thresholds?: Record<string, unknown>
+  integrity?: Record<string, unknown>
+  device_integrity?: Record<string, unknown>
+  deviceIntegrity?: Record<string, unknown>
+  runtime?: Record<string, unknown>
+  native_hardening?: Record<string, unknown>
+  nativeHardening?: Record<string, unknown>
+  app?: Record<string, unknown>
+  device?: Record<string, unknown>
+  network?: Record<string, unknown>
+  network_hints?: Record<string, unknown>
+  networkHints?: Record<string, unknown>
+  iocs?: AlertIOC[]
+  indicators?: AlertIOC[]
+  [key: string]: unknown
+}
+
+export interface AlertEvidenceQuality {
+  quality: 'direct' | 'correlated' | 'derived' | 'synthetic' | 'missing'
+  label: string
+  claimable: boolean
+  benchmark_eligible?: boolean
+  benchmarkEligible?: boolean
+  summary: string
+  checks?: Record<string, boolean>
+  missing?: string[]
+  investigation_context?: AlertInvestigationContext
+  investigationContext?: AlertInvestigationContext
+  score?: number
+}
+
+export interface AlertTriageAgentGap {
+  source?: string
+  field?: string
+  severity?: string
+}
+
+export interface AlertTriageAgentPivot {
+  action?: string
+  reason?: string
+  priority?: string
+}
+
+export interface AlertTriageAgentContract {
+  schema_version?: string
+  schemaVersion?: string
+  status?: string
+  hypothesis?: string
+  evidence_strength?: {
+    level?: string
+    label?: string
+    claimable?: boolean
+    benchmark_eligible?: boolean
+    benchmarkEligible?: boolean
+  }
+  evidenceStrength?: AlertTriageAgentContract['evidence_strength']
+  gaps?: AlertTriageAgentGap[]
+  false_positive_likelihood?: {
+    score?: number
+    label?: string
+    basis?: string[]
+  }
+  falsePositiveLikelihood?: AlertTriageAgentContract['false_positive_likelihood']
+  recommended_pivots?: AlertTriageAgentPivot[]
+  recommendedPivots?: AlertTriageAgentPivot[]
+  recommended_response?: string
+  recommendedResponse?: string
+  confidence?: number
+  generated_at?: string
+  generatedAt?: string
+}
+
+export interface AlertInvestigationContext {
+  state: 'ready' | 'partial' | 'unavailable'
+  summary: string
+  fields: Record<string, 'collected' | 'not_collected' | 'not_applicable'>
+  missing: string[]
+}
+
+export interface AlertInvestigationPivot {
+  type: 'process' | 'binary' | 'file' | 'network' | 'domain' | 'dns' | 'tls_sni' | 'remote_ip' | 'remote_endpoint' | 'ip' | 'url' | 'email' | 'hash' | 'file_path' | 'package' | 'app' | 'user' | 'device' | 'indicator'
+  label: string
+  value: string
+  source?: string
+  confidence?: number
+  remote_ip?: string
+  remoteIp?: string
+  remote_port?: string | number
+  remotePort?: string | number
+  latency_ms?: number
+  latencyMs?: number
+  ttd_ms?: number
+  ttdMs?: number
+}
+
+export interface AlertInvestigationTreeNode {
+  id: string
+  kind: 'process' | 'binary' | 'network' | 'file' | 'package' | 'device' | 'event'
+  label: string
+  detail?: string
+  source?: string
+  confidence?: number
+  children?: AlertInvestigationTreeNode[]
+}
+
+export interface AlertInvestigationMissingData {
+  field: string
+  reason: string
+  source?: string
+}
+
+export interface AlertInvestigationHuntQuery {
+  id?: string
+  label: string
+  family?: string
+  kind?: string
+  query: string
+  description?: string
+  pivot_type?: string
+  pivotType?: string
+  pivot_value?: string
+  pivotValue?: string
+  latency_ms?: number
+  latencyMs?: number
+  ttd_ms?: number
+  ttdMs?: number
+  latency_placeholder?: string
+  latencyPlaceholder?: string
+  ttd_placeholder?: string
+  ttdPlaceholder?: string
+  missing_data_explanation?: string
+  missingDataExplanation?: string
+}
+
+export interface AlertInvestigationConfidenceExplanation {
+  label?: string
+  summary?: string
+  factors?: string[]
+  reasons?: string[]
+  signals?: string[]
+}
+
+export interface AlertInvestigationStory {
+  summary?: string
+  confidence?: number
+  source?: string
+  pivots?: AlertInvestigationPivot[]
+  tree?: AlertInvestigationTreeNode[]
+  hunt_queries?: AlertInvestigationHuntQuery[]
+  huntQueries?: AlertInvestigationHuntQuery[]
+  confidence_explanation?: AlertInvestigationConfidenceExplanation
+  confidenceExplanation?: AlertInvestigationConfidenceExplanation
+  missing_data?: AlertInvestigationMissingData[]
+  missingData?: AlertInvestigationMissingData[]
+}
+
+export interface AppGuardReadinessSummary {
+  status?: 'ready' | 'degraded' | 'blocked' | 'unknown' | string
+  platform?: string
+  protected_app_registered?: boolean
+  recent_event_count?: number
+  runtime_signal_count?: number
+  runtime_signals?: string[]
+  gaps?: string[]
+  claim_boundary?: string
+  [key: string]: unknown
 }
 
 // Process chain node for alert process ancestry
@@ -162,7 +411,7 @@ export interface Alert {
   severity: 'critical' | 'high' | 'medium' | 'low'
   title: string
   description: string
-  status: 'new' | 'open' | 'investigating' | 'resolved' | 'false_positive'
+  status: 'new' | 'open' | 'acknowledged' | 'triaged' | 'investigating' | 'resolved' | 'false_positive' | 'closed'
   threatScore: number
   source?: string
   mitreTactics: string[]
@@ -170,15 +419,30 @@ export interface Alert {
   createdAt: string
   // Enhanced fields for correlation
   evidence?: Evidence
+  evidenceQuality?: AlertEvidenceQuality
+  evidence_quality?: AlertEvidenceQuality
+  triageAgent?: AlertTriageAgentContract
+  triage_agent?: AlertTriageAgentContract
+  investigationStory?: AlertInvestigationStory
+  investigation_story?: AlertInvestigationStory
   iocs?: AlertIOC[]
   processChain?: ProcessChainNode[]
   rawEvent?: Record<string, unknown>
+  raw_event?: Record<string, unknown>
   detectionMetadata?: {
     rule_name?: string
     rule_type?: string
     detection_type?: string
     confidence?: number
     matched_pattern?: string
+    alert_claim_strength?: string
+    alertClaimStrength?: string
+    fp_review_required?: boolean
+    fpReviewRequired?: boolean
+    correlation_ready?: boolean
+    correlationReady?: boolean
+    telemetry_quality?: Record<string, unknown>
+    telemetryQuality?: Record<string, unknown>
     policy_decision?: {
       action?: string
       severity?: string
@@ -205,6 +469,16 @@ export interface Alert {
       blockThreshold?: number
       responseIntent?: string
     }
+    investigation_enrichment?: Record<string, any>
+    [key: string]: any
+  }
+  enrichment?: {
+    auto_investigation?: Record<string, any>
+    [key: string]: any
+  }
+  app_guard?: {
+    readiness?: AppGuardReadinessSummary
+    [key: string]: unknown
   }
   contributingEvents?: string[]
   sourceEventId?: string

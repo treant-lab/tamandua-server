@@ -395,14 +395,8 @@ defmodule TamanduaServerWeb.API.V1.AISecurityController do
   end
 
   defp enforcement_summary(event) do
-    %{
-      requested: event.policy_enforced == true,
-      mode: "endpoint_action_bridge",
-      target_agent_id: event.agent_id,
-      inline_proxy: false
-    }
+    Enforcement.summarize_event(event)
   end
-
 
   @doc """
   Scan RAG context documents for poisoning attacks.
@@ -594,11 +588,12 @@ defmodule TamanduaServerWeb.API.V1.AISecurityController do
       classification: event.classification,
       verdict: event.verdict,
       trace_id: event.trace_id,
-      session_id: event.session_id
+      session_id: event.session_id,
+      enforcement: enforcement_summary(event)
     }
   end
 
-  defp parse_int(value, default) when is_integer(value), do: value
+  defp parse_int(value, _default) when is_integer(value), do: value
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int

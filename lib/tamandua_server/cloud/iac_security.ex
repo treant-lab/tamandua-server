@@ -32,7 +32,6 @@ defmodule TamanduaServer.Cloud.IacSecurity do
 
   require Logger
 
-  alias TamanduaServer.Cloud.Finding
 
   @type scan_result :: %{
           findings: [map()],
@@ -635,19 +634,21 @@ defmodule TamanduaServer.Cloud.IacSecurity do
   end
 
   # Secret Patterns
-  @secret_patterns [
-    {~r/(?i)(api[_-]?key|apikey)\s*[:=]\s*['"]?[a-z0-9_\-]{16,}['"]?/, "API Key"},
-    {~r/(?i)(secret[_-]?key|secretkey)\s*[:=]\s*['"]?[a-z0-9_\-]{16,}['"]?/, "Secret Key"},
-    {~r/(?i)aws[_-]?access[_-]?key[_-]?id\s*[:=]\s*['"]?AKIA[A-Z0-9]{16}['"]?/, "AWS Access Key"},
-    {~r/(?i)aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9\/+=]{40}['"]?/,
-     "AWS Secret Key"},
-    {~r/(?i)password\s*[:=]\s*['"][^'"]{8,}['"]/, "Password"},
-    {~r/-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----/, "Private Key"},
-    {~r/ghp_[a-zA-Z0-9]{36}/, "GitHub Personal Access Token"},
-    {~r/gho_[a-zA-Z0-9]{36}/, "GitHub OAuth Token"},
-    {~r/xox[baprs]-[0-9]{12}-[0-9]{12}-[a-zA-Z0-9]{24}/, "Slack Token"},
-    {~r/sk_live_[a-zA-Z0-9]{24,}/, "Stripe Live Key"}
-  ]
+  defp secret_patterns do
+    [
+      {~r/(?i)(api[_-]?key|apikey)\s*[:=]\s*['"]?[a-z0-9_\-]{16,}['"]?/, "API Key"},
+      {~r/(?i)(secret[_-]?key|secretkey)\s*[:=]\s*['"]?[a-z0-9_\-]{16,}['"]?/, "Secret Key"},
+      {~r/(?i)aws[_-]?access[_-]?key[_-]?id\s*[:=]\s*['"]?AKIA[A-Z0-9]{16}['"]?/, "AWS Access Key"},
+      {~r/(?i)aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9\/+=]{40}['"]?/,
+       "AWS Secret Key"},
+      {~r/(?i)password\s*[:=]\s*['"][^'"]{8,}['"]/, "Password"},
+      {~r/-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----/, "Private Key"},
+      {~r/ghp_[a-zA-Z0-9]{36}/, "GitHub Personal Access Token"},
+      {~r/gho_[a-zA-Z0-9]{36}/, "GitHub OAuth Token"},
+      {~r/xox[baprs]-[0-9]{12}-[0-9]{12}-[a-zA-Z0-9]{24}/, "Slack Token"},
+      {~r/sk_live_[a-zA-Z0-9]{24,}/, "Stripe Live Key"}
+    ]
+  end
 
   # ============================================================================
   # Public API
@@ -1013,7 +1014,7 @@ defmodule TamanduaServer.Cloud.IacSecurity do
   end
 
   defp detect_secrets(content, _iac_type) do
-    Enum.flat_map(@secret_patterns, fn {pattern, secret_type} ->
+    Enum.flat_map(secret_patterns(), fn {pattern, secret_type} ->
       if Regex.match?(pattern, content) do
         [
           %{
@@ -1167,7 +1168,7 @@ defmodule TamanduaServer.Cloud.IacSecurity do
     not is_nil(resource["extended_auditing_policy"])
   end
 
-  defp bucket_allows_public?(resource) do
+  defp bucket_allows_public?(_resource) do
     # Check for public IAM bindings
     false
   end

@@ -68,7 +68,6 @@ defmodule TamanduaServer.AI.CostGovernor do
   use GenServer
   require Logger
   alias Phoenix.PubSub
-  alias TamanduaServer.Detection.InferenceTracker
   alias TamanduaServer.Policies.ModelPolicy
   alias TamanduaServer.Response.Executor
 
@@ -77,7 +76,6 @@ defmodule TamanduaServer.AI.CostGovernor do
   @ets_inferences :ai_cost_inferences
 
   @cleanup_interval :timer.minutes(5)
-  @usage_window_seconds 3600  # 1 hour for rolling windows
 
   # Default model pricing per 1M tokens (USD)
   @default_pricing %{
@@ -711,7 +709,7 @@ defmodule TamanduaServer.AI.CostGovernor do
     end) || 0.0
 
     # Calculate last hour's cost
-    hour_ts = div(DateTime.to_unix(now), 3600) * 3600
+    _hour_ts = div(DateTime.to_unix(now), 3600) * 3600
     hourly_cost = Enum.reduce(usage.day_cost, 0.0, fn {_day, cost}, acc ->
       # Approximate hourly cost from daily window
       acc + cost / 24

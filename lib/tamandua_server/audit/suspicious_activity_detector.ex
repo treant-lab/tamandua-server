@@ -44,7 +44,7 @@ defmodule TamanduaServer.Audit.SuspiciousActivityDetector do
   end
 
   # Check for multiple failed login attempts
-  defp check_failed_logins(%AuditLog{action: "auth.login_failed", ip_address: ip} = log) do
+  defp check_failed_logins(%AuditLog{action: "auth.login_failed", ip_address: ip} = _log) do
     window_start = DateTime.add(DateTime.utc_now(), -@failed_login_window_minutes * 60, :second)
     
     count = Repo.one(

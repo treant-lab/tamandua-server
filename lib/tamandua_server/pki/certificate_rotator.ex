@@ -51,7 +51,6 @@ defmodule TamanduaServer.PKI.CertificateRotator do
   alias TamanduaServer.PKI.CertificateGenerator
   alias TamanduaServer.Agents
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Audit
   alias TamanduaServer.Repo
 
   @default_scan_interval_minutes 60
@@ -195,6 +194,30 @@ defmodule TamanduaServer.PKI.CertificateRotator do
     {:noreply, new_state}
   end
 
+  @impl true
+  def handle_info({:retry_renewal, agent_id, attempt}, state) do
+    Logger.info("Retrying certificate renewal", agent_id: agent_id, attempt: attempt)
+
+    case CertificateGenerator.renew_agent_cert(agent_id) do
+      {:ok, cert_pem, _key_pem} ->
+        Logger.info("Certificate renewed on retry", agent_id: agent_id, attempt: attempt)
+        notify_agent_cert_ready(agent_id, cert_pem)
+
+      {:error, reason} ->
+        Logger.warning("Renewal retry failed",
+          agent_id: agent_id,
+          attempt: attempt,
+          reason: inspect(reason)
+        )
+        # Schedule next retry
+        schedule_retry(agent_id, attempt + 1)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
   # Private Functions
 
   defp perform_scan(state) do
@@ -310,7 +333,7 @@ defmodule TamanduaServer.PKI.CertificateRotator do
     %{stats | expired: stats.expired + 1}
   end
 
-  defp handle_expiring_soon_certificate(agent, expiry, days_until_expiry, state, stats) do
+  defp handle_expiring_soon_certificate(agent, expiry, days_until_expiry, _state, stats) do
     Logger.info("Agent certificate expiring soon",
       agent_id: agent.id,
       days_until_expiry: days_until_expiry
@@ -335,7 +358,7 @@ defmodule TamanduaServer.PKI.CertificateRotator do
     end
   end
 
-  defp handle_renewal_needed(agent, expiry, state, stats) do
+  defp handle_renewal_needed(agent, expiry, _state, stats) do
     Logger.info("Certificate renewal needed",
       agent_id: agent.id,
       expiry: expiry
@@ -472,19 +495,10 @@ defmodule TamanduaServer.PKI.CertificateRotator do
   end
 
   defp parse_expiry_date(date_string) when is_binary(date_string) do
-    # Try parsing common date formats
-    formats = [
-      "{ASC}",  # OpenSSL default
-      "{ISO:Extended}",
-      "{RFC3339}"
-    ]
-
-    Enum.find_value(formats, {:error, :parse_failed}, fn format ->
-      case Timex.parse(date_string, format) do
-        {:ok, datetime} -> {:ok, datetime}
-        _ -> nil
-      end
-    end)
+    case TamanduaServer.DateTimeParser.parse_utc(date_string) do
+      {:ok, datetime} -> {:ok, datetime}
+      {:error, _} -> {:error, :parse_failed}
+    end
   end
 
   defp parse_expiry_date(%DateTime{} = datetime), do: {:ok, datetime}
@@ -516,28 +530,4 @@ defmodule TamanduaServer.PKI.CertificateRotator do
   defp schedule_scan(interval_ms) do
     Process.send_after(self(), :scan_certificates, interval_ms)
   end
-
-  @impl true
-  def handle_info({:retry_renewal, agent_id, attempt}, state) do
-    Logger.info("Retrying certificate renewal", agent_id: agent_id, attempt: attempt)
-
-    case CertificateGenerator.renew_agent_cert(agent_id) do
-      {:ok, cert_pem, _key_pem} ->
-        Logger.info("Certificate renewed on retry", agent_id: agent_id, attempt: attempt)
-        notify_agent_cert_ready(agent_id, cert_pem)
-
-      {:error, reason} ->
-        Logger.warning("Renewal retry failed",
-          agent_id: agent_id,
-          attempt: attempt,
-          reason: inspect(reason)
-        )
-        # Schedule next retry
-        schedule_retry(agent_id, attempt + 1)
-    end
-
-    {:noreply, state}
-  end
-
-  def handle_info(_msg, state), do: {:noreply, state}
 end

@@ -82,7 +82,7 @@ defmodule TamanduaServer.Agents.Certificates do
   - "other" - Other reason
   """
   def revoke_certificate(fingerprint, opts \\ []) do
-    with {:ok, cert} <- get_certificate_result(fingerprint),
+    with {:ok, _cert} <- get_certificate_result(fingerprint),
          :ok <- check_not_already_revoked(fingerprint),
          {:ok, revocation} <- CertificateManager.revoke_certificate(fingerprint, opts) do
       Logger.info("Certificate revoked: #{fingerprint}, reason: #{opts[:reason]}")

@@ -44,7 +44,6 @@ defmodule TamanduaServer.Repo.MultiTenant do
   - Connection pooling maintains isolation between requests
   """
 
-  import Ecto.Query
   alias TamanduaServer.Repo
 
   require Logger
@@ -75,14 +74,33 @@ defmodule TamanduaServer.Repo.MultiTenant do
       :ok
   """
   def put_organization_id(conn \\ nil, organization_id) when is_binary(organization_id) do
-    org_id_string = format_uuid(organization_id)
+    org_id_string = canonical_organization_id!(organization_id)
 
-    sql = "SET LOCAL app.current_organization_id = '#{org_id_string}'"
+    case Repo.get_organization_id() do
+      nil -> :ok
+      ^org_id_string -> :ok
+      _different -> raise ArgumentError, "nested organization context switch is not allowed"
+    end
 
-    case execute_sql(conn, sql) do
-      {:ok, _} ->
+    sql = """
+    SELECT CASE
+      WHEN NULLIF(current_setting('app.current_organization_id', TRUE), '') IS NULL
+        OR current_setting('app.current_organization_id', TRUE) = $1
+      THEN set_config('app.current_organization_id', $1, TRUE)
+      ELSE NULL
+    END
+    """
+
+    case execute_sql(conn, sql, [org_id_string]) do
+      {:ok, %{rows: [[^org_id_string]]}} ->
         Logger.debug("Set organization context to #{org_id_string}")
         :ok
+
+      {:ok, %{rows: [[nil]]}} ->
+        {:error, :nested_organization_context_switch}
+
+      {:ok, _unexpected} ->
+        {:error, :unexpected_tenant_context_result}
 
       {:error, reason} ->
         Logger.error("Failed to set organization context: #{inspect(reason)}")
@@ -102,16 +120,23 @@ defmodule TamanduaServer.Repo.MultiTenant do
       :ok
   """
   def clear_organization_id(conn \\ nil) do
-    sql = "SET LOCAL app.current_organization_id = NULL"
+    if Repo.get_organization_id() != nil do
+      {:error, :active_tenant_context}
+    else
+      sql = "SELECT set_config('app.current_organization_id', '', TRUE)"
 
-    case execute_sql(conn, sql) do
-      {:ok, _} ->
-        Logger.debug("Cleared organization context")
-        :ok
+      case execute_sql(conn, sql) do
+        {:ok, %{rows: [[""]]}} ->
+          Logger.debug("Cleared organization context")
+          :ok
 
-      {:error, reason} ->
-        Logger.error("Failed to clear organization context: #{inspect(reason)}")
-        {:error, reason}
+        {:ok, _unexpected} ->
+          {:error, :unexpected_tenant_context_result}
+
+        {:error, reason} ->
+          Logger.error("Failed to clear organization context: #{inspect(reason)}")
+          {:error, reason}
+      end
     end
   end
 
@@ -168,14 +193,69 @@ defmodule TamanduaServer.Repo.MultiTenant do
         Repo.all(Alert)
       end)
   """
-  def with_organization(organization_id, fun) when is_function(fun, 0) do
-    Repo.transaction(fn ->
-      put_organization_id(organization_id)
-      fun.()
-    end)
-    |> case do
-      {:ok, result} -> result
-      {:error, reason} -> raise "Transaction failed: #{inspect(reason)}"
+  def with_organization(organization_id, fun)
+      when is_binary(organization_id) and is_function(fun, 0) do
+    organization_id = canonical_organization_id!(organization_id)
+    previous_organization_id = Repo.get_organization_id()
+
+    if previous_organization_id != nil and previous_organization_id != organization_id do
+      raise ArgumentError, "nested organization context switch is not allowed"
+    end
+
+    Repo.put_organization_id(organization_id)
+
+    try do
+      Repo.transaction(fn ->
+        case put_organization_id(organization_id) do
+          :ok -> fun.()
+          {:error, reason} -> Repo.rollback({:tenant_context_unavailable, reason})
+        end
+      end)
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> raise "Transaction failed: #{inspect(reason)}"
+      end
+    after
+      case previous_organization_id do
+        nil -> Repo.clear_organization_id()
+        previous -> Repo.put_organization_id(previous)
+      end
+    end
+  end
+
+  @doc """
+  Executes an Ecto.Multi in one transaction with transaction-local tenant
+  context. This avoids nesting `Repo.transaction/1` inside
+  `with_organization/2` when a workflow must atomically combine RLS-scoped
+  writes with other resources such as an Oban job.
+  """
+  @spec transaction(String.t(), Ecto.Multi.t()) ::
+          {:ok, map()} | {:error, Ecto.Multi.name(), term(), map()}
+  def transaction(organization_id, %Ecto.Multi{} = multi) when is_binary(organization_id) do
+    organization_id = canonical_organization_id!(organization_id)
+    previous_organization_id = Repo.get_organization_id()
+
+    if previous_organization_id != nil and previous_organization_id != organization_id do
+      raise ArgumentError, "nested organization context switch is not allowed"
+    end
+
+    Repo.put_organization_id(organization_id)
+
+    try do
+      Ecto.Multi.new()
+      |> Ecto.Multi.run(:tenant_context, fn _repo, _changes ->
+        case put_organization_id(organization_id) do
+          :ok -> {:ok, organization_id}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+      |> Ecto.Multi.append(multi)
+      |> Repo.transaction()
+    after
+      case previous_organization_id do
+        nil -> Repo.clear_organization_id()
+        previous -> Repo.put_organization_id(previous)
+      end
     end
   end
 
@@ -369,14 +449,14 @@ defmodule TamanduaServer.Repo.MultiTenant do
 
   ## Private Functions
 
-  defp execute_sql(nil, sql), do: Repo.query(sql)
-  defp execute_sql(conn, sql), do: Ecto.Adapters.SQL.query(conn, sql)
+  defp execute_sql(conn, sql), do: execute_sql(conn, sql, [])
+  defp execute_sql(nil, sql, params), do: Repo.query(sql, params)
+  defp execute_sql(conn, sql, params), do: Ecto.Adapters.SQL.query(conn, sql, params)
 
-  defp format_uuid(uuid) when is_binary(uuid) do
-    # Normalize UUID to string format (handle both binary and string UUIDs)
+  defp canonical_organization_id!(uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
       {:ok, uuid_string} -> uuid_string
-      :error -> uuid
+      :error -> raise ArgumentError, "organization_id must be a valid UUID"
     end
   end
 

@@ -17,7 +17,7 @@ defmodule TamanduaServer.ASM.Discovery do
   use GenServer
   require Logger
 
-  alias TamanduaServer.ASM.{Exposure, RiskScoring, Monitor}
+  alias TamanduaServer.ASM.{Exposure, Monitor}
 
   # Discovery method types
   @discovery_methods [:dns_enum, :ct_logs, :shodan, :cloud, :passive_dns, :whois]
@@ -432,6 +432,34 @@ defmodule TamanduaServer.ASM.Discovery do
   end
 
   @impl true
+  def handle_cast({:store_asset, asset}, state) do
+    existing = case :ets.lookup(state.assets, asset.id) do
+      [{_, existing}] -> existing
+      [] -> nil
+    end
+
+    if existing do
+      # Update existing asset
+      updated = merge_asset(existing, asset)
+      :ets.insert(state.assets, {updated.id, updated})
+
+      # Check for changes
+      if asset_changed?(existing, updated) do
+        Monitor.notify_change(:asset_updated, updated, existing)
+      end
+    else
+      # New asset
+      :ets.insert(state.assets, {asset.id, asset})
+      Monitor.notify_change(:asset_discovered, asset, nil)
+
+      # Trigger exposure analysis for new assets
+      Exposure.analyze_asset(asset)
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:trigger_discovery, :domain, domain}, state) do
     Logger.info("Triggering domain discovery for: #{domain}")
 
@@ -514,34 +542,6 @@ defmodule TamanduaServer.ASM.Discovery do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
-
-  @impl true
-  def handle_cast({:store_asset, asset}, state) do
-    existing = case :ets.lookup(state.assets, asset.id) do
-      [{_, existing}] -> existing
-      [] -> nil
-    end
-
-    if existing do
-      # Update existing asset
-      updated = merge_asset(existing, asset)
-      :ets.insert(state.assets, {updated.id, updated})
-
-      # Check for changes
-      if asset_changed?(existing, updated) do
-        Monitor.notify_change(:asset_updated, updated, existing)
-      end
-    else
-      # New asset
-      :ets.insert(state.assets, {asset.id, asset})
-      Monitor.notify_change(:asset_discovered, asset, nil)
-
-      # Trigger exposure analysis for new assets
-      Exposure.analyze_asset(asset)
-    end
-
-    {:noreply, state}
-  end
 
   # ============================================================================
   # Discovery Functions
@@ -670,7 +670,7 @@ defmodule TamanduaServer.ASM.Discovery do
     end
   end
 
-  defp passive_dns_lookup(domain, config) do
+  defp passive_dns_lookup(domain, _config) do
     # Use passive DNS services for historical resolution data
     # This could integrate with services like SecurityTrails, Farsight, etc.
 

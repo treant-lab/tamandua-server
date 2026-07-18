@@ -109,7 +109,7 @@ defmodule TamanduaServer.CLIAuth do
       nil ->
         {:reply, {:error, :not_found}, state}
 
-      {device_code, %{status: :approved} = device} ->
+      {_device_code, %{status: :approved} = device} ->
         {:reply, device_status(device), state}
 
       {_device_code, %{status: :consumed}} ->

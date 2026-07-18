@@ -2,7 +2,6 @@ defmodule TamanduaServer.Repo.Migrations.AddEventsCreatedAtBenchmarkIndexes do
   use Ecto.Migration
 
   @disable_ddl_transaction true
-  @disable_migration_lock true
 
   def up do
     execute """

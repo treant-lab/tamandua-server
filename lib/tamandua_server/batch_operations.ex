@@ -15,14 +15,10 @@ defmodule TamanduaServer.BatchOperations do
 
   alias Ecto.Multi
   alias TamanduaServer.Repo
-  alias TamanduaServer.TenantScope
   alias TamanduaServer.Alerts
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Detection
   alias TamanduaServer.Detection.IOC
-  alias TamanduaServer.Agents
-  alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Response
   alias TamanduaServer.Workers.BatchJobWorker
   alias TamanduaServer.Connectors.Helpers.RateLimiter
 
@@ -619,7 +615,7 @@ defmodule TamanduaServer.BatchOperations do
         })
       rescue
         e ->
-          Logger.warn("[BatchOperations] Failed to log activity: #{inspect(e)}")
+          Logger.warning("[BatchOperations] Failed to log activity: #{inspect(e)}")
       end
     end)
   end

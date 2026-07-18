@@ -131,7 +131,7 @@ defmodule TamanduaServer.Reports.PDFGenerator do
     """
   end
 
-  defp build_styles(format) do
+  defp build_styles(_format) do
     """
     <style>
       @page {
@@ -731,7 +731,7 @@ defmodule TamanduaServer.Reports.PDFGenerator do
 
     score_html = if security_score do
       score_num = extract_numeric_score(security_score)
-      score_class = cond do
+      _score_class = cond do
         score_num >= 80 -> "success"
         score_num >= 60 -> "warning"
         true -> "danger"
@@ -1016,8 +1016,8 @@ defmodule TamanduaServer.Reports.PDFGenerator do
   # ============================================================================
 
   defp build_pdf_options(opts) do
-    page_size = Keyword.get(opts, :page_size, "A4")
-    orientation = Keyword.get(opts, :orientation, :portrait)
+    _page_size = Keyword.get(opts, :page_size, "A4")
+    _orientation = Keyword.get(opts, :orientation, :portrait)
 
     [
       print_to_pdf: %{

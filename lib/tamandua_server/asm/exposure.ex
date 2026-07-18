@@ -19,7 +19,7 @@ defmodule TamanduaServer.ASM.Exposure do
   use GenServer
   require Logger
 
-  alias TamanduaServer.ASM.{RiskScoring, Monitor}
+  alias TamanduaServer.ASM.{RiskScoring}
   alias TamanduaServer.Vulnerability
 
   # Well-known risky ports and services
@@ -898,7 +898,7 @@ defmodule TamanduaServer.ASM.Exposure do
 
   defp format_subject(_subject), do: "Unknown"
 
-  defp parse_utc_time(time) do
+  defp parse_utc_time(_time) do
     try do
       DateTime.utc_now() # Placeholder - would properly parse ASN.1 time
     catch
@@ -986,7 +986,7 @@ defmodule TamanduaServer.ASM.Exposure do
     end
   end
 
-  defp outdated_version?(service) do
+  defp outdated_version?(_service) do
     # Check if version is known to be outdated
     # This would integrate with vulnerability data in production
     false

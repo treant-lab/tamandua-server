@@ -196,7 +196,7 @@ defmodule TamanduaServer.Performance.QueryOptimizer do
     # Check for row estimate accuracy
     if plan["Plan Rows"] > 0 do
       estimate_ratio = plan["Actual Rows"] / plan["Plan Rows"]
-      warnings = if estimate_ratio > 10 or estimate_ratio < 0.1 do
+      _warnings = if estimate_ratio > 10 or estimate_ratio < 0.1 do
         ["Row estimate significantly off - consider running ANALYZE" | warnings]
       else
         warnings

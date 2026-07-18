@@ -14,9 +14,7 @@ defmodule TamanduaServer.Enrichment.GeoStats do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Alerts
   alias TamanduaServer.Alerts.Alert
-  alias TamanduaServer.Agents
   alias TamanduaServer.Enrichment.GeoIP
   alias TamanduaServer.Repo
 

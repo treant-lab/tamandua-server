@@ -565,7 +565,7 @@ defmodule TamanduaServer.Serverless.BehavioralBaseline do
     if duration && baseline.duration_mean && baseline.duration_std && baseline.duration_std > 0 do
       z_score = (duration - baseline.duration_mean) / baseline.duration_std
       if abs(z_score) > @anomaly_sensitivity do
-        anomalies = [create_anomaly(
+        _anomalies = [create_anomaly(
           execution_data,
           baseline,
           :duration,
@@ -582,7 +582,7 @@ defmodule TamanduaServer.Serverless.BehavioralBaseline do
     if memory && baseline.memory_mean && baseline.memory_std && baseline.memory_std > 0 do
       z_score = (memory - baseline.memory_mean) / baseline.memory_std
       if abs(z_score) > @anomaly_sensitivity do
-        anomalies = [create_anomaly(
+        _anomalies = [create_anomaly(
           execution_data,
           baseline,
           :memory,
@@ -603,7 +603,7 @@ defmodule TamanduaServer.Serverless.BehavioralBaseline do
     |> MapSet.difference(baseline.typical_outbound_hosts || MapSet.new())
 
     if MapSet.size(new_hosts) > 0 do
-      anomalies = [create_anomaly(
+      _anomalies = [create_anomaly(
         execution_data,
         baseline,
         :new_outbound_host,
@@ -622,7 +622,7 @@ defmodule TamanduaServer.Serverless.BehavioralBaseline do
     |> MapSet.difference(baseline.typical_outbound_ports || MapSet.new())
 
     if MapSet.size(new_ports) > 0 do
-      anomalies = [create_anomaly(
+      _anomalies = [create_anomaly(
         execution_data,
         baseline,
         :new_outbound_port,
@@ -639,7 +639,7 @@ defmodule TamanduaServer.Serverless.BehavioralBaseline do
     typical_hours = get_typical_hours(baseline.peak_hours || [])
 
     if typical_hours != [] && hour not in typical_hours do
-      anomalies = [create_anomaly(
+      _anomalies = [create_anomaly(
         execution_data,
         baseline,
         :unusual_time,

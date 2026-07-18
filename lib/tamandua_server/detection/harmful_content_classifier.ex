@@ -44,7 +44,8 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
   # Compiled Regex Patterns
   # ============================================================================
 
-  @violence_patterns [
+  defp violence_patterns do
+    [
     # Explicit threats
     ~r/\bi\s+will\s+kill\s+you\b/i,
     ~r/\bgoing\s+to\s+murder\b/i,
@@ -65,9 +66,11 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
     # Violence glorification
     ~r/\bviolence\s+is\s+(?:good|necessary|justified)\b/i,
     ~r/\bdeserve\s+to\s+(?:die|suffer)\b/i
-  ]
+    ]
+  end
 
-  @hate_speech_patterns [
+  defp hate_speech_patterns do
+    [
     # Discriminatory language (patterns, not specific slurs)
     ~r/\ball\s+\[?\w+\]?\s+(?:should|must)\s+(?:die|be\s+killed)\b/i,
     ~r/\b(?:inferior|subhuman)\s+(?:race|people|species)\b/i,
@@ -83,9 +86,11 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
     # Extremist rhetoric
     ~r/\bhate\s+all\s+\w+\b/i,
     ~r/\b(?:death|destruction)\s+to\s+(?:all\s+)?\w+\b/i
-  ]
+    ]
+  end
 
-  @self_harm_patterns [
+  defp self_harm_patterns do
+    [
     # Suicide discussion
     ~r/\bhow\s+to\s+(?:kill\s+myself|commit\s+suicide)\b/i,
     ~r/\bways\s+to\s+(?:end\s+(?:my\s+)?life|die)\b/i,
@@ -102,9 +107,11 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
     # Self-injury patterns
     ~r/\bcut(?:ting)?\s+(?:myself|yourself)\b/i,
     ~r/\bself[- ](?:harm|injury|mutilation)\s+(?:tips|methods)\b/i
-  ]
+    ]
+  end
 
-  @illegal_patterns [
+  defp illegal_patterns do
+    [
     # Drug manufacturing
     ~r/\bhow\s+to\s+(?:make|cook|synthesize)\s+(?:meth|cocaine|heroin|fentanyl)\b/i,
     ~r/\bmeth(?:amphetamine)?\s+(?:recipe|synthesis|cook)\b/i,
@@ -124,9 +131,11 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
     # Human trafficking
     ~r/\b(?:human|sex)\s+trafficking\b/i,
     ~r/\bchild\s+(?:exploitation|trafficking)\b/i
-  ]
+    ]
+  end
 
-  @explicit_patterns [
+  defp explicit_patterns do
+    [
     # Sexual content indicators
     ~r/\bexplicit\s+sexual\s+content\b/i,
     ~r/\bgraphic\s+sexual\s+(?:description|content)\b/i,
@@ -138,7 +147,8 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
     ~r/\bchild\s+(?:pornography|exploitation|abuse\s+material)\b/i,
     ~r/\bminor\s+sexual\b/i,
     ~r/\bunderage\s+(?:sex|nude|porn)\b/i
-  ]
+    ]
+  end
 
   # ============================================================================
   # Type Definitions
@@ -272,11 +282,11 @@ defmodule TamanduaServer.Detection.HarmfulContentClassifier do
   # ============================================================================
 
   defp match_regex_patterns(text) do
-    violence_matches = match_pattern_list(text, @violence_patterns, :violence)
-    hate_matches = match_pattern_list(text, @hate_speech_patterns, :hate_speech)
-    self_harm_matches = match_pattern_list(text, @self_harm_patterns, :self_harm)
-    illegal_matches = match_pattern_list(text, @illegal_patterns, :illegal)
-    explicit_matches = match_pattern_list(text, @explicit_patterns, :explicit)
+    violence_matches = match_pattern_list(text, violence_patterns(), :violence)
+    hate_matches = match_pattern_list(text, hate_speech_patterns(), :hate_speech)
+    self_harm_matches = match_pattern_list(text, self_harm_patterns(), :self_harm)
+    illegal_matches = match_pattern_list(text, illegal_patterns(), :illegal)
+    explicit_matches = match_pattern_list(text, explicit_patterns(), :explicit)
 
     all_matches =
       violence_matches ++ hate_matches ++ self_harm_matches ++

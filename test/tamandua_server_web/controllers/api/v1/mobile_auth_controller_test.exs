@@ -42,6 +42,18 @@ defmodule TamanduaServerWeb.API.V1.MobileAuthControllerTest do
       assert %{"message" => "Invalid email or password"} = json_response(conn, 401)
     end
 
+    test "returns 401 instead of 500 for malformed password hashes", %{conn: conn} do
+      user = insert(:user, email: "mobile-bad-hash@example.com", password_hash: "legacy-bad-hash")
+
+      conn =
+        post(conn, "/api/v1/auth/login", %{
+          "email" => user.email,
+          "password" => "password123"
+        })
+
+      assert %{"message" => "Invalid email or password"} = json_response(conn, 401)
+    end
+
     test "returns 400 for malformed login request", %{conn: conn} do
       conn = post(conn, "/api/v1/auth/login", %{"email" => "missing-password@example.com"})
 

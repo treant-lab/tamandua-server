@@ -10,9 +10,7 @@ defmodule TamanduaServer.Hunting.QueryScheduler do
   alias TamanduaServer.Repo
   alias TamanduaServer.Hunting.{
     QuerySchedule,
-    QueryResultHistory,
-    QueryParameterValue,
-    SavedQuery
+    QueryResultHistory
   }
   alias TamanduaServer.Hunting.SavedQueries
   alias TamanduaServer.Notifications
@@ -158,7 +156,11 @@ defmodule TamanduaServer.Hunting.QueryScheduler do
       query_text = apply_parameters(schedule.saved_query.query, schedule.parameter_values)
 
       # Execute query
-      result = SavedQueries.execute_query(query_text, user_id: schedule.user_id)
+      result =
+        SavedQueries.execute_query(query_text,
+          user_id: schedule.user_id,
+          organization_id: schedule.organization_id
+        )
 
       execution_time = System.monotonic_time(:millisecond) - start_time
 

@@ -160,7 +160,7 @@ defmodule TamanduaServer.Detection.YaraGenerator do
         }
         {:reply, {:ok, rule}, new_state}
 
-      {:skip, reason} = skip ->
+      {:skip, _reason} = skip ->
         new_state = %{state | rules_skipped: state.rules_skipped + 1}
         {:reply, skip, new_state}
 

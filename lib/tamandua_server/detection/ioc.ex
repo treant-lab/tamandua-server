@@ -47,6 +47,9 @@ defmodule TamanduaServer.Detection.IOC do
     |> validate_inclusion(:type, ["hash_md5", "hash_sha256", "hash_sha1", "ip", "domain", "url", "email", "filename"])
     |> validate_inclusion(:severity, ["low", "medium", "high", "critical"])
     |> validate_number(:confidence, greater_than_or_equal_to: 0.0, less_than_or_equal_to: 1.0)
-    |> unique_constraint([:type, :value])
+    |> unique_constraint([:type, :value], name: :iocs_global_type_value_unique_index)
+    |> unique_constraint([:type, :value, :organization_id],
+      name: :iocs_type_value_organization_id_index
+    )
   end
 end

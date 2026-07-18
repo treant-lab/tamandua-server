@@ -27,11 +27,21 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   require Logger
 
   alias TamanduaServer.Agents
-  alias TamanduaServer.Agents.Registry, as: AgentRegistry
-  alias TamanduaServer.Agents.Worker
+  alias TamanduaServer.Agents.{Agent, CommandManager, Registry}
+  alias TamanduaServer.AuditLog
   alias TamanduaServer.LiveResponse.SessionManager
   alias TamanduaServer.LiveResponse.CommandExecutor
-  alias TamanduaServer.LiveResponse.AuditLogger
+
+  alias TamanduaServer.LiveResponse.{
+    ScreenCapture,
+    ScreenCaptureAdmission,
+    ScreenCaptureArtifacts,
+    ScreenCapturePolicy
+  }
+
+  alias TamanduaServer.Mobile.{DeviceV2, MDMCommand}
+  alias TamanduaServer.Repo
+  alias TamanduaServer.Repo.MultiTenant
   alias TamanduaServer.Forensics.Collector
 
   action_fallback(TamanduaServerWeb.FallbackController)
@@ -192,13 +202,21 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   - status: Filter by status (optional)
   """
   def list_sessions(conn, params) do
+    organization_id = get_current_organization_id(conn)
+    supervise? = supervise_live_response?(conn)
+
     opts =
       []
       |> maybe_add_opt(:agent_id, Map.get(params, "agent_id"))
-      |> maybe_add_opt(:user_id, Map.get(params, "user_id"))
+      |> maybe_add_opt(
+        :user_id,
+        if(supervise?, do: Map.get(params, "user_id"), else: get_current_user_id(conn))
+      )
       |> maybe_add_opt(:status, parse_status(Map.get(params, "status")))
+      |> maybe_add_opt(:organization_id, organization_id)
 
-    sessions = SessionManager.list_sessions(opts)
+    sessions =
+      if is_nil(organization_id), do: [], else: SessionManager.list_sessions(opts)
 
     json(conn, %{
       data: Enum.map(sessions, &format_session/1),
@@ -212,7 +230,7 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   GET /api/v1/live-response/sessions/:id
   """
   def show_session(conn, %{"id" => session_id}) do
-    case SessionManager.get_session(session_id) do
+    case authorize_session_access(conn, session_id) do
       {:ok, session} ->
         json(conn, %{data: format_session_detail(session)})
 
@@ -232,20 +250,26 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   def terminate_session(conn, %{"id" => session_id} = params) do
     reason = Map.get(params, "reason", "user_requested")
 
-    case SessionManager.close_session(session_id, reason) do
-      {:ok, session} ->
-        json(conn, %{
-          data: format_session(session),
-          message: "Session closed"
-        })
+    case authorize_session_access(conn, session_id) do
+      {:ok, _session} ->
+        case SessionManager.close_session(session_id, reason) do
+          {:ok, session} ->
+            json(conn, %{
+              data: format_session(session),
+              message: "Session closed"
+            })
 
-      {:error, :session_not_found} ->
+          {:error, :session_not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "Session not found"})
+
+          {:error, close_reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: to_string(close_reason)})
+        end
+
+      {:error, :not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "Session not found"})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
     end
   end
 
@@ -255,8 +279,10 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   GET /api/v1/live-response/sessions/:id/history
   """
   def session_command_history(conn, %{"id" => session_id}) do
-    case SessionManager.get_session_history(session_id) do
-      {:ok, history} ->
+    case authorize_session_access(conn, session_id) do
+      {:ok, session} ->
+        history = session.command_history
+
         json(conn, %{
           data: %{
             session_id: session_id,
@@ -276,8 +302,9 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
   GET /api/v1/live-response/sessions/:id/recording
   """
   def session_recording(conn, %{"id" => session_id}) do
-    case SessionManager.get_session_recording(session_id) do
-      {:ok, recording} ->
+    case authorize_session_access(conn, session_id) do
+      {:ok, _session} ->
+        {:ok, recording} = SessionManager.get_session_recording(session_id)
         json(conn, %{data: format_recording(recording)})
 
       {:error, :not_found} ->
@@ -310,7 +337,10 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
 
     case CommandExecutor.execute(session_id, command, args,
            timeout: timeout,
-           user_role: user_role
+           user_role: user_role,
+           organization_id: get_current_organization_id(conn),
+           user_id: get_current_user_id(conn),
+           supervise: supervise_live_response?(conn)
          ) do
       {:ok, result} ->
         json(conn, %{
@@ -346,6 +376,9 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
         |> json(%{error: "Insufficient permissions for this command"})
 
       {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Session not found"})
+
+      {:error, :unauthorized} ->
         conn |> put_status(:not_found) |> json(%{error: "Session not found"})
 
       {:error, :timeout} ->
@@ -662,6 +695,560 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
     end
   end
 
+  @doc """
+  Queue an audited, single-frame endpoint screen capture.
+
+  POST /api/v1/live-response/:agent_id/screen-capture
+
+  Requires `reason`, never returns or logs image bytes, and does not enable
+  continuous viewing or remote input.
+  """
+  def screen_capture(conn, %{"agent_id" => agent_id} = params) do
+    user = conn.assigns[:current_user]
+    org_id = get_current_organization_id(conn)
+
+    with :ok <- authorize_screen_capture(user),
+         {:ok, request} <- ScreenCapture.validate_request(params),
+         {:ok, agent} <- Agents.get_agent_for_org(org_id, agent_id),
+         policy <- ScreenCapturePolicy.resolve(agent_id),
+         policy <- ScreenCapturePolicy.for_command(policy, request.ttl_seconds),
+         :ok <- require_screen_capture_policy(policy, request),
+         {:ok, delivery} <- screen_capture_delivery(agent, org_id),
+         :ok <- ScreenCaptureAdmission.authorize(agent, org_id, delivery, policy),
+         capability <- ScreenCapture.capability_state(agent.os_type, delivery.capabilities),
+         :ok <- require_screen_capture_capability(capability),
+         {:ok, command, artifact} <-
+           create_and_queue_screen_capture(
+             org_id,
+             agent_id,
+             request,
+             capability,
+             policy,
+             delivery
+           ) do
+      audit_screen_capture(conn, command.id, agent_id, request, capability, policy, "queued")
+
+      conn
+      |> put_status(:accepted)
+      |> json(%{
+        data:
+          ScreenCapture.response(%{
+            command_id: command.id,
+            status: "queued",
+            capability_state: capability.state,
+            consent_required: capability.consent_required,
+            consent_model: Map.get(capability, :consent_model),
+            capture_coverage: Map.get(capability, :capture_coverage),
+            policy_mode: policy.mode,
+            notify_timing: policy.notify_timing,
+            policy: policy.policy,
+            display: request.display,
+            scope: request.scope,
+            monitor_id: request.monitor_id,
+            watermark: request.watermark,
+            redaction_count: length(request.redactions),
+            expires_at: format_datetime(artifact.expires_at),
+            artifact: %{
+              id: artifact.id,
+              status: artifact.status,
+              mime: artifact.mime,
+              size: artifact.size,
+              sha256: artifact.sha256,
+              captured_at: nil,
+              display: artifact.display,
+              expires_at: format_datetime(artifact.expires_at),
+              uploaded_at: nil,
+              content_url: nil,
+              status_url: "/api/v1/live-response/#{agent_id}/screen-captures/#{artifact.id}"
+            }
+          })
+      })
+    else
+      {:error, :unauthorized} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Insufficient permissions"})
+
+      {:error, :reason_required} ->
+        invalid_screen_capture_request(conn, "reason is required")
+
+      {:error, :reason_too_long} ->
+        invalid_screen_capture_request(conn, "reason must be at most 500 bytes")
+
+      {:error, :invalid_ttl_seconds} ->
+        invalid_screen_capture_request(conn, "ttl_seconds must be between 60 and 900")
+
+      {:error, :invalid_display} ->
+        invalid_screen_capture_request(
+          conn,
+          "display must be all for the initial virtual-desktop capture"
+        )
+
+      {:error, :invalid_scope} ->
+        invalid_screen_capture_request(
+          conn,
+          "scope must be virtual_desktop, monitor, or active_window"
+        )
+
+      {:error, :invalid_monitor_id} ->
+        invalid_screen_capture_request(
+          conn,
+          "monitor_id is required only for monitor scope and must be at most 128 bytes"
+        )
+
+      {:error, :invalid_watermark} ->
+        invalid_screen_capture_request(conn, "watermark must be a boolean")
+
+      {:error, :invalid_redactions} ->
+        invalid_screen_capture_request(
+          conn,
+          "redactions must contain at most 32 in-bounds basis-point rectangles"
+        )
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
+
+      {:error, :agent_not_found} ->
+        conn |> put_status(:service_unavailable) |> json(%{error: "Agent is offline"})
+
+      {:error, :runtime_tenant_mismatch} ->
+        conn |> put_status(:not_found) |> json(%{error: "Agent not found"})
+
+      {:error, :mobile_command_device_not_found} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "Mobile command device is not linked",
+          detail: "Re-enroll or sync the mobile endpoint before requesting screen capture"
+        })
+
+      {:error, {:screen_capture_admission_denied, reason}} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "Screen capture policy hash contract is not negotiated",
+          code: "screen_capture_policy_hash_contract_not_negotiated",
+          reason: to_string(reason)
+        })
+
+      {:error, {:policy_denied, policy}} ->
+        audit_screen_capture_policy_denied(
+          conn,
+          agent_id,
+          safe_audit_request(params),
+          policy
+        )
+
+        conn
+        |> put_status(:forbidden)
+        |> json(%{
+          error: "Screen capture is disabled by effective agent policy",
+          data: %{
+            status: "policy_denied",
+            policy_mode: policy.mode,
+            notify_timing: policy.notify_timing,
+            policy: policy.policy,
+            denial_reason: Map.get(policy, :denial_reason),
+            continuous: false,
+            input_control: false
+          }
+        })
+
+      {:error, :unsafe_screen_capture_upload_url} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          error:
+            "Screen capture upload URL is not safely configured; set an HTTPS TAMANDUA_SCREEN_CAPTURE_UPLOAD_BASE_URL"
+        })
+
+      {:error, {:unsupported, capability}} ->
+        policy = ScreenCapturePolicy.resolve(agent_id)
+
+        audit_screen_capture(
+          conn,
+          nil,
+          agent_id,
+          safe_audit_request(params),
+          capability,
+          policy,
+          "unsupported"
+        )
+
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          data:
+            ScreenCapture.response(%{
+              status: "unsupported",
+              capability_state: capability.state,
+              consent_required: capability.consent_required,
+              consent_model: Map.get(capability, :consent_model),
+              capture_coverage: Map.get(capability, :capture_coverage),
+              unsupported_reason: capability.unsupported_reason,
+              display: Map.get(params, "display", "all")
+            })
+        })
+
+      {:error, %Ecto.Changeset{}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Screen capture command rejected"})
+
+      {:error, reason} ->
+        Logger.error(
+          "Screen capture command queue failed agent=#{agent_id} reason=#{inspect(reason)}"
+        )
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "Unable to queue screen capture"})
+    end
+  end
+
+  defp authorize_screen_capture(nil), do: {:error, :unauthorized}
+
+  defp authorize_screen_capture(user) do
+    if safe_rbac_can?(user, :live_response_screen), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp verify_runtime_tenant(runtime, organization_id) do
+    if Registry.same_canonical_organization_id?(runtime[:organization_id], organization_id) do
+      :ok
+    else
+      {:error, :runtime_tenant_mismatch}
+    end
+  end
+
+  defp require_screen_capture_capability(%{state: "unsupported"} = capability),
+    do: {:error, {:unsupported, capability}}
+
+  defp require_screen_capture_capability(_capability), do: :ok
+
+  defp require_screen_capture_policy(%{mode: "disabled"} = policy, _request),
+    do: {:error, {:policy_denied, policy}}
+
+  defp require_screen_capture_policy(%{mode: mode} = policy, request)
+       when mode in ["silent", "notify", "consent_required"] do
+    cond do
+      not ScreenCapturePolicy.usable?(policy) ->
+        {:error, {:policy_denied, Map.put(policy, :denial_reason, "policy_evidence_unusable")}}
+
+      request.scope not in policy.allowed_scopes ->
+        {:error, {:policy_denied, Map.put(policy, :denial_reason, "scope_not_allowed")}}
+
+      policy.redaction_required and request.redactions == [] ->
+        {:error, {:policy_denied, Map.put(policy, :denial_reason, "redaction_required")}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp require_screen_capture_policy(policy, _request),
+    do: {:error, {:policy_denied, policy}}
+
+  defp create_and_queue_screen_capture(
+         organization_id,
+         agent_id,
+         request,
+         capability,
+         policy,
+         delivery
+       ) do
+    with {:ok, upload_base_url} <- ScreenCaptureArtifacts.upload_base_url(),
+         {:ok, artifact, upload_token} <-
+           ScreenCaptureArtifacts.create(organization_id, agent_id, request.ttl_seconds) do
+      upload = %{
+        url:
+          upload_base_url <>
+            "/api/v1/agent-artifacts/screen-captures/#{artifact.id}",
+        token: upload_token,
+        method: "PUT",
+        content_type: ScreenCaptureArtifacts.allowed_mime(),
+        max_bytes: ScreenCaptureArtifacts.max_bytes(),
+        expires_at: format_datetime(artifact.expires_at)
+      }
+
+      case queue_screen_capture(
+             agent_id,
+             request,
+             capability,
+             policy,
+             artifact.id,
+             upload,
+             delivery
+           ) do
+        {:ok, command} ->
+          case attach_screen_capture_command(artifact, command, delivery) do
+            {:ok, attached_artifact} ->
+              {:ok, command, attached_artifact}
+
+            {:error, reason} ->
+              cancel_screen_capture_command(command, delivery)
+
+              ScreenCaptureArtifacts.scrub_command_credential(
+                artifact.organization_id,
+                command.id
+              )
+
+              ScreenCaptureArtifacts.mark_failed(artifact, "command_attachment_failed")
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          ScreenCaptureArtifacts.mark_failed(artifact, "command_queue_failed")
+          {:error, reason}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp queue_screen_capture(
+         agent_id,
+         request,
+         capability,
+         policy,
+         artifact_id,
+         upload,
+         delivery
+       ) do
+    command_params = %{
+      schema_version: ScreenCapture.schema_version(),
+      reason: request.reason,
+      display: request.display,
+      scope: request.scope,
+      monitor_id: request.monitor_id,
+      watermark: request.watermark,
+      redactions: request.redactions,
+      artifact_id: artifact_id,
+      upload: upload,
+      expires_at: upload.expires_at,
+      nonce: Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
+      consent_required: capability.consent_required,
+      policy_mode: policy.mode,
+      notify_timing: policy.notify_timing,
+      policy: policy.policy,
+      continuous: false,
+      input_control: false,
+      result_contract: %{
+        schema_version: ScreenCapture.schema_version(),
+        status: "completed|failed|unsupported",
+        capability_state: "supported|consent_required|unsupported",
+        consent_model: "policy|os_permission|portal_prompt|user_prompt|user_initiated",
+        capture_coverage: "platform-reported bounded screen coverage",
+        captured_at: "RFC3339 timestamp or null",
+        display: "all (full virtual desktop)",
+        scope: "virtual_desktop|monitor|active_window",
+        monitor_id: "stable native display identifier or null",
+        watermark: "true when the fixed local product/time watermark was applied",
+        redactions: "validated basis-point rectangles applied before upload",
+        mime: "image/png",
+        sha256: "lowercase hex digest",
+        size: "non-negative byte count",
+        artifact: %{
+          id: artifact_id,
+          storage: "server artifact upload only; no filesystem path"
+        },
+        unsupported_reason: "stable reason code or null",
+        continuous: false,
+        input_control: false,
+        policy: %{
+          id: "effective policy evidence id",
+          version: "policy evidence version",
+          mode: "silent|notify|consent_required|disabled",
+          notify_timing: "before_capture|after_capture|null",
+          hash: "sha256 of canonical normalized policy",
+          hash_algorithm:
+            "screen_capture_policy_hash_sha256_lexical_v2 for multi-scope policy evidence",
+          issued_at_ms: "unix epoch milliseconds",
+          expires_at_ms: "unix epoch milliseconds; no later than command TTL"
+        }
+      }
+    }
+
+    case delivery do
+      %{kind: :mobile, device: %DeviceV2{} = device} ->
+        MultiTenant.with_organization(device.organization_id, fn ->
+          %MDMCommand{}
+          |> MDMCommand.changeset(%{
+            command_type: "screen_capture",
+            device_id: device.id,
+            organization_id: device.organization_id,
+            requested_by: "live_response:#{agent_id}",
+            status: "pending",
+            payload: command_params
+          })
+          |> Repo.insert()
+        end)
+
+      _desktop ->
+        CommandManager.queue_command(agent_id, :screen_capture, command_params,
+          priority: 2,
+          timeout: request.ttl_seconds
+        )
+    end
+  end
+
+  defp cancel_screen_capture_command(%MDMCommand{} = command, %{kind: :mobile}) do
+    Repo.delete(command)
+    :ok
+  end
+
+  defp cancel_screen_capture_command(command, _delivery) do
+    CommandManager.cancel_command(command.id)
+  end
+
+  defp attach_screen_capture_command(artifact, %MDMCommand{} = command, %{kind: :mobile}),
+    do: ScreenCaptureArtifacts.attach_mobile_command(artifact, command.id)
+
+  defp attach_screen_capture_command(artifact, command, _delivery),
+    do: ScreenCaptureArtifacts.attach_command(artifact, command.id)
+
+  defp screen_capture_delivery(%Agent{} = agent, organization_id) do
+    if mobile_os?(agent.os_type) do
+      device =
+        MultiTenant.with_organization(organization_id, fn ->
+          Repo.get_by(DeviceV2,
+            organization_id: organization_id,
+            device_id: agent.machine_id
+          )
+        end)
+
+      case device do
+        %DeviceV2{} = device ->
+          {:ok,
+           %{
+             kind: :mobile,
+             device: device,
+             capabilities: mobile_screen_capture_capabilities(agent.config)
+           }}
+
+        nil ->
+          {:error, :mobile_command_device_not_found}
+      end
+    else
+      with {:ok, runtime} <- Registry.get(agent.id),
+           :ok <- verify_runtime_tenant(runtime, organization_id) do
+        {:ok,
+         %{
+           kind: :desktop,
+           capabilities: runtime[:capabilities] || [],
+           runtime_snapshot: runtime[:runtime_snapshot]
+         }}
+      end
+    end
+  end
+
+  defp mobile_os?(os_type) do
+    normalized =
+      os_type
+      |> to_string()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]/, "")
+
+    normalized in ["android", "ios", "iphone", "ipad", "ipados"]
+  end
+
+  defp mobile_screen_capture_capabilities(config) when is_map(config) do
+    capabilities = config["capabilities"] || config[:capabilities] || %{}
+    capture = capabilities["screen_capture"] || capabilities[:screen_capture]
+
+    if mobile_capture_available?(capture),
+      do: ["screen_capture", "screen_capture_consent_required"],
+      else: []
+  end
+
+  defp mobile_screen_capture_capabilities(_config), do: []
+  defp mobile_capture_available?(true), do: true
+
+  defp mobile_capture_available?(capture) when is_map(capture) do
+    capture["available"] == true || capture[:available] == true ||
+      capture["native_method_available"] == true || capture[:native_method_available] == true
+  end
+
+  defp mobile_capture_available?(_capture), do: false
+
+  defp invalid_screen_capture_request(conn, message) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: message})
+  end
+
+  defp safe_audit_request(params) do
+    %{
+      reason: params["reason"] |> to_string() |> String.slice(0, 500),
+      display: Map.get(params, "display", "all"),
+      scope: Map.get(params, "scope", "virtual_desktop"),
+      monitor_id: Map.get(params, "monitor_id"),
+      watermark: Map.get(params, "watermark", false),
+      redaction_count:
+        if(is_list(Map.get(params, "redactions")),
+          do: length(Map.get(params, "redactions")),
+          else: 0
+        ),
+      ttl_seconds: Map.get(params, "ttl_seconds", ScreenCapture.default_ttl_seconds())
+    }
+  end
+
+  defp audit_screen_capture(conn, command_id, agent_id, request, capability, policy, status) do
+    user = conn.assigns[:current_user]
+
+    AuditLog.log(%{
+      user_id: user && live_response_user_id(user),
+      user_email: user && user.email,
+      action: "screen_capture_request",
+      action_type: "live_response",
+      resource_type: "agent",
+      resource_id: agent_id,
+      severity: :warning,
+      organization_id: get_current_organization_id(conn),
+      details: %{
+        command_id: command_id,
+        status: status,
+        reason: request[:reason],
+        display: request[:display],
+        scope: request[:scope],
+        monitor_id: request[:monitor_id],
+        watermark: request[:watermark],
+        redaction_count: length(request[:redactions] || []),
+        ttl_seconds: request[:ttl_seconds],
+        capability_state: capability.state,
+        consent_required: capability.consent_required,
+        unsupported_reason: capability.unsupported_reason,
+        policy_mode: policy.mode,
+        notify_timing: policy.notify_timing,
+        policy: policy.policy,
+        continuous: false,
+        input_control: false
+      }
+    })
+  end
+
+  defp audit_screen_capture_policy_denied(conn, agent_id, request, policy) do
+    user = conn.assigns[:current_user]
+
+    AuditLog.log(%{
+      user_id: user && live_response_user_id(user),
+      user_email: user && user.email,
+      action: "screen_capture_request",
+      action_type: "live_response",
+      resource_type: "agent",
+      resource_id: agent_id,
+      severity: :warning,
+      organization_id: get_current_organization_id(conn),
+      details: %{
+        command_id: nil,
+        status: "policy_denied",
+        reason: request[:reason],
+        display: request[:display],
+        ttl_seconds: request[:ttl_seconds],
+        policy_mode: policy.mode,
+        notify_timing: policy.notify_timing,
+        policy: policy.policy,
+        continuous: false,
+        input_control: false
+      }
+    })
+  end
+
   # ============================================================================
   # Private - Remote Command Execution
   # ============================================================================
@@ -681,6 +1268,22 @@ defmodule TamanduaServerWeb.API.V1.LiveResponseController do
     # Try multiple sources for organization_id
     conn.assigns[:current_organization_id] ||
       live_response_user_org_id(conn.assigns[:current_user])
+  end
+
+  defp authorize_session_access(conn, session_id) do
+    case SessionManager.get_session_for_access(
+           session_id,
+           get_current_organization_id(conn),
+           get_current_user_id(conn),
+           supervise_live_response?(conn)
+         ) do
+      {:ok, session} -> {:ok, session}
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
+  defp supervise_live_response?(conn) do
+    safe_rbac_can?(conn.assigns[:current_user], :live_response_admin)
   end
 
   defp verify_live_response_user(nil), do: {:error, :unauthorized}

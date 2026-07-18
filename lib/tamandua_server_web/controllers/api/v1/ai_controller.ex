@@ -242,20 +242,20 @@ defmodule TamanduaServerWeb.API.V1.AIController do
       result = try do
         run_chat_query(conn, message, context, conversation_id)
       rescue
-        e ->
-          Logger.warning("AI chat query failed: #{Exception.message(e)}")
-          {:error, Exception.message(e)}
+        error ->
+          Logger.warning("AI chat query failed", error_type: inspect(error.__struct__))
+          {:error, :query_failed}
       catch
-        kind, reason ->
-          Logger.warning("AI chat query crashed: #{kind} #{inspect(reason)}")
-          {:error, reason}
+        kind, _reason ->
+          Logger.warning("AI chat query crashed", failure_kind: kind)
+          {:error, :query_failed}
       end
 
       response_message =
         case result do
           {:ok, data} when is_map(data) -> data[:message] || data[:summary] || inspect(data)
           {:ok, text} when is_binary(text) -> text
-          {:error, reason} -> "I encountered an issue: #{inspect(reason)}"
+          {:error, _reason} -> "I encountered an issue while processing the scoped query."
           _ -> "I'm processing your request."
         end
         |> localize_assistant_message(response_language)
@@ -270,8 +270,8 @@ defmodule TamanduaServerWeb.API.V1.AIController do
               _ -> []
             end
           catch
-            kind, reason ->
-              Logger.warning("AI chat conversation lookup failed: #{kind} #{inspect(reason)}")
+            kind, _reason ->
+              Logger.warning("AI chat conversation lookup failed", failure_kind: kind)
               []
           end
       end
@@ -295,25 +295,31 @@ defmodule TamanduaServerWeb.API.V1.AIController do
             {:ok, conv} ->
               conv.id
 
-            {:error, reason} ->
-              Logger.warning("AI chat conversation persistence failed: #{inspect(reason)}")
+            {:error, _reason} ->
+              Logger.warning("AI chat conversation persistence failed")
               conversation_id
           end
         catch
-          kind, reason ->
-            Logger.warning("AI chat conversation persistence crashed: #{kind} #{inspect(reason)}")
+          kind, _reason ->
+            Logger.warning("AI chat conversation persistence crashed", failure_kind: kind)
             conversation_id
         end
 
+      suggested_actions =
+        result
+        |> chat_suggestions_from_result(message)
+        |> localize_suggested_actions(response_language)
+
       json(conn, %{
-        data: %{
-          message: response_message,
-          conversation_id: saved_conversation_id,
-          suggested_actions:
-            result
-            |> chat_suggestions_from_result(message)
-            |> localize_suggested_actions(response_language)
-        }
+        data:
+          Map.merge(
+            %{
+              message: response_message,
+              conversation_id: saved_conversation_id,
+              suggested_actions: suggested_actions
+            },
+            chat_structured_fields(result, suggested_actions)
+          )
       })
     end
   end
@@ -333,8 +339,8 @@ defmodule TamanduaServerWeb.API.V1.AIController do
       try do
         ConversationStore.list_conversations(user_id)
       catch
-        kind, reason ->
-          Logger.warning("AI conversation list failed: #{kind} #{inspect(reason)}")
+        kind, _reason ->
+          Logger.warning("AI conversation list failed", failure_kind: kind)
           []
       end
 
@@ -461,7 +467,6 @@ defmodule TamanduaServerWeb.API.V1.AIController do
   end
 
   @alert_id_regex ~r/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
-
   defp run_chat_query(conn, message, context, conversation_id) do
     organization_id = current_organization_id(conn)
     user_id = get_user_id(conn)
@@ -472,6 +477,14 @@ defmodule TamanduaServerWeb.API.V1.AIController do
     alert_id = explicit_alert_id || active_alert_id_from_messages(messages, organization_id)
 
     cond do
+      QueryInterface.focused_query?(message) ->
+        opts =
+          conn
+          |> query_context_opts(context)
+          |> maybe_put_query_option(:alert_id, alert_id)
+
+        {:ok, QueryInterface.process_query(message, opts)}
+
       length(contextual_alert_ids) > 1 and multi_alert_summary_intent?(lower) ->
         summarize_context_alerts(contextual_alert_ids, organization_id)
 
@@ -1254,6 +1267,18 @@ defmodule TamanduaServerWeb.API.V1.AIController do
 
   defp chat_suggestions_from_result(_, query), do: build_chat_suggestions(query)
 
+  defp chat_structured_fields({:ok, data}, suggested_actions) when is_map(data) do
+    %{
+      status: data[:status] || data["status"] || :completed,
+      tool_results: data[:tool_results] || data["tool_results"] || [],
+      actions: data[:actions] || data["actions"] || suggested_actions
+    }
+  end
+
+  defp chat_structured_fields(_result, suggested_actions) do
+    %{status: :degraded, tool_results: [], actions: suggested_actions}
+  end
+
   defp detect_response_language(message) when is_binary(message) do
     lower = String.downcase(message)
 
@@ -1520,11 +1545,15 @@ defmodule TamanduaServerWeb.API.V1.AIController do
   defp query_context_opts(conn, context) when is_map(context) do
     [
       organization_id: current_organization_id(conn),
-      time_range: context["time_range"] || context[:time_range] || "24h"
+      time_range: context["time_range"] || context[:time_range] || "24h",
+      context: context
     ]
   end
 
   defp query_context_opts(conn, _context), do: query_context_opts(conn, %{})
+
+  defp maybe_put_query_option(opts, _key, nil), do: opts
+  defp maybe_put_query_option(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp current_organization_id(conn) do
     conn.assigns[:current_organization_id] ||
@@ -1806,8 +1835,8 @@ defmodule TamanduaServerWeb.API.V1.AIController do
 
   defp plain_process_name(alert, evidence) do
     process =
-      map_value(evidence, ["process", :process, "process_name", :process_name, "image", :image]) ||
-        map_value(alert.raw_event || %{}, ["process", :process, "process_name", :process_name, "image", :image])
+      map_value(evidence, ["process", :process, "process_name", :process_name, "name", :name, "image", :image]) ||
+        map_value(Map.get(alert, :raw_event) || %{}, ["process", :process, "process_name", :process_name, "name", :name, "image", :image])
 
     cond do
       is_binary(process) and process != "" -> process

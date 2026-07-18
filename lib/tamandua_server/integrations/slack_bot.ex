@@ -116,7 +116,7 @@ defmodule TamanduaServer.Integrations.SlackBot do
   # ==========================================================================
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     config = Application.get_env(:tamandua_server, __MODULE__, [])
 
     state = %State{
@@ -300,7 +300,7 @@ defmodule TamanduaServer.Integrations.SlackBot do
     end
   end
 
-  defp triage_alert(org_id, alert_id, action, user_id, state) do
+  defp triage_alert(org_id, alert_id, action, user_id, _state) do
     case BotCommands.process_command("alerts", "triage #{alert_id} #{action}", user_id, org_id, :slack) do
       {:ok, _response} ->
         {:ok,
@@ -314,10 +314,15 @@ defmodule TamanduaServer.Integrations.SlackBot do
     end
   end
 
-  defp approve_remediation(_org_id, action_id, user_id, _state) do
+  defp approve_remediation(org_id, action_id, user_id, _state) do
     alias TamanduaServer.Remediation.ApprovalManager
 
-    case ApprovalManager.approve(action_id, user_id, "Approved via Slack") do
+    case ApprovalManager.approve(
+           action_id,
+           user_id,
+           "Approved via Slack",
+           {:organization, org_id}
+         ) do
       {:ok, _execution} ->
         {:ok,
          %{
@@ -346,16 +351,24 @@ defmodule TamanduaServer.Integrations.SlackBot do
       {:error, :insufficient_permissions} ->
         {:ok, %{text: "You don't have permission to approve this action"}}
 
+      {:error, reason} when reason in [:user_not_found, :user_lookup_failed] ->
+        {:ok, %{text: "Approval unavailable: link this Slack identity to a Tamandua user"}}
+
       {:error, reason} ->
         Logger.error("Slack approval failed: #{inspect(reason)}")
         {:ok, %{text: "Approval failed: #{inspect(reason)}"}}
     end
   end
 
-  defp deny_remediation(_org_id, action_id, user_id, _state) do
+  defp deny_remediation(org_id, action_id, user_id, _state) do
     alias TamanduaServer.Remediation.ApprovalManager
 
-    case ApprovalManager.reject(action_id, user_id, "Denied via Slack") do
+    case ApprovalManager.reject(
+           action_id,
+           user_id,
+           "Denied via Slack",
+           {:organization, org_id}
+         ) do
       {:ok, _execution} ->
         {:ok,
          %{
@@ -380,6 +393,9 @@ defmodule TamanduaServer.Integrations.SlackBot do
 
       {:error, :not_found} ->
         {:ok, %{text: "Approval request not found or already processed"}}
+
+      {:error, reason} when reason in [:user_not_found, :user_lookup_failed] ->
+        {:ok, %{text: "Denial unavailable: link this Slack identity to a Tamandua user"}}
 
       {:error, reason} ->
         Logger.error("Slack denial failed: #{inspect(reason)}")
@@ -410,7 +426,7 @@ defmodule TamanduaServer.Integrations.SlackBot do
         end
 
       {:error, :not_found} ->
-        Logger.warn("No Slack workspace configured for organization: #{org_id}")
+        Logger.warning("No Slack workspace configured for organization: #{org_id}")
     end
   end
 
@@ -563,19 +579,19 @@ defmodule TamanduaServer.Integrations.SlackBot do
       medium: Alerts.count_by_severity_for_org(org_id, "medium"),
       low: Alerts.count_by_severity_for_org(org_id, "low"),
       resolved: count_resolved_alerts(org_id, start_time),
-      agents_total: TamanduaServer.Agents.Registry.count_total(org_id),
-      agents_online: TamanduaServer.Agents.Registry.count_online(org_id),
+      agents_total: TamanduaServer.Agents.count_agents_for_org(org_id),
+      agents_online: TamanduaServer.Agents.count_online_for_org(org_id),
       period: period,
       start_time: start_time
     }
   end
 
-  defp count_alerts_since(org_id, start_time) do
+  defp count_alerts_since(_org_id, _start_time) do
     # TODO: Implement time-based alert counting
     0
   end
 
-  defp count_resolved_alerts(org_id, start_time) do
+  defp count_resolved_alerts(_org_id, _start_time) do
     # TODO: Implement resolved alert counting
     0
   end
@@ -639,7 +655,7 @@ defmodule TamanduaServer.Integrations.SlackBot do
     }
   end
 
-  defp schedule_digests(state) do
+  defp schedule_digests(_state) do
     # Schedule daily digest at 9 AM UTC
     daily_seconds = calculate_next_run(9, 0)
     Process.send_after(self(), {:daily_digest}, daily_seconds * 1000)
@@ -663,7 +679,7 @@ defmodule TamanduaServer.Integrations.SlackBot do
     DateTime.diff(target, now)
   end
 
-  defp calculate_next_weekly_run(day_of_week, hour, minute) do
+  defp calculate_next_weekly_run(_day_of_week, hour, minute) do
     # Simplified - just use daily for now
     calculate_next_run(hour, minute)
   end

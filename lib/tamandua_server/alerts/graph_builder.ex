@@ -12,10 +12,8 @@ defmodule TamanduaServer.Alerts.GraphBuilder do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.{Alert, AlertCorrelation, AttackCampaign}
-  alias TamanduaServer.Agents.Agent
 
   @max_nodes_full_graph 500
-  @max_nodes_per_cluster 50
 
   @doc """
   Build a complete graph from a list of alert IDs.
@@ -142,7 +140,7 @@ defmodule TamanduaServer.Alerts.GraphBuilder do
     {nodes, node_ids} = build_user_nodes(alerts, nodes, node_ids)
 
     # Build process nodes
-    {nodes, node_ids} = build_process_nodes(alerts, nodes, node_ids)
+    {nodes, _node_ids} = build_process_nodes(alerts, nodes, node_ids)
 
     # Build links
     links = build_agent_alert_links(alerts, links)

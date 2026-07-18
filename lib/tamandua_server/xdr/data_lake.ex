@@ -28,7 +28,6 @@ defmodule TamanduaServer.XDR.DataLake do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
 
   # Configuration
   @default_config %{
@@ -59,10 +58,8 @@ defmodule TamanduaServer.XDR.DataLake do
   }
 
   # Storage tiers
-  @storage_tiers [:hot, :warm, :cold, :archive]
 
   # Supported storage backends
-  @supported_backends [:local, :s3, :gcs, :azure]
 
   defstruct [
     config: @default_config,

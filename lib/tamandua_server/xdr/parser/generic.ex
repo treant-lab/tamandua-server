@@ -117,7 +117,7 @@ defmodule TamanduaServer.XDR.Parser.Generic do
     ipv4_pattern = ~r/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/
 
     # IPv6 pattern (simplified)
-    ipv6_pattern = ~r/\b([0-9a-fA-F:]{2,39})\b/
+    _ipv6_pattern = ~r/\b([0-9a-fA-F:]{2,39})\b/
 
     ipv4_matches = Regex.scan(ipv4_pattern, data)
     |> Enum.map(fn [_, ip] -> ip end)

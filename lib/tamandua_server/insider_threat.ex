@@ -9,10 +9,8 @@ defmodule TamanduaServer.InsiderThreat do
     Detector,
     RiskScorer,
     PeerGroup,
-    PeerGroupMember,
     Alert,
-    Investigation,
-    Indicator
+    Investigation
   }
 
   import Ecto.Query

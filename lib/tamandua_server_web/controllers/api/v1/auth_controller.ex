@@ -14,6 +14,7 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
 
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.TokenManager
+  alias TamanduaServer.Repo.MultiTenant
 
   @doc """
   Refresh an agent's JWT token.
@@ -79,6 +80,14 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
           message: "A newer token has been issued for this agent"
         })
 
+      {:error, :token_rotation_disabled} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{
+          error: "Token rotation is disabled",
+          message: "An administrator must enable rotation before this token can be refreshed"
+        })
+
       {:error, :expired} ->
         conn
         |> put_status(:unauthorized)
@@ -86,6 +95,11 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
           error: "Token has expired",
           message: "Please re-enroll the agent to obtain new credentials"
         })
+
+      {:error, :database_error} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "token_refresh_unavailable", retryable: true})
 
       {:error, reason} ->
         Logger.warning("Token refresh failed: #{inspect(reason)}")
@@ -134,7 +148,9 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
         # Return 404 (not 403) to avoid enumeration attacks
         case Agents.get_agent_for_org(user.organization_id, agent_id) do
           {:error, :not_found} ->
-            Logger.warning("User #{user.id} attempted to revoke agent #{agent_id} from different org")
+            Logger.warning(
+              "User #{user.id} attempted to revoke agent #{agent_id} from different org"
+            )
 
             conn
             |> put_status(:not_found)
@@ -143,7 +159,9 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
           {:ok, agent} ->
             # Check if user has permission to manage this agent
             if can_manage_agent?(user, agent) do
-              case TokenManager.revoke_token(agent_id,
+              case TokenManager.revoke_token(
+                     agent_id,
+                     user.organization_id,
                      reason: reason,
                      all_generations: all_generations
                    ) do
@@ -159,10 +177,15 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
                     reason: reason
                   })
 
-                {:error, revoke_reason} ->
+                {:error, :database_error} ->
+                  conn
+                  |> put_status(:service_unavailable)
+                  |> json(%{error: "token_revocation_unavailable", retryable: true})
+
+                {:error, _revoke_reason} ->
                   conn
                   |> put_status(:internal_server_error)
-                  |> json(%{error: "Revocation failed", reason: inspect(revoke_reason)})
+                  |> json(%{error: "Revocation failed"})
               end
             else
               Logger.warning(
@@ -198,8 +221,8 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
   def status(conn, _params) do
     with {:ok, token} <- extract_bearer_token(conn),
          {:ok, claims} <- TokenManager.validate_token(token),
-         {:ok, agent_id, generation} <- extract_token_info(claims),
-         {:ok, stats} <- get_token_status(agent_id, generation) do
+         {:ok, agent_id, generation, organization_id} <- extract_token_info(claims),
+         {:ok, stats} <- get_token_status(agent_id, generation, organization_id) do
       json(conn, stats)
     else
       {:error, :missing_token} ->
@@ -254,14 +277,19 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
             |> json(%{error: "Agent not found"})
 
           {:ok, _agent} ->
-            case TokenManager.get_token_stats(agent_id) do
+            case TokenManager.get_token_stats(agent_id, user.organization_id) do
               {:ok, stats} ->
                 json(conn, stats)
 
-              {:error, reason} ->
+              {:error, :database_error} ->
+                conn
+                |> put_status(:service_unavailable)
+                |> json(%{error: "token_stats_unavailable", retryable: true})
+
+              {:error, _reason} ->
                 conn
                 |> put_status(:internal_server_error)
-                |> json(%{error: "Failed to retrieve stats", reason: inspect(reason)})
+                |> json(%{error: "Failed to retrieve stats"})
             end
         end
     end
@@ -289,84 +317,98 @@ defmodule TamanduaServerWeb.API.V1.AuthController do
   defp extract_token_info(claims) do
     agent_id = claims["agent_id"]
     generation = claims["generation"]
+    organization_id = claims["org_id"]
 
-    if agent_id && generation do
-      {:ok, agent_id, generation}
+    if agent_id && generation && organization_id == claims["organization_id"] do
+      {:ok, agent_id, generation, organization_id}
     else
       {:error, :invalid_claims}
     end
   end
 
-  defp get_token_status(agent_id, generation) do
-    with {:ok, dumped_agent_id} <- dump_uuid(agent_id) do
-      query = """
-      SELECT
-        t.id,
-        t.agent_id::text,
-        t.token_generation,
-        t.issued_at,
-        t.expires_at,
-        t.last_refreshed_at,
-        t.refresh_count,
-        t.revoked_at,
-        a.token_refresh_window_percent
-      FROM agent_tokens t
-      JOIN agents a ON a.id = t.agent_id
-      WHERE t.agent_id = $1 AND t.token_generation = $2
-      """
-
-      case TamanduaServer.Repo.query(query, [dumped_agent_id, generation]) do
-        {:ok, %{rows: [row]}} ->
-          [
-            _id,
-            row_agent_id,
-            gen,
-            issued_at,
-            expires_at,
-            last_refreshed,
-            refresh_count,
-            revoked_at,
-            configured_refresh_window
-          ] = row
-
-          agent_id = load_uuid_string(row_agent_id)
-          issued_at = utc_datetime(issued_at)
-          expires_at = utc_datetime(expires_at)
-          last_refreshed = utc_datetime(last_refreshed)
-          now = DateTime.utc_now()
-          time_to_expiry = DateTime.diff(expires_at, now, :second)
-          ttl = DateTime.diff(expires_at, issued_at, :second)
-          elapsed = DateTime.diff(now, issued_at, :second)
-          percent_elapsed = if ttl > 0, do: elapsed / ttl * 100, else: 100.0
-
-          refresh_window = min(configured_refresh_window || 60, 60)
-          refresh_eligible = percent_elapsed >= refresh_window and is_nil(revoked_at)
-
-          {:ok,
-           %{
-             valid: is_nil(revoked_at) and time_to_expiry > 0,
-             agent_id: agent_id,
-             generation: gen,
-             issued_at: issued_at,
-             expires_at: expires_at,
-             last_refreshed_at: last_refreshed,
-             refresh_eligible: refresh_eligible,
-             refresh_window_percent: refresh_window,
-             time_to_expiry_seconds: max(0, time_to_expiry),
-             percent_elapsed: Float.round(percent_elapsed, 2),
-             refresh_count: refresh_count,
-             revoked: not is_nil(revoked_at)
-           }}
-
-        {:ok, %{rows: []}} ->
-          {:error, :token_not_found}
-
-        {:error, reason} ->
-          Logger.error("Failed to query token status: #{inspect(reason)}")
-          {:error, :database_error}
-      end
+  defp get_token_status(agent_id, generation, organization_id) do
+    with {:ok, dumped_agent_id} <- dump_uuid(agent_id),
+         {:ok, dumped_organization_id} <- dump_uuid(organization_id) do
+      MultiTenant.with_organization(organization_id, fn ->
+        query_token_status(dumped_agent_id, generation, dumped_organization_id)
+      end)
     else
       :error -> {:error, :invalid_agent_id}
+    end
+  rescue
+    error ->
+      Logger.error("Failed to query token status: #{Exception.message(error)}")
+      {:error, :database_error}
+  end
+
+  defp query_token_status(agent_id, generation, organization_id) do
+    query = """
+    SELECT
+      t.id,
+      t.agent_id::text,
+      t.token_generation,
+      t.issued_at,
+      t.expires_at,
+      t.last_refreshed_at,
+      t.refresh_count,
+      t.revoked_at,
+      a.token_refresh_window_percent
+    FROM agent_tokens t
+    JOIN agents a ON a.id = t.agent_id
+    WHERE t.agent_id = $1
+      AND t.token_generation = $2
+      AND a.organization_id = $3
+    """
+
+    case TamanduaServer.Repo.query(query, [agent_id, generation, organization_id]) do
+      {:ok, %{rows: [row]}} ->
+        [
+          _id,
+          row_agent_id,
+          gen,
+          issued_at,
+          expires_at,
+          last_refreshed,
+          refresh_count,
+          revoked_at,
+          configured_refresh_window
+        ] = row
+
+        agent_id = load_uuid_string(row_agent_id)
+        issued_at = utc_datetime(issued_at)
+        expires_at = utc_datetime(expires_at)
+        last_refreshed = utc_datetime(last_refreshed)
+        now = DateTime.utc_now()
+        time_to_expiry = DateTime.diff(expires_at, now, :second)
+        ttl = DateTime.diff(expires_at, issued_at, :second)
+        elapsed = DateTime.diff(now, issued_at, :second)
+        percent_elapsed = if ttl > 0, do: elapsed / ttl * 100, else: 100.0
+
+        refresh_window = min(configured_refresh_window || 60, 60)
+        refresh_eligible = percent_elapsed >= refresh_window and is_nil(revoked_at)
+
+        {:ok,
+         %{
+           valid: is_nil(revoked_at) and time_to_expiry > 0,
+           agent_id: agent_id,
+           generation: gen,
+           issued_at: issued_at,
+           expires_at: expires_at,
+           last_refreshed_at: last_refreshed,
+           refresh_eligible: refresh_eligible,
+           refresh_window_percent: refresh_window,
+           time_to_expiry_seconds: max(0, time_to_expiry),
+           percent_elapsed: Float.round(percent_elapsed, 2),
+           refresh_count: refresh_count,
+           revoked: not is_nil(revoked_at)
+         }}
+
+      {:ok, %{rows: []}} ->
+        {:error, :token_not_found}
+
+      {:error, reason} ->
+        Logger.error("Failed to query token status: #{inspect(reason)}")
+        {:error, :database_error}
     end
   end
 

@@ -175,7 +175,7 @@ defmodule TamanduaServerWeb.API.V1.YaraRuleController do
     }
   end
 
-  defp builtin_rule_matches_filters?(rule, %{"enabled" => enabled}) when enabled in ["false", false] do
+  defp builtin_rule_matches_filters?(_rule, %{"enabled" => enabled}) when enabled in ["false", false] do
     false
   end
   defp builtin_rule_matches_filters?(rule, filters) do

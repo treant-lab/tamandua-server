@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react'
+import { Head, router } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import {
   Shield,
@@ -31,7 +31,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +39,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 
 type AggressivenessLevel = 'disabled' | 'cautious' | 'moderate' | 'aggressive' | 'extra_aggressive'
 type ResponseMode = 'detect_only' | 'detect_and_prevent'
+type ControlState = 'enforced' | 'decision_only' | 'partial' | 'unavailable'
 
 interface CategorySetting {
   category: string
@@ -129,6 +130,13 @@ const THREAT_CATEGORIES: { id: string; label: string; icon: React.ComponentType<
 const MODE_LABELS: Record<ResponseMode, string> = {
   detect_only: 'Detect Only',
   detect_and_prevent: 'Detect & Prevent',
+}
+
+const CONTROL_STATE_STYLES: Record<ControlState, { label: string; text: string; bg: string; border: string }> = {
+ enforced: { label: 'Enforced', text: 'var(--emerald-400)', bg: 'var(--emerald-glow)', border: 'var(--emerald-500)' },
+ decision_only: { label: 'Decision only', text: 'var(--high)', bg: 'var(--high-bg)', border: 'var(--high)' },
+ partial: { label: 'Partial', text: 'var(--med)', bg: 'var(--med-bg)', border: 'var(--med)' },
+ unavailable: { label: 'Unavailable', text: 'var(--subtle)', bg: 'var(--surface-2)', border: 'var(--border)' },
 }
 
 const API_BASE = '/api/v1/prevention-policies'
@@ -1297,6 +1305,240 @@ function PolicyCard({
   )
 }
 
+
+function ControlStateBadge({ state }: { state: ControlState }) {
+ const style = CONTROL_STATE_STYLES[state]
+ return (
+ <span
+ className='inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium'
+ style={{ color: style.text, backgroundColor: style.bg, border: `1px solid ${style.border}` }}
+ >
+ {state === 'enforced' && <CheckCircle className='h-3 w-3' />}
+ {state === 'decision_only' && <Shield className='h-3 w-3' />}
+ {state === 'partial' && <AlertTriangle className='h-3 w-3' />}
+ {state === 'unavailable' && <ShieldOff className='h-3 w-3' />}
+ {style.label}
+ </span>
+ )
+}
+
+function OperationalControlPanel({ policies }: { policies: PreventionPolicy[] }) {
+ const summary = useMemo(() => {
+ const assignedAgentIds = new Set<string>()
+ const assignedAgentNames = new Set<string>()
+
+ policies.forEach((policy) => {
+ (policy.assigned_agents ?? []).forEach((agent) => {
+ assignedAgentIds.add(agent.id)
+ assignedAgentNames.add(agent.hostname || agent.id)
+ })
+ })
+
+ const preventPolicies = policies.filter((policy) => policy.mode === 'detect_and_prevent')
+ const detectOnlyPolicies = policies.filter((policy) => policy.mode === 'detect_only')
+ const assignedPreventPolicies = preventPolicies.filter((policy) => (policy.assigned_agents?.length ?? 0) > 0)
+ const networkScopedPolicies = policies.filter((policy) => {
+ const containment = policy.network_containment
+ return containment && (!containment.allow_dns || (containment.allowed_ips?.length ?? 0) > 0)
+ })
+
+ const policyState: ControlState = policies.length === 0
+ ? 'unavailable'
+ : assignedPreventPolicies.length > 0
+ ? 'enforced'
+ : preventPolicies.length > 0 || assignedAgentIds.size > 0
+ ? 'partial'
+ : 'decision_only'
+
+ return {
+ totalPolicies: policies.length,
+ preventPolicies: preventPolicies.length,
+ detectOnlyPolicies: detectOnlyPolicies.length,
+ assignedAgents: assignedAgentIds.size,
+ assignedAgentNames: Array.from(assignedAgentNames).slice(0, 5),
+ assignedPreventPolicies: assignedPreventPolicies.length,
+ networkScopedPolicies: networkScopedPolicies.length,
+ policyState,
+ }
+ }, [policies])
+
+ const controls: Array<{
+ title: string
+ state: ControlState
+ value: string
+ description: string
+ action: string
+ path: string
+ icon: React.ComponentType<{ className?: string }>
+ }> = [
+ {
+ title: 'Prevention policy mode',
+ state: summary.policyState,
+ value: `${summary.preventPolicies} prevent / ${summary.detectOnlyPolicies} detect-only`,
+ description: summary.assignedPreventPolicies > 0
+ ? 'At least one prevent policy is assigned to endpoints. Runtime execution still depends on agent health and capability.'
+ : 'Policies are available, but prevention impact is limited until prevent-mode policies are assigned to endpoints.',
+ action: 'Edit policies',
+ path: '/app/prevention-policies',
+ icon: ShieldCheck,
+ },
+ {
+ title: 'Network controls',
+ state: summary.assignedAgents > 0 ? 'partial' : 'decision_only',
+ value: summary.assignedAgents > 0 ? `${summary.assignedAgents} scoped endpoint${summary.assignedAgents === 1 ? '' : 's'}` : 'No endpoint scope',
+ description: 'Network rows can queue Block IP, Block Domain and Isolate Agent actions. This is response-bridge enforcement, not inline packet blocking from this page.',
+ action: 'Open Network',
+ path: '/app/network',
+ icon: Globe,
+ },
+ {
+ title: 'Shadow AI controls',
+ state: 'decision_only',
+ value: 'Simulation available / dry-run not proven here',
+ description: 'Use Shadow AI for gateway policy decisions and simulation. Inline AI proxy enforcement must be confirmed by its own source health and event status.',
+ action: 'Open Shadow AI',
+ path: '/app/shadow-ai',
+ icon: Brain,
+ },
+ {
+ title: 'Browser Guard controls',
+ state: 'partial',
+ value: 'Health and bridge view available',
+ description: 'Browser Guard has a dedicated operational view. Native host and extension events must be validated there before treating browser blocking as enforced.',
+ action: 'Open Browser Guard',
+ path: '/app/browser-guard',
+ icon: Shield,
+ },
+ {
+ title: 'Rollback and response',
+ state: 'partial',
+ value: 'Rollback depends on action history',
+ description: 'Unblock and unisolate flows should be operated from Response or the originating event/action, where command status and target context are visible.',
+ action: 'Open Response',
+ path: '/app/response',
+ icon: ArrowRightLeft,
+ },
+ ]
+
+ const goTo = (path: string) => router.visit(path)
+
+ return (
+ <div className='mb-8 space-y-4'>
+ <div className='flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between'>
+ <div>
+ <h2 className='text-base font-semibold' style={{ color: 'var(--fg)' }}>AI and network control readiness</h2>
+ <p className='text-sm mt-1 max-w-3xl' style={{ color: 'var(--muted)' }}>
+ Operational map for prevention, AI policy, network response and browser controls. States reflect what this page can prove from policy scope and linked control surfaces.
+ </p>
+ </div>
+ <div className='flex flex-wrap gap-2'>
+ <button type='button' onClick={() => goTo('/app/network')} className='btn-sentinel btn-sentinel-secondary btn-sentinel-sm'>
+ <Globe className='h-3.5 w-3.5' />
+ Network
+ </button>
+ <button type='button' onClick={() => goTo('/app/shadow-ai')} className='btn-sentinel btn-sentinel-secondary btn-sentinel-sm'>
+ <Brain className='h-3.5 w-3.5' />
+ Shadow AI
+ </button>
+ <button type='button' onClick={() => goTo('/app/browser-guard')} className='btn-sentinel btn-sentinel-secondary btn-sentinel-sm'>
+ <Shield className='h-3.5 w-3.5' />
+ Browser Guard
+ </button>
+ <button type='button' onClick={() => goTo('/app/response')} className='btn-sentinel btn-sentinel-secondary btn-sentinel-sm'>
+ <ArrowRightLeft className='h-3.5 w-3.5' />
+ Response
+ </button>
+ </div>
+ </div>
+
+ <div className='grid grid-cols-1 gap-4 xl:grid-cols-5'>
+ <div className='xl:col-span-2 rounded-xl p-4' style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+ <div className='flex items-start justify-between gap-3'>
+ <div>
+ <p className='text-xs font-semibold uppercase tracking-wider' style={{ color: 'var(--subtle)' }}>Endpoint impact</p>
+ <div className='text-2xl font-bold mt-2' style={{ color: 'var(--fg)' }}>{summary.assignedAgents}</div>
+ <p className='text-xs mt-1' style={{ color: 'var(--muted)' }}>endpoints assigned through prevention policies</p>
+ </div>
+ <ControlStateBadge state={summary.policyState} />
+ </div>
+ <div className='mt-4 grid grid-cols-3 gap-3 text-xs'>
+ <div>
+ <div className='font-semibold' style={{ color: 'var(--fg)' }}>{summary.totalPolicies}</div>
+ <div style={{ color: 'var(--muted)' }}>policies</div>
+ </div>
+ <div>
+ <div className='font-semibold' style={{ color: 'var(--emerald-400)' }}>{summary.assignedPreventPolicies}</div>
+ <div style={{ color: 'var(--muted)' }}>prevent scoped</div>
+ </div>
+ <div>
+ <div className='font-semibold' style={{ color: 'var(--high)' }}>{summary.networkScopedPolicies}</div>
+ <div style={{ color: 'var(--muted)' }}>network scoped</div>
+ </div>
+ </div>
+ {summary.assignedAgentNames.length > 0 ? (
+ <div className='mt-4 flex flex-wrap gap-1.5'>
+ {summary.assignedAgentNames.map((name) => (
+ <span key={name} className='px-2 py-1 rounded text-xs' style={{ color: 'var(--fg-2)', backgroundColor: 'var(--surface-2)', border: '1px solid var(--hairline)' }}>
+ {name}
+ </span>
+ ))}
+ </div>
+ ) : (
+ <p className='text-xs mt-4' style={{ color: 'var(--high)' }}>No endpoint impact is provable until policies are assigned to agents.</p>
+ )}
+ </div>
+
+ <div className='xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4'>
+ <div className='rounded-xl p-4' style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+ <div className='flex items-center justify-between gap-3'>
+ <div className='flex items-center gap-2'>
+ <Activity className='h-4 w-4' style={{ color: 'var(--emerald-400)' }} />
+ <span className='text-sm font-medium' style={{ color: 'var(--fg)' }}>Simulation</span>
+ </div>
+ <ControlStateBadge state='partial' />
+ </div>
+ <p className='text-xs mt-3' style={{ color: 'var(--muted)' }}>
+ Shadow AI decision simulation is linked. Network and browser dry-run require their source views or action payloads; this page does not fabricate dry-run results.
+ </p>
+ </div>
+ <div className='rounded-xl p-4' style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+ <div className='flex items-center justify-between gap-3'>
+ <div className='flex items-center gap-2'>
+ <ArrowRightLeft className='h-4 w-4' style={{ color: 'var(--med)' }} />
+ <span className='text-sm font-medium' style={{ color: 'var(--fg)' }}>Rollback</span>
+ </div>
+ <ControlStateBadge state='partial' />
+ </div>
+ <p className='text-xs mt-3' style={{ color: 'var(--muted)' }}>
+ Rollback is operational only when the original response action has target context and command history. Use Response for unblock or unisolate workflows.
+ </p>
+ </div>
+ </div>
+ </div>
+
+ <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4'>
+ {controls.map((control) => (
+ <div key={control.title} className='rounded-xl p-4 flex flex-col gap-3' style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+ <div className='flex items-start justify-between gap-3'>
+ <div className='flex items-center gap-2 min-w-0'>
+ <control.icon className='h-4 w-4 flex-shrink-0' style={{ color: 'var(--fg-2)' }} />
+ <h3 className='text-sm font-semibold truncate' style={{ color: 'var(--fg)' }}>{control.title}</h3>
+ </div>
+ <ControlStateBadge state={control.state} />
+ </div>
+ <div className='text-xs font-medium' style={{ color: 'var(--fg-2)' }}>{control.value}</div>
+ <p className='text-xs leading-relaxed flex-1' style={{ color: 'var(--muted)' }}>{control.description}</p>
+ <button type='button' onClick={() => goTo(control.path)} className='btn-sentinel btn-sentinel-ghost btn-sentinel-sm justify-start px-0'>
+ {control.action}
+ <ArrowRightLeft className='h-3.5 w-3.5' />
+ </button>
+ </div>
+ ))}
+ </div>
+ </div>
+ )
+}
+
 // ---------------------------------------------------------------------------
 // Main Page Component
 // ---------------------------------------------------------------------------
@@ -1413,7 +1655,9 @@ export default function PreventionPolicies() {
         </button>
       </div>
 
-      {/* Content */}
+      {!loading && !error && <OperationalControlPanel policies={policies} />}
+
+ {/* Content */}
       {loading ? (
         <div className="flex flex-col items-center justify-center py-24">
           <Loader2 className="h-8 w-8 animate-spin mb-4" style={{ color: 'var(--emerald-400)' }} />

@@ -113,7 +113,7 @@ export function DemoFlow({ className, onRefresh }: DemoFlowProps) {
       }
 
       // Fetch latest alerts with attestation
-      const alertsRes = await fetch('/api/v1/alerts?limit=1&sort=inserted_at:desc', { credentials: 'include' });
+      const alertsRes = await fetch('/api/v1/alerts?per_page=1&sort=inserted_at:desc', { credentials: 'include' });
       let alertData: DemoFlowData['alertCreated'] = { status: 'no-data' };
       let detectionData: DemoFlowData['detectionFired'] = { status: 'no-data' };
       let responseData: DemoFlowData['responseAction'] = { status: 'no-data' };

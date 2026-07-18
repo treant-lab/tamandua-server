@@ -645,7 +645,7 @@ defmodule TamanduaServer.Integration.DetectRespondPipelineTest do
 
       # Record attributions for each agent with the same IOC
       for agent <- agents do
-        CampaignTracker.record_attribution(%{
+        CampaignTracker.record_attribution(org.id, %{
           alert_id: Ecto.UUID.generate(),
           agent_id: agent.id,
           actor: "APT29",
@@ -658,28 +658,28 @@ defmodule TamanduaServer.Integration.DetectRespondPipelineTest do
       Process.sleep(200)
 
       # Trigger auto-detection to cluster the attributions
-      CampaignTracker.auto_detect_campaigns()
+      CampaignTracker.auto_detect_campaigns(org.id)
       Process.sleep(200)
 
       # ── Verify campaign state ──
-      stats = CampaignTracker.get_stats()
+      stats = CampaignTracker.get_stats(org.id)
       assert is_map(stats)
       assert Map.has_key?(stats, :attributions_recorded)
       assert stats.attributions_recorded >= 4,
              "Expected at least 4 attributions recorded, got #{stats.attributions_recorded}"
 
       # The shared IOC should be indexed
-      campaigns_for_ioc = CampaignTracker.campaigns_for_ioc(shared_c2_ip)
+      campaigns_for_ioc = CampaignTracker.campaigns_for_ioc(org.id, shared_c2_ip)
       assert is_list(campaigns_for_ioc)
 
       # Check if agents are indexed
       for agent <- agents do
-        agent_campaigns = CampaignTracker.campaigns_for_agent(agent.id)
+        agent_campaigns = CampaignTracker.campaigns_for_agent(org.id, agent.id)
         assert is_list(agent_campaigns)
       end
 
       # If campaigns were created, verify structure
-      campaigns = CampaignTracker.list_campaigns()
+      campaigns = CampaignTracker.list_campaigns(org.id, [])
 
       if length(campaigns) > 0 do
         campaign = List.first(campaigns)

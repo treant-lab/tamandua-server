@@ -7,10 +7,13 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   """
 
   use TamanduaServerWeb, :controller
+  import Ecto.Query, only: [from: 2]
 
+  alias TamanduaServer.Repo
   alias TamanduaServer.Automation.Hyperautomation
+  alias TamanduaServer.Automation.Hyperautomation.Workflow
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   @doc """
   List all workflows with optional filtering.
@@ -21,12 +24,15 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
       trigger_type: Map.get(params, "trigger_type"),
       category: Map.get(params, "category"),
       search: Map.get(params, "search"),
+      organization_id: current_organization_id(conn),
       page: parse_int(Map.get(params, "page"), 1, 1, 10_000),
       page_size: parse_int(Map.get(params, "page_size"), 20, 1, 500)
     }
 
     case Hyperautomation.list_workflows(filters) do
       {:ok, workflows} when is_list(workflows) ->
+        workflows = if workflows == [], do: list_workflows_from_repo(filters), else: workflows
+
         json(conn, %{
           data: Enum.map(workflows, &serialize_workflow/1),
           meta: %{
@@ -50,12 +56,14 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   def show(conn, %{"id" => id}) do
     case Hyperautomation.get_workflow(id) do
       {:ok, workflow} ->
-        json(conn, %{data: serialize_workflow(workflow)})
+        with :ok <- ensure_workflow_visible(conn, workflow) do
+          json(conn, %{data: serialize_workflow(workflow)})
+        else
+          {:error, :forbidden} -> show_forbidden(conn)
+        end
 
       {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: %{message: "Workflow not found"}})
+        workflow_not_found(conn)
 
       {:error, reason} ->
         conn
@@ -64,11 +72,26 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     end
   end
 
+  defp show_forbidden(conn) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: %{message: "Workflow not found"}})
+  end
+
+  defp workflow_not_found(conn) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: %{message: "Workflow not found"}})
+  end
+
   @doc """
   Create a new workflow.
   """
   def create(conn, params) do
-    workflow_params = normalize_workflow_params(params, default_enabled: false)
+    workflow_params =
+      params
+      |> normalize_workflow_params(default_enabled: false)
+      |> put_tenant_workflow_fields(conn)
 
     case Hyperautomation.create_workflow(workflow_params) do
       {:ok, workflow} ->
@@ -89,7 +112,9 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
       {:error, %Ecto.Changeset{} = changeset} ->
         conn
         |> put_status(:unprocessable_entity)
-        |> json(%{error: %{message: "Validation failed", details: format_changeset_errors(changeset)}})
+        |> json(%{
+          error: %{message: "Validation failed", details: format_changeset_errors(changeset)}
+        })
 
       {:error, reason} ->
         conn
@@ -102,34 +127,41 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   Update an existing workflow.
   """
   def update(conn, %{"id" => id} = params) do
-    update_params =
-      params
-      |> Map.drop(["id"])
-      |> normalize_workflow_params()
+    with {:ok, workflow} <- Hyperautomation.get_workflow(id),
+         :ok <- ensure_workflow_owned(conn, workflow) do
+      update_params =
+        params
+        |> Map.drop(["id"])
+        |> normalize_workflow_params()
+        |> put_tenant_workflow_fields(conn, include_created_by: false)
 
-    case Hyperautomation.update_workflow(id, update_params) do
-      {:ok, workflow} ->
-        json(conn, %{data: serialize_workflow(workflow)})
+      case Hyperautomation.update_workflow(id, update_params) do
+        {:ok, workflow} ->
+          json(conn, %{data: serialize_workflow(workflow)})
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: %{message: "Workflow not found"}})
+        {:error, :not_found} ->
+          workflow_not_found(conn)
 
-      {:error, :workflow_running} ->
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: %{message: "Cannot update a running workflow"}})
+        {:error, :workflow_running} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: %{message: "Cannot update a running workflow"}})
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: %{message: "Validation failed", details: format_changeset_errors(changeset)}})
+        {:error, %Ecto.Changeset{} = changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{
+            error: %{message: "Validation failed", details: format_changeset_errors(changeset)}
+          })
 
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: %{message: "Failed to update workflow", details: reason}})
+        {:error, reason} ->
+          conn
+          |> put_status(:internal_server_error)
+          |> json(%{error: %{message: "Failed to update workflow", details: reason}})
+      end
+    else
+      {:error, :not_found} -> workflow_not_found(conn)
+      {:error, :forbidden} -> show_forbidden(conn)
     end
   end
 
@@ -137,27 +169,31 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   Delete a workflow.
   """
   def delete(conn, %{"id" => id}) do
-    case Hyperautomation.delete_workflow(id) do
-      :ok ->
-        send_resp(conn, :no_content, "")
+    with {:ok, workflow} <- Hyperautomation.get_workflow(id),
+         :ok <- ensure_workflow_owned(conn, workflow) do
+      case Hyperautomation.delete_workflow(id) do
+        :ok ->
+          send_resp(conn, :no_content, "")
 
-      {:ok, _} ->
-        send_resp(conn, :no_content, "")
+        {:ok, _} ->
+          send_resp(conn, :no_content, "")
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: %{message: "Workflow not found"}})
+        {:error, :not_found} ->
+          workflow_not_found(conn)
 
-      {:error, :workflow_running} ->
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: %{message: "Cannot delete a running workflow"}})
+        {:error, :workflow_running} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: %{message: "Cannot delete a running workflow"}})
 
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: %{message: "Failed to delete workflow", details: reason}})
+        {:error, reason} ->
+          conn
+          |> put_status(:internal_server_error)
+          |> json(%{error: %{message: "Failed to delete workflow", details: reason}})
+      end
+    else
+      {:error, :not_found} -> workflow_not_found(conn)
+      {:error, :forbidden} -> show_forbidden(conn)
     end
   end
 
@@ -165,49 +201,57 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
   Execute a workflow manually.
   """
   def execute(conn, %{"id" => id} = params) do
-    context = Map.get(params, "context", %{})
-    execution_opts = [
-      dry_run: Map.get(params, "dry_run", false),
-      async: Map.get(params, "async", true)
-    ]
+    with {:ok, workflow} <- Hyperautomation.get_workflow(id),
+         :ok <- ensure_workflow_owned(conn, workflow) do
+      context = Map.get(params, "context", %{})
 
-    case Hyperautomation.execute_workflow(id, context, execution_opts) do
-      {:ok, execution} ->
-        is_async = Keyword.get(execution_opts, :async, true)
-        status = if is_async, do: :accepted, else: :ok
+      execution_opts = [
+        dry_run: Map.get(params, "dry_run", false),
+        async: Map.get(params, "async", true)
+      ]
 
-        conn
-        |> put_status(status)
-        |> json(%{
-          data: %{
-            execution_id: execution.id,
-            workflow_id: id,
-            status: execution.status,
-            started_at: execution.started_at,
-            completed_at: execution.completed_at,
-            result: execution_result(execution)
-          }
-        })
+      case Hyperautomation.execute_workflow(id, context, execution_opts) do
+        {:ok, execution} ->
+          is_async = Keyword.get(execution_opts, :async, true)
+          status = if is_async, do: :accepted, else: :ok
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: %{message: "Workflow not found"}})
+          conn
+          |> put_status(status)
+          |> json(%{
+            data: %{
+              execution_id: execution.id,
+              workflow_id: id,
+              status: execution.status,
+              started_at: execution.started_at,
+              completed_at: execution.completed_at,
+              result: execution_result(execution)
+            }
+          })
 
-      {:error, :workflow_disabled} ->
-        conn
-        |> put_status(:forbidden)
-        |> json(%{error: %{message: "Workflow is disabled"}})
+        {:error, :not_found} ->
+          workflow_not_found(conn)
 
-      {:error, :execution_in_progress} ->
-        conn
-        |> put_status(:conflict)
-        |> json(%{error: %{message: "Workflow execution already in progress"}})
+        {:error, :workflow_not_found} ->
+          workflow_not_found(conn)
 
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: %{message: "Failed to execute workflow", details: reason}})
+        {:error, :workflow_disabled} ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: %{message: "Workflow is disabled"}})
+
+        {:error, :execution_in_progress} ->
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: %{message: "Workflow execution already in progress"}})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:internal_server_error)
+          |> json(%{error: %{message: "Failed to execute workflow", details: reason}})
+      end
+    else
+      {:error, :not_found} -> workflow_not_found(conn)
+      {:error, :forbidden} -> show_forbidden(conn)
     end
   end
 
@@ -224,23 +268,27 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     category_atom = parse_action_category(category_filter)
 
     # Apply optional filters
-    filtered_actions = actions
-    |> Enum.filter(fn {_name, config} ->
-      category_match = is_nil(category_filter) || config.category == category_atom
-      search_match = is_nil(search_filter) || String.contains?(config.description, search_filter)
-      category_match && search_match
-    end)
-    |> Enum.map(fn {name, config} ->
-      %{
-        id: name,
-        name: name,
-        description: config.description,
-        category: config.category,
-        required_params: config.required_params,
-        optional_params: config.optional_params,
-        integrations: config.integrations
-      }
-    end)
+    filtered_actions =
+      actions
+      |> Enum.filter(fn {_name, config} ->
+        category_match = is_nil(category_filter) || config.category == category_atom
+
+        search_match =
+          is_nil(search_filter) || String.contains?(config.description, search_filter)
+
+        category_match && search_match
+      end)
+      |> Enum.map(fn {name, config} ->
+        %{
+          id: name,
+          name: name,
+          description: config.description,
+          category: config.category,
+          required_params: config.required_params,
+          optional_params: config.optional_params,
+          integrations: config.integrations
+        }
+      end)
 
     json(conn, %{data: filtered_actions})
   end
@@ -255,24 +303,28 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     case Hyperautomation.list_templates() do
       {:ok, templates} ->
         # Apply optional filters
-        filtered_templates = templates
-        |> Enum.filter(fn template ->
-          category_match = is_nil(category_filter) || template[:category] == category_filter
-          search_match = is_nil(search_filter) ||
-            String.contains?(template[:name] || "", search_filter) ||
-            String.contains?(template[:description] || "", search_filter)
-          category_match && search_match
-        end)
-        |> Enum.map(fn template ->
-          %{
-            name: template[:name],
-            description: template[:description],
-            category: template[:category],
-            trigger_type: template[:trigger_type],
-            steps: template[:steps],
-            tags: template[:tags]
-          }
-        end)
+        filtered_templates =
+          templates
+          |> Enum.filter(fn template ->
+            category_match = is_nil(category_filter) || template[:category] == category_filter
+
+            search_match =
+              is_nil(search_filter) ||
+                String.contains?(template[:name] || "", search_filter) ||
+                String.contains?(template[:description] || "", search_filter)
+
+            category_match && search_match
+          end)
+          |> Enum.map(fn template ->
+            %{
+              name: template[:name],
+              description: template[:description],
+              category: template[:category],
+              trigger_type: template[:trigger_type],
+              steps: template[:steps],
+              tags: template[:tags]
+            }
+          end)
 
         json(conn, %{data: filtered_templates})
 
@@ -334,15 +386,26 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
 
   defp trigger_config_from_legacy(params) do
     cond do
-      is_map(Map.get(params, "trigger")) -> Map.get(params, "trigger")
-      is_list(Map.get(params, "conditions")) -> %{"conditions" => Map.get(params, "conditions")}
-      is_list(Map.get(params, "triggerConditions")) -> %{"conditions" => Map.get(params, "triggerConditions")}
-      true -> nil
+      is_map(Map.get(params, "trigger")) ->
+        Map.get(params, "trigger")
+
+      is_list(Map.get(params, "conditions")) ->
+        %{"conditions" => Map.get(params, "conditions")}
+
+      is_list(Map.get(params, "triggerConditions")) ->
+        %{"conditions" => Map.get(params, "triggerConditions")}
+
+      true ->
+        nil
     end
   end
 
   defp normalize_trigger_type("event"), do: "event_stream"
-  defp normalize_trigger_type(type) when type in ["manual", "alert", "detection", "schedule", "webhook", "api", "event_stream"], do: type
+
+  defp normalize_trigger_type(type)
+       when type in ["manual", "alert", "detection", "schedule", "webhook", "api", "event_stream"],
+       do: type
+
   defp normalize_trigger_type(_), do: "manual"
 
   defp normalize_steps(steps) when is_list(steps) do
@@ -356,9 +419,18 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
 
   defp normalize_step({%{} = step, index}) do
     id = Map.get(step, "id") || Map.get(step, :id) || "step-#{index}"
-    type = Map.get(step, "type") || Map.get(step, :type) || Map.get(step, "action") || Map.get(step, :action)
-    params = first_present(step, ["params", :params, "parameters", :parameters, "config", :config]) || %{}
-    name = Map.get(step, "name") || Map.get(step, :name) || Map.get(step, "label") || Map.get(step, :label) || type || "Step #{index}"
+
+    type =
+      Map.get(step, "type") || Map.get(step, :type) || Map.get(step, "action") ||
+        Map.get(step, :action)
+
+    params =
+      first_present(step, ["params", :params, "parameters", :parameters, "config", :config]) ||
+        %{}
+
+    name =
+      Map.get(step, "name") || Map.get(step, :name) || Map.get(step, "label") ||
+        Map.get(step, :label) || type || "Step #{index}"
 
     if is_binary(id) and is_binary(type) do
       step
@@ -402,7 +474,13 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
         }
 
       {action, index} when is_binary(action) ->
-        %{"id" => "step-#{index}", "type" => "action", "name" => action, "action" => action, "params" => %{}}
+        %{
+          "id" => "step-#{index}",
+          "type" => "action",
+          "name" => action,
+          "action" => action,
+          "params" => %{}
+        }
     end)
   end
 
@@ -413,6 +491,101 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
       nil -> Keyword.get(opts, :default_enabled)
       value -> value
     end
+  end
+
+  defp put_tenant_workflow_fields(params, conn, opts \\ []) do
+    params
+    |> maybe_put_if_present(:organization_id, current_organization_id(conn))
+    |> maybe_put_created_by(conn, Keyword.get(opts, :include_created_by, true))
+  end
+
+  defp maybe_put_if_present(params, _key, nil), do: params
+  defp maybe_put_if_present(params, key, value), do: Map.put(params, key, value)
+
+  defp maybe_put_created_by(params, _conn, false), do: params
+
+  defp maybe_put_created_by(params, conn, true) do
+    user_id =
+      case conn.assigns[:current_user] do
+        %{id: id} when not is_nil(id) -> id
+        _ -> nil
+      end
+
+    maybe_put_if_present(params, :created_by, user_id)
+  end
+
+  defp current_organization_id(conn) do
+    conn.assigns[:current_organization_id] ||
+      case conn.assigns[:current_user] do
+        %{organization_id: organization_id} -> organization_id
+        _ -> nil
+      end
+  end
+
+  defp ensure_workflow_visible(conn, workflow) do
+    if workflow_visible_to_org?(workflow.organization_id, current_organization_id(conn)) do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp ensure_workflow_owned(conn, workflow) do
+    workflow_org_id = workflow.organization_id
+    current_org_id = current_organization_id(conn)
+
+    cond do
+      is_nil(workflow_org_id) and is_nil(current_org_id) -> :ok
+      is_nil(workflow_org_id) -> {:error, :forbidden}
+      workflow_org_id == current_org_id -> :ok
+      to_string(workflow_org_id) == to_string(current_org_id) -> :ok
+      true -> {:error, :forbidden}
+    end
+  end
+
+  defp workflow_visible_to_org?(nil, _current_org_id), do: true
+  defp workflow_visible_to_org?(_workflow_org_id, nil), do: false
+
+  defp workflow_visible_to_org?(workflow_org_id, current_org_id),
+    do: to_string(workflow_org_id) == to_string(current_org_id)
+
+  defp list_workflows_from_repo(filters) do
+    Workflow
+    |> workflow_org_scope(filters.organization_id)
+    |> workflow_status_scope(filters.status)
+    |> workflow_eq_scope(:category, filters.category)
+    |> workflow_eq_scope(:trigger_type, filters.trigger_type)
+    |> workflow_search_scope(filters.search)
+    |> order_workflows_by_name()
+    |> Repo.all()
+  rescue
+    _ -> []
+  end
+
+  defp order_workflows_by_name(query), do: from(w in query, order_by: [asc: w.name])
+
+  defp workflow_org_scope(query, nil), do: query
+
+  defp workflow_org_scope(query, organization_id) do
+    from(w in query, where: is_nil(w.organization_id) or w.organization_id == ^organization_id)
+  end
+
+  defp workflow_status_scope(query, status) when status in [nil, "", "all"], do: query
+  defp workflow_status_scope(query, "enabled"), do: from(w in query, where: w.enabled == true)
+  defp workflow_status_scope(query, "disabled"), do: from(w in query, where: w.enabled == false)
+  defp workflow_status_scope(query, _status), do: query
+
+  defp workflow_eq_scope(query, _field, value) when value in [nil, "", "all"], do: query
+
+  defp workflow_eq_scope(query, field, value) do
+    from(w in query, where: field(w, ^field) == ^value)
+  end
+
+  defp workflow_search_scope(query, search) when search in [nil, ""], do: query
+
+  defp workflow_search_scope(query, search) do
+    pattern = "%#{search}%"
+    from(w in query, where: ilike(w.name, ^pattern) or ilike(w.description, ^pattern))
   end
 
   defp serialize_workflow(workflow) do
@@ -467,7 +640,7 @@ defmodule TamanduaServerWeb.API.V1.WorkflowController do
     }
   end
 
-  defp parse_int(value, fallback, min, max) when is_integer(value), do: clamp(value, min, max)
+  defp parse_int(value, _fallback, min, max) when is_integer(value), do: clamp(value, min, max)
 
   defp parse_int(value, fallback, min, max) when is_binary(value) do
     case Integer.parse(value) do

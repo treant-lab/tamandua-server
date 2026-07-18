@@ -1002,18 +1002,49 @@ defmodule TamanduaServer.ThreatIntel.RetroactiveScanner do
   defp notify_campaign_tracker(matches) when length(matches) == 0, do: :ok
   defp notify_campaign_tracker(matches) do
     try do
-      # Group by agent to provide per-agent context
-      by_agent = Enum.group_by(matches, & &1.agent_id)
+      matches
+      |> Enum.group_by(fn match ->
+        TamanduaServer.Agents.OrgLookup.get_org_id(match.agent_id)
+      end)
+      |> Enum.each(fn
+        {organization_id, agent_matches}
+        when is_binary(organization_id) and organization_id != "" ->
+          scoped_matches =
+            Enum.filter(agent_matches, fn match ->
+              claimed = match[:organization_id]
+              valid = is_nil(claimed) or claimed == organization_id
 
-      Enum.each(by_agent, fn {_agent_id, agent_matches} ->
-        ioc_values = agent_matches |> Enum.map(& &1.ioc_value) |> Enum.uniq()
+              unless valid do
+                :telemetry.execute(
+                  [:tamandua, :campaign_tracker, :attribution_dropped],
+                  %{count: 1},
+                  %{source: :retroactive_scanner, reason: :organization_mismatch}
+                )
+              end
 
-        TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(%{
-          source: "retroactive_scanner",
-          ioc_values: ioc_values,
-          match_count: length(agent_matches),
-          timestamp: DateTime.utc_now()
-        })
+              valid
+            end)
+
+          if scoped_matches != [] do
+            ioc_values = scoped_matches |> Enum.map(& &1.ioc_value) |> Enum.uniq()
+
+            TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(
+              organization_id,
+              %{
+                source: "retroactive_scanner",
+                ioc_values: ioc_values,
+                match_count: length(scoped_matches),
+                timestamp: DateTime.utc_now()
+              }
+            )
+          end
+
+        {_unknown, dropped} ->
+          :telemetry.execute(
+            [:tamandua, :campaign_tracker, :attribution_dropped],
+            %{count: length(dropped)},
+            %{source: :retroactive_scanner, reason: :organization_unknown}
+          )
       end)
     rescue
       _ -> :ok

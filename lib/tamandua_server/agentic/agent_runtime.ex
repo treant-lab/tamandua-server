@@ -38,7 +38,6 @@ defmodule TamanduaServer.Agentic.AgentRuntime do
   require Logger
 
   alias TamanduaServer.Agentic.AgentBuilder
-  alias TamanduaServer.Agentic.AgentBuilder.{AgentDefinition, Guardrails, ReasoningStep}
   alias TamanduaServer.Response.Executor
   alias TamanduaServer.ThreatIntel
 
@@ -695,9 +694,11 @@ defmodule TamanduaServer.Agentic.AgentRuntime do
 
     if indicator do
       try do
-        case ThreatIntel.lookup(indicator) do
+        # ThreatIntel.lookup/2 requires the indicator type; infer it from
+        # the indicator's shape (hash length, IP format, URL scheme).
+        case ThreatIntel.lookup(infer_indicator_type(indicator), indicator) do
           {:ok, result} -> {:ok, %{"threat_intel" => result}}
-          {:error, _} -> {:ok, %{"threat_intel" => "no_data"}}
+          :not_found -> {:ok, %{"threat_intel" => "no_data"}}
         end
       rescue
         _ -> {:ok, %{"threat_intel" => "lookup_failed"}}
@@ -840,6 +841,20 @@ defmodule TamanduaServer.Agentic.AgentRuntime do
       {:error, "Cannot execute #{action}: no agent_id available"}
     end
   end
+
+  defp infer_indicator_type(indicator) when is_binary(indicator) do
+    cond do
+      Regex.match?(~r/^\d{1,3}(\.\d{1,3}){3}$/, indicator) -> :ip
+      Regex.match?(~r/^[a-fA-F0-9]{64}$/, indicator) -> :hash_sha256
+      Regex.match?(~r/^[a-fA-F0-9]{40}$/, indicator) -> :hash_sha1
+      Regex.match?(~r/^[a-fA-F0-9]{32}$/, indicator) -> :hash_md5
+      String.starts_with?(indicator, "http://") -> :url
+      String.starts_with?(indicator, "https://") -> :url
+      true -> :domain
+    end
+  end
+
+  defp infer_indicator_type(_), do: :domain
 
   # ============================================================================
   # Guardrail Enforcement

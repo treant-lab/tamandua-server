@@ -20,7 +20,6 @@ defmodule TamanduaServerWeb.PaginationComponent do
   """
 
   use Phoenix.Component
-  import TamanduaServerWeb.CoreComponents
 
   attr :page, :integer, required: true
   attr :per_page, :integer, required: true
@@ -161,7 +160,7 @@ defmodule TamanduaServerWeb.PaginationComponent do
 
   # Calculate which page numbers to display
   # Shows: 1 ... 4 5 [6] 7 8 ... 20
-  defp calculate_page_numbers(current_page, total_pages) when total_pages <= 7 do
+  defp calculate_page_numbers(_current_page, total_pages) when total_pages <= 7 do
     1..total_pages |> Enum.to_list()
   end
 

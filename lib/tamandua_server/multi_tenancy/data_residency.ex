@@ -50,7 +50,7 @@ defmodule TamanduaServer.MultiTenancy.DataResidency do
   import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.MultiTenancy.{RegionRouter, ComplianceValidator}
+  alias TamanduaServer.MultiTenancy.{ComplianceValidator}
   alias TamanduaServer.Audit
 
   require Logger

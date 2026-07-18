@@ -15,10 +15,10 @@
  * - Supervisor approval mode
  */
 
-import { Head, router } from '@inertiajs/react'
+import { Head } from '@inertiajs/react'
 import { MainLayout } from '@/layouts/MainLayout'
 import type { TerminalRef } from '@/components/Terminal'
-import { useState, useRef, useCallback, useEffect, lazy, Suspense } from 'react'
+import { useState, useRef, useCallback, useEffect, lazy, Suspense, type FormEvent } from 'react'
 
 const Terminal = lazy(() => import('@/components/Terminal').then(m => ({ default: m.Terminal })))
 import {
@@ -33,24 +33,16 @@ import {
   Hash,
   ClipboardList,
   Cpu,
-  RotateCcw,
   History,
   Play,
-  Square,
   X,
   Plus,
-  Clock,
   User,
   Download,
   FileText,
-  AlertCircle,
-  HardDrive,
-  Key,
   Shield,
   Loader2,
-  ExternalLink,
   Eye,
-  EyeOff,
   Share2,
   Save,
   File,
@@ -61,17 +53,9 @@ import {
   CheckCircle,
   XCircle,
   Users,
-  Lock,
-  Unlock,
-  Trash2,
-  Upload,
   Database,
-  Wifi,
-  WifiOff,
   RefreshCw,
-  Copy,
   Settings,
-  MoreVertical,
   Pencil,
 } from 'lucide-react'
 import { cn, formatDate, formatBytes } from '@/lib/utils'
@@ -154,9 +138,57 @@ interface PendingApproval {
 
 interface ActiveSession {
   session_id: string
-  user_email: string
+  user_email?: string
   view_only: boolean
   joined_at: string
+}
+
+interface MobileCommandRecord {
+  id: string
+  command_type: string
+  status: string
+  payload?: Record<string, unknown>
+  result?: Record<string, unknown>
+  inserted_at?: string
+  completed_at?: string
+}
+
+interface MobileOverviewPayload {
+  linked?: boolean
+  link_status?: {
+    reason?: string
+    expected_identifiers?: string[]
+    remediation?: string
+  }
+  device?: {
+    id?: string
+    device_id?: string
+  } | null
+  command_device?: {
+    id?: string
+    device_id?: string
+    platform?: string
+    status?: string
+  } | null
+  command_identity?: {
+    command_device_id?: string
+    external_device_id?: string
+    agent_machine_id?: string
+    background_sync_device_id?: string
+  } | null
+  command_history?: MobileCommandRecord[]
+}
+
+function mobileOverviewCommandDeviceId(overview?: MobileOverviewPayload | null): string {
+  return String(
+    overview?.command_identity?.command_device_id ||
+      overview?.command_device?.id ||
+      overview?.command_device?.device_id ||
+      overview?.command_identity?.background_sync_device_id ||
+      overview?.device?.id ||
+      overview?.device?.device_id ||
+      ''
+  ).trim()
 }
 
 function TerminalLoadingFallback() {
@@ -254,20 +286,29 @@ const quickActions: BuiltinCommand[] = [
 const LIVE_RESPONSE_TABS_KEY = 'tamandua.liveResponse.tabs.v1'
 
 function canStartLiveResponse(agent: Agent | null | undefined): boolean {
-  if (isMobileAgent(agent)) return false
+  if (isMobileAgent(agent)) return mobileCanStart(agent)
   return agent?.status === 'online' || agent?.status === 'degraded'
 }
 
 function liveResponseStatusLabel(agent: Agent | null | undefined): string {
   if (!agent) return 'Select an agent'
-  if (isMobileAgent(agent)) return 'Live response shell is not available for mobile endpoints'
+  if (isMobileAgent(agent)) return 'Mobile live response uses managed queued endpoint commands; shell_execute is gated by privileged Android builds'
   if (agent.status === 'online') return 'Ready'
   if (agent.status === 'degraded') return 'Limited telemetry, shell may still be available'
   return 'Agent is offline'
 }
 
+function mobileCanStart(agent: Agent | null | undefined): boolean {
+  return agent?.status === 'online' || agent?.status === 'degraded'
+}
+
 function isMobileAgent(agent: Agent | null | undefined): boolean {
   const os = String(agent?.os_type || '').toLowerCase()
+  return os.includes('android') || os.includes('ios') || os.includes('iphone') || os.includes('ipad')
+}
+
+function isMobileTab(tab: TabSession | null | undefined): boolean {
+  const os = String(tab?.osType || '').toLowerCase()
   return os.includes('android') || os.includes('ios') || os.includes('iphone') || os.includes('ipad')
 }
 
@@ -1127,6 +1168,264 @@ function SupervisorApprovalPanel({
   )
 }
 
+function MobileCommandTerminal({
+  agent,
+  queuedCommand,
+  onQueuedCommandConsumed,
+}: {
+  agent: Agent
+  queuedCommand?: string | null
+  onQueuedCommandConsumed?: () => void
+}) {
+  const [overview, setOverview] = useState<MobileOverviewPayload | null>(null)
+  const [lines, setLines] = useState<string[]>([
+    'Tamandua Mobile Shell',
+    'Mobile managed shell and response commands are available from the mobile endpoint panel',
+    'Managed commands: help, posture, network, dns, apps, capabilities, collect_diagnostics',
+    'shell_execute is disabled unless the Android build explicitly opts in and reports privileged shell capability',
+  ])
+  const [input, setInput] = useState('help')
+  const [mode, setMode] = useState<'managed_shell' | 'shell_execute'>('managed_shell')
+  const [loading, setLoading] = useState(false)
+
+  const appendLines = useCallback((entries: string[]) => {
+    setLines((prev) => [...prev, ...entries].slice(-300))
+  }, [])
+
+  const loadOverview = useCallback(async () => {
+    const response = await axios.get(`/api/v1/mobile/agents/${agent.id}/overview`)
+    const data = response.data?.data || null
+    setOverview(data)
+    return data as MobileOverviewPayload | null
+  }, [agent.id])
+
+  useEffect(() => {
+    loadOverview().catch(() => {
+      appendLines(['mobile> endpoint link unavailable'])
+    })
+  }, [appendLines, loadOverview])
+
+  const pollCommand = useCallback(async (commandId: string): Promise<MobileCommandRecord | null> => {
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      const response = await axios.get(`/api/v1/mobile/v2/commands/${commandId}`)
+      const command = response.data?.data as MobileCommandRecord
+      if (command?.status === 'completed' || command?.status === 'failed') return command
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    }
+    return null
+  }, [])
+
+  const executeMobileShell = useCallback(async (rawValue?: string, forcedMode?: 'managed_shell' | 'shell_execute') => {
+    const raw = String(rawValue ?? input).trim()
+    if (!raw) return
+
+    const privileged = raw.startsWith('!')
+    const commandType = forcedMode || (privileged ? 'shell_execute' : mode)
+    const commandText = privileged ? raw.slice(1).trim() : raw
+    const prompt = commandType === 'shell_execute' ? 'mobile#' : 'mobile>'
+    let currentOverview = overview || (await loadOverview())
+    let commandDeviceId = mobileOverviewCommandDeviceId(currentOverview)
+
+    appendLines([`${prompt} ${commandText || raw}`])
+
+    if (!commandDeviceId) {
+      appendLines(['status: refreshing mobile endpoint link...'])
+      try {
+        currentOverview = await loadOverview()
+        commandDeviceId = mobileOverviewCommandDeviceId(currentOverview)
+      } catch (error: unknown) {
+        const message =
+          (error as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error ||
+          (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+          (error as Error)?.message ||
+          'mobile endpoint link refresh failed'
+        appendLines([`status: ${message}`])
+      }
+    }
+
+    if (!commandDeviceId) {
+      const identifiers = currentOverview?.link_status?.expected_identifiers || []
+      appendLines([
+        'error: no linked mobile command device for this agent',
+        ...(currentOverview?.link_status?.reason ? [`link status: ${currentOverview.link_status.reason}`] : []),
+        ...(identifiers.length ? [`link identifiers tried: ${identifiers.join(', ')}`] : []),
+        ...(currentOverview?.link_status?.remediation ? [currentOverview.link_status.remediation] : []),
+      ])
+      return
+    }
+
+    setLoading(true)
+    try {
+      const response = await axios.post('/api/v1/mobile/v2/commands', {
+        device_id: commandDeviceId,
+        command_type: commandType,
+        payload: { command: commandText || raw },
+      })
+      const created = response.data?.data as MobileCommandRecord
+      appendLines([`queued: ${created.id} (${commandType})`])
+
+      const completed = await pollCommand(created.id)
+      if (!completed) {
+        appendLines(['status: still pending; mobile app has not returned a result yet'])
+        return
+      }
+
+      appendLines(formatMobileCommandOutput(completed))
+      loadOverview().catch(() => undefined)
+    } catch (error: unknown) {
+      const message =
+        (error as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error ||
+        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+        (error as Error)?.message ||
+        'mobile shell command failed'
+      appendLines([`error: ${message}`])
+    } finally {
+      setLoading(false)
+      setInput('')
+    }
+  }, [
+    appendLines,
+    input,
+    loadOverview,
+    mode,
+    overview,
+    pollCommand,
+  ])
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    executeMobileShell()
+  }
+
+  useEffect(() => {
+    if (!queuedCommand) return
+    executeMobileShell(queuedCommand, queuedCommand.startsWith('!') ? 'shell_execute' : 'managed_shell')
+    onQueuedCommandConsumed?.()
+  }, [executeMobileShell, onQueuedCommandConsumed, queuedCommand])
+
+  return (
+    <div className="h-full flex flex-col" style={{ backgroundColor: '#050807', color: '#d7fbe8' }}>
+      <div className="flex items-center justify-between px-4 py-2 border-b" style={{ borderColor: 'rgba(255,255,255,0.12)' }}>
+        <div className="flex items-center gap-2 text-sm">
+          <TerminalIcon className="h-4 w-4" />
+          <span className="font-medium">{agent.hostname}</span>
+          <span style={{ color: '#8fd7b0' }}>{overview?.command_device?.status || 'mobile endpoint'}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setMode('managed_shell')}
+            className={cn('px-2 py-1 rounded text-xs', mode === 'managed_shell' ? 'bg-emerald-500 text-black' : 'bg-white/10')}
+          >
+            Managed
+          </button>
+          <button
+            onClick={() => setMode('shell_execute')}
+            className={cn('px-2 py-1 rounded text-xs', mode === 'shell_execute' ? 'bg-orange-400 text-black' : 'bg-white/10')}
+            title="Requires tamandua.endpoint.allow_privileged_shell=true and a reported privileged shell capability"
+          >
+            Privileged gated
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto p-4 font-mono text-sm whitespace-pre-wrap">
+        {lines.map((line, index) => (
+          <div key={`${index}-${line.slice(0, 24)}`}>{line}</div>
+        ))}
+        {loading && <div style={{ color: '#facc15' }}>waiting for mobile endpoint result...</div>}
+      </div>
+
+      <div className="px-4 py-2 border-t flex flex-wrap gap-2" style={{ borderColor: 'rgba(255,255,255,0.12)' }}>
+        {['posture', 'network', 'dns', 'apps', 'capabilities', 'collect_diagnostics'].map((command) => (
+          <button
+            key={command}
+            onClick={() => executeMobileShell(command, command.startsWith('!') ? 'shell_execute' : 'managed_shell')}
+            disabled={loading}
+            className="px-2 py-1 rounded text-xs bg-white/10 hover:bg-white/20 disabled:opacity-50"
+          >
+            {command}
+          </button>
+        ))}
+      </div>
+
+      <form onSubmit={submit} className="p-3 border-t flex items-center gap-2" style={{ borderColor: 'rgba(255,255,255,0.12)' }}>
+        <span className="font-mono text-sm">{mode === 'shell_execute' ? 'mobile#' : 'mobile>'}</span>
+        <input
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          disabled={loading}
+          className="flex-1 bg-transparent outline-none font-mono text-sm"
+          placeholder={mode === 'shell_execute' ? 'id' : 'posture'}
+        />
+        <button
+          type="submit"
+          disabled={loading || !input.trim()}
+          className="px-3 py-1.5 rounded text-sm bg-emerald-500 text-black disabled:opacity-50"
+        >
+          Run
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function formatMobileCommandOutput(command: MobileCommandRecord): string[] {
+  const envelope = command.result || {}
+  const nestedResult = envelope.result && typeof envelope.result === 'object'
+    ? (envelope.result as Record<string, unknown>)
+    : null
+  const result = nestedResult || envelope
+  const status = command.status || 'unknown'
+  const output = result.output || result.stdout
+  const stderr = result.stderr
+  const reason = result.reason || result.error
+  const exitCode = result.exit_code
+  const shell = result.shell || result.strategy
+  const attempts = Array.isArray(result.attempts) ? result.attempts : null
+
+  const lines = [
+    `status: ${status}${exitCode !== undefined ? ` exit=${exitCode}` : ''}${shell ? ` shell=${String(shell)}` : ''}`,
+  ]
+
+  if (typeof output === 'string' && output.trim()) {
+    lines.push(output.trim())
+  } else if (result && Object.keys(result).length > 0) {
+    lines.push(JSON.stringify(result, null, 2))
+  }
+
+  if (typeof stderr === 'string' && stderr.trim()) lines.push(`stderr: ${stderr.trim()}`)
+  if (attempts?.length) lines.push(`attempts: ${JSON.stringify(attempts, null, 2)}`)
+  if (reason) lines.push(`reason: ${String(reason)}`)
+  if (reason === 'privileged_shell_disabled') {
+    lines.push('shell_execute requires explicit Android build opt-in: tamandua.endpoint.allow_privileged_shell=true')
+    lines.push('use managed_shell commands for the default mobile response path')
+  }
+
+  return lines
+}
+
+function mobileQuickActionCommand(command: string): string {
+  switch (command) {
+    case 'ps':
+      return 'posture'
+    case 'netstat':
+      return 'network'
+    case 'autoruns':
+    case 'services':
+      return 'capabilities'
+    case 'tasks':
+      return 'collect_diagnostics'
+    case 'dns':
+      return 'dns'
+    case 'history':
+      return 'capabilities'
+    case 'help':
+      return 'help'
+    default:
+      return command
+  }
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -1152,7 +1451,7 @@ export default function LiveResponse({
   const [showFileBrowser, setShowFileBrowser] = useState(false)
   const [activeSessionsByAgent, setActiveSessionsByAgent] = useState<Record<string, ActiveSession[]>>({})
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([])
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting'>('disconnected')
+  const [mobileQueuedCommands, setMobileQueuedCommands] = useState<Record<string, string | null>>({})
 
   const terminalRefs = useRef<Map<string, TerminalRef>>(new Map())
   // Track if we're already starting a session to prevent race conditions
@@ -1274,7 +1573,7 @@ export default function LiveResponse({
       osType: selectedAgent.os_type,
       title: selectedAgent.hostname,
       sessionId: null,
-      status: 'connecting',
+      status: isMobileAgent(selectedAgent) ? 'connected' : 'connecting',
       waitingForOutput: false,
       viewOnly,
     }
@@ -1333,11 +1632,18 @@ export default function LiveResponse({
       return
     }
 
+    const active = tabs.find((tab) => tab.id === activeTabId)
+    if (isMobileTab(active)) {
+      const mapped = mobileQuickActionCommand(action.command)
+      setMobileQueuedCommands((prev) => ({ ...prev, [activeTabId]: mapped }))
+      return
+    }
+
     const ref = terminalRefs.current.get(activeTabId)
     if (ref) {
       ref.executeBuiltin(action.command, action.args)
     }
-  }, [activeTabId])
+  }, [activeTabId, tabs])
 
   // Handle playback
   const handlePlayback = useCallback(async (session: ShellSession) => {
@@ -1729,11 +2035,20 @@ export default function LiveResponse({
           {/* File Browser Panel */}
           {showFileBrowser && activeTabId && activeTab && (
             <div className="mb-3 shrink-0">
-              <FileBrowser
-                agentId={activeTab.agentId}
-                osType={activeTab.osType}
-                onClose={() => setShowFileBrowser(false)}
-              />
+              {isMobileTab(activeTab) ? (
+                <div
+                  className="rounded-xl border p-4 text-sm"
+                  style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--muted)' }}
+                >
+                  Mobile file browsing is exposed through package/app inspection and diagnostics commands, not the host file browser.
+                </div>
+              ) : (
+                <FileBrowser
+                  agentId={activeTab.agentId}
+                  osType={activeTab.osType}
+                  onClose={() => setShowFileBrowser(false)}
+                />
+              )}
             </div>
           )}
 
@@ -1830,105 +2145,121 @@ export default function LiveResponse({
                     key={tab.id}
                     className={cn('absolute inset-0', tab.id !== activeTabId && 'hidden')}
                   >
-                    <Suspense fallback={<TerminalLoadingFallback />}>
-                      <Terminal
-                        ref={(ref) => {
-                          if (ref) {
-                            terminalRefs.current.set(tab.id, ref)
-                          }
+                    {isMobileTab(tab) ? (
+                      <MobileCommandTerminal
+                        agent={{
+                          id: tab.agentId,
+                          hostname: tab.hostname,
+                          os_type: tab.osType || 'android',
+                          status: 'online',
+                          last_seen: '',
                         }}
-                        agentId={tab.agentId}
-                        sessionId={tab.sessionId || undefined}
-                        viewOnly={tab.viewOnly}
-                        onConnectionStateChange={(state) => {
-                          setTabs((prev) =>
-                            prev.map((t) =>
-                              t.id === tab.id
-                                ? {
-                                    ...t,
-                                    status:
-                                      state === 'connected'
-                                        ? 'connected'
-                                        : state === 'connecting'
-                                          ? 'connecting'
-                                          : state === 'error'
-                                            ? 'error'
-                                            : 'disconnected',
-                                  }
-                                : t
-                            )
-                          )
-                        }}
-                        onWaitingForOutputChange={(waiting) => {
-                          setTabs((prev) =>
-                            prev.map((t) =>
-                              t.id === tab.id ? { ...t, waitingForOutput: waiting } : t
-                            )
-                          )
-                        }}
-                        onSessionStart={(sessionId) => {
-                          setTabs((prev) =>
-                            prev.map((t) =>
-                              t.id === tab.id
-                                ? { ...t, sessionId, status: 'connected', waitingForOutput: true }
-                                : t
-                            )
-                          )
-                        }}
-                        onActiveSessions={(sessions) => {
-                          setActiveSessionsByAgent((prev) => ({
-                            ...prev,
-                            [tab.agentId]: sessions.filter(
-                              (session, index, all) =>
-                                session.session_id &&
-                                all.findIndex((candidate) => candidate.session_id === session.session_id) === index
-                            ),
-                          }))
-                        }}
-                        onShareToken={(token) => {
-                          navigator.clipboard.writeText(token).catch(() => undefined)
-                          toast.success('Share token copied to clipboard')
-                        }}
-                        onSupervisorRequired={(commandId, command) => {
-                          setPendingApprovals((prev) => {
-                            if (prev.some((approval) => approval.command_id === commandId)) {
-                              return prev
-                            }
-
-                            return [
-                              ...prev,
-                              {
-                                command_id: commandId,
-                                command,
-                                reason: 'Supervisor approval required',
-                                requested_at: new Date().toISOString(),
-                              },
-                            ]
-                          })
-                        }}
-                        onSessionEnd={(reason) => {
-                          setTabs((prev) =>
-                            prev.map((t) =>
-                              t.id === tab.id
-                                ? { ...t, status: 'disconnected', waitingForOutput: false }
-                                : t
-                            )
-                          )
-                          toast.info(`Session ended: ${reason}`)
-                        }}
-                        onError={(error) => {
-                          setTabs((prev) =>
-                            prev.map((t) =>
-                              t.id === tab.id
-                                ? { ...t, status: 'error', waitingForOutput: false }
-                                : t
-                            )
-                          )
-                          toast.error(error)
-                        }}
-                        className="h-full"
+                        queuedCommand={mobileQueuedCommands[tab.id]}
+                        onQueuedCommandConsumed={() =>
+                          setMobileQueuedCommands((prev) => ({ ...prev, [tab.id]: null }))
+                        }
                       />
-                    </Suspense>
+                    ) : (
+                      <Suspense fallback={<TerminalLoadingFallback />}>
+                        <Terminal
+                          ref={(ref) => {
+                            if (ref) {
+                              terminalRefs.current.set(tab.id, ref)
+                            }
+                          }}
+                          agentId={tab.agentId}
+                          sessionId={tab.sessionId || undefined}
+                          viewOnly={tab.viewOnly}
+                          onConnectionStateChange={(state) => {
+                            setTabs((prev) =>
+                              prev.map((t) =>
+                                t.id === tab.id
+                                  ? {
+                                      ...t,
+                                      status:
+                                        state === 'connected'
+                                          ? 'connected'
+                                          : state === 'connecting'
+                                            ? 'connecting'
+                                            : state === 'error'
+                                              ? 'error'
+                                              : 'disconnected',
+                                    }
+                                  : t
+                              )
+                            )
+                          }}
+                          onWaitingForOutputChange={(waiting) => {
+                            setTabs((prev) =>
+                              prev.map((t) =>
+                                t.id === tab.id ? { ...t, waitingForOutput: waiting } : t
+                              )
+                            )
+                          }}
+                          onSessionStart={(sessionId) => {
+                            setTabs((prev) =>
+                              prev.map((t) =>
+                                t.id === tab.id
+                                  ? { ...t, sessionId, status: 'connected', waitingForOutput: true }
+                                  : t
+                              )
+                            )
+                          }}
+                          onActiveSessions={(sessions) => {
+                            setActiveSessionsByAgent((prev) => ({
+                              ...prev,
+                              [tab.agentId]: sessions.filter(
+                                (session, index, all) =>
+                                  session.session_id &&
+                                  all.findIndex((candidate) => candidate.session_id === session.session_id) === index
+                              ),
+                            }))
+                          }}
+                          onShareToken={(token) => {
+                            navigator.clipboard.writeText(token).catch(() => undefined)
+                            toast.success('Share token copied to clipboard')
+                          }}
+                          onSupervisorRequired={(commandId, command) => {
+                            setPendingApprovals((prev) => {
+                              if (prev.some((approval) => approval.command_id === commandId)) {
+                                return prev
+                              }
+
+                              return [
+                                ...prev,
+                                {
+                                  command_id: commandId,
+                                  command,
+                                  reason: 'Supervisor approval required',
+                                  requested_at: new Date().toISOString(),
+                                },
+                              ]
+                            })
+                          }}
+                          onSessionEnd={(reason) => {
+                            setTabs((prev) =>
+                              prev.map((t) =>
+                                t.id === tab.id
+                                  ? { ...t, status: 'disconnected', waitingForOutput: false }
+                                  : t
+                              )
+                            )
+                            toast.info(`Session ended: ${reason}`)
+                          }}
+                          onError={(error) => {
+                            setTabs((prev) =>
+                              prev.map((t) =>
+                                t.id === tab.id
+                                  ? { ...t, status: 'error', waitingForOutput: false }
+                                  : t
+                              )
+                            )
+                            toast.error(error)
+                          }}
+                          className="h-full"
+                        />
+                      </Suspense>
+                    )}
                   </div>
                 ))}
               </div>

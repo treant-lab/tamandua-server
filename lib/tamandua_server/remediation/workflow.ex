@@ -209,7 +209,7 @@ defmodule TamanduaServer.Remediation.Workflow do
           notify_state_change(updated_workflow, new_state)
           {:ok, updated_workflow}
 
-        {:error, changeset} = error ->
+        {:error, _changeset} = error ->
           error
       end
     end

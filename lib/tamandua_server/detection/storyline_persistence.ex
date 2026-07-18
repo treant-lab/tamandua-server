@@ -73,12 +73,13 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
 
     Logger.info("[StorylinePersistence] Started — sync every #{div(@sync_interval_ms, 1000)}s")
 
-    {:ok, %{
-      last_sync_at: DateTime.utc_now(),
-      synced: 0,
-      recovered: 0,
-      errors: 0
-    }}
+    {:ok,
+     %{
+       last_sync_at: DateTime.utc_now(),
+       synced: 0,
+       recovered: 0,
+       errors: 0
+     }}
   end
 
   # -- Periodic sync ---------------------------------------------------
@@ -119,6 +120,7 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
         case persist_to_db(storyline) do
           :ok ->
             {:noreply, %{state | synced: state.synced + 1}}
+
           :error ->
             {:noreply, %{state | errors: state.errors + 1}}
         end
@@ -154,20 +156,19 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
       Logger.debug("[StorylinePersistence] Synced #{synced} storylines to DB (#{errors} errors)")
     end
 
-    %{state |
-      last_sync_at: DateTime.utc_now(),
-      synced: state.synced + synced,
-      errors: state.errors + errors
+    %{
+      state
+      | last_sync_at: DateTime.utc_now(),
+        synced: state.synced + synced,
+        errors: state.errors + errors
     }
   end
 
   defp persist_to_db(%StorylineData{} = storyline) do
-    org_id = TamanduaServer.Agents.OrgLookup.get_org_id(storyline.agent_id)
-
     attrs = %{
       id: storyline.id,
       agent_id: storyline.agent_id,
-      organization_id: org_id,
+      organization_id: storyline.organization_id,
       alert_id: storyline.alert_id,
       root_pid: storyline.root_pid,
       status: to_string(storyline.status),
@@ -188,7 +189,10 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
     :ok
   rescue
     e ->
-      Logger.error("[StorylinePersistence] Failed to persist storyline #{storyline.id}: #{inspect(e)}")
+      Logger.error(
+        "[StorylinePersistence] Failed to persist storyline #{storyline.id}: #{inspect(e)}"
+      )
+
       :error
   end
 
@@ -201,15 +205,17 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
   defp do_recover do
     cutoff = DateTime.utc_now() |> DateTime.add(-@recovery_window_hours * 3600, :second)
 
-    records = StorylineRecord.list(
-      status: "active",
-      limit: 1000
-    )
+    records =
+      StorylineRecord.list(
+        status: "active",
+        limit: 1000
+      )
 
     # Only recover records newer than cutoff
-    records = Enum.filter(records, fn r ->
-      r.last_seen_at && DateTime.compare(r.last_seen_at, cutoff) == :gt
-    end)
+    records =
+      Enum.filter(records, fn r ->
+        r.last_seen_at && DateTime.compare(r.last_seen_at, cutoff) == :gt
+      end)
 
     Enum.reduce(records, 0, fn record, count ->
       case recover_to_ets(record) do
@@ -223,7 +229,8 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
       0
   end
 
-  defp recover_to_ets(record) do
+  defp recover_to_ets(%{organization_id: organization_id} = record)
+       when is_binary(organization_id) do
     # Don't overwrite if already in ETS (e.g., engine already re-created it)
     case ets_lookup(record.id) do
       {:ok, _} ->
@@ -233,6 +240,7 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
         storyline = %StorylineData{
           id: record.id,
           agent_id: record.agent_id,
+          organization_id: record.organization_id,
           root_pid: record.root_pid,
           created_at: record.first_seen_at || record.inserted_at,
           updated_at: record.last_seen_at || record.updated_at,
@@ -250,7 +258,10 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
 
         # Rebuild PID-to-storyline mappings
         Enum.each(record.process_pids || [], fn pid ->
-          :ets.insert(:tamandua_pid_to_storyline, {{record.agent_id, pid}, record.id})
+          :ets.insert(
+            :tamandua_pid_to_storyline,
+            {{record.organization_id, record.agent_id, pid}, record.id}
+          )
         end)
 
         :ok
@@ -258,6 +269,8 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
   rescue
     _ -> :skip
   end
+
+  defp recover_to_ets(_record), do: :skip
 
   # ------------------------------------------------------------------
   # ETS Helpers
@@ -325,6 +338,7 @@ defmodule TamanduaServer.Detection.StorylinePersistence do
       _ -> nil
     end
   end
+
   defp deserialize_datetime(%DateTime{} = dt), do: dt
   defp deserialize_datetime(_), do: nil
 end

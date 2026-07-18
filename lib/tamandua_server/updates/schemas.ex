@@ -134,8 +134,8 @@ defmodule Tamandua.Updates.Version do
   end
 
   defp compare_parts([], []), do: :eq
-  defp compare_parts([h1 | t1], [h2 | t2]) when h1 > h2, do: :gt
-  defp compare_parts([h1 | t1], [h2 | t2]) when h1 < h2, do: :lt
+  defp compare_parts([h1 | _t1], [h2 | _t2]) when h1 > h2, do: :gt
+  defp compare_parts([h1 | _t1], [h2 | _t2]) when h1 < h2, do: :lt
   defp compare_parts([_ | t1], [_ | t2]), do: compare_parts(t1, t2)
   defp compare_parts([], _), do: :lt
   defp compare_parts(_, []), do: :gt

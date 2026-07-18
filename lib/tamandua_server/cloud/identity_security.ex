@@ -412,7 +412,7 @@ defmodule TamanduaServer.Cloud.IdentitySecurity do
   # AWS IAM Analysis
 
   defp analyze_aws_iam(account_id, policies) do
-    findings = []
+    _findings = []
 
     # Analyze each policy
     {policy_findings, identities} =
@@ -714,7 +714,7 @@ defmodule TamanduaServer.Cloud.IdentitySecurity do
   # Azure IAM Analysis
 
   defp analyze_azure_iam(account_id, role_assignments) do
-    findings = []
+    _findings = []
 
     analysis_results =
       Enum.map(role_assignments, fn assignment ->
@@ -826,7 +826,7 @@ defmodule TamanduaServer.Cloud.IdentitySecurity do
   # GCP IAM Analysis
 
   defp analyze_gcp_iam(account_id, iam_bindings) do
-    findings = []
+    _findings = []
 
     analysis_results =
       Enum.flat_map(iam_bindings, fn binding ->

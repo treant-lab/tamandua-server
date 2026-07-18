@@ -21,33 +21,33 @@ defmodule TamanduaServer.Detection.StorylineRecord do
   @foreign_key_type :binary_id
 
   schema "storylines" do
-    belongs_to :agent, TamanduaServer.Agents.Agent
-    belongs_to :organization, TamanduaServer.Organizations.Organization
-    belongs_to :alert, TamanduaServer.Alerts.Alert
+    belongs_to(:agent, TamanduaServer.Agents.Agent)
+    belongs_to(:organization, TamanduaServer.Accounts.Organization)
+    belongs_to(:alert, TamanduaServer.Alerts.Alert)
 
-    field :root_pid, :integer
-    field :status, :string, default: "active"
-    field :severity, :string, default: "low"
-    field :total_score, :float, default: 0.0
+    field(:root_pid, :integer)
+    field(:status, :string, default: "active")
+    field(:severity, :string, default: "low")
+    field(:total_score, :float, default: 0.0)
 
-    field :process_pids, {:array, :integer}, default: []
-    field :mitre_tactics, {:array, :string}, default: []
-    field :mitre_techniques, {:array, :string}, default: []
-    field :detections, {:array, :map}, default: []
+    field(:process_pids, {:array, :integer}, default: [])
+    field(:mitre_tactics, {:array, :string}, default: [])
+    field(:mitre_techniques, {:array, :string}, default: [])
+    field(:detections, {:array, :map}, default: [])
 
-    field :detection_count, :integer, default: 0
-    field :process_count, :integer, default: 0
-    field :tactic_count, :integer, default: 0
+    field(:detection_count, :integer, default: 0)
+    field(:process_count, :integer, default: 0)
+    field(:tactic_count, :integer, default: 0)
 
-    field :first_seen_at, :utc_datetime_usec
-    field :last_seen_at, :utc_datetime_usec
+    field(:first_seen_at, :utc_datetime_usec)
+    field(:last_seen_at, :utc_datetime_usec)
 
     timestamps(type: :utc_datetime_usec)
   end
 
-  @required_fields ~w(id agent_id status severity total_score)a
+  @required_fields ~w(id agent_id organization_id status severity total_score)a
   @optional_fields ~w(
-    organization_id alert_id root_pid process_pids
+    alert_id root_pid process_pids
     mitre_tactics mitre_techniques detections
     detection_count process_count tactic_count
     first_seen_at last_seen_at
@@ -102,12 +102,23 @@ defmodule TamanduaServer.Detection.StorylineRecord do
     %__MODULE__{}
     |> changeset(attrs)
     |> Repo.insert!(
-      on_conflict: {:replace, [
-        :status, :severity, :total_score, :process_pids,
-        :mitre_tactics, :mitre_techniques, :detections,
-        :detection_count, :process_count, :tactic_count,
-        :alert_id, :last_seen_at, :updated_at
-      ]},
+      on_conflict:
+        {:replace,
+         [
+           :status,
+           :severity,
+           :total_score,
+           :process_pids,
+           :mitre_tactics,
+           :mitre_techniques,
+           :detections,
+           :detection_count,
+           :process_count,
+           :tactic_count,
+           :alert_id,
+           :last_seen_at,
+           :updated_at
+         ]},
       conflict_target: :id
     )
   end
@@ -162,24 +173,29 @@ defmodule TamanduaServer.Detection.StorylineRecord do
   defp base_query, do: from(s in __MODULE__)
 
   defp maybe_filter_agent(query, nil), do: query
+
   defp maybe_filter_agent(query, agent_id) do
     where(query, [s], s.agent_id == ^agent_id)
   end
 
   defp maybe_filter_org(query, nil), do: query
+
   defp maybe_filter_org(query, org_id) do
     where(query, [s], s.organization_id == ^org_id)
   end
 
   defp maybe_filter_status(query, nil), do: query
+
   defp maybe_filter_status(query, status) when is_atom(status) do
     maybe_filter_status(query, to_string(status))
   end
+
   defp maybe_filter_status(query, status) do
     where(query, [s], s.status == ^status)
   end
 
   defp maybe_filter_min_severity(query, nil), do: query
+
   defp maybe_filter_min_severity(query, min_severity) do
     severity_order = %{"low" => 0, "medium" => 1, "high" => 2, "critical" => 3}
     min_str = to_string(min_severity)

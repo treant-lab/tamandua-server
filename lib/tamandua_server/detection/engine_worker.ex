@@ -18,12 +18,39 @@ defmodule TamanduaServer.Detection.EngineWorker do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.{Rules, Correlator, DNSAnalyzer, C2Detector, Config,
-    CollectorRouter, EventContext, EventTypes, PreventionPolicy, Evidence, Mitre, YaraScanner, YaraGenerator, Baseline,
-    TemporalScorer, Provenance, LateralMovement, IdentityThreats, Storyline,
-    EngineSupervisor, PackageBehaviorAnalyzer, CredentialDetector, MLProcessTracker,
-    ModelFileCorrelator, LLMRequestTracker, AIRuntimeAnalyzer, InferenceTracker,
-    PromptInjectionClassifier, RiskScoreSnapshot, AgentRiskScoreStore}
+  alias TamanduaServer.Detection.{
+    Rules,
+    Correlator,
+    DNSAnalyzer,
+    C2Detector,
+    Config,
+    CollectorRouter,
+    EventContext,
+    EventTypes,
+    PreventionPolicy,
+    Evidence,
+    Mitre,
+    YaraScanner,
+    YaraGenerator,
+    Baseline,
+    TemporalScorer,
+    Provenance,
+    LateralMovement,
+    IdentityThreats,
+    Storyline,
+    EngineSupervisor,
+    PackageBehaviorAnalyzer,
+    CredentialDetector,
+    MLProcessTracker,
+    ModelFileCorrelator,
+    LLMRequestTracker,
+    AIRuntimeAnalyzer,
+    InferenceTracker,
+    PromptInjectionClassifier,
+    RiskScoreSnapshot,
+    AgentRiskScoreStore
+  }
+
   alias TamanduaServer.Detection.ThreatIntel.Feeds, as: ThreatIntelFeeds
   alias TamanduaServer.Telemetry.PackageInstallCorrelator
   alias TamanduaServer.Alerts
@@ -37,63 +64,89 @@ defmodule TamanduaServer.Detection.EngineWorker do
   alias TamanduaServer.ThreatIntel.Attribution
   alias TamanduaServer.Runtime.KillSwitch
   alias TamanduaServer.Detection.OutputValidator
-  alias TamanduaServer.NDR.{FlowAnalyzer, ProtocolAnalyzer, LateralDetector, EncryptedTraffic, EventNormalizer}
+
+  alias TamanduaServer.NDR.{
+    FlowAnalyzer,
+    ProtocolAnalyzer,
+    LateralDetector,
+    EncryptedTraffic,
+    EventNormalizer
+  }
 
   @trusted_domains [
-    "microsoft.com", "windows.com", "windowsupdate.com", "office.com", "office365.com",
-    "live.com", "outlook.com", "azure.com", "azureedge.net", "msedge.net",
-    "google.com", "googleapis.com", "gstatic.com", "youtube.com", "googlevideo.com",
-    "cloudflare.com", "cloudflare-dns.com",
-    "amazonaws.com", "aws.amazon.com", "cloudfront.net",
-    "github.com", "githubusercontent.com", "github.io",
-    "akamai.net", "akamaized.net", "akadns.net",
-    "apple.com", "icloud.com",
-    "mozilla.org", "mozilla.net", "firefox.com",
-    "digicert.com", "letsencrypt.org", "verisign.com",
-    "ubuntu.com", "debian.org", "fedoraproject.org",
-    "docker.com", "docker.io",
-    "npmjs.org", "pypi.org", "crates.io", "hex.pm",
-    "slack.com", "teams.microsoft.com"
+    "microsoft.com",
+    "windows.com",
+    "windowsupdate.com",
+    "office.com",
+    "office365.com",
+    "live.com",
+    "outlook.com",
+    "azure.com",
+    "azureedge.net",
+    "msedge.net",
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+    "youtube.com",
+    "googlevideo.com",
+    "cloudflare.com",
+    "cloudflare-dns.com",
+    "amazonaws.com",
+    "aws.amazon.com",
+    "cloudfront.net",
+    "github.com",
+    "githubusercontent.com",
+    "github.io",
+    "akamai.net",
+    "akamaized.net",
+    "akadns.net",
+    "apple.com",
+    "icloud.com",
+    "mozilla.org",
+    "mozilla.net",
+    "firefox.com",
+    "digicert.com",
+    "letsencrypt.org",
+    "verisign.com",
+    "ubuntu.com",
+    "debian.org",
+    "fedoraproject.org",
+    "docker.com",
+    "docker.io",
+    "npmjs.org",
+    "pypi.org",
+    "crates.io",
+    "hex.pm",
+    "slack.com",
+    "teams.microsoft.com"
   ]
 
   @dns_ports MapSet.new(["53", "5353"])
   @dot_ports MapSet.new(["853"])
   @doh_ports MapSet.new(["443", "8443"])
   @known_doh_ips MapSet.new([
-    "1.1.1.1",
-    "1.0.0.1",
-    "8.8.8.8",
-    "8.8.4.4",
-    "9.9.9.9",
-    "149.112.112.112",
-    "94.140.14.14",
-    "94.140.15.15",
-    "76.76.2.0",
-    "76.76.10.0",
-    "185.228.168.9",
-    "185.228.169.9"
-  ])
+                   "1.1.1.1",
+                   "1.0.0.1",
+                   "8.8.8.8",
+                   "8.8.4.4",
+                   "9.9.9.9",
+                   "149.112.112.112",
+                   "94.140.14.14",
+                   "94.140.15.15",
+                   "76.76.2.0",
+                   "76.76.10.0",
+                   "185.228.168.9",
+                   "185.228.169.9"
+                 ])
   @known_doh_domains MapSet.new([
-    "cloudflare-dns.com",
-    "dns.google",
-    "dns.quad9.net",
-    "dns.adguard.com",
-    "doh.opendns.com",
-    "dns.nextdns.io",
-    "dns.cleanbrowsing.org"
-  ])
-
-  # ── Async backpressure (load shedding) ─────────────────────────────
-  # Default mailbox depth at which fire-and-forget async analysis events are
-  # shed instead of cast. Override via:
-  #   config :tamandua_server, :detection_engine, max_async_queue: N
-  @max_async_queue 5_000
-  # Events already carrying agent-side detections are high-priority and are
-  # only shed once the mailbox reaches this multiple of the threshold.
-  @high_priority_queue_factor 2
-  # Rate limit for the shed warning log (per shard) so a burst does not
-  # produce one log line per dropped event.
-  @drop_log_interval_ms 10_000
+                       "cloudflare-dns.com",
+                       "dns.google",
+                       "dns.quad9.net",
+                       "dns.adguard.com",
+                       "doh.opendns.com",
+                       "dns.nextdns.io",
+                       "dns.cleanbrowsing.org"
+                     ])
 
   # ── Client API ─────────────────────────────────────────────────────
 
@@ -227,8 +280,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
       detections = detections ++ sigma_matches
 
       # 3. IOC matching (read from ETS)
-      iocs = get_iocs()
-      ioc_matches = match_iocs(event, iocs)
+      iocs = lookup_iocs(event)
+      ioc_matches = match_iocs(iocs)
       detections = detections ++ ioc_matches
 
       # 3b. Threat Intel Feed matching
@@ -246,6 +299,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
       # 4. DNS-specific analysis
       event_type = detection_context.event_type
+
       dns_detections =
         if event_type == "dns_query" or dns_transport_event?(event) do
           dns_event = canonical_dns_analysis_event(event)
@@ -255,14 +309,17 @@ defmodule TamanduaServer.Detection.EngineWorker do
         else
           []
         end
+
       detections = detections ++ dns_detections
 
       # 4b. DNS tunneling detection via C2 Detector
-      dns_tunnel_detections = if event_type == "dns_query" do
-        safe_call(fn -> C2Detector.analyze_dns_tunneling(event) end, [])
-      else
-        []
-      end
+      dns_tunnel_detections =
+        if event_type == "dns_query" do
+          safe_call(fn -> C2Detector.analyze_dns_tunneling(event) end, [])
+        else
+          []
+        end
+
       detections = detections ++ dns_tunnel_detections
 
       # 5. C2 detection for network connections. The detector tracks all
@@ -271,11 +328,13 @@ defmodule TamanduaServer.Detection.EngineWorker do
       payload = event[:payload] || event["payload"] || %{}
       agent_id = event[:agent_id] || event["agent_id"]
 
-      c2_detections = if event_type == "network_connect" do
-        safe_call(fn -> C2Detector.analyze_connection(event) end, [])
-      else
-        []
-      end
+      c2_detections =
+        if event_type == "network_connect" do
+          safe_call(fn -> C2Detector.analyze_connection(event) end, [])
+        else
+          []
+        end
+
       detections = detections ++ c2_detections
 
       # 5b. Feed concrete network telemetry into the NDR analyzers. These
@@ -288,11 +347,14 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
           safe_call(fn -> FlowAnalyzer.process_event(ndr_event) end, :ok)
 
-          safe_call(fn ->
-            ProtocolAnalyzer.analyze_event(ndr_event) ++
-              LateralDetector.analyze_event(ndr_event) ++
-              EncryptedTraffic.analyze_event(ndr_event)
-          end, [])
+          safe_call(
+            fn ->
+              ProtocolAnalyzer.analyze_event(ndr_event) ++
+                LateralDetector.analyze_event(ndr_event) ++
+                EncryptedTraffic.analyze_event(ndr_event)
+            end,
+            []
+          )
         else
           []
         end
@@ -300,11 +362,13 @@ defmodule TamanduaServer.Detection.EngineWorker do
       detections = detections ++ ndr_detections
 
       # 6. YARA scanning for file events
-      yara_detections = if event_type in ["file_create", "file_modify", "process_create"] do
-        scan_event_with_yara(event)
-      else
-        []
-      end
+      yara_detections =
+        if event_type in ["file_create", "file_modify", "process_create"] do
+          scan_event_with_yara(event)
+        else
+          []
+        end
+
       detections = detections ++ yara_detections
 
       # 7. Feed to correlator for behavioral analysis
@@ -312,52 +376,89 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
       # 7b. Build provenance graph
       prov_agent_id = event[:agent_id] || event["agent_id"]
-      if prov_agent_id, do: safe_call(fn -> Provenance.record_event(prov_agent_id, event) end, :ok)
+
+      if prov_agent_id,
+        do: safe_call(fn -> Provenance.record_event(prov_agent_id, event) end, :ok)
 
       # 7c-sl. Feed process lifecycle events into the Storyline engine
       storyline_agent_id = event[:agent_id] || event["agent_id"]
-      if storyline_agent_id && event_type in ["process_create", "process", "process_terminate", "process_exit"] do
+
+      if storyline_agent_id &&
+           event_type in ["process_create", "process", "process_terminate", "process_exit"] do
         safe_call(fn -> Storyline.ingest_process_event(storyline_agent_id, event) end, :ok)
       end
 
       # 7c. Feed authentication/network events to Lateral Movement engine
-      lateral_event_types = ["authentication", "logon", "auth_event", "logon_event",
-                             "network_connect", "network_connection", "network", "network_anomaly",
-                             "service_create", "service_created", "service_install",
-                             "scheduled_task", "task_create", "scheduled_task_create",
-                             "wmi_event", "wmi_exec", "wmi_process",
-                             "named_pipe", "pipe_connect"]
+      lateral_event_types = [
+        "authentication",
+        "logon",
+        "auth_event",
+        "logon_event",
+        "network_connect",
+        "network_connection",
+        "network",
+        "network_anomaly",
+        "service_create",
+        "service_created",
+        "service_install",
+        "scheduled_task",
+        "task_create",
+        "scheduled_task_create",
+        "wmi_event",
+        "wmi_exec",
+        "wmi_process",
+        "named_pipe",
+        "pipe_connect"
+      ]
 
       if event_type in lateral_event_types do
         safe_call(fn -> LateralMovement.process_event(event) end, :ok)
       end
 
       # 7d. Feed authentication/identity events to Identity Threat engine
-      identity_event_types = ["authentication", "logon", "auth_event", "logon_event",
-                              "kerberos_tgt", "kerberos_tgs", "directory_replication",
-                              "account_logon", "logon_failure"]
+      identity_event_types = [
+        "authentication",
+        "logon",
+        "auth_event",
+        "logon_event",
+        "kerberos_tgt",
+        "kerberos_tgs",
+        "directory_replication",
+        "account_logon",
+        "logon_failure"
+      ]
 
       if event_type in identity_event_types do
         safe_call(fn -> IdentityThreats.analyze_event(event) end, :ok)
       end
 
       # 7e. Supply chain behavioral analysis for package manager process exits
-      supply_chain_detections = if event_type in ["process_terminate", "process_exit", :process_terminate, :process_exit] do
-        analyze_package_install_completion(event)
-      else
-        []
-      end
+      supply_chain_detections =
+        if event_type in ["process_terminate", "process_exit", :process_terminate, :process_exit] do
+          analyze_package_install_completion(event)
+        else
+          []
+        end
+
       detections = detections ++ supply_chain_detections
 
       # 7f. Credential/secret detection for process and file events
-      credential_detections = if event_type in ["process_create", "process_creation", "file_create", "file_modify", "file_access"] do
-        case CredentialDetector.detect_credentials(event) do
-          {:ok, cred_detections} -> cred_detections
-          _ -> []
+      credential_detections =
+        if event_type in [
+             "process_create",
+             "process_creation",
+             "file_create",
+             "file_modify",
+             "file_access"
+           ] do
+          case CredentialDetector.detect_credentials(event) do
+            {:ok, cred_detections} -> cred_detections
+            _ -> []
+          end
+        else
+          []
         end
-      else
-        []
-      end
+
       detections = detections ++ credential_detections
 
       # 7g. Track ML processes
@@ -389,111 +490,156 @@ defmodule TamanduaServer.Detection.EngineWorker do
       # 7j-3. Track inference responses via InferenceTracker (Phase 42)
       if event_type in ["inference_response", "llm_response", "llm_api_response"] do
         session_id = payload[:session_id] || payload["session_id"]
+
         if session_id do
           safe_call(fn -> InferenceTracker.track_response(agent_id, session_id, payload) end, :ok)
         end
       end
 
       # 7k. AI Runtime behavior analysis for LLM/inference requests
-      ai_runtime_detections = if event_type in ["llm_request", "llm_api_request", "inference_request", "inference_response"] do
-        case safe_call(fn -> AIRuntimeAnalyzer.analyze_llm_request(agent_id, payload) end, {:ok, []}) do
-          {:ok, detections_list} ->
-            Enum.map(detections_list, fn {rule, count} ->
-              %{
-                rule_id: rule["id"],
-                rule_name: rule["title"],
-                severity: rule["level"] || "medium",
-                category: "ai_runtime",
-                match_count: count
-              }
-            end)
-          _ -> []
+      ai_runtime_detections =
+        if event_type in [
+             "llm_request",
+             "llm_api_request",
+             "inference_request",
+             "inference_response"
+           ] do
+          case safe_call(
+                 fn -> AIRuntimeAnalyzer.analyze_llm_request(agent_id, payload) end,
+                 {:ok, []}
+               ) do
+            {:ok, detections_list} ->
+              Enum.map(detections_list, fn {rule, count} ->
+                %{
+                  rule_id: rule["id"],
+                  rule_name: rule["title"],
+                  severity: rule["level"] || "medium",
+                  category: "ai_runtime",
+                  match_count: count
+                }
+              end)
+
+            _ ->
+              []
+          end
+        else
+          []
         end
-      else
-        []
-      end
+
       detections = detections ++ ai_runtime_detections
 
       # 7l. Prompt injection classification for inference events (Phase 42)
-      prompt_injection_detections = if event_type in ["inference_request", "llm_request", "llm_api_request"] do
-        prompt = payload[:prompt_preview] || payload["prompt_preview"] || ""
+      prompt_injection_detections =
+        if event_type in ["inference_request", "llm_request", "llm_api_request"] do
+          prompt = payload[:prompt_preview] || payload["prompt_preview"] || ""
 
-        case safe_call(fn -> PromptInjectionClassifier.classify(prompt) end, {:ok, %{is_injection: false}}) do
-          {:ok, %{is_injection: true} = result} ->
-            # Create alert for prompt injection
-            if agent_id do
-              severity = PromptInjectionClassifier.severity_for_injection(result.injection_type)
-              safe_call(fn ->
-                Alerts.create_alert(%{
-                  agent_id: agent_id,
-                  severity: severity,
-                  category: "prompt_injection",
-                  title: "Prompt Injection Detected: #{result.injection_type || "unknown"}",
-                  description: "Detected #{result.injection_type || "unknown"} prompt injection with #{round((result.confidence || 0.0) * 100)}% confidence",
-                  tags: ["ai_security", "prompt_injection", to_string(result.injection_type || "unknown")],
-                  threat_score: result.confidence || 0.0,
+          case safe_call(
+                 fn -> PromptInjectionClassifier.classify(prompt) end,
+                 {:ok, %{is_injection: false}}
+               ) do
+            {:ok, %{is_injection: true} = result} ->
+              # Create alert for prompt injection
+              if agent_id do
+                severity = PromptInjectionClassifier.severity_for_injection(result.injection_type)
+
+                safe_call(
+                  fn ->
+                    Alerts.create_alert(%{
+                      agent_id: agent_id,
+                      severity: severity,
+                      category: "prompt_injection",
+                      title: "Prompt Injection Detected: #{result.injection_type || "unknown"}",
+                      description:
+                        "Detected #{result.injection_type || "unknown"} prompt injection with #{round((result.confidence || 0.0) * 100)}% confidence",
+                      tags: [
+                        "ai_security",
+                        "prompt_injection",
+                        to_string(result.injection_type || "unknown")
+                      ],
+                      threat_score: result.confidence || 0.0,
+                      mitre_tactics: ["initial-access", "execution"],
+                      mitre_techniques: ["T1203", "T1059"],
+                      recommended_response:
+                        recommended_response_for("prompt_injection", severity),
+                      detection_metadata: %{
+                        "injection_type" => result.injection_type,
+                        "confidence" => result.confidence,
+                        "matched_patterns" => result.matched_patterns || [],
+                        "analysis_method" => result.analysis_method,
+                        "latency_ms" => result.latency_ms
+                      }
+                    })
+                  end,
+                  :ok
+                )
+              end
+
+              [
+                %{
+                  type: :prompt_injection,
+                  rule_name: "Prompt Injection: #{result.injection_type || "unknown"}",
+                  confidence: result.confidence || 0.0,
+                  description:
+                    "Detected #{result.injection_type || "unknown"} prompt injection attack",
                   mitre_tactics: ["initial-access", "execution"],
                   mitre_techniques: ["T1203", "T1059"],
-                  recommended_response: recommended_response_for("prompt_injection", severity),
-                  detection_metadata: %{
-                    "injection_type" => result.injection_type,
-                    "confidence" => result.confidence,
-                    "matched_patterns" => result.matched_patterns || [],
-                    "analysis_method" => result.analysis_method,
-                    "latency_ms" => result.latency_ms
-                  }
-                })
-              end, :ok)
-            end
+                  injection_type: result.injection_type,
+                  matched_patterns: result.matched_patterns || [],
+                  analysis_method: result.analysis_method
+                }
+              ]
 
-            [%{
-              type: :prompt_injection,
-              rule_name: "Prompt Injection: #{result.injection_type || "unknown"}",
-              confidence: result.confidence || 0.0,
-              description: "Detected #{result.injection_type || "unknown"} prompt injection attack",
-              mitre_tactics: ["initial-access", "execution"],
-              mitre_techniques: ["T1203", "T1059"],
-              injection_type: result.injection_type,
-              matched_patterns: result.matched_patterns || [],
-              analysis_method: result.analysis_method
-            }]
-
-          _ ->
-            []
+            _ ->
+              []
+          end
+        else
+          []
         end
-      else
-        []
-      end
+
       detections = detections ++ prompt_injection_detections
 
       # 7m. Output validation and kill switch integration for inference responses (Phase 43)
-      output_validation_detections = if event_type in ["inference_response", "llm_response", "llm_api_response"] do
-        session_id = payload[:session_id] || payload["session_id"]
-        output_text = payload[:output] || payload["output"] || payload[:response] || payload["response"] || ""
+      output_validation_detections =
+        if event_type in ["inference_response", "llm_response", "llm_api_response"] do
+          session_id = payload[:session_id] || payload["session_id"]
 
-        case safe_call(fn -> OutputValidator.validate(session_id || "unknown", output_text, payload) end, {:ok, %{overall_risk: :low}}) do
-          {:ok, %{overall_risk: risk_level} = validation_result} when risk_level in [:critical, :high] ->
-            # Check if we should auto-trigger kill switch
-            maybe_trigger_kill_switch(validation_result, agent_id, payload)
+          output_text =
+            payload[:output] || payload["output"] || payload[:response] || payload["response"] ||
+              ""
 
-            # Return detection entry
-            severity = if risk_level == :critical, do: "critical", else: "high"
-            [%{
-              type: :output_validation,
-              rule_name: "Output Validation: #{risk_level}",
-              confidence: Map.get(validation_result, :confidence, 0.8),
-              description: build_output_validation_description(validation_result),
-              mitre_tactics: ["impact", "exfiltration"],
-              mitre_techniques: ["T1041", "T1567"],
-              output_validation: validation_result
-            }]
+          case safe_call(
+                 fn ->
+                   OutputValidator.validate(session_id || "unknown", output_text, payload)
+                 end,
+                 {:ok, %{overall_risk: :low}}
+               ) do
+            {:ok, %{overall_risk: risk_level} = validation_result}
+            when risk_level in [:critical, :high] ->
+              # Check if we should auto-trigger kill switch
+              maybe_trigger_kill_switch(validation_result, agent_id, payload)
 
-          _ ->
-            []
+              # Return detection entry
+              _severity = if risk_level == :critical, do: "critical", else: "high"
+
+              [
+                %{
+                  type: :output_validation,
+                  rule_name: "Output Validation: #{risk_level}",
+                  confidence: Map.get(validation_result, :confidence, 0.8),
+                  description: build_output_validation_description(validation_result),
+                  mitre_tactics: ["impact", "exfiltration"],
+                  mitre_techniques: ["T1041", "T1567"],
+                  output_validation: validation_result
+                }
+              ]
+
+            _ ->
+              []
+          end
+        else
+          []
         end
-      else
-        []
-      end
+
       detections = detections ++ output_validation_detections
 
       detections = normalize_and_rank_detections(detections)
@@ -502,10 +648,13 @@ defmodule TamanduaServer.Detection.EngineWorker do
       threat_score = calculate_threat_score(detections)
 
       # 8. Apply temporal proximity boost
-      {threat_score, temporal_metadata} = apply_temporal_adjustment(agent_id, event, threat_score, detections)
+      {threat_score, temporal_metadata} =
+        apply_temporal_adjustment(agent_id, event, threat_score, detections)
 
       # 9. Apply baseline adjustment
-      {adjusted_threat_score, baseline_metadata} = apply_baseline_adjustment(agent_id, event, threat_score)
+      {adjusted_threat_score, baseline_metadata} =
+        apply_baseline_adjustment(agent_id, event, threat_score)
+
       baseline_metadata = Map.merge(baseline_metadata, temporal_metadata)
 
       # 9b. Apply agent-side deterministic score boost (enrichment only,
@@ -531,18 +680,29 @@ defmodule TamanduaServer.Detection.EngineWorker do
       event = Map.put(event, :_detection_context, detection_context)
 
       # Evaluate against prevention policy
-      policy_decision = PreventionPolicy.evaluate_event(
-        event[:agent_id],
-        event,
-        threat_score,
-        threat_category
-      )
+      policy_decision =
+        PreventionPolicy.evaluate_event(
+          event[:agent_id],
+          event,
+          threat_score,
+          threat_category
+        )
 
-      result = apply_policy_decision(policy_decision, event, detections, threat_score, baseline_metadata, shard)
+      result =
+        apply_policy_decision(
+          policy_decision,
+          event,
+          detections,
+          threat_score,
+          baseline_metadata,
+          shard
+        )
+
       persist_backend_detections(event, detections, threat_score, result)
 
       # Emit telemetry for per-shard latency tracking
       elapsed_us = System.monotonic_time(:microsecond) - start_time
+
       record_precision_event(:detection_completed, event, detection_context, %{
         duration_us: elapsed_us,
         detection_count: length(detections),
@@ -561,7 +721,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
     rescue
       e ->
         Logger.error("[EngineWorker:#{shard}] analyze_event crashed: #{Exception.message(e)}")
-        record_precision_event(:event_lost, event, detection_context, %{reason: Exception.message(e)})
+
+        record_precision_event(:event_lost, event, detection_context, %{
+          reason: Exception.message(e)
+        })
 
         # Return a safe fallback so the caller never sees an exception
         %{
@@ -580,9 +743,18 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
     if event_type in ["process_create", "process_creation", "process"] do
       payload = event[:payload] || event["payload"] || %{}
-      process_name = payload[:process_name] || payload["process_name"] || payload[:name] || payload["name"] || ""
-      command_line = payload[:command_line] || payload["command_line"] || payload[:cmdline] || payload["cmdline"] || ""
-      path = payload[:path] || payload["path"] || payload[:image_path] || payload["image_path"] || ""
+
+      process_name =
+        payload[:process_name] || payload["process_name"] || payload[:name] || payload["name"] ||
+          ""
+
+      command_line =
+        payload[:command_line] || payload["command_line"] || payload[:cmdline] ||
+          payload["cmdline"] || ""
+
+      path =
+        payload[:path] || payload["path"] || payload[:image_path] || payload["image_path"] || ""
+
       process = process_name |> to_string() |> String.downcase()
       command = command_line |> to_string()
       command_lower = String.downcase(command)
@@ -595,7 +767,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
         )
 
       beacon_path? =
-        Regex.match?(~r/https?:\/\/[^\s"']+\/(?:beacon|gate|task|checkin)(?:[\/\?\s"']|$)/i, command)
+        Regex.match?(
+          ~r/https?:\/\/[^\s"']+\/(?:beacon|gate|task|checkin)(?:[\/\?\s"']|$)/i,
+          command
+        )
 
       detections = []
 
@@ -629,8 +804,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
               rule_name: "PowerShell Encoded Command",
               confidence: 0.72,
               severity: "medium",
-              description:
-                "PowerShell command line contains an encoded command switch",
+              description: "PowerShell command line contains an encoded command switch",
               evidence: %{
                 process_name: process_name,
                 command_line: command_line
@@ -732,7 +906,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
         String.contains?(path, "powershell") or
         String.contains?(command, "get-process")
 
-    powershell? and String.contains?(command, "get-process") and String.contains?(command, "lsass")
+    powershell? and String.contains?(command, "get-process") and
+      String.contains?(command, "lsass")
   end
 
   defp safe_credential_canary_probe?(command) do
@@ -800,7 +975,14 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
   # ── Policy decision handler ────────────────────────────────────────
 
-  defp apply_policy_decision(policy_decision, event, detections, threat_score, baseline_metadata, shard) do
+  defp apply_policy_decision(
+         policy_decision,
+         event,
+         detections,
+         threat_score,
+         baseline_metadata,
+         shard
+       ) do
     case policy_decision.action do
       :ignore ->
         Logger.debug("Event ignored by prevention policy: #{policy_decision.reason}")
@@ -824,7 +1006,11 @@ defmodule TamanduaServer.Detection.EngineWorker do
         case suppression_result do
           {:suppress, reason} ->
             EngineSupervisor.update_shard_stat(shard, :alerts_suppressed)
-            Logger.debug("Alert suppressed: event=#{event[:event_id]}, agent=#{agent_id}, reason=#{reason}")
+
+            Logger.debug(
+              "Alert suppressed: event=#{event[:event_id]}, agent=#{agent_id}, reason=#{reason}"
+            )
+
             Suppression.record_occurrence(provisional_alert, agent_id)
 
             %{
@@ -839,7 +1025,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
           {:auto_suppress, count, reason} ->
             EngineSupervisor.update_shard_stat(shard, :alerts_suppressed)
-            Logger.debug("Alert auto-suppressed: event=#{event[:event_id]}, agent=#{agent_id}, count=#{count}")
+
+            Logger.debug(
+              "Alert auto-suppressed: event=#{event[:event_id]}, agent=#{agent_id}, count=#{count}"
+            )
 
             %{
               event_id: event[:event_id],
@@ -858,15 +1047,31 @@ defmodule TamanduaServer.Detection.EngineWorker do
             reduced_alert = Map.put(provisional_alert, :severity, new_severity)
 
             handle_severity_reduction(
-              reduced_alert, provisional_alert, event, detections,
-              threat_score, reduced_score, new_severity, reason,
-              action, agent_id, policy_decision, baseline_metadata, shard
+              reduced_alert,
+              provisional_alert,
+              event,
+              detections,
+              threat_score,
+              reduced_score,
+              new_severity,
+              reason,
+              action,
+              agent_id,
+              policy_decision,
+              baseline_metadata,
+              shard
             )
 
           :allow ->
             handle_allowed_alert(
-              provisional_alert, event, detections, threat_score,
-              action, policy_decision, baseline_metadata, shard
+              provisional_alert,
+              event,
+              detections,
+              threat_score,
+              action,
+              policy_decision,
+              baseline_metadata,
+              shard
             )
         end
     end
@@ -875,10 +1080,20 @@ defmodule TamanduaServer.Detection.EngineWorker do
   # ── Severity reduction with health-aware tuning ────────────────────
 
   defp handle_severity_reduction(
-    reduced_alert, provisional_alert, event, detections,
-    original_threat_score, reduced_score, new_severity, reason,
-    action, agent_id, policy_decision, baseline_metadata, shard
-  ) do
+         reduced_alert,
+         provisional_alert,
+         event,
+         detections,
+         original_threat_score,
+         reduced_score,
+         new_severity,
+         reason,
+         action,
+         agent_id,
+         policy_decision,
+         baseline_metadata,
+         shard
+       ) do
     health_result = safe_health_tuning(reduced_alert, agent_id)
 
     case health_result do
@@ -905,15 +1120,23 @@ defmodule TamanduaServer.Detection.EngineWorker do
           EngineSupervisor.update_shard_stat(shard, :alerts_health_adjusted)
         end
 
-        alert_id = case create_alert_with_health_context(event, detections, final_score, health_tuned_alert, policy_decision) do
-          {:ok, created_alert} ->
-            EngineSupervisor.update_shard_stat(shard, :alerts_created)
-            maybe_schedule_attribution(created_alert, event, detections)
-            created_alert.id
-          {:error, changeset_error} ->
-            Logger.error("Failed to create severity-reduced alert: #{inspect(changeset_error)}")
-            nil
-        end
+        alert_id =
+          case create_alert_with_health_context(
+                 event,
+                 detections,
+                 final_score,
+                 health_tuned_alert,
+                 policy_decision
+               ) do
+            {:ok, created_alert} ->
+              EngineSupervisor.update_shard_stat(shard, :alerts_created)
+              maybe_schedule_attribution(created_alert, event, detections)
+              created_alert.id
+
+            {:error, changeset_error} ->
+              Logger.error("Failed to create severity-reduced alert: #{inspect(changeset_error)}")
+              nil
+          end
 
         Suppression.record_occurrence(provisional_alert, agent_id)
         HealthAwareSuppression.record_alert(agent_id)
@@ -934,7 +1157,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
           policy_action: action,
           severity_reduced: true,
           severity_reduction_reason: reason,
-          agent_health_context: get_in(health_tuned_alert, [:detection_metadata, "agent_health_context"]),
+          agent_health_context:
+            get_in(health_tuned_alert, [:detection_metadata, "agent_health_context"]),
           baseline: baseline_metadata
         }
     end
@@ -943,9 +1167,15 @@ defmodule TamanduaServer.Detection.EngineWorker do
   # ── Allowed alert (no suppression rule matched) ────────────────────
 
   defp handle_allowed_alert(
-    provisional_alert, event, detections, threat_score,
-    action, policy_decision, baseline_metadata, shard
-  ) do
+         provisional_alert,
+         event,
+         detections,
+         threat_score,
+         action,
+         policy_decision,
+         baseline_metadata,
+         shard
+       ) do
     agent_id = event[:agent_id] || event["agent_id"]
     health_result = safe_health_tuning(provisional_alert, agent_id)
 
@@ -966,25 +1196,35 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
       {:allow, health_tuned_alert} ->
         final_severity = health_tuned_alert[:severity] || provisional_alert[:severity]
-        final_score = if to_string(final_severity) != to_string(provisional_alert[:severity]) do
-          severity_to_reduced_score(to_string(final_severity), threat_score)
-        else
-          threat_score
-        end
+
+        final_score =
+          if to_string(final_severity) != to_string(provisional_alert[:severity]) do
+            severity_to_reduced_score(to_string(final_severity), threat_score)
+          else
+            threat_score
+          end
 
         if to_string(final_severity) != to_string(provisional_alert[:severity]) do
           EngineSupervisor.update_shard_stat(shard, :alerts_health_adjusted)
         end
 
-        alert_id = case create_alert_with_health_context(event, detections, final_score, health_tuned_alert, policy_decision) do
-          {:ok, created_alert} ->
-            EngineSupervisor.update_shard_stat(shard, :alerts_created)
-            maybe_schedule_attribution(created_alert, event, detections)
-            created_alert.id
-          {:error, changeset_error} ->
-            Logger.error("Failed to create alert: #{inspect(changeset_error)}")
-            nil
-        end
+        alert_id =
+          case create_alert_with_health_context(
+                 event,
+                 detections,
+                 final_score,
+                 health_tuned_alert,
+                 policy_decision
+               ) do
+            {:ok, created_alert} ->
+              EngineSupervisor.update_shard_stat(shard, :alerts_created)
+              maybe_schedule_attribution(created_alert, event, detections)
+              created_alert.id
+
+            {:error, changeset_error} ->
+              Logger.error("Failed to create alert: #{inspect(changeset_error)}")
+              nil
+          end
 
         Suppression.record_occurrence(provisional_alert, agent_id)
         HealthAwareSuppression.record_alert(agent_id)
@@ -1004,7 +1244,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
           original_threat_score: if(final_score != threat_score, do: threat_score, else: nil),
           alert_id: alert_id,
           policy_action: action,
-          agent_health_context: get_in(health_tuned_alert, [:detection_metadata, "agent_health_context"]),
+          agent_health_context:
+            get_in(health_tuned_alert, [:detection_metadata, "agent_health_context"]),
           baseline: baseline_metadata
         }
     end
@@ -1027,23 +1268,18 @@ defmodule TamanduaServer.Detection.EngineWorker do
         }
 
         agent_id = sample[:agent_id] || sample["agent_id"]
+        organization_id = sample[:organization_id] || sample["organization_id"]
 
         ml_response_result =
-          if agent_id do
-            MLResponse.handle_ml_detection(sample, prediction, agent_id)
-          else
-            if result.threat_score >= Config.threat_threshold() do
-              case create_ml_alert(sample, prediction, result.threat_score) do
-                {:ok, _alert} ->
-                  {:ok, :alert_created, %{}}
+          cond do
+            agent_id && organization_id ->
+              MLResponse.handle_ml_detection(sample, prediction, agent_id, organization_id)
 
-                {:error, reason} ->
-                  Logger.warning("Failed to create ML malware alert: #{inspect(reason)}")
-                  {:error, :alert_failed}
-              end
-            else
+            agent_id ->
+              {:error, :organization_scope_required}
+
+            true ->
               :no_action
-            end
           end
 
         result = Map.put(result, :ml_response, ml_response_result)
@@ -1116,10 +1352,18 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
           case PackageBehaviorAnalyzer.analyze_install_window(agent_id, pid, events) do
             {:anomalous, anomalies, risk_score} ->
-              Logger.info("[EngineWorker] Supply chain anomaly detected: #{inspect(ecosystem)}, score=#{risk_score}")
+              Logger.info(
+                "[EngineWorker] Supply chain anomaly detected: #{inspect(ecosystem)}, score=#{risk_score}"
+              )
 
               # Build and persist alert
-              alert_attrs = PackageBehaviorAnalyzer.build_supply_chain_alert(agent_id, ecosystem, anomalies)
+              alert_attrs =
+                PackageBehaviorAnalyzer.build_supply_chain_alert(
+                  agent_id,
+                  ecosystem,
+                  anomalies,
+                  supply_chain_alert_metadata(event, events)
+                )
 
               case Alerts.create_alert(alert_attrs) do
                 {:ok, alert} ->
@@ -1127,17 +1371,23 @@ defmodule TamanduaServer.Detection.EngineWorker do
                   SupplyChainEnricher.broadcast_alert(enriched)
 
                   # Return detection for inclusion in response
-                  [%{
-                    type: :supply_chain,
-                    rule_name: "Supply Chain Behavioral Anomaly",
-                    confidence: risk_score,
-                    description: alert_attrs[:description] || "Anomalous package install behavior",
-                    mitre_tactics: ["initial_access"],
-                    mitre_techniques: ["T1195.001", "T1059"]
-                  }]
+                  [
+                    %{
+                      type: :supply_chain,
+                      rule_name: "Supply Chain Behavioral Anomaly",
+                      confidence: risk_score,
+                      description:
+                        alert_attrs[:description] || "Anomalous package install behavior",
+                      mitre_tactics: ["initial_access"],
+                      mitre_techniques: ["T1195.001", "T1059"]
+                    }
+                  ]
 
                 {:error, reason} ->
-                  Logger.error("[EngineWorker] Failed to create supply chain alert: #{inspect(reason)}")
+                  Logger.error(
+                    "[EngineWorker] Failed to create supply chain alert: #{inspect(reason)}"
+                  )
+
                   []
               end
 
@@ -1156,6 +1406,57 @@ defmodule TamanduaServer.Detection.EngineWorker do
     :exit, _ ->
       []
   end
+
+  defp supply_chain_alert_metadata(event, session_events) do
+    event_ids =
+      session_events
+      |> Enum.map(&extract_existing_event_id/1)
+      |> Enum.filter(&valid_uuid?/1)
+      |> Enum.uniq()
+
+    case event_ids do
+      [] ->
+        %{}
+
+      [source_event_id | _] ->
+        organization_id =
+          first_valid_uuid([event | session_events], &extract_existing_organization_id/1)
+
+        %{}
+        |> maybe_put_metadata(:organization_id, organization_id)
+        |> Map.put(:source_event_id, source_event_id)
+        |> Map.put(:event_ids, event_ids)
+        |> Map.put(:contributing_events, Enum.map(event_ids, &to_string/1))
+    end
+  end
+
+  defp maybe_put_metadata(metadata, _key, nil), do: metadata
+  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  defp extract_existing_event_id(event) when is_map(event) do
+    event[:event_id] || event["event_id"] || event[:id] || event["id"]
+  end
+
+  defp extract_existing_event_id(_), do: nil
+
+  defp extract_existing_organization_id(event) when is_map(event) do
+    event[:organization_id] || event["organization_id"]
+  end
+
+  defp extract_existing_organization_id(_), do: nil
+
+  defp first_valid_uuid(events, extractor) do
+    Enum.find_value(events, fn event ->
+      value = extractor.(event)
+      if valid_uuid?(value), do: value
+    end)
+  end
+
+  defp valid_uuid?(value) when is_binary(value) do
+    match?({:ok, _}, Ecto.UUID.cast(value))
+  end
+
+  defp valid_uuid?(_), do: false
 
   # ── ETS rule readers ───────────────────────────────────────────────
 
@@ -1180,12 +1481,143 @@ defmodule TamanduaServer.Detection.EngineWorker do
     end
   end
 
-  defp get_iocs do
-    try do
-      :ets.tab2list(:detection_ioc_rules) |> Enum.map(fn {_id, ioc} -> ioc end)
-    rescue
-      ArgumentError -> []
+  @doc false
+  def lookup_iocs(event, org_lookup \\ &OrgLookup.get_org_id/1) do
+    scope = ioc_scope_for_event(event, org_lookup)
+    observables = extract_observables(event)
+
+    TamanduaServer.Detection.RuleLoader.with_ioc_snapshot(fn table ->
+      observables
+      |> ioc_lookup_candidates()
+      |> Enum.flat_map(&lookup_ioc_candidate(table, scope, &1))
+      |> Enum.uniq_by(&Map.get(&1, :id))
+    end)
+  rescue
+    ArgumentError -> []
+  end
+
+  @doc false
+  def ioc_scope_for_event(event, org_lookup \\ &OrgLookup.get_org_id/1) do
+    agent_id = event[:agent_id] || event["agent_id"]
+    authoritative_organization_id = org_lookup.(agent_id)
+    claimed_organization_id = claimed_event_organization_id(event)
+
+    cond do
+      not is_binary(authoritative_organization_id) or authoritative_organization_id == "" ->
+        emit_ioc_scope_downgrade(:unknown_agent)
+        :global
+
+      is_nil(claimed_organization_id) or claimed_organization_id == authoritative_organization_id ->
+        {:tenant, authoritative_organization_id}
+
+      true ->
+        emit_ioc_scope_downgrade(:organization_claim_mismatch)
+        :global
     end
+  rescue
+    _ ->
+      emit_ioc_scope_downgrade(:organization_lookup_failed)
+      :global
+  end
+
+  defp emit_ioc_scope_downgrade(reason) do
+    :telemetry.execute(
+      [:tamandua, :detection, :ioc_scope_downgrade],
+      %{count: 1},
+      %{reason: reason}
+    )
+  rescue
+    _ -> :ok
+  end
+
+  defp claimed_event_organization_id(event) do
+    payload = event[:payload] || event["payload"] || %{}
+
+    event[:organization_id] || event["organization_id"] || payload[:organization_id] ||
+      payload["organization_id"]
+  end
+
+  defp lookup_ioc_candidate(table, {:tenant, organization_id}, {type, value}) do
+    case :ets.lookup(table, {{:tenant, organization_id}, type, value}) do
+      [{_key, ioc}] -> [ioc]
+      [] -> lookup_ioc_candidate(table, :global, {type, value})
+    end
+  end
+
+  defp lookup_ioc_candidate(table, :global, {type, value}) do
+    case :ets.lookup(table, {:global, type, value}) do
+      [{_key, ioc}] -> [ioc]
+      [] -> []
+    end
+  end
+
+  defp ioc_lookup_candidates(observables) do
+    hash_candidates =
+      [:sha256, :sha1, :md5]
+      |> Enum.flat_map(fn type ->
+        case normalize_hash_observable(Map.get(observables, type)) do
+          nil -> []
+          value -> [{type, value}]
+        end
+      end)
+
+    ip_candidates =
+      case normalize_ioc_observable(observables.ip) do
+        nil -> []
+        value -> [{:ip, value}]
+      end
+
+    domain_candidates =
+      case normalize_ioc_observable(observables.domain) do
+        nil ->
+          []
+
+        domain ->
+          if trusted_domain?(domain) do
+            []
+          else
+            Enum.map(domain_suffixes(domain), &{:domain, &1})
+          end
+      end
+
+    hash_candidates ++ ip_candidates ++ domain_candidates
+  end
+
+  defp normalize_hash_observable(nil), do: nil
+
+  defp normalize_hash_observable(value) when is_binary(value) do
+    normalized = String.downcase(value)
+
+    if Regex.match?(~r/\A[0-9a-f]+\z/, normalized) do
+      normalized
+    else
+      Base.encode16(value, case: :lower)
+    end
+  end
+
+  defp normalize_hash_observable(_), do: nil
+
+  defp normalize_ioc_observable(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.trim_trailing(".")
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_ioc_observable(_), do: nil
+
+  defp domain_suffixes(domain) do
+    labels = String.split(domain, ".", trim: true)
+    max_offset = min(max(length(labels) - 2, 0), 15)
+
+    0..max_offset
+    |> Enum.map(&Enum.drop(labels, &1))
+    |> Enum.reject(&(length(&1) < 2))
+    |> Enum.map(&Enum.join(&1, "."))
   end
 
   defp persist_backend_detections(_event, [], _threat_score, _result), do: :ok
@@ -1204,13 +1636,21 @@ defmodule TamanduaServer.Detection.EngineWorker do
     _ -> :ok
   end
 
-  defp retry_persist_backend_detections(_event_id, _detections, _threat_score, _result, 0), do: :ok
+  defp retry_persist_backend_detections(_event_id, _detections, _threat_score, _result, 0),
+    do: :ok
 
   defp retry_persist_backend_detections(event_id, detections, threat_score, result, attempts_left) do
     case Repo.get(Event, event_id) do
       nil ->
         Process.sleep(250)
-        retry_persist_backend_detections(event_id, detections, threat_score, result, attempts_left - 1)
+
+        retry_persist_backend_detections(
+          event_id,
+          detections,
+          threat_score,
+          result,
+          attempts_left - 1
+        )
 
       %Event{} = persisted_event ->
         existing = List.wrap(persisted_event.detections)
@@ -1237,13 +1677,19 @@ defmodule TamanduaServer.Detection.EngineWorker do
             :ok
 
           {:error, reason} ->
-            Logger.debug("[EngineWorker] Failed to persist backend detections for #{event_id}: #{inspect(reason)}")
+            Logger.debug(
+              "[EngineWorker] Failed to persist backend detections for #{event_id}: #{inspect(reason)}"
+            )
+
             :ok
         end
     end
   rescue
     e ->
-      Logger.debug("[EngineWorker] Backend detection persistence skipped for #{event_id}: #{Exception.message(e)}")
+      Logger.debug(
+        "[EngineWorker] Backend detection persistence skipped for #{event_id}: #{Exception.message(e)}"
+      )
+
       :ok
   end
 
@@ -1276,41 +1722,55 @@ defmodule TamanduaServer.Detection.EngineWorker do
   # These are identical to the original Engine implementations.
 
   defp match_sigma_rules(event, rules) do
-    instant_matches = Enum.flat_map(rules, fn rule ->
-      sigma_rule = sigma_matcher_rule(rule)
+    instant_matches =
+      Enum.flat_map(rules, fn rule ->
+        sigma_rule = sigma_matcher_rule(rule)
 
-      if Rules.Sigma.matches?(event, sigma_rule) do
-        [%{
-          type: :sigma,
-          rule_name: sigma_rule["title"] || sigma_rule["name"] || Map.get(rule, :name) || "Sigma Rule",
-          confidence: sigma_rule["level_score"] || Map.get(rule, :level_score) || sigma_level_score(sigma_rule["level"]),
-          description: sigma_rule["description"] || Map.get(rule, :description),
-          category: sigma_detection_category(sigma_rule),
-          mitre_tactics: sigma_mitre_values(sigma_rule, :tactics),
-          mitre_techniques: sigma_mitre_values(sigma_rule, :techniques),
-          # Include author_pubkey for bounty payments (Solana base58 address)
-          rule_author_pubkey: sigma_rule["author_pubkey"] || Map.get(rule, :author_pubkey)
-        }]
-      else
-        []
-      end
-    end)
+        if Rules.Sigma.matches?(event, sigma_rule) do
+          [
+            %{
+              type: :sigma,
+              rule_name:
+                sigma_rule["title"] || sigma_rule["name"] || Map.get(rule, :name) || "Sigma Rule",
+              confidence:
+                sigma_rule["level_score"] || Map.get(rule, :level_score) ||
+                  sigma_level_score(sigma_rule["level"]),
+              description: sigma_rule["description"] || Map.get(rule, :description),
+              category: sigma_detection_category(sigma_rule),
+              mitre_tactics: sigma_mitre_values(sigma_rule, :tactics),
+              mitre_techniques: sigma_mitre_values(sigma_rule, :techniques),
+              # Include author_pubkey for bounty payments (Solana base58 address)
+              rule_author_pubkey: sigma_rule["author_pubkey"] || Map.get(rule, :author_pubkey)
+            }
+          ]
+        else
+          []
+        end
+      end)
 
     # Aggregation-aware matching
     {_instant_parsed, agg_triggers} = Rules.Sigma.evaluate_with_aggregation(event)
 
-    agg_matches = Enum.map(agg_triggers, fn {rule, count} ->
-      %{
-        type: :sigma_aggregation,
-        rule_name: rule["title"] || "Aggregation Rule",
-        confidence: Map.get(rule, "level_score", 0.7),
-        description: "#{rule["description"] || "Aggregation threshold exceeded"} (count: #{count})",
-        mitre_tactics: rule["tags"] |> List.wrap() |> Enum.filter(&String.starts_with?(to_string(&1), "attack.")),
-        mitre_techniques: rule["tags"] |> List.wrap() |> Enum.filter(&String.starts_with?(to_string(&1), "attack.t")),
-        # Include author_pubkey for bounty payments (Solana base58 address)
-        rule_author_pubkey: rule["author_pubkey"]
-      }
-    end)
+    agg_matches =
+      Enum.map(agg_triggers, fn {rule, count} ->
+        %{
+          type: :sigma_aggregation,
+          rule_name: rule["title"] || "Aggregation Rule",
+          confidence: Map.get(rule, "level_score", 0.7),
+          description:
+            "#{rule["description"] || "Aggregation threshold exceeded"} (count: #{count})",
+          mitre_tactics:
+            rule["tags"]
+            |> List.wrap()
+            |> Enum.filter(&String.starts_with?(to_string(&1), "attack.")),
+          mitre_techniques:
+            rule["tags"]
+            |> List.wrap()
+            |> Enum.filter(&String.starts_with?(to_string(&1), "attack.t")),
+          # Include author_pubkey for bounty payments (Solana base58 address)
+          rule_author_pubkey: rule["author_pubkey"]
+        }
+      end)
 
     instant_matches ++ agg_matches
   end
@@ -1329,7 +1789,9 @@ defmodule TamanduaServer.Detection.EngineWorker do
         |> Map.new()
 
     %{
-      "title" => Map.get(rule, :title) || Map.get(rule, "title") || Map.get(rule, :name) || Map.get(rule, "name"),
+      "title" =>
+        Map.get(rule, :title) || Map.get(rule, "title") || Map.get(rule, :name) ||
+          Map.get(rule, "name"),
       "name" => Map.get(rule, :name) || Map.get(rule, "name"),
       "description" => Map.get(rule, :description) || Map.get(rule, "description"),
       "level" => Map.get(rule, :level) || Map.get(rule, "level"),
@@ -1338,7 +1800,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
       "detection" => detection,
       "tags" => Map.get(rule, :tags) || Map.get(rule, "tags") || [],
       "mitre_tactics" => Map.get(rule, :mitre_tactics) || Map.get(rule, "mitre_tactics") || [],
-      "mitre_techniques" => Map.get(rule, :mitre_techniques) || Map.get(rule, "mitre_techniques") || [],
+      "mitre_techniques" =>
+        Map.get(rule, :mitre_techniques) || Map.get(rule, "mitre_techniques") || [],
       "author_pubkey" => Map.get(rule, :author_pubkey) || Map.get(rule, "author_pubkey")
     }
   end
@@ -1351,7 +1814,9 @@ defmodule TamanduaServer.Detection.EngineWorker do
       |> Map.get("tags", [])
       |> List.wrap()
       |> Enum.map(&to_string/1)
-      |> Enum.filter(&(String.starts_with?(&1, "attack.") and not String.starts_with?(&1, "attack.t")))
+      |> Enum.filter(
+        &(String.starts_with?(&1, "attack.") and not String.starts_with?(&1, "attack.t"))
+      )
 
     Enum.uniq(direct ++ tags)
   end
@@ -1397,22 +1862,16 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp sigma_level_score("low"), do: 0.35
   defp sigma_level_score(_), do: 0.5
 
-  defp match_iocs(event, iocs) do
-    observables = extract_observables(event)
-
-    Enum.flat_map(iocs, fn ioc ->
-      if observable_matches_ioc?(observables, ioc) do
-        [%{
-          type: :ioc,
-          rule_name: "IOC: #{ioc.type}",
-          confidence: ioc.confidence / 100,
-          description: ioc.description,
-          mitre_tactics: [],
-          mitre_techniques: []
-        }]
-      else
-        []
-      end
+  defp match_iocs(iocs) do
+    Enum.map(iocs, fn ioc ->
+      %{
+        type: :ioc,
+        rule_name: "IOC: #{ioc.type}",
+        confidence: ioc.confidence / 100,
+        description: ioc.description,
+        mitre_tactics: [],
+        mitre_techniques: []
+      }
     end)
   end
 
@@ -1421,45 +1880,52 @@ defmodule TamanduaServer.Detection.EngineWorker do
     detections = []
 
     # Check hash
-    detections = if sha256 = observables.sha256 do
-      hash_str = if is_binary(sha256), do: sha256, else: Base.encode16(sha256, case: :lower)
-      case safe_feed_check(:hash, hash_str) do
-        {:ok, %{found: true} = result} ->
-          [feed_result_to_detection(result, :hash, hash_str) | detections]
-        _ ->
-          detections
-      end
-    else
-      detections
-    end
+    detections =
+      if sha256 = observables.sha256 do
+        hash_str = if is_binary(sha256), do: sha256, else: Base.encode16(sha256, case: :lower)
 
-    # Check IP
-    detections = if ip = observables.ip do
-      case safe_feed_check(:ip, ip) do
-        {:ok, %{found: true} = result} ->
-          [feed_result_to_detection(result, :ip, ip) | detections]
-        _ ->
-          detections
-      end
-    else
-      detections
-    end
-
-    # Check domain (skip trusted)
-    detections = if domain = observables.domain do
-      if not trusted_domain?(domain) do
-        case safe_feed_check(:domain, domain) do
+        case safe_feed_check(:hash, hash_str) do
           {:ok, %{found: true} = result} ->
-            [feed_result_to_detection(result, :domain, domain) | detections]
+            [feed_result_to_detection(result, :hash, hash_str) | detections]
+
           _ ->
             detections
         end
       else
         detections
       end
-    else
-      detections
-    end
+
+    # Check IP
+    detections =
+      if ip = observables.ip do
+        case safe_feed_check(:ip, ip) do
+          {:ok, %{found: true} = result} ->
+            [feed_result_to_detection(result, :ip, ip) | detections]
+
+          _ ->
+            detections
+        end
+      else
+        detections
+      end
+
+    # Check domain (skip trusted)
+    detections =
+      if domain = observables.domain do
+        if not trusted_domain?(domain) do
+          case safe_feed_check(:domain, domain) do
+            {:ok, %{found: true} = result} ->
+              [feed_result_to_detection(result, :domain, domain) | detections]
+
+            _ ->
+              detections
+          end
+        else
+          detections
+        end
+      else
+        detections
+      end
 
     detections
   end
@@ -1483,12 +1949,37 @@ defmodule TamanduaServer.Detection.EngineWorker do
       |> String.downcase()
 
     payload = event[:payload] || event["payload"] || %{}
-    port = dns_payload_value(payload, [:remote_port, :destination_port, :dst_port, :port, :resolver_port])
+
+    port =
+      dns_payload_value(payload, [
+        :remote_port,
+        :destination_port,
+        :dst_port,
+        :port,
+        :resolver_port
+      ])
+
     remote_ip = dns_payload_value(payload, [:remote_ip, :destination_ip, :dst_ip, :resolver_ip])
-    host = dns_payload_value(payload, [:domain, :host, :hostname, :sni, :tls_sni, :query_name, :dns_query])
+
+    host =
+      dns_payload_value(payload, [
+        :domain,
+        :host,
+        :hostname,
+        :sni,
+        :tls_sni,
+        :query_name,
+        :dns_query
+      ])
 
     network_like? =
-      event_type in ["network", "network_connect", "network_connection", "connection", "socket_connect"]
+      event_type in [
+        "network",
+        "network_connect",
+        "network_connection",
+        "connection",
+        "socket_connect"
+      ]
 
     network_like? and
       (dns_port?(port) or dot_port?(port) or doh_port?(port) or
@@ -1499,9 +1990,30 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
   defp canonical_dns_analysis_event(event) do
     payload = event[:payload] || event["payload"] || %{}
-    host = dns_payload_value(payload, [:query_name, :dns_query, :query, :domain, :host, :hostname, :sni, :tls_sni])
+
+    host =
+      dns_payload_value(payload, [
+        :query_name,
+        :dns_query,
+        :query,
+        :domain,
+        :host,
+        :hostname,
+        :sni,
+        :tls_sni
+      ])
+
     resolver_ip = dns_payload_value(payload, [:resolver_ip, :remote_ip, :destination_ip, :dst_ip])
-    resolver_port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+
+    resolver_port =
+      dns_payload_value(payload, [
+        :resolver_port,
+        :remote_port,
+        :destination_port,
+        :dst_port,
+        :port
+      ])
+
     transport = dns_transport(payload)
 
     dns_payload =
@@ -1514,28 +2026,85 @@ defmodule TamanduaServer.Detection.EngineWorker do
       |> Map.put_new("transport", transport)
       |> Map.put_new("capture_method", "network_transport_heuristic")
 
-    event
-    |> Map.put(:event_type, "dns_query")
-    |> Map.put("event_type", "dns_query")
-    |> Map.put(:payload, dns_payload)
-    |> Map.put("payload", dns_payload)
+    dns_event =
+      event
+      |> Map.put(:event_type, "dns_query")
+      |> Map.put("event_type", "dns_query")
+      |> Map.put(:payload, dns_payload)
+      |> Map.put("payload", dns_payload)
+
+    case DNSAnalyzer.authoritative_organization_id(dns_event) do
+      {:ok, organization_id} ->
+        dns_event
+        |> Map.put(:organization_id, organization_id)
+        |> Map.put("organization_id", organization_id)
+
+      {:error, _reason} ->
+        dns_event
+    end
   end
 
   defp dns_transport_detections(event) do
     payload = event[:payload] || event["payload"] || %{}
-    port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+
+    port =
+      dns_payload_value(payload, [
+        :resolver_port,
+        :remote_port,
+        :destination_port,
+        :dst_port,
+        :port
+      ])
+
     remote_ip = dns_payload_value(payload, [:resolver_ip, :remote_ip, :destination_ip, :dst_ip])
-    host = dns_payload_value(payload, [:query_name, :dns_query, :domain, :host, :hostname, :sni, :tls_sni])
+
+    host =
+      dns_payload_value(payload, [
+        :query_name,
+        :dns_query,
+        :domain,
+        :host,
+        :hostname,
+        :sni,
+        :tls_sni
+      ])
 
     cond do
       dot_port?(port) ->
-        [dns_transport_detection(:dns_over_tls, "DNS-over-TLS transport observed", 0.72, host, remote_ip, port)]
+        [
+          dns_transport_detection(
+            :dns_over_tls,
+            "DNS-over-TLS transport observed",
+            0.72,
+            host,
+            remote_ip,
+            port
+          )
+        ]
 
       doh_port?(port) and (known_doh_ip?(remote_ip) or known_doh_domain?(host)) ->
-        [dns_transport_detection(:dns_over_https, "DNS-over-HTTPS resolver transport observed", 0.78, host, remote_ip, port)]
+        [
+          dns_transport_detection(
+            :dns_over_https,
+            "DNS-over-HTTPS resolver transport observed",
+            0.78,
+            host,
+            remote_ip,
+            port
+          )
+        ]
 
       dns_port?(port) and known_doh_ip?(remote_ip) ->
-        [dns_transport_detection(:alternate_dns_resolver, "Direct DNS to public resolver observed", 0.58, host, remote_ip, port)]
+        [
+          dns_transport_detection(
+            :alternate_dns_resolver,
+            "Direct DNS to public resolver observed",
+            0.58,
+            host,
+            remote_ip,
+            port
+          )
+        ]
 
       true ->
         []
@@ -1561,7 +2130,14 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp dns_transport(payload) do
-    port = dns_payload_value(payload, [:resolver_port, :remote_port, :destination_port, :dst_port, :port])
+    port =
+      dns_payload_value(payload, [
+        :resolver_port,
+        :remote_port,
+        :destination_port,
+        :dst_port,
+        :port
+      ])
 
     cond do
       dot_port?(port) -> "dot"
@@ -1646,8 +2222,9 @@ defmodule TamanduaServer.Detection.EngineWorker do
       type: :threat_intel_feed,
       rule_name: "Threat Intel: #{result[:source] || "external feed"}",
       confidence: confidence,
-      description: "#{ioc_type} #{ioc_value} found in #{result[:source] || "threat feed"}: #{result[:threat_type] || "malicious"}" <>
-        if(result[:malware_family], do: " (#{result[:malware_family]})", else: ""),
+      description:
+        "#{ioc_type} #{ioc_value} found in #{result[:source] || "threat feed"}: #{result[:threat_type] || "malicious"}" <>
+          if(result[:malware_family], do: " (#{result[:malware_family]})", else: ""),
       mitre_tactics: feed_threat_type_to_tactics(result[:threat_type]),
       mitre_techniques: feed_threat_type_to_techniques(result[:threat_type]),
       feed_source: result[:source],
@@ -1682,46 +2259,41 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp extract_observables(event) do
-    payload = event[:payload] || %{}
+    payload = event[:payload] || event["payload"] || %{}
 
     %{
-      sha256: payload[:sha256],
-      sha1: payload[:sha1],
-      md5: payload[:md5],
-      ip: payload[:remote_ip],
+      sha256: payload[:sha256] || payload["sha256"],
+      sha1: payload[:sha1] || payload["sha1"],
+      md5: payload[:md5] || payload["md5"],
+      ip: payload[:remote_ip] || payload["remote_ip"],
       domain: extract_domain(payload),
-      path: payload[:path],
-      cmdline: payload[:cmdline]
+      path: payload[:path] || payload["path"],
+      cmdline: payload[:cmdline] || payload["cmdline"]
     }
   end
 
   defp extract_domain(payload) do
     cond do
-      payload[:query] -> payload[:query]
-      payload[:domain] -> payload[:domain]
-      payload[:url] ->
-        case URI.parse(to_string(payload[:url])) do
+      payload[:query] || payload["query"] ->
+        payload[:query] || payload["query"]
+
+      payload[:domain] || payload["domain"] ->
+        payload[:domain] || payload["domain"]
+
+      payload[:url] || payload["url"] ->
+        case URI.parse(to_string(payload[:url] || payload["url"])) do
           %URI{host: host} when is_binary(host) and host != "" -> host
           _ -> nil
         end
-      payload[:hostname] -> payload[:hostname]
-      payload[:remote_ip] -> nil
-      true -> nil
-    end
-  end
 
-  defp observable_matches_ioc?(observables, ioc) do
-    case ioc.type do
-      :sha256 -> observables.sha256 && Base.encode16(observables.sha256, case: :lower) == ioc.value
-      :sha1 -> observables.sha1 && Base.encode16(observables.sha1, case: :lower) == ioc.value
-      :md5 -> observables.md5 && Base.encode16(observables.md5, case: :lower) == ioc.value
-      :ip -> observables.ip == ioc.value
-      :domain ->
-        domain = observables.domain
-        domain != nil and
-          not trusted_domain?(domain) and
-          (domain == ioc.value or String.ends_with?(domain, "." <> ioc.value))
-      _ -> false
+      payload[:hostname] || payload["hostname"] ->
+        payload[:hostname] || payload["hostname"]
+
+      payload[:remote_ip] || payload["remote_ip"] ->
+        nil
+
+      true ->
+        nil
     end
   end
 
@@ -1731,21 +2303,47 @@ defmodule TamanduaServer.Detection.EngineWorker do
     detection_types = Enum.map(detections, & &1[:category])
     detection_type_atoms = Enum.map(detections, & &1[:type])
 
-    c2_types = [:c2_beacon_strong, :c2_beacon_moderate, :c2_ja3_match,
-                :c2_suspicious_certificate, :c2_dga_https, :c2_domain_fronting_suspected,
-                :c2_high_frequency, :c2_asymmetric_traffic, :c2_exfil_traffic]
-    has_c2 = Enum.any?(detection_type_atoms, & &1 in c2_types)
+    c2_types = [
+      :c2_beacon_strong,
+      :c2_beacon_moderate,
+      :c2_ja3_match,
+      :c2_suspicious_certificate,
+      :c2_dga_https,
+      :c2_domain_fronting_suspected,
+      :c2_high_frequency,
+      :c2_asymmetric_traffic,
+      :c2_exfil_traffic
+    ]
+
+    has_c2 = Enum.any?(detection_type_atoms, &(&1 in c2_types))
 
     cond do
-      :ransomware in detection_types -> :ransomware
-      :credential_theft in detection_types -> :credential_theft
-      :lateral_movement in detection_types -> :lateral_movement
-      has_c2 -> :command_and_control
-      event_type_atom in [:process_inject, :memory_scan, :shellcode] -> :fileless_attack
-      event_type_atom in [:exploit_mitigation, :buffer_overflow, :rop_chain] -> :exploit_prevention
-      event_type_atom in [:script_execution, :powershell, :amsi] -> :script_execution
-      :ml in detection_type_atoms -> :malware_ml
-      true -> :behavioral_ioa
+      :ransomware in detection_types ->
+        :ransomware
+
+      :credential_theft in detection_types ->
+        :credential_theft
+
+      :lateral_movement in detection_types ->
+        :lateral_movement
+
+      has_c2 ->
+        :command_and_control
+
+      event_type_atom in [:process_inject, :memory_scan, :shellcode] ->
+        :fileless_attack
+
+      event_type_atom in [:exploit_mitigation, :buffer_overflow, :rop_chain] ->
+        :exploit_prevention
+
+      event_type_atom in [:script_execution, :powershell, :amsi] ->
+        :script_execution
+
+      :ml in detection_type_atoms ->
+        :malware_ml
+
+      true ->
+        :behavioral_ioa
     end
   end
 
@@ -1785,8 +2383,25 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp detection_type_weight(:ml), do: 1.0
   defp detection_type_weight("ml"), do: 1.0
   defp detection_type_weight(type) when type in [:c2_beacon_strong, :c2_ja3_match], do: 1.4
-  defp detection_type_weight(type) when type in [:c2_beacon_moderate, :c2_suspicious_certificate, :c2_dga_https, :c2_domain_fronting_suspected], do: 1.2
-  defp detection_type_weight(type) when type in [:c2_beacon_weak, :c2_high_frequency, :c2_asymmetric_traffic, :c2_exfil_traffic], do: 1.0
+
+  defp detection_type_weight(type)
+       when type in [
+              :c2_beacon_moderate,
+              :c2_suspicious_certificate,
+              :c2_dga_https,
+              :c2_domain_fronting_suspected
+            ],
+       do: 1.2
+
+  defp detection_type_weight(type)
+       when type in [
+              :c2_beacon_weak,
+              :c2_high_frequency,
+              :c2_asymmetric_traffic,
+              :c2_exfil_traffic
+            ],
+       do: 1.0
+
   defp detection_type_weight(_), do: 0.8
 
   defp merge_detections(existing, []), do: existing
@@ -1808,12 +2423,23 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp normalize_detection(detection) when is_map(detection) do
-    type = detection[:type] || detection["type"] || detection[:detection_type] || detection["detection_type"]
+    type =
+      detection[:type] || detection["type"] || detection[:detection_type] ||
+        detection["detection_type"]
+
     category = detection[:category] || detection["category"]
-    rule_name = detection[:rule_name] || detection["rule_name"] || detection[:rule] || detection["rule"] || detection[:name] || detection["name"]
-    description = detection[:description] || detection["description"] || detection[:matched_pattern] || detection["matched_pattern"]
+
+    rule_name =
+      detection[:rule_name] || detection["rule_name"] || detection[:rule] || detection["rule"] ||
+        detection[:name] || detection["name"]
+
+    description =
+      detection[:description] || detection["description"] || detection[:matched_pattern] ||
+        detection["matched_pattern"]
+
     mitre_techniques =
-      (detection[:mitre_techniques] || detection["mitre_techniques"] || List.wrap(detection[:mitre_technique] || detection["mitre_technique"]))
+      (detection[:mitre_techniques] || detection["mitre_techniques"] ||
+         List.wrap(detection[:mitre_technique] || detection["mitre_technique"]))
       |> List.wrap()
       |> Enum.map(&canonical_mitre_technique/1)
       |> Enum.reject(&is_nil/1)
@@ -1825,9 +2451,15 @@ defmodule TamanduaServer.Detection.EngineWorker do
     |> Map.put(:category, normalize_detection_category(category))
     |> Map.put(:rule_name, rule_name)
     |> Map.put(:description, description)
-    |> Map.put(:confidence, normalize_confidence(detection[:confidence] || detection["confidence"]))
+    |> Map.put(
+      :confidence,
+      normalize_confidence(detection[:confidence] || detection["confidence"])
+    )
     |> Map.put(:mitre_techniques, mitre_techniques)
-    |> Map.put(:detection_type, detection[:detection_type] || detection["detection_type"] || category || type)
+    |> Map.put(
+      :detection_type,
+      detection[:detection_type] || detection["detection_type"] || category || type
+    )
   end
 
   defp normalize_detection(_), do: %{}
@@ -1835,8 +2467,15 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp atomize_known_detection_keys(detection) do
     Enum.reduce(
       [
-        :rule_id, :severity, :mitre_tactics, :matched_pattern, :rule_author_pubkey,
-        :feed_source, :threat_type, :malware_family, :tags
+        :rule_id,
+        :severity,
+        :mitre_tactics,
+        :matched_pattern,
+        :rule_author_pubkey,
+        :feed_source,
+        :threat_type,
+        :malware_family,
+        :tags
       ],
       %{},
       fn key, acc ->
@@ -1848,6 +2487,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp normalize_detection_type(value) when is_atom(value), do: value
+
   defp normalize_detection_type(value) when is_binary(value) do
     case value do
       "sigma" -> :sigma
@@ -1861,9 +2501,11 @@ defmodule TamanduaServer.Detection.EngineWorker do
       _ -> value
     end
   end
+
   defp normalize_detection_type(_), do: :unknown
 
   defp normalize_detection_category(value) when is_atom(value), do: value
+
   defp normalize_detection_category(value) when is_binary(value) do
     case value do
       "command_and_control" -> :command_and_control
@@ -1875,16 +2517,19 @@ defmodule TamanduaServer.Detection.EngineWorker do
       _ -> value
     end
   end
+
   defp normalize_detection_category(_), do: :behavioral_ioa
 
   defp normalize_confidence(value) when is_float(value), do: value
   defp normalize_confidence(value) when is_integer(value), do: value / 1
+
   defp normalize_confidence(value) when is_binary(value) do
     case Float.parse(value) do
       {parsed, _} -> parsed
       _ -> 0.5
     end
   end
+
   defp normalize_confidence(_), do: 0.5
 
   defp detection_rank(detection) do
@@ -1903,7 +2548,9 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp category_rank(:behavioral_ioa), do: 50
   defp category_rank(_), do: 10
 
-  defp canonical_mitre_technique(value) when is_atom(value), do: value |> Atom.to_string() |> canonical_mitre_technique()
+  defp canonical_mitre_technique(value) when is_atom(value),
+    do: value |> Atom.to_string() |> canonical_mitre_technique()
+
   defp canonical_mitre_technique(value) when is_binary(value) do
     value
     |> String.trim()
@@ -1914,6 +2561,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
       _ -> nil
     end
   end
+
   defp canonical_mitre_technique(_), do: nil
 
   defp calculate_ml_threat_score(prediction) do
@@ -1937,7 +2585,13 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
   # ── Alert creation ─────────────────────────────────────────────────
 
-  defp create_alert_with_health_context(event, detections, threat_score, health_tuned_alert, policy_decision \\ nil) do
+  defp create_alert_with_health_context(
+         event,
+         detections,
+         threat_score,
+         health_tuned_alert,
+         policy_decision \\ nil
+       ) do
     severity = Config.severity_from_score(threat_score)
     severity = health_tuned_alert[:severity] || severity
 
@@ -1945,45 +2599,55 @@ defmodule TamanduaServer.Detection.EngineWorker do
     agent_id = event[:agent_id] || event["agent_id"]
     pid = payload[:pid] || payload["pid"]
 
-    mitre_tactics = detections |> Enum.flat_map(& &1[:mitre_tactics] || []) |> Mitre.normalize_tactics()
-    mitre_techniques = detections |> Enum.flat_map(& &1[:mitre_techniques] || []) |> Enum.uniq()
+    mitre_tactics =
+      detections |> Enum.flat_map(&(&1[:mitre_tactics] || [])) |> Mitre.normalize_tactics()
+
+    mitre_techniques = detections |> Enum.flat_map(&(&1[:mitre_techniques] || [])) |> Enum.uniq()
 
     evidence = Evidence.extract(event, detections)
 
-    process_chain = if agent_id && pid do
-      case Correlator.build_storyline(agent_id, pid) do
-        {:ok, storyline} -> storyline.process_chain
-        _ -> []
+    process_chain =
+      if agent_id && pid do
+        case Correlator.build_storyline(agent_id, pid) do
+          {:ok, storyline} -> storyline.process_chain
+          _ -> []
+        end
+      else
+        []
       end
-    else
-      []
-    end
 
     title = generate_contextual_title(event, detections, evidence)
 
     detection_metadata = build_detection_metadata(event, detections)
     health_context = get_in(health_tuned_alert, [:detection_metadata, "agent_health_context"])
 
-    detection_metadata = if health_context do
-      Map.put(detection_metadata, "agent_health_context", health_context)
-    else
-      detection_metadata
-    end
+    detection_metadata =
+      if health_context do
+        Map.put(detection_metadata, "agent_health_context", health_context)
+      else
+        detection_metadata
+      end
 
     detection_metadata =
       if policy_decision do
-        Map.put(detection_metadata, "policy_decision", build_policy_decision_metadata(policy_decision))
+        Map.put(
+          detection_metadata,
+          "policy_decision",
+          build_policy_decision_metadata(policy_decision)
+        )
       else
         detection_metadata
       end
 
     base_description = generate_alert_description(event, detections)
     health_description = health_tuned_alert[:description]
-    description = if health_description && health_description != base_description do
-      health_description
-    else
-      base_description
-    end
+
+    description =
+      if health_description && health_description != base_description do
+        health_description
+      else
+        base_description
+      end
 
     primary = List.first(detections) || %{}
 
@@ -2023,14 +2687,15 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
     evidence = Evidence.extract(event, [])
 
-    process_chain = if agent_id && pid do
-      case Correlator.build_storyline(agent_id, pid) do
-        {:ok, storyline} -> storyline.process_chain
-        _ -> []
+    process_chain =
+      if agent_id && pid do
+        case Correlator.build_storyline(agent_id, pid) do
+          {:ok, storyline} -> storyline.process_chain
+          _ -> []
+        end
+      else
+        []
       end
-    else
-      []
-    end
 
     Alerts.create_alert(%{
       agent_id: agent_id,
@@ -2073,21 +2738,23 @@ defmodule TamanduaServer.Detection.EngineWorker do
       }
     }
 
-    process_chain = if agent_id && pid do
-      case Correlator.build_storyline(agent_id, pid) do
-        {:ok, storyline} -> storyline.process_chain
-        _ -> []
+    process_chain =
+      if agent_id && pid do
+        case Correlator.build_storyline(agent_id, pid) do
+          {:ok, storyline} -> storyline.process_chain
+          _ -> []
+        end
+      else
+        []
       end
-    else
-      []
-    end
 
     Alerts.create_alert(%{
       agent_id: agent_id,
       organization_id: sample[:organization_id] || OrgLookup.get_org_id(agent_id),
       severity: Config.severity_from_score(threat_score),
       title: "Malware detected: #{prediction[:malware_family] || "Unknown"}",
-      description: "ML analysis detected malicious file with #{Float.round(prediction[:confidence] * 100, 1)}% confidence",
+      description:
+        "ML analysis detected malicious file with #{Float.round(prediction[:confidence] * 100, 1)}% confidence",
       source_event_id: sample[:event_id],
       event_ids: List.wrap(sample[:event_id]),
       evidence: evidence,
@@ -2103,7 +2770,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
       },
       mitre_tactics: [],
       mitre_techniques: [],
-      recommended_response: recommended_response_for("ml", Config.severity_from_score(threat_score)),
+      recommended_response:
+        recommended_response_for("ml", Config.severity_from_score(threat_score)),
       threat_score: threat_score
     })
   end
@@ -2113,16 +2781,18 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp build_detection_metadata(event, detections) do
     primary = List.first(detections) || %{}
 
-    rule_names = detections
-    |> Enum.map(& &1[:rule_name])
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
+    rule_names =
+      detections
+      |> Enum.map(& &1[:rule_name])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
-    rule_types = detections
-    |> Enum.map(& &1[:type])
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&to_string/1)
-    |> Enum.uniq()
+    rule_types =
+      detections
+      |> Enum.map(& &1[:type])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&to_string/1)
+      |> Enum.uniq()
 
     categories =
       detections
@@ -2145,9 +2815,12 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
     %{
       "rule_name" => primary[:rule_name] || "",
-      "rule_type" => primary[:type] && to_string(primary[:type]) || "",
-      "detection_type" => primary[:detection_type] && to_string(primary[:detection_type]) || primary[:category] && to_string(primary[:category]) || primary[:type] && to_string(primary[:type]) || "",
-      "category" => primary[:category] && to_string(primary[:category]) || "",
+      "rule_type" => (primary[:type] && to_string(primary[:type])) || "",
+      "detection_type" =>
+        (primary[:detection_type] && to_string(primary[:detection_type])) ||
+          (primary[:category] && to_string(primary[:category])) ||
+          (primary[:type] && to_string(primary[:type])) || "",
+      "category" => (primary[:category] && to_string(primary[:category])) || "",
       "confidence" => primary[:confidence],
       "all_rule_names" => rule_names,
       "all_rule_types" => rule_types,
@@ -2186,10 +2859,17 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
     triage =
       case sev do
-        "critical" -> "Triage immediately: isolate the affected host and preserve volatile evidence."
-        "high" -> "Triage promptly: review the process chain and contain the host if confirmed."
-        "medium" -> "Investigate the surrounding telemetry and validate against expected baseline activity."
-        _ -> "Review the alert evidence and confirm whether the activity is expected."
+        "critical" ->
+          "Triage immediately: isolate the affected host and preserve volatile evidence."
+
+        "high" ->
+          "Triage promptly: review the process chain and contain the host if confirmed."
+
+        "medium" ->
+          "Investigate the surrounding telemetry and validate against expected baseline activity."
+
+        _ ->
+          "Review the alert evidence and confirm whether the activity is expected."
       end
 
     specific =
@@ -2222,7 +2902,11 @@ defmodule TamanduaServer.Detection.EngineWorker do
       "threat_category" => policy_decision[:threat_category],
       "alert_threshold" => policy_decision[:alert_threshold],
       "block_threshold" => policy_decision[:block_threshold],
-      "response_intent" => if(policy_decision.action == :alert_and_block, do: "automatic_response", else: "detect_only")
+      "response_intent" =>
+        if(policy_decision.action == :alert_and_block,
+          do: "automatic_response",
+          else: "detect_only"
+        )
     }
   end
 
@@ -2230,19 +2914,22 @@ defmodule TamanduaServer.Detection.EngineWorker do
     payload = event[:payload] || event["payload"] || %{}
     agent_id = event[:agent_id] || event["agent_id"]
 
-    mitre_tactics = detections |> Enum.flat_map(& &1[:mitre_tactics] || []) |> Mitre.normalize_tactics()
-    mitre_techniques = detections |> Enum.flat_map(& &1[:mitre_techniques] || []) |> Enum.uniq()
+    mitre_tactics =
+      detections |> Enum.flat_map(&(&1[:mitre_tactics] || [])) |> Mitre.normalize_tactics()
+
+    mitre_techniques = detections |> Enum.flat_map(&(&1[:mitre_techniques] || [])) |> Enum.uniq()
 
     evidence = Evidence.extract(event, detections)
     title = generate_contextual_title(event, detections, evidence)
     severity = Config.severity_from_score(threat_score)
 
-    detection_metadata = %{
-      "rule_name" => detections |> List.first(%{}) |> Map.get(:rule_name, ""),
-      "rule_type" => detections |> List.first(%{}) |> Map.get(:type, :unknown) |> to_string(),
-      "event_type" => to_string(event[:event_type] || event["event_type"] || "")
-    }
-    |> Map.merge(collector_context_metadata(event))
+    detection_metadata =
+      %{
+        "rule_name" => detections |> List.first(%{}) |> Map.get(:rule_name, ""),
+        "rule_type" => detections |> List.first(%{}) |> Map.get(:type, :unknown) |> to_string(),
+        "event_type" => to_string(event[:event_type] || event["event_type"] || "")
+      }
+      |> Map.merge(collector_context_metadata(event))
 
     %{
       agent_id: agent_id,
@@ -2297,14 +2984,16 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp severity_to_reduced_score(new_severity, original_score) do
-    target = case new_severity do
-      "info" -> 0.1
-      "low" -> 0.3
-      "medium" -> 0.5
-      "high" -> 0.7
-      "critical" -> 0.9
-      _ -> original_score
-    end
+    target =
+      case new_severity do
+        "info" -> 0.1
+        "low" -> 0.3
+        "medium" -> 0.5
+        "high" -> 0.7
+        "critical" -> 0.9
+        _ -> original_score
+      end
+
     min(target, original_score)
   end
 
@@ -2326,10 +3015,12 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
   defp trusted_domain?(domain) when is_binary(domain) do
     domain_lower = String.downcase(domain)
+
     Enum.any?(@trusted_domains, fn trusted ->
       domain_lower == trusted or String.ends_with?(domain_lower, "." <> trusted)
     end)
   end
+
   defp trusted_domain?(_), do: false
 
   defp scan_event_with_yara(event) do
@@ -2339,13 +3030,21 @@ defmodule TamanduaServer.Detection.EngineWorker do
       try do
         case YaraScanner.scan_event(event) do
           {:ok, matches} when matches != [] ->
-            Logger.info("YARA scan found #{length(matches)} matches for event #{event[:event_id]}")
+            Logger.info(
+              "YARA scan found #{length(matches)} matches for event #{event[:event_id]}"
+            )
+
             YaraScanner.matches_to_detections(matches)
-          {:ok, []} -> []
+
+          {:ok, []} ->
+            []
+
           {:error, reason} ->
             Logger.warning("YARA scan failed: #{inspect(reason)}")
             []
-          :skip -> []
+
+          :skip ->
+            []
         end
       rescue
         e ->
@@ -2369,13 +3068,14 @@ defmodule TamanduaServer.Detection.EngineWorker do
       event_type = EventTypes.normalize(event[:event_type] || event["event_type"])
       burst_score = TemporalScorer.get_burst_score(agent_id, event_type)
 
-      boost = if length(detections) > 0 do
-        temporal_boost = temporal_score * 0.10
-        burst_boost = if burst_score >= 0.7, do: burst_score * 0.05, else: 0.0
-        temporal_boost + burst_boost
-      else
-        0.0
-      end
+      boost =
+        if length(detections) > 0 do
+          temporal_boost = temporal_score * 0.10
+          burst_boost = if burst_score >= 0.7, do: burst_score * 0.05, else: 0.0
+          temporal_boost + burst_boost
+        else
+          0.0
+        end
 
       adjusted = min(threat_score + boost, 1.0)
 
@@ -2409,12 +3109,13 @@ defmodule TamanduaServer.Detection.EngineWorker do
         baseline_score = Baseline.get_baseline_score(agent_id, event)
 
         if baseline_score > 0.0 do
-          reduction_factor = cond do
-            baseline_score >= 0.8 -> 0.5
-            baseline_score >= 0.5 -> 0.25
-            baseline_score >= 0.2 -> 0.1
-            true -> 0.0
-          end
+          reduction_factor =
+            cond do
+              baseline_score >= 0.8 -> 0.5
+              baseline_score >= 0.5 -> 0.25
+              baseline_score >= 0.2 -> 0.1
+              true -> 0.0
+            end
 
           adjusted_score = threat_score * (1.0 - reduction_factor)
 
@@ -2425,7 +3126,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
             reduction_factor: reduction_factor
           }
 
-          Logger.debug("Baseline adjustment for agent #{agent_id}: #{threat_score} -> #{adjusted_score}")
+          Logger.debug(
+            "Baseline adjustment for agent #{agent_id}: #{threat_score} -> #{adjusted_score}"
+          )
+
           {adjusted_score, metadata}
         else
           {threat_score, %{baseline_adjusted: false}}
@@ -2569,9 +3273,7 @@ defmodule TamanduaServer.Detection.EngineWorker do
           true
 
         :error ->
-          Logger.debug(
-            "[EngineWorker:#{shard}] discarded malformed behavioral_risk_score event"
-          )
+          Logger.debug("[EngineWorker:#{shard}] discarded malformed behavioral_risk_score event")
 
           false
       end
@@ -2614,18 +3316,21 @@ defmodule TamanduaServer.Detection.EngineWorker do
 
   defp record_precision_event(kind, event, context, metadata) do
     if Code.ensure_loaded?(TamanduaServer.Detection.PrecisionMetrics) do
-      safe_call(fn ->
-        TamanduaServer.Detection.PrecisionMetrics.record_event(kind, %{
-          event_id: event[:event_id] || event["event_id"],
-          agent_id: event[:agent_id] || event["agent_id"],
-          collector: context[:collector],
-          profile: context[:profile],
-          family: context[:family],
-          event_type: context[:event_type],
-          telemetry_quality: context[:quality],
-          metadata: metadata
-        })
-      end, :ok)
+      safe_call(
+        fn ->
+          TamanduaServer.Detection.PrecisionMetrics.record_event(kind, %{
+            event_id: event[:event_id] || event["event_id"],
+            agent_id: event[:agent_id] || event["agent_id"],
+            collector: context[:collector],
+            profile: context[:profile],
+            family: context[:family],
+            event_type: context[:event_type],
+            telemetry_quality: context[:quality],
+            metadata: metadata
+          })
+        end,
+        :ok
+      )
     else
       :ok
     end
@@ -2642,8 +3347,8 @@ defmodule TamanduaServer.Detection.EngineWorker do
           payload: event[:payload] || event["payload"] || %{},
           detections: detections,
           threat_score: threat_score,
-          mitre_tactics: detections |> Enum.flat_map(& &1[:mitre_tactics] || []),
-          mitre_techniques: detections |> Enum.flat_map(& &1[:mitre_techniques] || []),
+          mitre_tactics: detections |> Enum.flat_map(&(&1[:mitre_tactics] || [])),
+          mitre_techniques: detections |> Enum.flat_map(&(&1[:mitre_techniques] || [])),
           title: detections |> Enum.map(& &1[:rule_name]) |> Enum.take(2) |> Enum.join(", ")
         })
       rescue
@@ -2671,8 +3376,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
           case YaraGenerator.generate_rule(event, prediction) do
             {:ok, rule} ->
               Logger.info("YARA auto-generation succeeded: #{rule.name}")
+
             {:skip, reason} ->
               Logger.debug("YARA auto-generation skipped: #{reason}")
+
             {:error, reason} ->
               Logger.warning("YARA auto-generation failed: #{inspect(reason)}")
           end
@@ -2714,73 +3421,108 @@ defmodule TamanduaServer.Detection.EngineWorker do
             agent_id: alert.agent_id
           }
 
-          case Attribution.attribute_alert(alert_data) do
-            {:ok, attributions} when is_list(attributions) and length(attributions) > 0 ->
-              top = List.first(attributions)
+          organization_id = alert.organization_id
 
-              # Extract actor names from the top attributions
-              actor_names = attributions
-              |> Enum.take(3)
-              |> Enum.map(fn a -> a[:actor_name] || a[:actor_id] || "unknown" end)
+          if is_binary(organization_id) and
+               match?({:ok, _}, Ecto.UUID.cast(organization_id)) do
+            case Attribution.attribute_alert(organization_id, alert_data) do
+              {:ok, attributions} when is_list(attributions) and length(attributions) > 0 ->
+                top = List.first(attributions)
 
-              # Build the details map from the top attribution
-              details = %{
-                "attributions" => Enum.take(attributions, 5) |> Enum.map(fn a ->
-                  %{
-                    "actor_name" => a[:actor_name],
-                    "actor_id" => a[:actor_id],
-                    "confidence" => a[:confidence],
-                    "matching_iocs" => a[:matching_iocs] || [],
-                    "matching_ttps" => a[:matching_ttps] || [],
-                    "matching_malware" => a[:matching_malware] || [],
-                    "evidence" => a[:evidence] || []
-                  }
-                end),
-                "attributed_at" => DateTime.to_iso8601(DateTime.utc_now())
-              }
+                # Extract actor names from the top attributions
+                actor_names =
+                  attributions
+                  |> Enum.take(3)
+                  |> Enum.map(fn a -> a[:actor_name] || a[:actor_id] || "unknown" end)
 
-              # Determine campaign_id from the top attribution if available
-              campaign_id = top[:campaign_id]
+                # Build the details map from the top attribution
+                details = %{
+                  "attributions" =>
+                    Enum.take(attributions, 5)
+                    |> Enum.map(fn a ->
+                      %{
+                        "actor_name" => a[:actor_name],
+                        "actor_id" => a[:actor_id],
+                        "confidence" => a[:confidence],
+                        "matching_iocs" => a[:matching_iocs] || [],
+                        "matching_ttps" => a[:matching_ttps] || [],
+                        "matching_malware" => a[:matching_malware] || [],
+                        "evidence" => a[:evidence] || []
+                      }
+                    end),
+                  "attributed_at" => DateTime.to_iso8601(DateTime.utc_now())
+                }
 
-              # Update the alert with attribution data
-              Alerts.update_alert(alert, %{
-                attributed_actors: actor_names,
-                campaign_id: campaign_id,
-                attribution_confidence: top[:confidence],
-                attribution_details: details
-              })
+                # Determine campaign_id from the top attribution if available
+                campaign_id = top[:campaign_id]
 
-              # Notify the CampaignTracker about this attribution
-              try do
-                TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(%{
-                  alert_id: alert.id,
-                  actor_names: actor_names,
-                  confidence: top[:confidence],
-                  timestamp: DateTime.utc_now()
+                # Update the alert with attribution data
+                Alerts.update_alert(alert, %{
+                  attributed_actors: actor_names,
+                  campaign_id: campaign_id,
+                  attribution_confidence: top[:confidence],
+                  attribution_details: details
                 })
-              rescue
-                _ -> :ok
-              catch
-                :exit, _ -> :ok
-              end
 
-              Logger.info(
-                "[Attribution] Alert #{alert.id} attributed to #{Enum.join(actor_names, ", ")} " <>
-                "(confidence: #{Float.round(top[:confidence] || 0.0, 3)})"
-              )
+                # Notify the CampaignTracker about this attribution
+                try do
+                  if is_binary(alert.organization_id) and alert.organization_id != "" do
+                    TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(
+                      alert.organization_id,
+                      %{
+                        alert_id: alert.id,
+                        actor_names: actor_names,
+                        confidence: top[:confidence],
+                        timestamp: DateTime.utc_now()
+                      }
+                    )
+                  else
+                    :telemetry.execute(
+                      [:tamandua, :campaign_tracker, :attribution_dropped],
+                      %{count: 1},
+                      %{source: :engine_worker, reason: :organization_missing}
+                    )
+                  end
+                rescue
+                  _ -> :ok
+                catch
+                  :exit, _ -> :ok
+                end
 
-            {:ok, []} ->
-              Logger.debug("[Attribution] No attribution match for alert #{alert.id}")
+                Logger.info(
+                  "[Attribution] Alert #{alert.id} attributed to #{Enum.join(actor_names, ", ")} " <>
+                    "(confidence: #{Float.round(top[:confidence] || 0.0, 3)})"
+                )
 
-            {:error, reason} ->
-              Logger.warning("[Attribution] Attribution failed for alert #{alert.id}: #{inspect(reason)}")
+              {:ok, []} ->
+                Logger.debug("[Attribution] No attribution match for alert #{alert.id}")
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[Attribution] Attribution failed for alert #{alert.id}: #{inspect(reason)}"
+                )
+            end
+          else
+            :telemetry.execute(
+              [:tamandua, :threat_intel, :attribution_scope_rejected],
+              %{count: 1},
+              %{
+                operation: :attribute_alert,
+                reason: :organization_unknown,
+                source: :engine_worker
+              }
+            )
           end
         rescue
           e ->
-            Logger.warning("[Attribution] Attribution error for alert #{alert.id}: #{Exception.message(e)}")
+            Logger.warning(
+              "[Attribution] Attribution error for alert #{alert.id}: #{Exception.message(e)}"
+            )
         catch
           :exit, reason ->
-            Logger.warning("[Attribution] Attribution exited for alert #{alert.id}: #{inspect(reason)}")
+            Logger.warning(
+              "[Attribution] Attribution exited for alert #{alert.id}: #{inspect(reason)}"
+            )
         end
       end)
     end
@@ -2793,37 +3535,42 @@ defmodule TamanduaServer.Detection.EngineWorker do
     enrichment = %{}
 
     # Extract IPs
-    enrichment = if ip = payload[:remote_ip] || payload["remote_ip"] do
-      Map.put(enrichment, "source_ip", ip)
-    else
-      enrichment
-    end
+    enrichment =
+      if ip = payload[:remote_ip] || payload["remote_ip"] do
+        Map.put(enrichment, "source_ip", ip)
+      else
+        enrichment
+      end
 
     # Extract domains
-    enrichment = if domain = payload[:query] || payload["query"] || payload[:domain] || payload["domain"] do
-      Map.put(enrichment, "domain", domain)
-    else
-      enrichment
-    end
+    enrichment =
+      if domain = payload[:query] || payload["query"] || payload[:domain] || payload["domain"] do
+        Map.put(enrichment, "domain", domain)
+      else
+        enrichment
+      end
 
     # Extract file hashes
-    enrichment = if hash = payload[:sha256] || payload["sha256"] do
-      Map.put(enrichment, "file_hash", hash)
-    else
-      enrichment
-    end
+    enrichment =
+      if hash = payload[:sha256] || payload["sha256"] do
+        Map.put(enrichment, "file_hash", hash)
+      else
+        enrichment
+      end
 
     # Extract malware family from detections
-    malware_families = detections
-    |> Enum.map(fn d -> d[:malware_family] || d[:yara_meta_malware] end)
-    |> Enum.reject(&is_nil/1)
+    malware_families =
+      detections
+      |> Enum.map(fn d -> d[:malware_family] || d[:yara_meta_malware] end)
+      |> Enum.reject(&is_nil/1)
 
-    enrichment = if length(malware_families) > 0 do
-      Map.put(enrichment, "detected_malware", malware_families)
-      |> Map.put("malware_family", List.first(malware_families))
-    else
-      enrichment
-    end
+    enrichment =
+      if length(malware_families) > 0 do
+        Map.put(enrichment, "detected_malware", malware_families)
+        |> Map.put("malware_family", List.first(malware_families))
+      else
+        enrichment
+      end
 
     # Include MITRE techniques for TTP matching
     enrichment = Map.put(enrichment, "mitre_techniques", alert.mitre_techniques || [])
@@ -2871,7 +3618,9 @@ defmodule TamanduaServer.Detection.EngineWorker do
               end
 
             _ ->
-              Logger.debug("[EngineWorker] Kill switch not armed for model #{model_id}, skipping auto-trigger")
+              Logger.debug(
+                "[EngineWorker] Kill switch not armed for model #{model_id}, skipping auto-trigger"
+              )
           end
         rescue
           e ->
@@ -2885,27 +3634,43 @@ defmodule TamanduaServer.Detection.EngineWorker do
   end
 
   defp should_auto_trigger_kill_switch?(validation_result) do
-    auto_trigger_enabled = Application.get_env(:tamandua_server, :kill_switch, [])
-                           |> Keyword.get(:auto_trigger_enabled, true)
+    auto_trigger_enabled =
+      Application.get_env(:tamandua_server, :kill_switch, [])
+      |> Keyword.get(:auto_trigger_enabled, true)
 
-    auto_trigger_on_critical = Application.get_env(:tamandua_server, :kill_switch, [])
-                               |> Keyword.get(:auto_trigger_on_critical, true)
+    auto_trigger_on_critical =
+      Application.get_env(:tamandua_server, :kill_switch, [])
+      |> Keyword.get(:auto_trigger_on_critical, true)
 
-    auto_trigger_on_high = Application.get_env(:tamandua_server, :kill_switch, [])
-                           |> Keyword.get(:auto_trigger_on_high, false)
+    auto_trigger_on_high =
+      Application.get_env(:tamandua_server, :kill_switch, [])
+      |> Keyword.get(:auto_trigger_on_high, false)
 
     cond do
-      not auto_trigger_enabled -> false
-      validation_result.overall_risk == :critical and auto_trigger_on_critical -> true
-      validation_result.overall_risk == :high and auto_trigger_on_high -> true
+      not auto_trigger_enabled ->
+        false
+
+      validation_result.overall_risk == :critical and auto_trigger_on_critical ->
+        true
+
+      validation_result.overall_risk == :high and auto_trigger_on_high ->
+        true
+
       # Also trigger on specific high-confidence threats
       get_in(validation_result, [:harmful, :is_harmful]) and
-        get_in(validation_result, [:harmful, :category]) in [:violence, :self_harm] -> true
+          get_in(validation_result, [:harmful, :category]) in [:violence, :self_harm] ->
+        true
+
       get_in(validation_result, [:pii, :has_pii]) and
-        get_in(validation_result, [:pii, :pii_count]) >= 5 -> true
+          get_in(validation_result, [:pii, :pii_count]) >= 5 ->
+        true
+
       get_in(validation_result, [:token_anomaly, :is_anomaly]) and
-        get_in(validation_result, [:token_anomaly, :anomaly_score]) > 0.95 -> true
-      true -> false
+          get_in(validation_result, [:token_anomaly, :anomaly_score]) > 0.95 ->
+        true
+
+      true ->
+        false
     end
   end
 
@@ -2915,9 +3680,10 @@ defmodule TamanduaServer.Detection.EngineWorker do
     api_endpoint = payload[:api_endpoint] || payload["api_endpoint"] || "unknown"
     model_name = payload[:model] || payload["model"] || "unknown"
 
-    components = [process_path, api_endpoint, model_name]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(":")
+    components =
+      [process_path, api_endpoint, model_name]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(":")
 
     if components == "" do
       # Fallback to agent-based ID
@@ -2930,26 +3696,29 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp build_kill_switch_reason(validation_result) do
     parts = []
 
-    parts = if get_in(validation_result, [:harmful, :is_harmful]) do
-      category = get_in(validation_result, [:harmful, :category])
-      ["Harmful content: #{category}" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:harmful, :is_harmful]) do
+        category = get_in(validation_result, [:harmful, :category])
+        ["Harmful content: #{category}" | parts]
+      else
+        parts
+      end
 
-    parts = if get_in(validation_result, [:pii, :has_pii]) do
-      count = get_in(validation_result, [:pii, :pii_count]) || 0
-      ["PII detected: #{count} instances" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:pii, :has_pii]) do
+        count = get_in(validation_result, [:pii, :pii_count]) || 0
+        ["PII detected: #{count} instances" | parts]
+      else
+        parts
+      end
 
-    parts = if get_in(validation_result, [:token_anomaly, :is_anomaly]) do
-      score = get_in(validation_result, [:token_anomaly, :anomaly_score]) || 0.0
-      ["Token anomaly: #{Float.round(score * 100, 1)}%" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:token_anomaly, :is_anomaly]) do
+        score = get_in(validation_result, [:token_anomaly, :anomaly_score]) || 0.0
+        ["Token anomaly: #{Float.round(score * 100, 1)}%" | parts]
+      else
+        parts
+      end
 
     if parts == [] do
       "Output validation violation: #{validation_result.overall_risk}"
@@ -2969,27 +3738,30 @@ defmodule TamanduaServer.Detection.EngineWorker do
   defp build_output_validation_description(validation_result) do
     parts = []
 
-    parts = if get_in(validation_result, [:pii, :has_pii]) do
-      types = get_in(validation_result, [:pii, :pii_types]) || []
-      ["PII detected: #{Enum.join(types, ", ")}" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:pii, :has_pii]) do
+        types = get_in(validation_result, [:pii, :pii_types]) || []
+        ["PII detected: #{Enum.join(types, ", ")}" | parts]
+      else
+        parts
+      end
 
-    parts = if get_in(validation_result, [:harmful, :is_harmful]) do
-      category = get_in(validation_result, [:harmful, :category])
-      confidence = get_in(validation_result, [:harmful, :confidence]) || 0.0
-      ["Harmful content (#{category}): #{Float.round(confidence * 100, 1)}% confidence" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:harmful, :is_harmful]) do
+        category = get_in(validation_result, [:harmful, :category])
+        confidence = get_in(validation_result, [:harmful, :confidence]) || 0.0
+        ["Harmful content (#{category}): #{Float.round(confidence * 100, 1)}% confidence" | parts]
+      else
+        parts
+      end
 
-    parts = if get_in(validation_result, [:token_anomaly, :is_anomaly]) do
-      score = get_in(validation_result, [:token_anomaly, :anomaly_score]) || 0.0
-      ["Token anomaly score: #{Float.round(score, 3)}" | parts]
-    else
-      parts
-    end
+    parts =
+      if get_in(validation_result, [:token_anomaly, :is_anomaly]) do
+        score = get_in(validation_result, [:token_anomaly, :anomaly_score]) || 0.0
+        ["Token anomaly score: #{Float.round(score, 3)}" | parts]
+      else
+        parts
+      end
 
     if parts == [] do
       "Output validation flagged with risk level: #{validation_result.overall_risk}"

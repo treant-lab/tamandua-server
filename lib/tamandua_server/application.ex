@@ -36,6 +36,8 @@ defmodule TamanduaServer.Application do
 
   @impl true
   def start(_type, _args) do
+    TamanduaServer.Detection.IOCSnapshotProvider.initialize!()
+
     # SECURITY: Check for dangerous LAB_LIGHT configuration in production
     check_lab_light_safety!()
 
@@ -56,7 +58,8 @@ defmodule TamanduaServer.Application do
           # Start the Telemetry supervisor
           TamanduaServerWeb.Telemetry,
 
-          # Initialize adaptive rate limiter ETS table (must be before Endpoint)
+          # Initialize rate limiter ETS tables (must be before Endpoint)
+          TamanduaServerWeb.Plugs.RateLimiterStore,
           %{
             id: :adaptive_rate_limiter_init,
             start:
@@ -125,6 +128,9 @@ defmodule TamanduaServer.Application do
           # Start a Task.Supervisor for async background work
           # (used by ClickHouse flush, remediation, etc.)
           {Task.Supervisor, name: TamanduaServer.TaskSupervisor},
+
+          # Tenant-keyed Microsoft 365 and Google Workspace integrations.
+          TamanduaServer.EmailSecurity.RuntimeSupervisor,
 
           # PERIPHERAL GROUP: Solana attestation (Client, RelayBatch,
           # FleetHealthAttestation) — isolated restart budget, same position/order
@@ -212,6 +218,10 @@ defmodule TamanduaServer.Application do
 
           # Start the Agent Registry (ETS-based tracking)
           TamanduaServer.Agents.Registry,
+
+          # Tenant-scoped email-to-endpoint correlation. OrgLookup must be available
+          # before endpoint events are admitted into correlation state.
+          TamanduaServer.EmailSecurity.EmailCorrelator,
 
           # Start the Connector Registry (dynamic plugin system for integrations)
           TamanduaServer.Connectors.Registry,
@@ -338,9 +348,18 @@ defmodule TamanduaServer.Application do
           # the ETS table this GenServer owns.
           TamanduaServer.Detection.AgentRiskScoreStore,
 
+          # Owns immutable IOC ETS generations independently of publisher
+          # processes. It must precede EngineSupervisor's initial snapshot.
+          TamanduaServer.Detection.IOCGenerationOwner,
+
           # Start the Sharded Detection Engine Supervisor (replaces single GenServer)
           # Creates ETS tables for rules + stats and spawns 16 EngineWorker shards.
           TamanduaServer.Detection.EngineSupervisor,
+
+          # Every node independently converges its IOC snapshot to the durable
+          # authority epoch. EngineSupervisor has already completed the
+          # mandatory initial snapshot before starting its worker shards.
+          {TamanduaServer.Detection.IOCReconciler, initial_reconcile: false},
 
           # Start the Detection Engine facade (lightweight Agent for health checks;
           # also loads rules into ETS on startup)
@@ -361,7 +380,7 @@ defmodule TamanduaServer.Application do
               {Task, :start_link,
                [
                  fn ->
-                   TamanduaServer.Detection.Engine.load_rules_into_ets()
+                   TamanduaServer.Detection.Engine.load_rules_into_ets(reconcile_iocs: false)
                  end
                ]},
             restart: :temporary
@@ -446,6 +465,9 @@ defmodule TamanduaServer.Application do
 
           # Start Remediation Policy Engine (evaluates alerts against policies)
           TamanduaServer.Remediation.PolicyEngine,
+
+          # Tenant-scoped approval workflow for legacy remediation executions
+          TamanduaServer.Remediation.ApprovalManager,
 
           # Start Model Quarantine Vault (stores recovery keys, audit logs)
           TamanduaServer.Quarantine.ModelVault,
@@ -641,6 +663,8 @@ defmodule TamanduaServer.Application do
         ]
       end
 
+    children = maybe_add_authority_repo(children)
+
     # Conditionally add ChromicPDF if Chrome is available
     children = maybe_add_chromic_pdf(children)
 
@@ -665,7 +689,10 @@ defmodule TamanduaServer.Application do
       max_seconds: 60
     ]
 
-    Supervisor.start_link(children, opts)
+    TamanduaServer.BootGuard.start(
+      fn -> Supervisor.start_link(children, opts) end,
+      boot_timeout_ms()
+    )
   end
 
   # Start secrets management if enabled
@@ -708,6 +735,11 @@ defmodule TamanduaServer.Application do
 
   # Check if Chrome/Chromium is available for PDF generation
   defp maybe_add_chromic_pdf(children) do
+    pdf_enabled? =
+      System.get_env("TAMANDUA_PDF_ENABLED", "true")
+      |> String.downcase()
+      |> Kernel.in(["1", "true", "yes", "on"])
+
     chrome_executables = [
       "/usr/bin/chromium-browser",
       "/usr/bin/chromium",
@@ -721,19 +753,151 @@ defmodule TamanduaServer.Application do
         File.regular?(exe)
       end)
 
-    if chrome_available do
-      require Logger
-      Logger.info("[Application] Chrome detected, enabling PDF generation")
-      [{ChromicPDF, chromic_pdf_config()} | children]
+    cond do
+      not pdf_enabled? ->
+        require Logger
+
+        Logger.warning("[Application] PDF generation disabled by TAMANDUA_PDF_ENABLED=false.")
+
+        children
+
+      chrome_available ->
+        require Logger
+        Logger.info("[Application] Chrome detected, enabling PDF generation")
+        [{ChromicPDF, chromic_pdf_config()} | children]
+
+      true ->
+        require Logger
+
+        Logger.warning(
+          "[Application] Chrome not found, PDF generation disabled. Install chromium for PDF support."
+        )
+
+        children
+    end
+  end
+
+  defp maybe_add_authority_repo(children) do
+    children =
+      if TamanduaServer.AuthorityRepo.enabled?() do
+        Enum.flat_map(children, fn
+          TamanduaServer.Repo ->
+            authority_repo_children(TamanduaServer.Repo)
+
+          {TamanduaServer.Repo, _opts} = child ->
+            authority_repo_children(child)
+
+          %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+            authority_repo_children(child)
+
+          child ->
+            [child]
+        end)
+      else
+        children
+      end
+
+    children =
+      if TamanduaServer.AgenticRestoreAuthorityRepo.enabled?() do
+        Enum.flat_map(children, fn
+          TamanduaServer.Repo ->
+            [TamanduaServer.Repo, TamanduaServer.AgenticRestoreAuthorityRepo]
+
+          {TamanduaServer.Repo, _opts} = child ->
+            [child, TamanduaServer.AgenticRestoreAuthorityRepo]
+
+          %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+            [child, TamanduaServer.AgenticRestoreAuthorityRepo]
+
+          child ->
+            [child]
+        end)
+      else
+        children
+      end
+
+    children =
+      if TamanduaServer.DecisionEngineAuthorityRepo.enabled?() do
+        Enum.flat_map(children, fn
+          TamanduaServer.Repo ->
+            [TamanduaServer.Repo, TamanduaServer.DecisionEngineAuthorityRepo]
+
+          {TamanduaServer.Repo, _opts} = child ->
+            [child, TamanduaServer.DecisionEngineAuthorityRepo]
+
+          %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+            [child, TamanduaServer.DecisionEngineAuthorityRepo]
+
+          child ->
+            [child]
+        end)
+      else
+        children
+      end
+
+    children =
+      if TamanduaServer.RemediationApprovalAuthorityRepo.enabled?() do
+        Enum.flat_map(children, fn
+          TamanduaServer.Repo ->
+            [TamanduaServer.Repo, TamanduaServer.RemediationApprovalAuthorityRepo]
+
+          {TamanduaServer.Repo, _opts} = child ->
+            [child, TamanduaServer.RemediationApprovalAuthorityRepo]
+
+          %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+            [child, TamanduaServer.RemediationApprovalAuthorityRepo]
+
+          child ->
+            [child]
+        end)
+      else
+        children
+      end
+
+    children =
+      if TamanduaServer.EnrollmentLocatorRepo.enabled?() do
+        Enum.flat_map(children, fn
+          TamanduaServer.Repo ->
+            [TamanduaServer.Repo, TamanduaServer.EnrollmentLocatorRepo]
+
+          {TamanduaServer.Repo, _opts} = child ->
+            [child, TamanduaServer.EnrollmentLocatorRepo]
+
+          %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+            [child, TamanduaServer.EnrollmentLocatorRepo]
+
+          child ->
+            [child]
+        end)
+      else
+        children
+      end
+
+    if TamanduaServer.IocSnapshotAuthorityRepo.enabled?() do
+      Enum.flat_map(children, fn
+        TamanduaServer.Repo ->
+          [TamanduaServer.Repo, TamanduaServer.IocSnapshotAuthorityRepo]
+
+        {TamanduaServer.Repo, _opts} = child ->
+          [child, TamanduaServer.IocSnapshotAuthorityRepo]
+
+        %{start: {TamanduaServer.Repo, _function, _args}} = child ->
+          [child, TamanduaServer.IocSnapshotAuthorityRepo]
+
+        child ->
+          [child]
+      end)
     else
-      require Logger
-
-      Logger.warning(
-        "[Application] Chrome not found, PDF generation disabled. Install chromium for PDF support."
-      )
-
       children
     end
+  end
+
+  defp authority_repo_children(repo_child) do
+    [
+      repo_child,
+      TamanduaServer.AuthorityRepo,
+      TamanduaServer.AuthorityGuard
+    ]
   end
 
   # Conditionally start the OCSP revocation checker. Defaults to disabled so
@@ -771,6 +935,7 @@ defmodule TamanduaServer.Application do
   defp lab_light_children do
     [
       TamanduaServerWeb.Telemetry,
+      TamanduaServerWeb.Plugs.RateLimiterStore,
       %{
         id: :adaptive_rate_limiter_init,
         start:
@@ -805,6 +970,7 @@ defmodule TamanduaServer.Application do
          "http://localhost:8123" => [size: 5, count: 1, conn_max_idle_time: 120_000]
        }},
       {Task.Supervisor, name: TamanduaServer.TaskSupervisor},
+      TamanduaServer.EmailSecurity.RuntimeSupervisor,
       {Redix,
        host: System.get_env("REDIS_HOST") || "localhost",
        port: String.to_integer(System.get_env("REDIS_PORT") || "6379"),
@@ -829,6 +995,7 @@ defmodule TamanduaServer.Application do
        [enabled: lab_light_threat_intel_feeds_enabled?()]},
       TamanduaServer.Agents.OrgLookup,
       TamanduaServer.Agents.Registry,
+      TamanduaServer.EmailSecurity.EmailCorrelator,
       TamanduaServer.Agents.TokenManager,
       TamanduaServer.Agents.HealthMonitor,
       {DynamicSupervisor,
@@ -860,6 +1027,15 @@ defmodule TamanduaServer.Application do
       TamanduaServer.Automation.Hyperautomation,
       TamanduaServer.Hunting.NLHunter,
       TamanduaServer.Detection.Behavioral,
+      # Visible lab-light routes rely on these lightweight state holders.
+      # Keep scheduled external CVE syncs disabled in the constrained profile.
+      TamanduaServer.Response.Playbook,
+      TamanduaServer.Response.AutonomousRules,
+      TamanduaServer.Response.AnalystLearning,
+      TamanduaServer.Response.DecisionEngine,
+      {TamanduaServer.Vulnerability.NVD, [auto_sync: false]},
+      {TamanduaServer.Vulnerability.EPSS, [auto_sync: false]},
+      {TamanduaServer.Vulnerability.KEV, [auto_sync: false]},
       # Live Response REST endpoints and tamandua-ctl rely on this ETS-backed
       # session lifecycle even in lab-light. Without it, session creation
       # returns 500 and the benchmark fallback transport is unusable.
@@ -867,7 +1043,9 @@ defmodule TamanduaServer.Application do
       TamanduaServer.Detection.TemporalScorer,
       TamanduaServer.Detection.Storyline,
       {Registry, keys: :unique, name: TamanduaServer.Detection.ShardRegistry},
+      TamanduaServer.Detection.IOCGenerationOwner,
       TamanduaServer.Detection.EngineSupervisor,
+      {TamanduaServer.Detection.IOCReconciler, initial_reconcile: false},
       %{
         id: TamanduaServer.Detection.Engine,
         start: {TamanduaServer.Detection.Engine, :start_link, [[]]},
@@ -879,7 +1057,7 @@ defmodule TamanduaServer.Application do
           {Task, :start_link,
            [
              fn ->
-               TamanduaServer.Detection.Engine.load_rules_into_ets()
+               TamanduaServer.Detection.Engine.load_rules_into_ets(reconcile_iocs: false)
              end
            ]},
         restart: :temporary
@@ -919,6 +1097,35 @@ defmodule TamanduaServer.Application do
 
   defp core_boot_profile? do
     lab_light?() || System.get_env("TAMANDUA_BOOT_PROFILE") in ["core", "demo"]
+  end
+
+  # Production keeps OTP's normal unlimited startup semantics unless an
+  # operator opts in explicitly. Constrained/core and test boots are bounded so
+  # a synchronous child init failure becomes an observable application error
+  # instead of an indefinitely wedged deployment or CI job.
+  defp boot_timeout_ms do
+    case System.get_env("TAMANDUA_BOOT_TIMEOUT_MS") do
+      nil -> default_boot_timeout_ms()
+      value -> parse_boot_timeout_ms(value)
+    end
+  end
+
+  defp default_boot_timeout_ms do
+    cond do
+      Application.get_env(:tamandua_server, :env) == :prod -> :infinity
+      core_boot_profile?() -> 30_000
+      Application.get_env(:tamandua_server, :env) == :test -> 60_000
+      true -> :infinity
+    end
+  end
+
+  defp parse_boot_timeout_ms("infinity"), do: :infinity
+
+  defp parse_boot_timeout_ms(value) do
+    case Integer.parse(value) do
+      {timeout_ms, ""} when timeout_ms > 0 -> timeout_ms
+      _ -> raise "TAMANDUA_BOOT_TIMEOUT_MS must be a positive integer or 'infinity'"
+    end
   end
 
   # SECURITY: Validate CORS configuration at startup
@@ -1042,18 +1249,22 @@ defmodule TamanduaServer.Application do
   defp chromic_pdf_config do
     [
       # Session pool for concurrent PDF generation
-      session_pool: [size: 2],
+      session_pool: [size: 1, timeout: 120_000, checkout_timeout: 30_000],
       # Timeout for PDF generation (2 minutes)
       timeout: 120_000,
+      # Chromium can take longer than the library default 5s to create its first
+      # headless target on constrained lab hosts.
+      init_timeout: 30_000,
       # Chrome/Chromium options
       chrome_args: [
-        "--headless",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--no-sandbox",
-        "--disable-setuid-sandbox"
+        append: [
+          "--disable-dev-shm-usage",
+          "--disable-setuid-sandbox",
+          "--disable-software-rasterizer",
+          "--ozone-platform=headless"
+        ]
       ],
-      # Offline mode - don't try to fetch external resources
+      # Offline mode - do not try to fetch external resources
       offline: false,
       # Disable JavaScript by default for security
       no_sandbox: true

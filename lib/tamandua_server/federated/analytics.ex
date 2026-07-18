@@ -13,7 +13,6 @@ defmodule TamanduaServer.Federated.Analytics do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
 
   defmodule State do
     @moduledoc false
@@ -119,7 +118,7 @@ defmodule TamanduaServer.Federated.Analytics do
   end
 
   @impl true
-  def handle_cast({:track_update, client_id, round_number, update_data}, state) do
+  def handle_cast({:track_update, client_id, _round_number, update_data}, state) do
     case Map.get(state.client_contributions, client_id) do
       nil ->
         Logger.warning("Update from unregistered client", client_id: client_id)

@@ -9,6 +9,7 @@ defmodule TamanduaServer.Investigations do
   import Ecto.Query, warn: false
 
   alias TamanduaServer.Repo
+  alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Investigations.CaseInvestigation
 
   @doc """
@@ -56,6 +57,22 @@ defmodule TamanduaServer.Investigations do
   @spec get_investigation(String.t()) :: {:ok, CaseInvestigation.t()} | {:error, :not_found}
   def get_investigation(id) do
     case Repo.get(CaseInvestigation, id) |> Repo.preload([:assigned_user, :creator]) do
+      nil -> {:error, :not_found}
+      investigation -> {:ok, investigation}
+    end
+  end
+
+  @doc """
+  Gets a single case investigation by ID scoped to an organization.
+  """
+  @spec get_investigation_for_org(String.t(), String.t()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found}
+  def get_investigation_for_org(organization_id, id) do
+    CaseInvestigation
+    |> where([i], i.id == ^id and i.organization_id == ^organization_id)
+    |> Repo.one()
+    |> Repo.preload([:assigned_user, :creator])
+    |> case do
       nil -> {:error, :not_found}
       investigation -> {:ok, investigation}
     end
@@ -113,7 +130,17 @@ defmodule TamanduaServer.Investigations do
   @spec add_alert_to_investigation(String.t(), String.t()) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def add_alert_to_investigation(investigation_id, alert_id) do
-    with {:ok, investigation} <- get_investigation(investigation_id) do
+    add_alert_to_investigation(investigation_id, alert_id, [])
+  end
+
+  @spec add_alert_to_investigation(String.t(), String.t(), keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def add_alert_to_investigation(investigation_id, alert_id, opts) do
+    organization_id = Keyword.get(opts, :organization_id)
+
+    with {:ok, investigation} <- get_investigation(investigation_id),
+         :ok <- ensure_investigation_scoped_to_org(investigation, organization_id),
+         :ok <- ensure_alerts_scoped_to_org([alert_id], organization_id) do
       current_ids = investigation.alert_ids || []
 
       if alert_id in current_ids do
@@ -130,7 +157,17 @@ defmodule TamanduaServer.Investigations do
   @spec remove_alert_from_investigation(String.t(), String.t()) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def remove_alert_from_investigation(investigation_id, alert_id) do
-    with {:ok, investigation} <- get_investigation(investigation_id) do
+    remove_alert_from_investigation(investigation_id, alert_id, [])
+  end
+
+  @spec remove_alert_from_investigation(String.t(), String.t(), keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def remove_alert_from_investigation(investigation_id, alert_id, opts) do
+    organization_id = Keyword.get(opts, :organization_id)
+
+    with {:ok, investigation} <- get_investigation(investigation_id),
+         :ok <- ensure_investigation_scoped_to_org(investigation, organization_id),
+         :ok <- ensure_alerts_scoped_to_org([alert_id], organization_id) do
       current_ids = investigation.alert_ids || []
       new_ids = Enum.reject(current_ids, &(&1 == alert_id))
       update_investigation(investigation, %{alert_ids: new_ids})
@@ -143,7 +180,17 @@ defmodule TamanduaServer.Investigations do
   @spec add_alerts_to_investigation(String.t(), [String.t()]) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def add_alerts_to_investigation(investigation_id, alert_ids) when is_list(alert_ids) do
-    with {:ok, investigation} <- get_investigation(investigation_id) do
+    add_alerts_to_investigation(investigation_id, alert_ids, [])
+  end
+
+  @spec add_alerts_to_investigation(String.t(), [String.t()], keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def add_alerts_to_investigation(investigation_id, alert_ids, opts) when is_list(alert_ids) do
+    organization_id = Keyword.get(opts, :organization_id)
+
+    with {:ok, investigation} <- get_investigation(investigation_id),
+         :ok <- ensure_alerts_scoped_to_org(alert_ids, organization_id),
+         :ok <- ensure_investigation_scoped_to_org(investigation, organization_id) do
       current_ids = investigation.alert_ids || []
       # Combine and deduplicate
       new_ids = Enum.uniq(current_ids ++ alert_ids)
@@ -158,7 +205,16 @@ defmodule TamanduaServer.Investigations do
   @spec add_note(String.t(), String.t(), String.t() | nil) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def add_note(investigation_id, note_content, author_name \\ nil) do
-    with {:ok, investigation} <- get_investigation(investigation_id) do
+    add_note(investigation_id, note_content, author_name, [])
+  end
+
+  @spec add_note(String.t(), String.t(), String.t() | nil, keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def add_note(investigation_id, note_content, author_name, opts) do
+    organization_id = Keyword.get(opts, :organization_id)
+
+    with {:ok, investigation} <- get_investigation(investigation_id),
+         :ok <- ensure_investigation_scoped_to_org(investigation, organization_id) do
       timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
       author = if author_name, do: " (#{author_name})", else: ""
       formatted_note = "[#{timestamp}]#{author}: #{note_content}"
@@ -176,8 +232,17 @@ defmodule TamanduaServer.Investigations do
   @spec update_status(String.t(), String.t()) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | :invalid_status | Ecto.Changeset.t()}
   def update_status(investigation_id, new_status) do
+    update_status(investigation_id, new_status, [])
+  end
+
+  @spec update_status(String.t(), String.t(), keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | :invalid_status | Ecto.Changeset.t()}
+  def update_status(investigation_id, new_status, opts) do
+    organization_id = Keyword.get(opts, :organization_id)
+
     if new_status in CaseInvestigation.statuses() do
-      with {:ok, investigation} <- get_investigation(investigation_id) do
+      with {:ok, investigation} <- get_investigation(investigation_id),
+           :ok <- ensure_investigation_scoped_to_org(investigation, organization_id) do
         update_investigation(investigation, %{status: new_status})
       end
     else
@@ -191,7 +256,16 @@ defmodule TamanduaServer.Investigations do
   @spec assign_investigation(String.t(), String.t() | nil) ::
           {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def assign_investigation(investigation_id, user_id) do
-    with {:ok, investigation} <- get_investigation(investigation_id) do
+    assign_investigation(investigation_id, user_id, [])
+  end
+
+  @spec assign_investigation(String.t(), String.t() | nil, keyword()) ::
+          {:ok, CaseInvestigation.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def assign_investigation(investigation_id, user_id, opts) do
+    organization_id = Keyword.get(opts, :organization_id)
+
+    with {:ok, investigation} <- get_investigation(investigation_id),
+         :ok <- ensure_investigation_scoped_to_org(investigation, organization_id) do
       update_investigation(investigation, %{assigned_to: user_id})
     end
   end
@@ -271,5 +345,23 @@ defmodule TamanduaServer.Investigations do
   defp apply_org_filter(query, nil), do: query
   defp apply_org_filter(query, org_id) do
     where(query, [i], i.organization_id == ^org_id)
+  end
+
+  defp ensure_investigation_scoped_to_org(_investigation, nil), do: :ok
+  defp ensure_investigation_scoped_to_org(%CaseInvestigation{organization_id: org_id}, org_id), do: :ok
+  defp ensure_investigation_scoped_to_org(_investigation, _organization_id), do: {:error, :not_found}
+
+  defp ensure_alerts_scoped_to_org(_alert_ids, nil), do: :ok
+  defp ensure_alerts_scoped_to_org([], _organization_id), do: :ok
+
+  defp ensure_alerts_scoped_to_org(alert_ids, organization_id) do
+    unique_alert_ids = Enum.uniq(alert_ids)
+
+    count =
+      Alert
+      |> where([a], a.id in ^unique_alert_ids and a.organization_id == ^organization_id)
+      |> Repo.aggregate(:count, :id)
+
+    if count == length(unique_alert_ids), do: :ok, else: {:error, :not_found}
   end
 end

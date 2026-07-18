@@ -43,7 +43,6 @@ defmodule TamanduaServer.Integrations.SOAR.GoogleChronicle do
   # Chronicle SOAR API endpoints
   @cases_endpoint "/api/external/v1/cases"
   @alerts_endpoint "/api/external/v1/alerts"
-  @entities_endpoint "/api/external/v1/entities"
   @playbooks_endpoint "/api/external/v1/playbooks"
   @actions_endpoint "/api/external/v1/actions"
   @workflows_endpoint "/api/external/v1/workflows"

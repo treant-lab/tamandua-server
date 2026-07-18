@@ -10,6 +10,49 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
 
   setup :verify_on_exit!
 
+  defmodule DecisionOnlyRegistry do
+    def scan_model(_model_id, _config) do
+      {:ok,
+       %{
+         risk_score: 0.2,
+         findings: [%{type: "weak_signal", severity: "low"}],
+         scanned_at: DateTime.utc_now()
+       }}
+    end
+  end
+
+  defmodule UnsupportedRegistry do
+    def scan_model(_model_id, _config), do: {:error, :unsupported_platform}
+  end
+
+  defmodule PackageFindingRegistry do
+    def scan_model(_model_id, _config) do
+      {:ok,
+       %{
+         risk_score: 0.72,
+         findings: [%{type: "package_backdoor_intent", severity: "high"}],
+         package_findings: [
+           %{
+             source: "package_scanner",
+             file: "setup.py",
+             type: "network_intent",
+             severity: "high",
+             description: "setup.py attempts outbound callback"
+           }
+         ],
+         external_model_scores: %{
+           ember2024: %{score: 0.91, verdict: "malicious", mode: "shadow"}
+         },
+         model_consensus: %{
+           state: "divergent",
+           tamandua: "malicious",
+           external_static_baseline: "malicious"
+         },
+         scanned_at: DateTime.utc_now()
+       }}
+    end
+  end
+
   describe "handle_download/2" do
     test "creates pending ModelProvenance record" do
       model_id = "test/model"
@@ -39,7 +82,8 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
     end
 
     test "returns error when model_id is nil" do
-      assert {:error, _changeset} = DownloadHook.handle_download(nil, TamanduaServer.Registries.HuggingFace)
+      assert {:error, _changeset} =
+               DownloadHook.handle_download(nil, TamanduaServer.Registries.HuggingFace)
     end
   end
 
@@ -132,6 +176,51 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
       assert updated.risk_score == 0.85
       assert updated.findings_count == 2
     end
+
+    test "records Model Guard decision-only evidence without escalating status", %{
+      provenance: provenance
+    } do
+      :ok =
+        DownloadHook.do_scan(provenance, DecisionOnlyRegistry, %{
+          model_guard_enforcement: :decision_only
+        })
+
+      updated = Repo.get!(ModelProvenance, provenance.id)
+      model_guard = updated.scan_result["model_guard"] || updated.scan_result[:model_guard]
+      evidence = model_guard["evidence"] || model_guard[:evidence]
+      thresholds = model_guard["thresholds"] || model_guard[:thresholds]
+
+      assert updated.status == "suspicious"
+      assert (model_guard["decision"] || model_guard[:decision]) == "review"
+      assert (model_guard["enforcement"] || model_guard[:enforcement]) == "decision_only"
+      assert (model_guard["action"] || model_guard[:action]) == "allow_with_review"
+      assert (model_guard["fp_rationale"] || model_guard[:fp_rationale]) =~ "review-only"
+      assert (evidence["model_id"] || evidence[:model_id]) == provenance.model_id
+      assert (evidence["findings_count"] || evidence[:findings_count]) == 1
+      assert (thresholds["block"] || thresholds[:block]) == 0.3
+    end
+
+    test "records package scanner and external model evidence", %{provenance: provenance} do
+      :ok =
+        DownloadHook.do_scan(provenance, PackageFindingRegistry, %{
+          model_guard_enforcement: :decision_only
+        })
+
+      updated = Repo.get!(ModelProvenance, provenance.id)
+      model_guard = updated.scan_result["model_guard"] || updated.scan_result[:model_guard]
+      evidence = model_guard["evidence"] || model_guard[:evidence]
+      package_findings = evidence["package_findings"] || evidence[:package_findings]
+      external_scores = evidence["external_model_scores"] || evidence[:external_model_scores]
+      consensus = evidence["model_consensus"] || evidence[:model_consensus]
+
+      assert updated.status == "malicious"
+      assert (evidence["package_scanner"] || evidence[:package_scanner]) == "collected"
+      assert (evidence["package_findings_count"] || evidence[:package_findings_count]) == 1
+      assert (hd(package_findings)["source"] || hd(package_findings)[:source]) == "package_scanner"
+      assert (external_scores["ember2024"] || external_scores[:ember2024]) != nil
+      assert (consensus["state"] || consensus[:state]) == "divergent"
+      assert (evidence["enforcement_note"] || evidence[:enforcement_note]) =~ "decision-only"
+    end
   end
 
   describe "alert creation for malicious models" do
@@ -140,7 +229,11 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
       risk_score = 0.85
 
       findings = [
-        %{type: "malicious_code", severity: "critical", description: "Detected malicious code execution"}
+        %{
+          type: "malicious_code",
+          severity: "critical",
+          description: "Detected malicious code execution"
+        }
       ]
 
       scan_result = %{
@@ -173,7 +266,11 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
       # In real implementation, DownloadHook would create alert
       # For now, test the alert creation logic directly
       alert_attrs = %{
-        severity: if(risk_score > 0.7, do: "critical", else: if(risk_score > 0.5, do: "high", else: "medium")),
+        severity:
+          if(risk_score > 0.7,
+            do: "critical",
+            else: if(risk_score > 0.5, do: "high", else: "medium")
+          ),
         title: "Malicious AI model detected: #{model_id}",
         description: "Model scan detected #{length(findings)} security findings",
         mitre_techniques: ["T1059", "T1027"],
@@ -193,19 +290,34 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
 
     test "severity is critical when risk_score > 0.7" do
       risk_score = 0.85
-      severity = if risk_score > 0.7, do: "critical", else: if(risk_score > 0.5, do: "high", else: "medium")
+
+      severity =
+        if risk_score > 0.7,
+          do: "critical",
+          else: if(risk_score > 0.5, do: "high", else: "medium")
+
       assert severity == "critical"
     end
 
     test "severity is high when 0.5 < risk_score <= 0.7" do
       risk_score = 0.6
-      severity = if risk_score > 0.7, do: "critical", else: if(risk_score > 0.5, do: "high", else: "medium")
+
+      severity =
+        if risk_score > 0.7,
+          do: "critical",
+          else: if(risk_score > 0.5, do: "high", else: "medium")
+
       assert severity == "high"
     end
 
     test "severity is medium when 0.3 < risk_score <= 0.5" do
       risk_score = 0.4
-      severity = if risk_score > 0.7, do: "critical", else: if(risk_score > 0.5, do: "high", else: "medium")
+
+      severity =
+        if risk_score > 0.7,
+          do: "critical",
+          else: if(risk_score > 0.5, do: "high", else: "medium")
+
       assert severity == "medium"
     end
   end
@@ -234,6 +346,31 @@ defmodule TamanduaServer.Registries.DownloadHookTest do
       updated = Repo.get!(ModelProvenance, provenance.id)
       assert updated.status == "error"
       assert updated.scan_result.error == "Network timeout"
+    end
+
+    test "records failed Model Guard evidence on scan errors" do
+      {:ok, provenance} =
+        %ModelProvenance{}
+        |> ModelProvenance.changeset(%{
+          model_id: "test/unsupported-model",
+          registry: "huggingface",
+          downloaded_at: DateTime.utc_now()
+        })
+        |> Repo.insert()
+
+      :ok = DownloadHook.do_scan(provenance, UnsupportedRegistry, %{model_guard_enforcement: :enforced})
+
+      updated = Repo.get!(ModelProvenance, provenance.id)
+      model_guard = updated.scan_result["model_guard"] || updated.scan_result[:model_guard]
+      evidence = model_guard["evidence"] || model_guard[:evidence]
+
+      assert updated.status == "error"
+      assert (model_guard["status"] || model_guard[:status]) == "unsupported"
+      assert (model_guard["decision"] || model_guard[:decision]) == "block"
+      assert (model_guard["enforcement"] || model_guard[:enforcement]) == "enforced"
+      assert (model_guard["action"] || model_guard[:action]) == "block_load"
+      assert (evidence["requested_enforcement"] || evidence[:requested_enforcement]) == "enforced"
+      assert (evidence["error"] || evidence[:error]) =~ "unsupported_platform"
     end
   end
 

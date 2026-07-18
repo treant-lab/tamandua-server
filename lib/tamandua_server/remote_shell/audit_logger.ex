@@ -12,7 +12,6 @@ defmodule TamanduaServer.RemoteShell.AuditLogger do
   alias TamanduaServer.Repo
   alias TamanduaServer.ShellSessions
 
-  @recording_dir "priv/shell_recordings"
 
   defmodule AuditLog do
     use Ecto.Schema
@@ -313,7 +312,7 @@ defmodule TamanduaServer.RemoteShell.AuditLogger do
     # Get session to find recording path
     case ShellSessions.get_session_by_session_id(session_id) do
       nil ->
-        Logger.warn("Session not found for recording: #{session_id}")
+        Logger.warning("Session not found for recording: #{session_id}")
         :ok
 
       session ->

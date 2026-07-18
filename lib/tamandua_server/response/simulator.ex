@@ -15,9 +15,8 @@ defmodule TamanduaServer.Response.Simulator do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Agents.Registry
-  alias TamanduaServer.Response.{Playbook, DecisionEngine}
-  alias TamanduaServer.Detection.{Behavioral, Correlator}
+  alias TamanduaServer.Agents.{OrgLookup, Registry}
+  alias TamanduaServer.Response.{Playbook}
 
   # Simulation result types
   @type simulation_result :: %{
@@ -127,7 +126,8 @@ defmodule TamanduaServer.Response.Simulator do
   @doc """
   Get simulation history.
   """
-  @spec get_simulation_history(keyword()) :: {:ok, [simulation_result()]}
+  @spec get_simulation_history(keyword()) ::
+          {:ok, [simulation_result()]} | {:error, :tenant_required}
   def get_simulation_history(opts \\ []) do
     GenServer.call(__MODULE__, {:get_history, opts})
   end
@@ -197,7 +197,24 @@ defmodule TamanduaServer.Response.Simulator do
 
     Logger.info("Simulating playbook #{playbook_id} on agent #{agent_id}")
 
-    case Playbook.get_playbook(playbook_id) do
+    case OrgLookup.get_org_id(agent_id) do
+      organization_id when is_binary(organization_id) and organization_id != "" ->
+        simulate_scoped_playbook(
+          playbook_id,
+          agent_id,
+          context,
+          simulation_id,
+          {:organization, organization_id},
+          state
+        )
+
+      _ ->
+        {:reply, {:error, :tenant_required}, state}
+    end
+  end
+
+  defp simulate_scoped_playbook(playbook_id, agent_id, context, simulation_id, scope, state) do
+    case Playbook.get_playbook(playbook_id, scope) do
       {:ok, playbook} ->
         agent_info = get_agent_info(agent_id)
 
@@ -229,6 +246,7 @@ defmodule TamanduaServer.Response.Simulator do
 
         result = %{
           simulation_id: simulation_id,
+          organization_id: elem(scope, 1),
           playbook_id: playbook_id,
           playbook_name: playbook.name,
           simulated: true,
@@ -362,9 +380,24 @@ defmodule TamanduaServer.Response.Simulator do
   @impl true
   def handle_call({:get_history, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 50)
-    history = Enum.take(state.simulation_history, limit)
+    scope = Keyword.get(opts, :scope)
 
-    {:reply, {:ok, history}, state}
+    case scope do
+      :system ->
+        {:reply, {:ok, Enum.take(state.simulation_history, limit)}, state}
+
+      {:organization, organization_id}
+      when is_binary(organization_id) and organization_id != "" ->
+        history =
+          state.simulation_history
+          |> Enum.filter(&(Map.get(&1, :organization_id) == organization_id))
+          |> Enum.take(limit)
+
+        {:reply, {:ok, history}, state}
+
+      _ ->
+        {:reply, {:error, :tenant_required}, state}
+    end
   end
 
   # ============================================================================
@@ -398,7 +431,7 @@ defmodule TamanduaServer.Response.Simulator do
     }
   end
 
-  defp calculate_would_affect(action_type, params, agent_info, state) do
+  defp calculate_would_affect(action_type, params, _agent_info, state) do
     case action_type do
       "isolate_host" ->
         ["Network connectivity", "User sessions", "Running applications"]

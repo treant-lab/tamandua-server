@@ -28,7 +28,9 @@ defmodule TamanduaServer.Integration.MultiTenantIsolationTest do
 
     test "validates RLS on core tables" do
       core_tables = [:alerts, :agents, :users, :remediation_policies, :remediation_workflows,
-                     :detection_rules, :quarantine_entries, :audit_events]
+                     :remediation_playbooks, :remediation_executions,
+                     :remediation_audit_log, :remediation_approval_history,
+                     :remediation_metrics, :detection_rules, :quarantine_entries, :audit_events]
 
       for table <- core_tables do
         assert :ok == MultiTenant.validate_rls_config(table),

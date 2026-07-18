@@ -5,8 +5,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
 
   require Logger
 
-  alias TamanduaServer.{Agents, Alerts, Repo}
-  alias TamanduaServer.Telemetry
+  alias TamanduaServer.{Agents, Repo}
   import Ecto.Query
 
   # Query resolvers
@@ -64,14 +63,15 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
       online = Agents.count_online_for_org(org_id)
       isolated = Agents.count_isolated_for_org(org_id)
 
-      {:ok, %{
-        total: total,
-        online: online,
-        offline: total - online - isolated,
-        isolated: isolated,
-        by_os: Agents.count_by_os_for_org(org_id),
-        by_version: %{}
-      }}
+      {:ok,
+       %{
+         total: total,
+         online: online,
+         offline: total - online - isolated,
+         isolated: isolated,
+         by_os: Agents.count_by_os_for_org(org_id),
+         by_version: %{}
+       }}
     end
   end
 
@@ -82,11 +82,12 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     status = args[:status]
     severity = args[:severity]
 
-    query = from(a in TamanduaServer.Alerts.Alert,
-      where: a.agent_id == ^agent.id,
-      order_by: [desc: a.inserted_at],
-      limit: ^limit
-    )
+    query =
+      from(a in TamanduaServer.Alerts.Alert,
+        where: a.agent_id == ^agent.id,
+        order_by: [desc: a.inserted_at],
+        limit: ^limit
+      )
 
     query = if status, do: where(query, [a], a.status == ^status), else: query
     query = if severity, do: where(query, [a], a.severity == ^severity), else: query
@@ -99,11 +100,12 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     event_type = args[:event_type]
     since = args[:since]
 
-    query = from(e in TamanduaServer.Telemetry.Event,
-      where: e.agent_id == ^agent.id,
-      order_by: [desc: e.timestamp],
-      limit: ^limit
-    )
+    query =
+      from(e in TamanduaServer.Telemetry.Event,
+        where: e.agent_id == ^agent.id,
+        order_by: [desc: e.timestamp],
+        limit: ^limit
+      )
 
     query = if event_type, do: where(query, [e], e.event_type == ^event_type), else: query
     query = if since, do: where(query, [e], e.timestamp >= ^since), else: query
@@ -120,42 +122,49 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     # Get baseline learning status from Baseline module
     case TamanduaServer.Detection.Baseline.get_learning_status(agent.id) do
       {:ok, status} ->
-        {:ok, %{
-          status: status.status,
-          started_at: status.started_at,
-          ends_at: status.ends_at,
-          patterns_learned: status.patterns_count,
-          anomalies_detected: status.anomalies_count
-        }}
+        {:ok,
+         %{
+           status: status.status,
+           started_at: status.started_at,
+           ends_at: status.ends_at,
+           patterns_learned: status.patterns_count,
+           anomalies_detected: status.anomalies_count
+         }}
 
       {:error, :not_found} ->
-        {:ok, %{
-          status: "disabled",
-          started_at: nil,
-          ends_at: nil,
-          patterns_learned: 0,
-          anomalies_detected: 0
-        }}
+        {:ok,
+         %{
+           status: "disabled",
+           started_at: nil,
+           ends_at: nil,
+           patterns_learned: 0,
+           anomalies_detected: 0
+         }}
     end
   rescue
     Ecto.NoResultsError ->
-      {:ok, %{
-        status: "disabled",
-        started_at: nil,
-        ends_at: nil,
-        patterns_learned: 0,
-        anomalies_detected: 0
-      }}
+      {:ok,
+       %{
+         status: "disabled",
+         started_at: nil,
+         ends_at: nil,
+         patterns_learned: 0,
+         anomalies_detected: 0
+       }}
 
     error ->
-      Logger.warning("baseline_status resolver failed for agent=#{inspect(agent.id)}: #{inspect(error)}")
-      {:ok, %{
-        status: "unknown",
-        started_at: nil,
-        ends_at: nil,
-        patterns_learned: 0,
-        anomalies_detected: 0
-      }}
+      Logger.warning(
+        "baseline_status resolver failed for agent=#{inspect(agent.id)}: #{inspect(error)}"
+      )
+
+      {:ok,
+       %{
+         status: "unknown",
+         started_at: nil,
+         ends_at: nil,
+         patterns_learned: 0,
+         anomalies_detected: 0
+       }}
   end
 
   # Mutation resolvers
@@ -169,22 +178,27 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     # Executor.isolate_host/2, crashing at runtime). The actor is enforced by
     # the Response Executor: cross-org targets are rejected as :unauthorized.
     with {:ok, actor} <- actor_from_context(context) do
-      case TamanduaServer.Response.Executor.isolate_network(agent_id, allowed_ips: [], actor: actor) do
+      case TamanduaServer.Response.Executor.isolate_network(agent_id,
+             allowed_ips: [],
+             actor: actor
+           ) do
         {:ok, _result} ->
-          {:ok, %{
-            success: true,
-            message: "Agent isolation command executed"
-          }}
+          {:ok,
+           %{
+             success: true,
+             message: "Agent isolation command executed"
+           }}
 
         {:error, :unauthorized} ->
           # Do not leak whether the agent exists in another organization.
           {:ok, %{success: false, message: "Agent not found"}}
 
         {:error, reason} ->
-          {:ok, %{
-            success: false,
-            message: "Failed to isolate: #{inspect(reason)}"
-          }}
+          {:ok,
+           %{
+             success: false,
+             message: "Failed to isolate: #{inspect(reason)}"
+           }}
       end
     end
   end
@@ -193,19 +207,21 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     with {:ok, actor} <- actor_from_context(context) do
       case TamanduaServer.Response.Executor.unisolate_network(agent_id, actor: actor) do
         {:ok, _result} ->
-          {:ok, %{
-            success: true,
-            message: "Agent de-isolation command executed"
-          }}
+          {:ok,
+           %{
+             success: true,
+             message: "Agent de-isolation command executed"
+           }}
 
         {:error, :unauthorized} ->
           {:ok, %{success: false, message: "Agent not found"}}
 
         {:error, reason} ->
-          {:ok, %{
-            success: false,
-            message: "Failed to unisolate: #{inspect(reason)}"
-          }}
+          {:ok,
+           %{
+             success: false,
+             message: "Failed to unisolate: #{inspect(reason)}"
+           }}
       end
     end
   end
@@ -220,13 +236,23 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
     end
   end
 
-  def restart_agent(_parent, %{agent_id: agent_id}, %{context: _context}) do
-    case Agents.send_command(agent_id, %{type: "restart"}) do
-      {:ok, :sent} ->
-        {:ok, %{success: true, message: "Restart command sent"}}
+  def restart_agent(_parent, %{agent_id: agent_id}, %{context: context}) do
+    case context[:organization_id] do
+      nil ->
+        {:error, "Not authorized: missing organization context"}
 
-      {:error, :agent_not_connected} ->
-        {:ok, %{success: false, message: "Agent not connected"}}
+      organization_id ->
+        with {:ok, _agent} <- Agents.get_agent_for_org(organization_id, agent_id) do
+          case Agents.send_command(agent_id, %{type: "restart"}) do
+            {:ok, :sent} ->
+              {:ok, %{success: true, message: "Restart command sent"}}
+
+            {:error, :agent_not_connected} ->
+              {:ok, %{success: false, message: "Agent not connected"}}
+          end
+        else
+          {:error, :not_found} -> {:ok, %{success: false, message: "Agent not found"}}
+        end
     end
   end
 
@@ -242,8 +268,10 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
   end
 
   defp maybe_filter_hostname(agents, nil), do: agents
+
   defp maybe_filter_hostname(agents, pattern) do
     pattern = String.downcase(pattern)
+
     Enum.filter(agents, fn a ->
       hostname = Map.get(a, :hostname) || a.hostname || ""
       String.contains?(String.downcase(hostname), pattern)
@@ -251,6 +279,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
   end
 
   defp maybe_filter_ip(agents, nil), do: agents
+
   defp maybe_filter_ip(agents, ip) do
     Enum.filter(agents, fn a ->
       agent_ip = Map.get(a, :ip_address) || a.ip_address || ""
@@ -259,6 +288,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
   end
 
   defp maybe_filter_os(agents, nil), do: agents
+
   defp maybe_filter_os(agents, os) do
     Enum.filter(agents, fn a ->
       agent_os = Map.get(a, :os_type) || a.os_type || ""
@@ -268,6 +298,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
 
   defp maybe_filter_tags(agents, nil), do: agents
   defp maybe_filter_tags(agents, []), do: agents
+
   defp maybe_filter_tags(agents, tags) do
     Enum.filter(agents, fn a ->
       agent_tags = Map.get(a, :tags) || []
@@ -276,6 +307,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.AgentResolver do
   end
 
   defp maybe_filter_version(agents, nil), do: agents
+
   defp maybe_filter_version(agents, version) do
     Enum.filter(agents, fn a ->
       agent_version = Map.get(a, :agent_version) || a.agent_version || ""

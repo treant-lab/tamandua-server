@@ -14,7 +14,7 @@ defmodule TamanduaServer.Agents.UpgradeCampaign do
   import Ecto.Changeset
   import Ecto.Query
   alias TamanduaServer.Repo
-  alias TamanduaServer.Agents.{Agent, RolloutStrategy}
+  alias TamanduaServer.Agents.{RolloutStrategy}
   alias __MODULE__
 
   @type t :: %__MODULE__{}

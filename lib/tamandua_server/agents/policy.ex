@@ -21,32 +21,32 @@ defmodule TamanduaServer.Agents.Policy do
   @policy_types ~w(template custom)
 
   schema "agent_policies" do
-    field :name, :string
-    field :description, :string
-    field :version, :integer, default: 1
-    field :status, :string, default: "draft"
-    field :scope, :string, default: "organization"
-    field :policy_type, :string, default: "custom"
-    field :template_name, :string
+    field(:name, :string)
+    field(:description, :string)
+    field(:version, :integer, default: 1)
+    field(:status, :string, default: "draft")
+    field(:scope, :string, default: "organization")
+    field(:policy_type, :string, default: "custom")
+    field(:template_name, :string)
 
     # Raw YAML config
-    field :config, :map, default: %{}
+    field(:config, :map, default: %{})
 
     # Parsed and validated policy data
-    field :policy_data, :map, default: %{}
+    field(:policy_data, :map, default: %{})
 
-    field :compliance_tags, {:array, :string}, default: []
-    field :tags, {:array, :string}, default: []
-    field :metadata, :map, default: %{}
+    field(:compliance_tags, {:array, :string}, default: [])
+    field(:tags, {:array, :string}, default: [])
+    field(:metadata, :map, default: %{})
 
-    belongs_to :organization, Organization
-    belongs_to :parent_policy, Policy, foreign_key: :parent_policy_id
-    belongs_to :created_by, User, foreign_key: :created_by_id
-    belongs_to :updated_by, User, foreign_key: :updated_by_id
+    belongs_to(:organization, Organization)
+    belongs_to(:parent_policy, Policy, foreign_key: :parent_policy_id)
+    belongs_to(:created_by, User, foreign_key: :created_by_id)
+    belongs_to(:updated_by, User, foreign_key: :updated_by_id)
 
-    has_many :child_policies, Policy, foreign_key: :parent_policy_id
-    has_many :group_assignments, PolicyGroupAssignment
-    has_many :agent_assignments, PolicyAssignment
+    has_many(:child_policies, Policy, foreign_key: :parent_policy_id)
+    has_many(:group_assignments, PolicyGroupAssignment)
+    has_many(:agent_assignments, PolicyAssignment)
 
     timestamps(type: :utc_datetime)
   end
@@ -175,7 +175,9 @@ defmodule TamanduaServer.Agents.Policy do
     enabled_valid? = is_boolean(config["enabled"])
     interval_valid? = is_nil(config["interval_ms"]) or positive_integer?(config["interval_ms"])
     sample_valid? = is_nil(config["sample_rate"]) or valid_sample_rate?(config["sample_rate"])
-    priority_valid? = is_nil(config["priority"]) or config["priority"] in ~w(low normal high critical)
+
+    priority_valid? =
+      is_nil(config["priority"]) or config["priority"] in ~w(low normal high critical)
 
     enabled_valid? and interval_valid? and sample_valid? and priority_valid?
   end
@@ -239,7 +241,7 @@ defmodule TamanduaServer.Agents.Policy do
   end
 
   defp validate_response(response, errors) when is_map(response) do
-    valid_actions = ~w(isolate kill_process quarantine delete_file restore_file)
+    valid_actions = ~w(isolate kill_process quarantine delete_file restore_file screen_capture)
 
     errors =
       if is_list(response["allowed_actions"]) and
@@ -256,15 +258,77 @@ defmodule TamanduaServer.Agents.Policy do
         [{:policy_data, "auto_response_enabled must be a boolean"} | errors]
       end
 
-    if is_integer(response["max_actions_per_hour"]) and response["max_actions_per_hour"] > 0 do
-      errors
-    else
-      [{:policy_data, "max_actions_per_hour must be a positive integer"} | errors]
-    end
+    errors =
+      if is_integer(response["max_actions_per_hour"]) and response["max_actions_per_hour"] > 0 do
+        errors
+      else
+        [{:policy_data, "max_actions_per_hour must be a positive integer"} | errors]
+      end
+
+    validate_screen_capture_policy(response["screen_capture"], errors)
   end
 
   defp validate_response(_response, errors) do
     [{:policy_data, "response must be a map"} | errors]
+  end
+
+  defp validate_screen_capture_policy(nil, errors), do: errors
+
+  defp validate_screen_capture_policy(config, errors) when is_map(config) do
+    mode = config["mode"]
+    timing = config["notify_timing"]
+    scopes = Map.get(config, "allowed_scopes", ["virtual_desktop"])
+    redaction_required = Map.get(config, "redaction_required", false)
+
+    errors =
+      if is_list(scopes) and scopes != [] and
+           Enum.all?(scopes, &(&1 in ~w(virtual_desktop monitor active_window))) do
+        errors
+      else
+        [
+          {:policy_data,
+           "response.screen_capture.allowed_scopes must contain virtual_desktop, monitor, or active_window"}
+          | errors
+        ]
+      end
+
+    errors =
+      if is_boolean(redaction_required),
+        do: errors,
+        else:
+          [
+            {:policy_data, "response.screen_capture.redaction_required must be boolean"}
+            | errors
+          ]
+
+    cond do
+      mode not in ~w(silent notify consent_required disabled) ->
+        [
+          {:policy_data,
+           "response.screen_capture.mode must be silent, notify, consent_required, or disabled"}
+          | errors
+        ]
+
+      mode == "notify" and timing not in ~w(before_capture after_capture) ->
+        [
+          {:policy_data,
+           "response.screen_capture.notify_timing must be before_capture or after_capture for notify mode"}
+          | errors
+        ]
+
+      mode != "notify" and not is_nil(timing) ->
+        [
+          {:policy_data, "response.screen_capture.notify_timing is only valid for notify mode"}
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp validate_screen_capture_policy(_config, errors) do
+    [{:policy_data, "response.screen_capture must be a map"} | errors]
   end
 
   @doc """

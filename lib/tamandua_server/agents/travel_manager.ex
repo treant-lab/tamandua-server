@@ -7,8 +7,7 @@ defmodule TamanduaServer.Agents.TravelManager do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Agents.{Agent, GeoTravelRequest, GeoRegion}
-  alias TamanduaServer.Accounts.User
+  alias TamanduaServer.Agents.{GeoTravelRequest}
 
   @doc """
   Create a travel request.
@@ -132,7 +131,7 @@ defmodule TamanduaServer.Agents.TravelManager do
 
   ## Private Functions
 
-  defp eligible_for_auto_approval?(request) do
+  defp eligible_for_auto_approval?(_request) do
     # Check if destination is in allowed regions for this agent
     # This would require checking geofencing rules
     # For now, return false (manual approval required)

@@ -44,7 +44,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react'
-import { Tooltip } from '@/components/ui/baseui/Tooltip'
+import { Select, SelectItem, Tooltip } from '@/components/ui/baseui'
 import { cn, formatDate } from '@/lib/utils'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useDashboardChannel, getConnectionStatusColor, getConnectionStatusText } from '@/hooks/useSocket'
@@ -1298,17 +1298,16 @@ function EntitiesTab({ entities, highRiskEntities, onEntitySelect }: EntitiesTab
               className="input-sentinel w-48 pl-10 pr-4"
             />
           </div>
-          <select
+          <Select
             value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
+            onValueChange={setTypeFilter}
             className="input-sentinel px-3 py-1.5 text-sm"
-            style={{ width: 'auto' }}
           >
-            <option value="all">All Types</option>
-            <option value="user">Users</option>
-            <option value="host">Hosts</option>
-            <option value="process">Processes</option>
-          </select>
+            <SelectItem value="all">All Types</SelectItem>
+            <SelectItem value="user">Users</SelectItem>
+            <SelectItem value="host">Hosts</SelectItem>
+            <SelectItem value="process">Processes</SelectItem>
+          </Select>
         </div>
       </div>
 
@@ -1826,16 +1825,17 @@ function SettingsTab({ suppressions, baselines, onSuppressionCreate, onSuppressi
           {/* Add new suppression form */}
           <div className="space-y-3 mb-4 pb-4" style={{ borderBottom: '1px solid var(--hairline)' }}>
             <div className="grid grid-cols-2 gap-3">
-              <select
+              <Select
                 value={newSuppression.pattern_type}
-                onChange={(e) => setNewSuppression((p) => ({ ...p, pattern_type: e.target.value }))}
+                onValueChange={(value) => setNewSuppression((p) => ({ ...p, pattern_type: value }))}
                 className="input-sentinel"
+                fullWidth
               >
-                <option value="process_name">Process Name</option>
-                <option value="command_line">Command Line</option>
-                <option value="entity_id">Entity ID</option>
-                <option value="rule_id">Rule ID</option>
-              </select>
+                <SelectItem value="process_name">Process Name</SelectItem>
+                <SelectItem value="command_line">Command Line</SelectItem>
+                <SelectItem value="entity_id">Entity ID</SelectItem>
+                <SelectItem value="rule_id">Rule ID</SelectItem>
+              </Select>
               <input
                 type="text"
                 placeholder="Pattern (regex supported)"

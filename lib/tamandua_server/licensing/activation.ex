@@ -27,8 +27,7 @@ defmodule TamanduaServer.Licensing.Activation do
 
   require Logger
 
-  alias TamanduaServer.Licensing.{License, LicenseKey}
-  alias TamanduaServer.Repo
+  alias TamanduaServer.Licensing.{License}
 
   # Dev-only fallback. Production MUST configure :activation_secret (sourced from
   # the ACTIVATION_SECRET env var in runtime.exs); otherwise signature generation
@@ -44,7 +43,7 @@ defmodule TamanduaServer.Licensing.Activation do
   for the given organization.
   """
   @spec activate_online(binary(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def activate_online(organization_id, license_key, opts \\ []) do
+  def activate_online(organization_id, license_key, _opts \\ []) do
     with {:ok, _claims} <- License.verify_license_key(license_key),
          {:ok, license} <- License.activate_license(organization_id, license_key) do
 
@@ -380,7 +379,7 @@ defmodule TamanduaServer.Licensing.Activation do
     end
   end
 
-  defp generate_qr_code(data) do
+  defp generate_qr_code(_data) do
     # Generate QR code using EQRCode library if available
     # For now, return a placeholder
     # In production: EQRCode.encode(data) |> EQRCode.png()

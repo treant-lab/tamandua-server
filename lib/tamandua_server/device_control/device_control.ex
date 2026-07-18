@@ -14,7 +14,6 @@ defmodule TamanduaServer.DeviceControl do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Agents
 
   # ETS tables for fast lookups
   @policies_table :usb_policies

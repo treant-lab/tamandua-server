@@ -33,7 +33,6 @@ defmodule TamanduaServer.MultiTenancy.ComplianceValidator do
       ComplianceValidator.generate_report(tenant_id, :gdpr)
   """
 
-  import Ecto.Query
   alias TamanduaServer.Repo
   alias TamanduaServer.Accounts.Organization
   alias TamanduaServer.MultiTenancy.DataResidency

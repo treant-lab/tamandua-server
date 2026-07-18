@@ -40,14 +40,14 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
   require Logger
 
   alias TamanduaServer.Detection.IOCs
-  alias TamanduaServer.ThreatIntel.IOCScoring
 
   @ets_hot_cache :aggregator_hot_cache
   @ets_source_tracking :aggregator_sources
   @ets_dedup_index :aggregator_dedup
 
   # Bloom filter parameters (for ~10M entries with 0.1% FP rate)
-  @bloom_size 143_775_874  # bits
+  # bits
+  @bloom_size 143_775_874
   @bloom_hashes 10
 
   # Hot cache settings
@@ -55,8 +55,6 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
   @hot_cache_max_size 100_000
 
   # Batch processing
-  @batch_size 1000
-  @enrichment_batch_size 100
 
   # Source weights for confidence calculation
   @source_weights %{
@@ -213,7 +211,10 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     {results, new_state} = process_ingestion_batch(source, iocs, state)
 
     elapsed = System.monotonic_time(:millisecond) - start_time
-    Logger.info("[Aggregator] Ingested #{results.inserted} IOCs from #{source} in #{elapsed}ms (#{results.deduplicated} deduped)")
+
+    Logger.info(
+      "[Aggregator] Ingested #{results.inserted} IOCs from #{source} in #{elapsed}ms (#{results.deduplicated} deduped)"
+    )
 
     {:reply, {:ok, results}, new_state}
   end
@@ -246,8 +247,9 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     key = normalize_key(type, value)
 
     # Get all sources that reported this IOC
-    sources = :ets.lookup(@ets_source_tracking, key)
-    |> Enum.map(fn {_, source_data} -> source_data end)
+    sources =
+      :ets.lookup(@ets_source_tracking, key)
+      |> Enum.map(fn {_, source_data} -> source_data end)
 
     if length(sources) > 0 do
       # Calculate aggregated confidence
@@ -269,43 +271,50 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     type_filter = Keyword.get(opts, :type)
 
     # Get IOCs with multiple sources
-    multi_source = :ets.foldl(fn {key, _}, acc ->
-      source_count = length(:ets.lookup(@ets_source_tracking, key))
+    multi_source =
+      :ets.foldl(
+        fn {key, _}, acc ->
+          source_count = length(:ets.lookup(@ets_source_tracking, key))
 
-      if source_count >= min_sources do
-        [type, value] = String.split(key, ":", parts: 2)
+          if source_count >= min_sources do
+            [type, _value] = String.split(key, ":", parts: 2)
 
-        if is_nil(type_filter) or type == Atom.to_string(type_filter) do
-          [{key, source_count} | acc]
-        else
-          acc
-        end
-      else
-        acc
-      end
-    end, [], @ets_dedup_index)
-    |> Enum.sort_by(fn {_, count} -> count end, :desc)
-    |> Enum.take(limit)
-    |> Enum.map(fn {key, source_count} ->
-      sources = :ets.lookup(@ets_source_tracking, key)
-      |> Enum.map(fn {_, data} -> data end)
+            if is_nil(type_filter) or type == Atom.to_string(type_filter) do
+              [{key, source_count} | acc]
+            else
+              acc
+            end
+          else
+            acc
+          end
+        end,
+        [],
+        @ets_dedup_index
+      )
+      |> Enum.sort_by(fn {_, count} -> count end, :desc)
+      |> Enum.take(limit)
+      |> Enum.map(fn {key, source_count} ->
+        sources =
+          :ets.lookup(@ets_source_tracking, key)
+          |> Enum.map(fn {_, data} -> data end)
 
-      aggregate_ioc_data(key, sources)
-      |> Map.put(:source_count, source_count)
-    end)
+        aggregate_ioc_data(key, sources)
+        |> Map.put(:source_count, source_count)
+      end)
 
     {:reply, multi_source, state}
   end
 
   @impl true
   def handle_call(:get_stats, _from, state) do
-    stats = Map.merge(state.stats, %{
-      hot_cache_size: :ets.info(@ets_hot_cache, :size),
-      dedup_index_size: :ets.info(@ets_dedup_index, :size),
-      source_tracking_size: :ets.info(@ets_source_tracking, :size),
-      cache_hit_rate: calculate_cache_hit_rate(state),
-      enrichment_queue_size: :queue.len(state.enrichment_queue)
-    })
+    stats =
+      Map.merge(state.stats, %{
+        hot_cache_size: :ets.info(@ets_hot_cache, :size),
+        dedup_index_size: :ets.info(@ets_dedup_index, :size),
+        source_tracking_size: :ets.info(@ets_source_tracking, :size),
+        cache_hit_rate: calculate_cache_hit_rate(state),
+        enrichment_queue_size: :queue.len(state.enrichment_queue)
+      })
 
     {:reply, stats, state}
   end
@@ -357,44 +366,20 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
 
   defp process_ingestion_batch(source, iocs, state) do
     # Normalize and deduplicate within batch
-    normalized = Enum.map(iocs, fn ioc ->
-      normalize_ioc(ioc, source)
-    end)
-    |> Enum.reject(&is_nil/1)
+    normalized =
+      Enum.map(iocs, fn ioc ->
+        normalize_ioc(ioc, source)
+      end)
+      |> Enum.reject(&is_nil/1)
 
     # Check for duplicates and merge
-    {new_iocs, updated_iocs} = Enum.reduce(normalized, {[], []}, fn ioc, {new_acc, update_acc} ->
-      key = normalize_key(ioc.type, ioc.value)
+    {new_iocs, updated_iocs} =
+      Enum.reduce(normalized, {[], []}, fn ioc, {new_acc, update_acc} ->
+        key = normalize_key(ioc.type, ioc.value)
 
-      case :ets.lookup(@ets_dedup_index, key) do
-        [{^key, existing_id}] ->
-          # Already exists - track new source
-          source_data = %{
-            source: source,
-            confidence: ioc.confidence,
-            severity: ioc.severity,
-            tags: ioc.tags,
-            metadata: ioc.metadata,
-            seen_at: DateTime.utc_now()
-          }
-          :ets.insert(@ets_source_tracking, {key, source_data})
-          {new_acc, [existing_id | update_acc]}
-
-        [] ->
-          # New IOC
-          {[ioc | new_acc], update_acc}
-      end
-    end)
-
-    # Insert new IOCs to database
-    inserted_count = if length(new_iocs) > 0 do
-      case IOCs.bulk_add(new_iocs, on_conflict: :update) do
-        {:ok, result} ->
-          # Update indexes for new IOCs
-          Enum.each(new_iocs, fn ioc ->
-            key = normalize_key(ioc.type, ioc.value)
-            :ets.insert(@ets_dedup_index, {key, ioc.value})
-
+        case :ets.lookup(@ets_dedup_index, key) do
+          [{^key, existing_id}] ->
+            # Already exists - track new source
             source_data = %{
               source: source,
               confidence: ioc.confidence,
@@ -403,34 +388,71 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
               metadata: ioc.metadata,
               seen_at: DateTime.utc_now()
             }
+
             :ets.insert(@ets_source_tracking, {key, source_data})
+            {new_acc, [existing_id | update_acc]}
 
-            # Add to bloom filter
-            bloom_add(state.bloom_filter, key)
-          end)
+          [] ->
+            # New IOC
+            {[ioc | new_acc], update_acc}
+        end
+      end)
 
-          result.successful
+    # Insert new IOCs to database
+    inserted_count =
+      if length(new_iocs) > 0 do
+        case IOCs.bulk_add_global(new_iocs, on_conflict: :update) do
+          {:ok, result} ->
+            # Update indexes for new IOCs
+            Enum.each(new_iocs, fn ioc ->
+              key = normalize_key(ioc.type, ioc.value)
+              :ets.insert(@ets_dedup_index, {key, ioc.value})
 
-        {:error, _} ->
-          0
+              source_data = %{
+                source: source,
+                confidence: ioc.confidence,
+                severity: ioc.severity,
+                tags: ioc.tags,
+                metadata: ioc.metadata,
+                seen_at: DateTime.utc_now()
+              }
+
+              :ets.insert(@ets_source_tracking, {key, source_data})
+
+              # Add to bloom filter
+              bloom_add(state.bloom_filter, key)
+            end)
+
+            result.successful
+
+          {:error, _} ->
+            0
+        end
+      else
+        0
       end
-    else
-      0
-    end
 
     # Update stats
-    new_stats = update_ingestion_stats(state.stats, source, length(iocs), inserted_count, length(updated_iocs))
+    new_stats =
+      update_ingestion_stats(
+        state.stats,
+        source,
+        length(iocs),
+        inserted_count,
+        length(updated_iocs)
+      )
 
     # Update feed health
-    new_health = Map.put(state.feed_health, source, %{
-      last_seen: DateTime.utc_now(),
-      iocs_last_batch: length(iocs),
-      status: :healthy
-    })
+    new_health =
+      Map.put(state.feed_health, source, %{
+        last_seen: DateTime.utc_now(),
+        iocs_last_batch: length(iocs),
+        status: :healthy
+      })
 
     # Refresh the detection engine ETS cache if any IOCs were inserted
     if inserted_count > 0 do
-      Task.start(fn -> TamanduaServer.Detection.Engine.reload_iocs() end)
+      TamanduaServer.Detection.IOCReload.schedule()
     end
 
     results = %{
@@ -474,7 +496,8 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     |> String.trim()
   end
 
-  defp normalize_value(type, value) when type in ["hash_md5", :hash_md5, "hash_sha1", :hash_sha1, "hash_sha256", :hash_sha256] do
+  defp normalize_value(type, value)
+       when type in ["hash_md5", :hash_md5, "hash_sha1", :hash_sha1, "hash_sha256", :hash_sha256] do
     value
     |> to_string()
     |> String.downcase()
@@ -502,10 +525,11 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     [type, value] = String.split(key, ":", parts: 2)
 
     # Calculate aggregated confidence
-    weighted_confidences = Enum.map(sources, fn src ->
-      weight = Map.get(@source_weights, src.source, @source_weights["default"])
-      src.confidence * weight
-    end)
+    weighted_confidences =
+      Enum.map(sources, fn src ->
+        weight = Map.get(@source_weights, src.source, @source_weights["default"])
+        src.confidence * weight
+      end)
 
     # Multi-source boost: each additional source adds confidence
     source_count = length(sources)
@@ -570,6 +594,7 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
 
   defp bloom_add(bloom, key) do
     positions = bloom_positions(key, bloom.hashes, bloom.size)
+
     Enum.each(positions, fn pos ->
       :ets.insert(bloom.bits, {pos, true})
     end)
@@ -577,6 +602,7 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
 
   defp bloom_maybe_contains?(bloom, key) do
     positions = bloom_positions(key, bloom.hashes, bloom.size)
+
     Enum.all?(positions, fn pos ->
       case :ets.lookup(bloom.bits, pos) do
         [{^pos, true}] -> true
@@ -587,7 +613,7 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
 
   defp bloom_positions(key, num_hashes, size) do
     # Use multiple hash functions
-    base_hash = :erlang.phash2(key, size)
+    _base_hash = :erlang.phash2(key, size)
 
     Enum.map(1..num_hashes, fn i ->
       :erlang.phash2({key, i}, size)
@@ -604,13 +630,18 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     ttl_seconds = @hot_cache_ttl |> div(1000)
 
     # Delete expired entries
-    expired = :ets.foldl(fn {key, _, timestamp}, acc ->
-      if now - timestamp > ttl_seconds do
-        [key | acc]
-      else
-        acc
-      end
-    end, [], @ets_hot_cache)
+    expired =
+      :ets.foldl(
+        fn {key, _, timestamp}, acc ->
+          if now - timestamp > ttl_seconds do
+            [key | acc]
+          else
+            acc
+          end
+        end,
+        [],
+        @ets_hot_cache
+      )
 
     Enum.each(expired, fn key ->
       :ets.delete(@ets_hot_cache, key)
@@ -618,6 +649,7 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
 
     # Enforce max size
     current_size = :ets.info(@ets_hot_cache, :size)
+
     if current_size > @hot_cache_max_size do
       # Delete oldest entries
       to_delete = current_size - @hot_cache_max_size
@@ -634,12 +666,13 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     stale_threshold = :timer.hours(12) |> div(1000)
 
     Map.new(state.feed_health, fn {source, health} ->
-      status = if health.last_seen do
-        age = DateTime.diff(now, health.last_seen)
-        if age > stale_threshold, do: :stale, else: :healthy
-      else
-        :unknown
-      end
+      status =
+        if health.last_seen do
+          age = DateTime.diff(now, health.last_seen)
+          if age > stale_threshold, do: :stale, else: :healthy
+        else
+          :unknown
+        end
 
       {source, Map.put(health, :status, status)}
     end)
@@ -664,14 +697,15 @@ defmodule TamanduaServer.ThreatIntel.Aggregator do
     Logger.info("[Aggregator] Index rebuild complete")
   end
 
-  defp update_ingestion_stats(stats, source, total, inserted, deduplicated) do
+  defp update_ingestion_stats(stats, source, total, _inserted, deduplicated) do
     by_source = Map.update(stats.by_source, source, total, &(&1 + total))
 
-    %{stats |
-      total_ingested: stats.total_ingested + total,
-      total_deduplicated: stats.total_deduplicated + deduplicated,
-      by_source: by_source,
-      last_ingestion: DateTime.utc_now()
+    %{
+      stats
+      | total_ingested: stats.total_ingested + total,
+        total_deduplicated: stats.total_deduplicated + deduplicated,
+        by_source: by_source,
+        last_ingestion: DateTime.utc_now()
     }
   end
 

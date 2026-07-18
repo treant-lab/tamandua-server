@@ -403,7 +403,7 @@ defmodule TamanduaServer.Enrichment.GeoIP do
 
   defp add_risk_indicators(info) do
     is_high_risk = info[:country_code] in high_risk_countries()
-    is_datacenter = info[:is_datacenter] || false
+    _is_datacenter = info[:is_datacenter] || false
 
     Map.merge(info, %{
       is_high_risk_country: is_high_risk,

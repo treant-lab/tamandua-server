@@ -1279,7 +1279,7 @@ function QuickLinksPanel() {
       color: 'purple',
     },
     {
-      href: '/app/analyst',
+      href: '/app/ai-assistant',
       icon: Zap,
       title: 'AI Analyst',
       description: 'Automated investigations',

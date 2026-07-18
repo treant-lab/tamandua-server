@@ -243,7 +243,7 @@ defmodule TamanduaServer.Runtime.KillSwitch do
   @impl true
   def handle_call({:release, model_id}, _from, state) do
     case ModelIsolation.release(model_id) do
-      {:ok, model_state} = result ->
+      {:ok, _model_state} = result ->
         # Update kill switch state
         current = get_or_init_state(model_id)
         new_state = %{current | triggered: false, triggered_at: nil}
@@ -335,7 +335,7 @@ defmodule TamanduaServer.Runtime.KillSwitch do
              reason: reason,
              isolated_by: triggered_by
            ) do
-        {:ok, isolation_state} ->
+        {:ok, _isolation_state} ->
           # Step 5: Dispatch agent command
           agent_acked = dispatch_agent_command(agent_id, model_id, mode)
 
@@ -615,7 +615,7 @@ defmodule TamanduaServer.Runtime.KillSwitch do
         "session:#{session_id}"
 
       # Fallback: generate from alert metadata
-      agent_id = alert[:agent_id] ->
+      _agent_id = alert[:agent_id] ->
         process_path = get_in(alert, [:raw_event, "process_path"]) || "unknown"
         api_endpoint = get_in(alert, [:raw_event, "api_endpoint"]) || "unknown"
 

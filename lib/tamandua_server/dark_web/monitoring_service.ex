@@ -508,7 +508,7 @@ defmodule TamanduaServer.DarkWeb.MonitoringService do
   # Private Functions - Storage
   # ============================================================================
 
-  defp record_compromised_credential(user, breach_name, breaches) do
+  defp record_compromised_credential(user, breach_name, _breaches) do
     # Find the breach in our database
     breach = Repo.get_by(Breach, breach_name: breach_name, source: "hibp")
 
@@ -587,45 +587,45 @@ defmodule TamanduaServer.DarkWeb.MonitoringService do
     count
   end
 
-  defp store_intel471_credentials(creds) do
+  defp store_intel471_credentials(_creds) do
     # Store and match with users
     count = 0
     # Implementation similar to HIBP
     count
   end
 
-  defp store_intel471_intelligence(reports) do
+  defp store_intel471_intelligence(_reports) do
     # Store intelligence reports
     count = 0
     # Implementation
     count
   end
 
-  defp store_flashpoint_credentials(hits) do
+  defp store_flashpoint_credentials(_hits) do
     count = 0
     # Implementation
     count
   end
 
-  defp store_flashpoint_threat_actors(actors) do
+  defp store_flashpoint_threat_actors(_actors) do
     count = 0
     # Implementation
     count
   end
 
-  defp store_flashpoint_forums(hits) do
+  defp store_flashpoint_forums(_hits) do
     count = 0
     # Implementation
     count
   end
 
-  defp store_flashpoint_marketplaces(hits) do
+  defp store_flashpoint_marketplaces(_hits) do
     count = 0
     # Implementation
     count
   end
 
-  defp store_flashpoint_leaks(hits) do
+  defp store_flashpoint_leaks(_hits) do
     count = 0
     # Implementation
     count

@@ -78,7 +78,7 @@ defmodule TamanduaServer.FPAnalysis.BaselineLearner do
   Check if a detection is expected based on the baseline.
   """
   @spec is_expected_detection?(String.t(), String.t(), map()) :: boolean()
-  def is_expected_detection?(organization_id, rule_id, context \\ %{}) do
+  def is_expected_detection?(organization_id, rule_id, _context \\ %{}) do
     # Check organization baseline
     case get_baseline(organization_id, :organization, organization_id) do
       nil ->
@@ -102,17 +102,25 @@ defmodule TamanduaServer.FPAnalysis.BaselineLearner do
 
       # Check if rule is expected
       rule_id = detection[:rule_id] || detection["rule_id"]
-      if rule_id do
-        rule_score = if BaselineProfile.rule_expected?(profile, rule_id), do: 0.0, else: 0.6
-        scores = [rule_score | scores]
-      end
+
+      scores =
+        if rule_id do
+          rule_score = if BaselineProfile.rule_expected?(profile, rule_id), do: 0.0, else: 0.6
+          [rule_score | scores]
+        else
+          scores
+        end
 
       # Check if process is normal
       process_name = detection[:process_name] || detection["process_name"]
-      if process_name do
-        process_score = if BaselineProfile.process_in_baseline?(profile, process_name), do: 0.0, else: 0.5
-        scores = [process_score | scores]
-      end
+
+      scores =
+        if process_name do
+          process_score = if BaselineProfile.process_in_baseline?(profile, process_name), do: 0.0, else: 0.5
+          [process_score | scores]
+        else
+          scores
+        end
 
       # Check time of day
       hour = DateTime.utc_now().hour

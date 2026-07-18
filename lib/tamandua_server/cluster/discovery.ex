@@ -13,7 +13,6 @@ defmodule TamanduaServer.Cluster.Discovery do
   require Logger
 
   @discovery_interval :timer.seconds(10)
-  @connect_timeout :timer.seconds(5)
 
   defstruct [
     :topology,
@@ -66,7 +65,7 @@ defmodule TamanduaServer.Cluster.Discovery do
   # Server Callbacks
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     topology = get_topology()
     state = %__MODULE__{
       topology: topology,

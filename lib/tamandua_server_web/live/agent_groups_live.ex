@@ -1,7 +1,7 @@
 defmodule TamanduaServerWeb.AgentGroupsLive do
   use TamanduaServerWeb, :live_view
 
-  alias TamanduaServer.Agents.{GroupManager, Group}
+  alias TamanduaServer.Agents.{GroupManager}
 
   @impl true
   def mount(_params, session, socket) do

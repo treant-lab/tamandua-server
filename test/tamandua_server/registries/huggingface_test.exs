@@ -64,7 +64,8 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
       # Test that function exists and returns expected format
       case HuggingFace.list_models(config) do
         {:ok, models} -> expected_structure.(models)
-        {:error, _} -> :ok  # Allow errors (network, auth, etc.)
+        # Allow errors (network, auth, etc.)
+        {:error, _} -> :ok
       end
     end
 
@@ -75,7 +76,9 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
         {:ok, models} ->
           # If successful, should respect limit
           assert is_list(models)
-        {:error, _} -> :ok
+
+        {:error, _} ->
+          :ok
       end
     end
 
@@ -109,8 +112,11 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
             assert is_list(model.metadata.siblings)
           end
 
-        {:error, :not_found} -> :ok
-        {:error, _} -> :ok
+        {:error, :not_found} ->
+          :ok
+
+        {:error, _} ->
+          :ok
       end
     end
 
@@ -118,7 +124,8 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
       case HuggingFace.get_model("nonexistent/model", %{}) do
         {:ok, _} -> flunk("Should return error for non-existent model")
         {:error, :not_found} -> :ok
-        {:error, _} -> :ok  # Other errors are acceptable (network, auth)
+        # Other errors are acceptable (network, auth)
+        {:error, _} -> :ok
       end
     end
   end
@@ -130,8 +137,10 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
       case HuggingFace.search_models(query, %{}) do
         {:ok, models} ->
           assert is_list(models)
-          # Results should be relevant to query
-        {:error, _} -> :ok
+
+        # Results should be relevant to query
+        {:error, _} ->
+          :ok
       end
     end
 
@@ -142,7 +151,9 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
       case HuggingFace.search_models(query, config) do
         {:ok, models} ->
           assert is_list(models)
-        {:error, _} -> :ok
+
+        {:error, _} ->
+          :ok
       end
     end
   end
@@ -154,7 +165,8 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
       case HuggingFace.list_models(config) do
         {:ok, _} -> :ok
         {:error, :unauthorized} -> flunk("Should allow anonymous access")
-        {:error, _} -> :ok  # Other errors acceptable
+        # Other errors acceptable
+        {:error, _} -> :ok
       end
     end
 
@@ -199,6 +211,13 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
   end
 
   describe "scan_model/2" do
+    test "fails closed instead of scanning mutable remote URLs" do
+      assert {:error, :secure_artifact_intake_required} =
+               HuggingFace.scan_model("test/model", %{
+                 ml_service_url: "http://attacker.invalid"
+               })
+    end
+
     test "returns scan result structure" do
       model_id = "test/model"
       config = %{ml_service_url: "http://localhost:8000"}
@@ -211,9 +230,14 @@ defmodule TamanduaServer.Registries.HuggingFaceTest do
           assert is_list(result.findings)
           assert %DateTime{} = result.scanned_at
 
-        {:error, :not_found} -> :ok
-        {:error, :scan_failed} -> :ok
-        {:error, _} -> :ok
+        {:error, :not_found} ->
+          :ok
+
+        {:error, :scan_failed} ->
+          :ok
+
+        {:error, _} ->
+          :ok
       end
     end
   end

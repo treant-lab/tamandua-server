@@ -4,9 +4,6 @@ import { MainLayout } from '@/layouts/MainLayout'
 import {
   ArrowLeft,
   Monitor,
-  Wifi,
-  WifiOff,
-  AlertCircle,
   AlertTriangle,
   Clock,
   Cpu,
@@ -21,7 +18,6 @@ import {
   Crosshair,
   Loader2,
   CheckCircle,
-  XCircle,
   Globe,
   File,
   Server,
@@ -38,14 +34,21 @@ import {
   Smartphone,
   Package,
   Lock,
-  MapPin,
+  MapPin
 } from 'lucide-react'
 import { cn, formatDate, formatRelativeTime, safeCapitalize, severityColor } from '@/lib/utils'
 import { useAgentStatus, useEventStream, getConnectionStatusColor, getConnectionStatusText } from '@/hooks/useSocket'
 import type { StreamEvent } from '@/hooks/useSocket'
-import type { Agent, Alert, TelemetryEvent } from '@/types'
+import type { Agent, Alert } from '@/types'
 import axios from 'axios'
 import { toast } from 'sonner'
+import {
+  ScreenCapturePanel,
+  type ScreenCapturePolicyHealth,
+  type ScreenSessionBrokerHealth
+} from '@/components/ScreenCapturePanel'
+import { TrustPosturePanel } from '@/components/TrustPosturePanel'
+import { RuntimeIntegrityPreviewPanel } from '@/components/RuntimeIntegrityPreviewPanel'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,6 +103,8 @@ interface AgentEvent {
 
 interface AgentDetailPageProps {
   agent: Agent
+  trust_posture?: unknown
+  runtime_integrity_preview?: unknown
   collectors: Collector[]
   health: HealthMetrics | null
   events: AgentEvent[]
@@ -117,6 +122,8 @@ interface PlatformCapability {
   status?: CapabilityMaturity
   observed?: string
   detail?: string
+  session_broker?: ScreenSessionBrokerHealth
+  screen_capture_policy?: ScreenCapturePolicyHealth
 }
 
 type DataSourceKey = 'process' | 'file' | 'dns' | 'network' | 'registry' | 'driver' | 'ai' | 'ndr'
@@ -156,6 +163,18 @@ interface MobileOverview {
     device_id?: string
     platform?: string
     status?: string
+    command_identity?: {
+      command_device_id?: string
+      external_device_id?: string
+      agent_machine_id?: string
+      background_sync_device_id?: string
+    }
+  } | null
+  command_identity?: {
+    command_device_id?: string
+    external_device_id?: string
+    agent_machine_id?: string
+    background_sync_device_id?: string
   } | null
   posture: Record<string, any> | null
   compliance: Record<string, any> | null
@@ -182,6 +201,26 @@ interface MobileOverview {
   last_command?: Record<string, any> | null
 }
 
+interface MobileCommandOption {
+  id: string
+  label: string
+  destructive?: boolean
+  execution_scope?: string
+  supported_by_mobile_app?: boolean
+}
+
+interface MobileCommandDraft {
+  command: string
+  label: string
+  fieldLabel: string
+  value: string
+  placeholder: string
+  required: boolean
+  payloadKind: 'command' | 'domain' | 'package'
+  executionScope?: string
+  destructive?: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Event type icon map
 // ---------------------------------------------------------------------------
@@ -192,14 +231,19 @@ const EVENT_TYPE_ICONS: Record<string, React.ComponentType<{ className?: string 
   file: File,
   dns: Server,
   registry: Settings,
-  alert: AlertTriangle,
+  alert: AlertTriangle
 }
 
 // ---------------------------------------------------------------------------
 // Mini gauge component
 // ---------------------------------------------------------------------------
 
-function UsageGauge({ value, label, icon: Icon, color }: {
+function UsageGauge({
+  value,
+  label,
+  icon: Icon,
+  color
+}: {
   value: number
   label: string
   icon: React.ComponentType<{ className?: string }>
@@ -214,14 +258,11 @@ function UsageGauge({ value, label, icon: Icon, color }: {
     <div className="flex flex-col items-center gap-2">
       <div className="relative w-24 h-24">
         <svg className="w-24 h-24 -rotate-90" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r={radius} stroke="var(--surface-alt)" strokeWidth="6" fill="none" />
           <circle
-            cx="40" cy="40" r={radius}
-            stroke="var(--surface-alt)"
-            strokeWidth="6"
-            fill="none"
-          />
-          <circle
-            cx="40" cy="40" r={radius}
+            cx="40"
+            cy="40"
+            r={radius}
             stroke="currentColor"
             className={color}
             strokeWidth="6"
@@ -233,10 +274,14 @@ function UsageGauge({ value, label, icon: Icon, color }: {
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <Icon className={cn('h-4 w-4 mb-0.5', color)} />
-          <span className="text-lg font-bold" style={{ color: 'var(--fg)' }}>{Math.round(clampedValue)}%</span>
+          <span className="text-lg font-bold" style={{ color: 'var(--fg)' }}>
+            {Math.round(clampedValue)}%
+          </span>
         </div>
       </div>
-      <span className="text-sm" style={{ color: 'var(--muted)' }}>{label}</span>
+      <span className="text-sm" style={{ color: 'var(--muted)' }}>
+        {label}
+      </span>
     </div>
   )
 }
@@ -250,11 +295,13 @@ function SparkLine({ data, color, height = 32 }: { data: number[]; color: string
 
   const max = Math.max(...data, 1)
   const width = 120
-  const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * width
-    const y = height - (v / max) * height
-    return `${x},${y}`
-  }).join(' ')
+  const points = data
+    .map((v, i) => {
+      const x = (i / (data.length - 1)) * width
+      const y = height - (v / max) * height
+      return `${x},${y}`
+    })
+    .join(' ')
 
   return (
     <svg width={width} height={height} className="inline-block">
@@ -281,25 +328,25 @@ function StatusBadge({ status }: { status: Agent['status'] }) {
         return {
           bg: 'rgba(52, 211, 153, 0.2)', // emerald-400 with alpha
           text: 'var(--emerald-400)',
-          dot: 'var(--emerald-400)',
+          dot: 'var(--emerald-400)'
         }
       case 'degraded':
         return {
           bg: 'rgba(251, 191, 36, 0.2)', // yellow-400 with alpha
           text: 'var(--warn)',
-          dot: 'var(--warn)',
+          dot: 'var(--warn)'
         }
       case 'offline':
         return {
           bg: 'rgba(239, 68, 68, 0.2)', // red with alpha
           text: 'var(--crit)',
-          dot: 'var(--crit)',
+          dot: 'var(--crit)'
         }
       default:
         return {
           bg: 'var(--surface-alt)',
           text: 'var(--muted)',
-          dot: 'var(--muted)',
+          dot: 'var(--muted)'
         }
     }
   }
@@ -311,10 +358,7 @@ function StatusBadge({ status }: { status: Agent['status'] }) {
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
       style={{ backgroundColor: styles.bg, color: styles.text }}
     >
-      <span
-        className="h-2 w-2 rounded-full"
-        style={{ backgroundColor: styles.dot }}
-      />
+      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: styles.dot }} />
       {safeCapitalize(status)}
     </span>
   )
@@ -332,28 +376,28 @@ function CollectorStatusBadge({ status }: { status: Collector['status'] }) {
           bg: 'rgba(52, 211, 153, 0.2)',
           text: 'var(--emerald-400)',
           dot: 'var(--emerald-400)',
-          pulse: true,
+          pulse: true
         }
       case 'stopped':
         return {
           bg: 'var(--surface-alt)',
           text: 'var(--muted)',
           dot: 'var(--muted)',
-          pulse: false,
+          pulse: false
         }
       case 'error':
         return {
           bg: 'rgba(239, 68, 68, 0.2)',
           text: 'var(--crit)',
           dot: 'var(--crit)',
-          pulse: false,
+          pulse: false
         }
       default:
         return {
           bg: 'var(--surface-alt)',
           text: 'var(--muted)',
           dot: 'var(--muted)',
-          pulse: false,
+          pulse: false
         }
     }
   }
@@ -378,7 +422,15 @@ function CollectorStatusBadge({ status }: { status: Collector['status'] }) {
 // Quick action button
 // ---------------------------------------------------------------------------
 
-function QuickAction({ label, icon: Icon, color, onClick, loading, disabled, title }: {
+function QuickAction({
+  label,
+  icon: Icon,
+  color,
+  onClick,
+  loading,
+  disabled,
+  title
+}: {
   label: string
   icon: React.ComponentType<{ className?: string }>
   color: string
@@ -394,17 +446,11 @@ function QuickAction({ label, icon: Icon, color, onClick, loading, disabled, tit
       title={title}
       className={cn(
         'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors',
-        disabled || loading
-          ? 'cursor-not-allowed'
-          : color
+        disabled || loading ? 'cursor-not-allowed' : color
       )}
       style={disabled || loading ? { backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' } : undefined}
     >
-      {loading ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <Icon className="h-4 w-4" />
-      )}
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
       {label}
     </button>
   )
@@ -414,7 +460,12 @@ function QuickAction({ label, icon: Icon, color, onClick, loading, disabled, tit
 // Confirmation dialog
 // ---------------------------------------------------------------------------
 
-function ConfirmDialog({ title, message, onConfirm, onCancel }: {
+function ConfirmDialog({
+  title,
+  message,
+  onConfirm,
+  onCancel
+}: {
   title: string
   message: string
   onConfirm: () => void
@@ -424,15 +475,25 @@ function ConfirmDialog({ title, message, onConfirm, onCancel }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div
         className="card-sentinel rounded-xl shadow-xl max-w-md w-full mx-4 p-6"
-        style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
+        style={{
+          backgroundColor: 'var(--surface)',
+          borderColor: 'var(--border)'
+        }}
       >
-        <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--fg)' }}>{title}</h3>
-        <p className="text-sm mb-6" style={{ color: 'var(--muted)' }}>{message}</p>
+        <h3 className="text-lg font-semibold mb-2" style={{ color: 'var(--fg)' }}>
+          {title}
+        </h3>
+        <p className="text-sm mb-6" style={{ color: 'var(--muted)' }}>
+          {message}
+        </p>
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}
             className="px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-80"
-            style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--fg)' }}
+            style={{
+              backgroundColor: 'var(--surface-alt)',
+              color: 'var(--fg)'
+            }}
           >
             Cancel
           </button>
@@ -452,7 +513,7 @@ function ConfirmDialog({ title, message, onConfirm, onCancel }: {
 function CliTokenDialog({
   payload,
   onClose,
-  onCopy,
+  onCopy
 }: {
   payload: CliTokenPayload
   onClose: () => void
@@ -465,20 +526,28 @@ function CliTokenDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div
         className="card-sentinel rounded-xl shadow-xl max-w-3xl w-full mx-4 p-6"
-        style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
+        style={{
+          backgroundColor: 'var(--surface)',
+          borderColor: 'var(--border)'
+        }}
       >
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
-            <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Connect via CLI</h3>
+            <h3 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+              Connect via CLI
+            </h3>
             <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
               Short-lived token for {payload.hostname || payload.agent_id}
-              {payload.expires_at ? ` · expires ${formatRelativeTime(payload.expires_at)}` : ''}
+              {payload.expires_at ? ` · expires ${formatRelativeTime(new Date(payload.expires_at).getTime())}` : ''}
             </p>
           </div>
           <button
             onClick={onClose}
             className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors hover:opacity-80"
-            style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--fg)' }}
+            style={{
+              backgroundColor: 'var(--surface-alt)',
+              color: 'var(--fg)'
+            }}
           >
             Close
           </button>
@@ -510,7 +579,9 @@ function CommandBox({ label, command, onCopy }: { label: string; command: string
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>{label}</span>
+        <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+          {label}
+        </span>
         <button
           onClick={onCopy}
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors hover:opacity-80"
@@ -522,7 +593,11 @@ function CommandBox({ label, command, onCopy }: { label: string; command: string
       </div>
       <pre
         className="max-h-32 overflow-auto rounded-lg p-3 text-xs whitespace-pre-wrap break-all"
-        style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--fg)', border: '1px solid var(--border)' }}
+        style={{
+          backgroundColor: 'var(--surface-alt)',
+          color: 'var(--fg)',
+          border: '1px solid var(--border)'
+        }}
       >
         {command}
       </pre>
@@ -536,22 +611,28 @@ function CommandBox({ label, command, onCopy }: { label: string; command: string
 
 export default function AgentDetail({
   agent,
+  trust_posture,
+  runtime_integrity_preview,
   collectors,
   health,
   events,
   alerts,
-  config,
+  config
 }: AgentDetailPageProps) {
   const agentPlatform = resolveAgentPlatform(agent)
   const reportedPlatformCapabilities = normalizePlatformCapabilities(
-    (agent as Agent & { platformCapabilities?: PlatformCapability[]; platform_capabilities?: PlatformCapability[] }).platformCapabilities ||
-      (agent as Agent & { platform_capabilities?: PlatformCapability[] }).platform_capabilities
+    (
+      agent as Agent & {
+        platformCapabilities?: PlatformCapability[]
+        platform_capabilities?: PlatformCapability[]
+      }
+    ).platformCapabilities || (agent as Agent & { platform_capabilities?: PlatformCapability[] }).platform_capabilities
   )
   const platformCapabilities = shouldUseMobileFallbackCapabilities(agentPlatform, reportedPlatformCapabilities)
     ? fallbackPlatformCapabilities(agentPlatform)
     : reportedPlatformCapabilities.length > 0
-    ? reportedPlatformCapabilities
-    : fallbackPlatformCapabilities(agentPlatform)
+      ? reportedPlatformCapabilities
+      : fallbackPlatformCapabilities(agentPlatform)
   const mobileAgent = isMobilePlatform(agentPlatform)
   const supportsLiveResponse = capabilityAvailable(platformCapabilities, 'live_response')
   const supportsNetworkIsolation = capabilityAvailable(platformCapabilities, 'network_isolation')
@@ -566,7 +647,7 @@ export default function AgentDetail({
     clearEvents,
     pauseStream,
     resumeStream,
-    isPaused,
+    isPaused
   } = useEventStream(agent.id)
   const [executingAction, setExecutingAction] = useState<string | null>(null)
   const [showConfirm, setShowConfirm] = useState<{
@@ -589,6 +670,7 @@ export default function AgentDetail({
   const [mobileOverview, setMobileOverview] = useState<MobileOverview | null>(null)
   const [mobileOverviewLoading, setMobileOverviewLoading] = useState(false)
   const [mobileCommandLoading, setMobileCommandLoading] = useState<string | null>(null)
+  const [mobileCommandDraft, setMobileCommandDraft] = useState<MobileCommandDraft | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -621,7 +703,7 @@ export default function AgentDetail({
       const response = await axios.get('/api/v1/agents/data-sources/health?hours=24')
       const rows = Array.isArray(response.data?.data) ? response.data.data : []
       const normalized = rows.map(normalizeAgentDataSourceHealth).filter(Boolean) as AgentDataSourceHealth[]
-      setDataSourceHealth(normalized.find(row => row.agentId === agent.id) || null)
+      setDataSourceHealth(normalized.find((row) => row.agentId === agent.id) || null)
     } catch (error: unknown) {
       const axiosError = error as { response?: { status?: number } }
       setDataSourceHealth(null)
@@ -677,13 +759,18 @@ export default function AgentDetail({
   }
 
   // Merge live WebSocket status with Inertia props (props = base, WS = incremental overlay)
-  const displayAgent = useMemo(() => ({
-    ...agent,
-    ...(liveStatus ? {
-      status: liveStatus.status,
-      last_seen: liveStatus.lastSeen ? new Date(liveStatus.lastSeen).toISOString() : agent.last_seen,
-    } : {}),
-  }), [agent, liveStatus])
+  const displayAgent = useMemo(
+    () => ({
+      ...agent,
+      ...(liveStatus
+        ? {
+            status: liveStatus.status,
+            last_seen: liveStatus.lastSeen ? new Date(liveStatus.lastSeen).toISOString() : agent.last_seen
+          }
+        : {})
+    }),
+    [agent, liveStatus]
+  )
 
   const currentStatus = displayAgent.status
   const rawCpu = Number(liveStatus?.cpuUsage ?? health?.cpu_usage ?? 0)
@@ -720,22 +807,29 @@ export default function AgentDetail({
   // Response actions
   // -------------------------------------------------------------------
 
-  const executeAction = useCallback(async (url: string, params: Record<string, unknown> = {}, label: string = '') => {
-    setExecutingAction(label)
-    try {
-      await axios.post(url, {
-        agent_id: agent.id,
-        ...params,
-      })
-      toast.success(`Action "${label}" executed successfully`)
-      router.reload()
-    } catch (error: unknown) {
-      const axiosError = error as { response?: { data?: { error?: string; message?: string } } }
-      toast.error(axiosError.response?.data?.error || axiosError.response?.data?.message || `Failed to execute ${label}`)
-    } finally {
-      setExecutingAction(null)
-    }
-  }, [agent.id])
+  const executeAction = useCallback(
+    async (url: string, params: Record<string, unknown> = {}, label: string = '') => {
+      setExecutingAction(label)
+      try {
+        await axios.post(url, {
+          agent_id: agent.id,
+          ...params
+        })
+        toast.success(`Action "${label}" executed successfully`)
+        router.reload()
+      } catch (error: unknown) {
+        const axiosError = error as {
+          response?: { data?: { error?: string; message?: string } }
+        }
+        toast.error(
+          axiosError.response?.data?.error || axiosError.response?.data?.message || `Failed to execute ${label}`
+        )
+      } finally {
+        setExecutingAction(null)
+      }
+    },
+    [agent.id]
+  )
 
   const handleIsolate = () => {
     if (!supportsNetworkIsolation) {
@@ -748,7 +842,7 @@ export default function AgentDetail({
       onConfirm: () => {
         setShowConfirm(null)
         executeAction(`/api/v1/agents/${agent.id}/isolate`, {}, 'isolate')
-      },
+      }
     })
   }
 
@@ -779,7 +873,7 @@ export default function AgentDetail({
       onConfirm: () => {
         setShowConfirm(null)
         executeAction(`/api/v1/agents/${agent.id}/restart`, {}, 'restart')
-      },
+      }
     })
   }
 
@@ -800,23 +894,22 @@ export default function AgentDetail({
     try {
       const response = await axios.post(`/api/v1/live-response/${agent.id}/cli-token`, {
         ttl_minutes: 15,
-        server_url: window.location.origin,
+        server_url: window.location.origin
       })
       setCliToken(response.data as CliTokenPayload)
       toast.success('CLI token generated')
     } catch (error: unknown) {
       const message =
-        (error as { response?: { data?: { error?: string } } })?.response?.data?.error ||
-        'Failed to generate CLI token'
+        (error as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to generate CLI token'
       toast.error(message)
     } finally {
       setCliTokenLoading(false)
     }
   }
 
-  const handleMobileCommand = async (command: string) => {
-    const commandDeviceId = mobileOverview?.command_device?.id
-    const legacyDeviceId = mobileOverview?.device?.id
+  const handleMobileCommand = async (command: string, payload: Record<string, unknown> = {}) => {
+    const commandDeviceId = mobileCommandTargetId(mobileOverview)
+    const legacyDeviceId = mobileLegacyDeviceId(mobileOverview)
     if (!commandDeviceId && !legacyDeviceId) {
       toast.error('Mobile device link is not available for this endpoint')
       return
@@ -828,22 +921,47 @@ export default function AgentDetail({
         await axios.post('/api/v1/mobile/v2/commands', {
           device_id: commandDeviceId,
           command_type: command,
-          payload: {},
+          payload
         })
       } else {
-        await axios.post(`/api/v1/mobile/devices/${legacyDeviceId}/commands/${command}`, {})
+        await axios.post(`/api/v1/mobile/devices/${legacyDeviceId}/commands/${command}`, payload)
       }
       toast.success(`Mobile ${command} command queued`)
+      setMobileCommandDraft(null)
       loadMobileOverview()
     } catch (error: unknown) {
       const message =
-        (error as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error ||
+        (
+          error as {
+            response?: { data?: { error?: string; message?: string } }
+          }
+        )?.response?.data?.error ||
         (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
         `Failed to send mobile ${command} command`
       toast.error(message)
     } finally {
       setMobileCommandLoading(null)
     }
+  }
+
+  const handleMobileCommandSelect = (command: MobileCommandOption) => {
+    const draft = createMobileCommandDraft(command)
+    if (draft) {
+      setMobileCommandDraft(draft)
+      return
+    }
+    setMobileCommandDraft(null)
+    handleMobileCommand(command.id)
+  }
+
+  const submitMobileCommandDraft = () => {
+    if (!mobileCommandDraft) return
+    const payload = buildMobileCommandPayloadFromDraft(mobileCommandDraft)
+    if (!payload) {
+      toast.error(`${mobileCommandDraft.fieldLabel} is required before queueing ${mobileCommandDraft.label}`)
+      return
+    }
+    handleMobileCommand(mobileCommandDraft.command, payload)
   }
 
   const copyText = async (text: string, label = 'Copied') => {
@@ -875,19 +993,19 @@ export default function AgentDetail({
         />
       )}
 
-      {cliToken && (
-        <CliTokenDialog
-          payload={cliToken}
-          onClose={() => setCliToken(null)}
-          onCopy={copyText}
-        />
-      )}
+      {cliToken && <CliTokenDialog payload={cliToken} onClose={() => setCliToken(null)} onCopy={copyText} />}
 
       <div className="space-y-6">
         {/* ================================================================
             Agent Info Header
             ================================================================ */}
-        <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <div
+          className="card-sentinel rounded-xl p-6"
+          style={{
+            backgroundColor: 'var(--surface)',
+            border: '1px solid var(--border)'
+          }}
+        >
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-4">
               <button
@@ -902,7 +1020,9 @@ export default function AgentDetail({
               </div>
               <div>
                 <div className="flex items-center gap-3">
-                  <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>{agent.hostname}</h1>
+                  <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
+                    {agent.hostname}
+                  </h1>
                   <StatusBadge status={currentStatus} />
                 </div>
                 <div className="flex items-center gap-4 mt-1 text-sm" style={{ color: 'var(--muted)' }}>
@@ -912,8 +1032,7 @@ export default function AgentDetail({
                     {agent.os_type} {agent.os_version}
                   </span>
                   <span className="flex items-center gap-1">
-                    <Shield className="h-3.5 w-3.5" />
-                    v{agent.agent_version}
+                    <Shield className="h-3.5 w-3.5" />v{agent.agent_version}
                   </span>
                   <span className="flex items-center gap-1">
                     <Clock className="h-3.5 w-3.5" />
@@ -933,10 +1052,15 @@ export default function AgentDetail({
               {/* Live connection indicator */}
               <div
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-                style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  border: '1px solid var(--border)'
+                }}
               >
                 <span className={cn('h-2 w-2 rounded-full', getConnectionStatusColor(agentConnState))} />
-                <span className="text-xs" style={{ color: 'var(--muted)' }}>{getConnectionStatusText(agentConnState)}</span>
+                <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                  {getConnectionStatusText(agentConnState)}
+                </span>
                 {agentConnState === 'connected' && (
                   <Radio className="h-3 w-3 animate-pulse" style={{ color: 'var(--emerald-400)' }} />
                 )}
@@ -956,8 +1080,16 @@ export default function AgentDetail({
         {/* ================================================================
             Health Metrics
             ================================================================ */}
-        <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
-          <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>Health Metrics</h2>
+        <div
+          className="card-sentinel rounded-xl p-6"
+          style={{
+            backgroundColor: 'var(--surface)',
+            border: '1px solid var(--border)'
+          }}
+        >
+          <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--fg)' }}>
+            Health Metrics
+          </h2>
 
           {health ? (
             <div className="flex items-start gap-8">
@@ -972,13 +1104,21 @@ export default function AgentDetail({
                   value={currentMemory}
                   label="Memory"
                   icon={MemoryStick}
-                  color={currentMemory > 90 ? 'text-red-400' : currentMemory > 70 ? 'text-yellow-400' : 'text-green-400'}
+                  color={
+                    currentMemory > 90 ? 'text-red-400' : currentMemory > 70 ? 'text-yellow-400' : 'text-green-400'
+                  }
                 />
                 <UsageGauge
                   value={Number.isFinite(health.disk_usage) ? health.disk_usage : 0}
                   label="Disk"
                   icon={Disc}
-                  color={(health.disk_usage || 0) > 90 ? 'text-red-400' : (health.disk_usage || 0) > 70 ? 'text-yellow-400' : 'text-green-400'}
+                  color={
+                    (health.disk_usage || 0) > 90
+                      ? 'text-red-400'
+                      : (health.disk_usage || 0) > 70
+                        ? 'text-yellow-400'
+                        : 'text-green-400'
+                  }
                 />
               </div>
 
@@ -986,14 +1126,18 @@ export default function AgentDetail({
                 <div>
                   <div className="flex items-center justify-between text-sm mb-1">
                     <span style={{ color: 'var(--muted)' }}>CPU History</span>
-                    <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>{Math.round(currentCpu)}%</span>
+                    <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
+                      {Math.round(currentCpu)}%
+                    </span>
                   </div>
                   <SparkLine data={health.cpu_history} color="text-cyan-400" />
                 </div>
                 <div>
                   <div className="flex items-center justify-between text-sm mb-1">
                     <span style={{ color: 'var(--muted)' }}>Memory History</span>
-                    <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>{Math.round(currentMemory)}%</span>
+                    <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
+                      {Math.round(currentMemory)}%
+                    </span>
                   </div>
                   <SparkLine data={health.memory_history} color="text-violet-400" />
                 </div>
@@ -1019,72 +1163,104 @@ export default function AgentDetail({
           onRefresh={loadDataSourceHealth}
         />
 
+        <TrustPosturePanel posture={trust_posture} />
+
+        <RuntimeIntegrityPreviewPanel preview={runtime_integrity_preview} />
+
         <PlatformCapabilitiesPanel capabilities={platformCapabilities} />
+
+        <ScreenCapturePanel
+          agentId={agent.id}
+          hostname={agent.hostname}
+          online={currentStatus === 'online'}
+          capabilities={platformCapabilities}
+        />
 
         {(mobileAgent || mobileOverview?.mobile) && (
           <MobileEndpointPanel
             overview={mobileOverview}
             loading={mobileOverviewLoading}
             commandLoading={mobileCommandLoading}
-            onCommand={handleMobileCommand}
+            commandDraft={mobileCommandDraft}
+            onCommand={handleMobileCommandSelect}
+            onDraftChange={setMobileCommandDraft}
+            onDraftSubmit={submitMobileCommandDraft}
             onRefresh={loadMobileOverview}
           />
         )}
 
         {/* Performance Profile */}
-        <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <div
+          className="card-sentinel rounded-xl p-6"
+          style={{
+            backgroundColor: 'var(--surface)',
+            border: '1px solid var(--border)'
+          }}
+        >
           <div className="mb-4">
-            <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Collection Performance Profile</h2>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+              Collection Performance Profile
+            </h2>
             <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-              Controls collector frequency and resource usage. Blocking decisions are handled separately by the prevention policy below.
+              Controls collector frequency and resource usage. Blocking decisions are handled separately by the
+              prevention policy below.
             </p>
           </div>
           <div className="grid grid-cols-3 gap-4">
-            {([
-              {
-                id: 'lightweight',
-                label: 'Lightweight',
-                desc: 'Minimal resource usage. Basic process and file monitoring only.',
-                color: 'border-green-500 bg-green-500/10 text-green-400',
-                icon: '\u{1FAB6}',
-              },
-              {
-                id: 'balanced',
-                label: 'Balanced',
-                desc: 'Moderate resource usage. All core collectors at standard intervals.',
-                color: 'border-blue-500 bg-blue-500/10 text-blue-400',
-                icon: '\u2696\uFE0F',
-              },
-              {
-                id: 'aggressive',
-                label: 'Aggressive',
-                desc: 'Maximum detection. All collectors at high frequency, real-time analysis.',
-                color: 'border-red-500 bg-red-500/10 text-red-400',
-                icon: '\uD83D\uDD25',
-              },
-            ] as const).map((profile) => (
+            {(
+              [
+                {
+                  id: 'lightweight',
+                  label: 'Lightweight',
+                  desc: 'Minimal resource usage. Basic process and file monitoring only.',
+                  color: 'border-green-500 bg-green-500/10 text-green-400',
+                  icon: '\u{1FAB6}'
+                },
+                {
+                  id: 'balanced',
+                  label: 'Balanced',
+                  desc: 'Moderate resource usage. All core collectors at standard intervals.',
+                  color: 'border-blue-500 bg-blue-500/10 text-blue-400',
+                  icon: '\u2696\uFE0F'
+                },
+                {
+                  id: 'aggressive',
+                  label: 'Aggressive',
+                  desc: 'Maximum detection. All collectors at high frequency, real-time analysis.',
+                  color: 'border-red-500 bg-red-500/10 text-red-400',
+                  icon: '\uD83D\uDD25'
+                }
+              ] as const
+            ).map((profile) => (
               <button
                 key={profile.id}
                 onClick={() => handleProfileChange(profile.id)}
                 disabled={savingProfile}
                 className={cn(
                   'p-4 rounded-xl border-2 text-left transition-all',
-                  performanceProfile === profile.id
-                    ? profile.color
-                    : 'hover:opacity-80'
+                  performanceProfile === profile.id ? profile.color : 'hover:opacity-80'
                 )}
-                style={performanceProfile !== profile.id ? {
-                  borderColor: 'var(--border)',
-                  backgroundColor: 'var(--surface-alt)',
-                  color: 'var(--muted)',
-                } : undefined}
+                style={
+                  performanceProfile !== profile.id
+                    ? {
+                        borderColor: 'var(--border)',
+                        backgroundColor: 'var(--surface-alt)',
+                        color: 'var(--muted)'
+                      }
+                    : undefined
+                }
               >
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-lg">{profile.icon}</span>
-                  <span className="font-semibold" style={{ color: performanceProfile === profile.id ? undefined : 'var(--fg)' }}>{profile.label}</span>
-                  {performanceProfile === profile.id && (
-                    <CheckCircle className="h-4 w-4 ml-auto" />
-                  )}
+                  <span
+                    className="font-semibold"
+                    style={{
+                      color: performanceProfile === profile.id ? undefined : 'var(--fg)'
+                    }}
+                  >
+                    {profile.label}
+                  </span>
+                  {performanceProfile === profile.id && <CheckCircle className="h-4 w-4 ml-auto" />}
                 </div>
                 <p className="text-xs opacity-80">{profile.desc}</p>
               </button>
@@ -1099,18 +1275,31 @@ export default function AgentDetail({
         </div>
 
         {/* Effective Prevention Policy */}
-        <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <div
+          className="card-sentinel rounded-xl p-6"
+          style={{
+            backgroundColor: 'var(--surface)',
+            border: '1px solid var(--border)'
+          }}
+        >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Effective Prevention Policy</h2>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                Effective Prevention Policy
+              </h2>
               <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-                Defines whether detections only alert or can trigger automatic containment, quarantine, process termination, or network blocks.
+                Defines whether detections only alert or can trigger automatic containment, quarantine, process
+                termination, or network blocks.
               </p>
             </div>
             <button
               onClick={() => router.visit('/app/prevention-policies')}
               className="px-3 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-80"
-              style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--fg)', border: '1px solid var(--border)' }}
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                color: 'var(--fg)',
+                border: '1px solid var(--border)'
+              }}
             >
               Manage Policies
             </button>
@@ -1123,33 +1312,79 @@ export default function AgentDetail({
             </div>
           ) : effectivePolicy ? (
             <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}>
-                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Policy</p>
-                <p className="mt-1 font-semibold" style={{ color: 'var(--fg)' }}>{effectivePolicy.name}</p>
+              <div
+                className="p-4 rounded-lg"
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                  Policy
+                </p>
+                <p className="mt-1 font-semibold" style={{ color: 'var(--fg)' }}>
+                  {effectivePolicy.name}
+                </p>
               </div>
-              <div className="p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}>
-                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Mode</p>
-                <p className="mt-1 font-semibold" style={{ color: effectivePolicy.mode === 'detect_and_prevent' ? 'var(--emerald-400)' : 'var(--med)' }}>
+              <div
+                className="p-4 rounded-lg"
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                  Mode
+                </p>
+                <p
+                  className="mt-1 font-semibold"
+                  style={{
+                    color: effectivePolicy.mode === 'detect_and_prevent' ? 'var(--emerald-400)' : 'var(--med)'
+                  }}
+                >
                   {effectivePolicy.mode === 'detect_and_prevent' ? 'Detect & Prevent' : 'Detect Only'}
                 </p>
               </div>
-              <div className="p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}>
-                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Aggressiveness</p>
+              <div
+                className="p-4 rounded-lg"
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                  Aggressiveness
+                </p>
                 <p className="mt-1 font-semibold capitalize" style={{ color: 'var(--fg)' }}>
                   {effectivePolicy.aggressiveness.replace(/_/g, ' ')}
                 </p>
               </div>
-              <div className="p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}>
-                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Category Overrides</p>
+              <div
+                className="p-4 rounded-lg"
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                  Category Overrides
+                </p>
                 <p className="mt-1 font-semibold" style={{ color: 'var(--fg)' }}>
                   {effectivePolicy.category_settings?.length ?? 0}
                 </p>
               </div>
             </div>
           ) : (
-            <div className="mt-4 p-4 rounded-lg" style={{ backgroundColor: 'var(--surface-alt)', border: '1px solid var(--border)' }}>
+            <div
+              className="mt-4 p-4 rounded-lg"
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                border: '1px solid var(--border)'
+              }}
+            >
               <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                No policy data available for this agent. The backend will fall back to the default prevention policy if one exists.
+                No policy data available for this agent. The backend will fall back to the default prevention policy if
+                one exists.
               </p>
             </div>
           )}
@@ -1160,11 +1395,22 @@ export default function AgentDetail({
           {/* ==============================================================
               Active Collectors
               ============================================================== */}
-          <div className="card-sentinel rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div
+            className="card-sentinel rounded-xl"
+            style={{
+              backgroundColor: 'var(--surface)',
+              border: '1px solid var(--border)'
+            }}
+          >
             <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Active Collectors</h2>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                Active Collectors
+              </h2>
             </div>
-            <div className="divide-y max-h-[360px] overflow-y-auto overflow-x-hidden custom-scrollbar" style={{ borderColor: 'var(--border)' }}>
+            <div
+              className="divide-y max-h-[360px] overflow-y-auto overflow-x-hidden custom-scrollbar"
+              style={{ borderColor: 'var(--border)' }}
+            >
               {collectors.length === 0 ? (
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                   <Settings className="h-10 w-10 mx-auto mb-2 opacity-50" />
@@ -1181,32 +1427,38 @@ export default function AgentDetail({
                       <div
                         className="p-2 rounded-lg"
                         style={{
-                          backgroundColor: collector.status === 'running'
-                            ? 'rgba(52, 211, 153, 0.1)'
-                            : collector.status === 'error'
-                              ? 'rgba(239, 68, 68, 0.1)'
-                              : 'var(--surface-alt)'
+                          backgroundColor:
+                            collector.status === 'running'
+                              ? 'rgba(52, 211, 153, 0.1)'
+                              : collector.status === 'error'
+                                ? 'rgba(239, 68, 68, 0.1)'
+                                : 'var(--surface-alt)'
                         }}
                       >
                         <Activity
                           className="h-4 w-4"
                           style={{
-                            color: collector.status === 'running'
-                              ? 'var(--emerald-400)'
-                              : collector.status === 'error'
-                                ? 'var(--crit)'
-                                : 'var(--muted)'
+                            color:
+                              collector.status === 'running'
+                                ? 'var(--emerald-400)'
+                                : collector.status === 'error'
+                                  ? 'var(--crit)'
+                                  : 'var(--muted)'
                           }}
                         />
                       </div>
                       <div>
-                        <p className="text-sm font-medium capitalize" style={{ color: 'var(--fg)' }}>{collector.name.replace(/_/g, ' ')}</p>
+                        <p className="text-sm font-medium capitalize" style={{ color: 'var(--fg)' }}>
+                          {collector.name.replace(/_/g, ' ')}
+                        </p>
                         <p className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
                           {collector.events_collected.toLocaleString()} events
                           {collector.last_event_at && ` \u00b7 Last: ${formatDate(collector.last_event_at)}`}
                         </p>
                         {collector.error_message && (
-                          <p className="text-xs mt-0.5" style={{ color: 'var(--crit)' }}>{collector.error_message}</p>
+                          <p className="text-xs mt-0.5" style={{ color: 'var(--crit)' }}>
+                            {collector.error_message}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -1220,9 +1472,17 @@ export default function AgentDetail({
           {/* ==============================================================
               Response Actions
               ============================================================== */}
-          <div className="card-sentinel rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div
+            className="card-sentinel rounded-xl"
+            style={{
+              backgroundColor: 'var(--surface)',
+              border: '1px solid var(--border)'
+            }}
+          >
             <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Quick Actions</h2>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                Quick Actions
+              </h2>
             </div>
             <div className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-3">
@@ -1296,24 +1556,41 @@ export default function AgentDetail({
           {/* ==============================================================
               Recent Events (live stream + static)
               ============================================================== */}
-          <div className="card-sentinel rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div
+            className="card-sentinel rounded-xl"
+            style={{
+              backgroundColor: 'var(--surface)',
+              border: '1px solid var(--border)'
+            }}
+          >
             <div className="p-4" style={{ borderBottom: '1px solid var(--border)' }}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Recent Events</h2>
+                  <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                    Recent Events
+                  </h2>
                   {eventConnState === 'connected' && (
                     <span
                       className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-                      style={{ backgroundColor: 'rgba(52, 211, 153, 0.1)', color: 'var(--emerald-400)' }}
+                      style={{
+                        backgroundColor: 'rgba(52, 211, 153, 0.1)',
+                        color: 'var(--emerald-400)'
+                      }}
                     >
-                      <span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--emerald-400)' }} />
+                      <span
+                        className="h-1.5 w-1.5 rounded-full animate-pulse"
+                        style={{ backgroundColor: 'var(--emerald-400)' }}
+                      />
                       LIVE
                     </span>
                   )}
                   {isPaused && (
                     <span
                       className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
-                      style={{ backgroundColor: 'rgba(251, 191, 36, 0.1)', color: 'var(--warn)' }}
+                      style={{
+                        backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                        color: 'var(--warn)'
+                      }}
                     >
                       <Pause className="h-2.5 w-2.5" />
                       PAUSED
@@ -1332,7 +1609,10 @@ export default function AgentDetail({
                   <button
                     onClick={resumeStream}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
-                    style={{ backgroundColor: 'rgba(52, 211, 153, 0.1)', color: 'var(--emerald-400)' }}
+                    style={{
+                      backgroundColor: 'rgba(52, 211, 153, 0.1)',
+                      color: 'var(--emerald-400)'
+                    }}
                   >
                     <Play className="h-3 w-3" />
                     Resume
@@ -1341,7 +1621,10 @@ export default function AgentDetail({
                   <button
                     onClick={pauseStream}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
-                    style={{ backgroundColor: 'rgba(251, 191, 36, 0.1)', color: 'var(--warn)' }}
+                    style={{
+                      backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                      color: 'var(--warn)'
+                    }}
                   >
                     <Pause className="h-3 w-3" />
                     Pause
@@ -1350,14 +1633,20 @@ export default function AgentDetail({
                 <button
                   onClick={clearEvents}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
-                  style={{ backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' }}
+                  style={{
+                    backgroundColor: 'var(--surface-alt)',
+                    color: 'var(--muted)'
+                  }}
                 >
                   <Trash2 className="h-3 w-3" />
                   Clear Live
                 </button>
               </div>
             </div>
-            <div className="divide-y max-h-[480px] overflow-y-auto overflow-x-hidden custom-scrollbar" style={{ borderColor: 'var(--border)' }}>
+            <div
+              className="divide-y max-h-[480px] overflow-y-auto overflow-x-hidden custom-scrollbar"
+              style={{ borderColor: 'var(--border)' }}
+            >
               {combinedEvents.length === 0 ? (
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                   <Activity className="h-10 w-10 mx-auto mb-2 opacity-50" />
@@ -1366,52 +1655,62 @@ export default function AgentDetail({
               ) : (
                 combinedEvents.map((event) => {
                   const isLive = '_live' in event && event._live
-                  const eventType = 'event_type' in event ? event.event_type : ('eventType' in event ? event.eventType : 'unknown')
-                  const eventTimestamp = 'timestamp' in event
-                    ? (typeof event.timestamp === 'number' ? new Date(event.timestamp).toISOString() : event.timestamp)
-                    : ''
+                  const eventType =
+                    'event_type' in event ? event.event_type : 'eventType' in event ? event.eventType : 'unknown'
+                  const eventTimestamp =
+                    'timestamp' in event
+                      ? typeof event.timestamp === 'number'
+                        ? new Date(event.timestamp).toISOString()
+                        : event.timestamp
+                      : ''
                   const Icon = EVENT_TYPE_ICONS[eventType] || Activity
                   return (
                     <div
                       key={event.id}
-                      className={cn(
-                        'p-3 transition-colors',
-                        isLive && 'border-l-2'
-                      )}
+                      className={cn('p-3 transition-colors', isLive && 'border-l-2')}
                       style={{
                         borderColor: 'var(--border)',
-                        ...(isLive ? {
-                          borderLeftColor: 'rgba(52, 211, 153, 0.6)',
-                          backgroundColor: 'rgba(52, 211, 153, 0.03)',
-                        } : {})
+                        ...(isLive
+                          ? {
+                              borderLeftColor: 'rgba(52, 211, 153, 0.6)',
+                              backgroundColor: 'rgba(52, 211, 153, 0.03)'
+                            }
+                          : {})
                       }}
                     >
                       <div className="flex items-start gap-3">
-                        <div className={cn(
-                          'p-1.5 rounded-lg mt-0.5',
-                          severityColor(event.severity)
-                        )}>
+                        <div className={cn('p-1.5 rounded-lg mt-0.5', severityColor(event.severity))}>
                           <Icon className="h-3.5 w-3.5" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-sm truncate" style={{ color: 'var(--fg)' }}>{event.summary}</span>
-                            <span className={cn(
-                              'px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0',
-                              severityColor(event.severity)
-                            )}>
+                            <span className="text-sm truncate" style={{ color: 'var(--fg)' }}>
+                              {event.summary}
+                            </span>
+                            <span
+                              className={cn(
+                                'px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0',
+                                severityColor(event.severity)
+                              )}
+                            >
                               {event.severity}
                             </span>
                             {isLive && (
                               <span
                                 className="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
-                                style={{ backgroundColor: 'rgba(52, 211, 153, 0.1)', color: 'var(--emerald-400)' }}
+                                style={{
+                                  backgroundColor: 'rgba(52, 211, 153, 0.1)',
+                                  color: 'var(--emerald-400)'
+                                }}
                               >
                                 live
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
+                          <div
+                            className="flex items-center gap-2 mt-0.5 text-xs"
+                            style={{ color: 'var(--muted)', opacity: 0.7 }}
+                          >
                             <span>{eventType}</span>
                             <span>{formatDate(eventTimestamp)}</span>
                           </div>
@@ -1427,12 +1726,25 @@ export default function AgentDetail({
           {/* ==============================================================
               Recent Alerts
               ============================================================== */}
-          <div className="card-sentinel rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div
+            className="card-sentinel rounded-xl"
+            style={{
+              backgroundColor: 'var(--surface)',
+              border: '1px solid var(--border)'
+            }}
+          >
             <div className="p-4 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border)' }}>
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Recent Alerts</h2>
-              <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>{alerts.length} alerts</span>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+                Recent Alerts
+              </h2>
+              <span className="text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
+                {alerts.length} alerts
+              </span>
             </div>
-            <div className="divide-y max-h-[480px] overflow-y-auto overflow-x-hidden custom-scrollbar" style={{ borderColor: 'var(--border)' }}>
+            <div
+              className="divide-y max-h-[480px] overflow-y-auto overflow-x-hidden custom-scrollbar"
+              style={{ borderColor: 'var(--border)' }}
+            >
               {alerts.length === 0 ? (
                 <div className="p-8 text-center" style={{ color: 'var(--muted)' }}>
                   <Shield className="h-10 w-10 mx-auto mb-2 opacity-50" />
@@ -1452,17 +1764,26 @@ export default function AgentDetail({
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium truncate" style={{ color: 'var(--fg)' }}>{alert.title}</span>
-                          <span className={cn(
-                            'px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0',
-                            severityColor(alert.severity)
-                          )}>
+                          <span className="text-sm font-medium truncate" style={{ color: 'var(--fg)' }}>
+                            {alert.title}
+                          </span>
+                          <span
+                            className={cn(
+                              'px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0',
+                              severityColor(alert.severity)
+                            )}
+                          >
                             {alert.severity}
                           </span>
                           <AlertStatusBadge status={alert.status} />
                         </div>
-                        <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--muted)' }}>{alert.description}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-xs" style={{ color: 'var(--muted)', opacity: 0.7 }}>
+                        <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--muted)' }}>
+                          {alert.description}
+                        </p>
+                        <div
+                          className="flex items-center gap-2 mt-0.5 text-xs"
+                          style={{ color: 'var(--muted)', opacity: 0.7 }}
+                        >
                           <span>Score: {alert.threatScore}</span>
                           <span>{formatDate(alert.createdAt)}</span>
                         </div>
@@ -1478,12 +1799,20 @@ export default function AgentDetail({
         {/* ================================================================
             Agent Configuration
             ================================================================ */}
-        <div className="card-sentinel rounded-xl" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <div
+          className="card-sentinel rounded-xl"
+          style={{
+            backgroundColor: 'var(--surface)',
+            border: '1px solid var(--border)'
+          }}
+        >
           <button
             onClick={() => setConfigExpanded(!configExpanded)}
             className="w-full p-4 flex items-center justify-between transition-colors rounded-xl hover:opacity-90"
           >
-            <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Agent Configuration</h2>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+              Agent Configuration
+            </h2>
             {configExpanded ? (
               <ChevronDown className="h-5 w-5" style={{ color: 'var(--muted)' }} />
             ) : (
@@ -1493,7 +1822,9 @@ export default function AgentDetail({
           {configExpanded && (
             <div className="px-4 pb-4">
               {Object.keys(config).length === 0 ? (
-                <p className="text-sm" style={{ color: 'var(--muted)' }}>No configuration data available</p>
+                <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                  No configuration data available
+                </p>
               ) : (
                 <div
                   className="rounded-lg p-4 overflow-y-auto overflow-x-hidden max-h-[400px] custom-scrollbar"
@@ -1502,14 +1833,20 @@ export default function AgentDetail({
                   <table className="w-full text-sm">
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                        <th className="text-left py-2 pr-4 font-medium" style={{ color: 'var(--muted)' }}>Key</th>
-                        <th className="text-left py-2 font-medium" style={{ color: 'var(--muted)' }}>Value</th>
+                        <th className="text-left py-2 pr-4 font-medium" style={{ color: 'var(--muted)' }}>
+                          Key
+                        </th>
+                        <th className="text-left py-2 font-medium" style={{ color: 'var(--muted)' }}>
+                          Value
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y" style={{ borderColor: 'var(--border)' }}>
                       {Object.entries(config).map(([key, value]) => (
                         <tr key={key} className="hover:opacity-80">
-                          <td className="py-2 pr-4 font-mono text-xs" style={{ color: 'var(--fg)' }}>{key}</td>
+                          <td className="py-2 pr-4 font-mono text-xs" style={{ color: 'var(--fg)' }}>
+                            {key}
+                          </td>
                           <td className="py-2 font-mono text-xs break-all" style={{ color: 'var(--muted)' }}>
                             {typeof value === 'object' ? JSON.stringify(value) : String(value)}
                           </td>
@@ -1535,20 +1872,26 @@ function MobileEndpointPanel({
   overview,
   loading,
   commandLoading,
+  commandDraft,
   onCommand,
-  onRefresh,
+  onDraftChange,
+  onDraftSubmit,
+  onRefresh
 }: {
   overview: MobileOverview | null
   loading: boolean
   commandLoading: string | null
-  onCommand: (command: string) => void
+  commandDraft: MobileCommandDraft | null
+  onCommand: (command: MobileCommandOption) => void
+  onDraftChange: (draft: MobileCommandDraft | null) => void
+  onDraftSubmit: () => void
   onRefresh: () => void
 }) {
-  const linked = !!overview?.linked && !!overview.device
+  const device = effectiveMobileDevice(overview)
+  const linked = hasEffectiveMobileLink(overview, device)
   const posture = overview?.posture || {}
   const apps = overview?.app_inventory?.apps || []
   const appGuardEvents = overview?.app_guard?.events || []
-  const device = overview?.device || {}
   const highRiskApps = Number(overview?.app_inventory?.high_risk ?? 0)
   const sideloadedApps = Number(overview?.app_inventory?.sideloaded ?? 0)
   const protectedApps = overview?.app_guard?.protected_apps || []
@@ -1556,6 +1899,7 @@ function MobileEndpointPanel({
   const commandHistory = overview?.command_history || []
   const mdmProvider = device.mdm?.provider || device.mdm_provider
   const mdmCompliance = device.mdm?.compliance_status || posture.mdm_compliance_status
+  const responseSummary = buildMobileResponseSummary(overview?.commands || [], commandHistory, overview?.last_command)
   const deviceLabel =
     device.device_name ||
     [device.model, device.os_version].filter(Boolean).join(' / ') ||
@@ -1564,7 +1908,13 @@ function MobileEndpointPanel({
   const ownerLabel = device.user_email || device.owner_email || device.user_name || 'not assigned'
 
   return (
-    <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+    <div
+      className="card-sentinel rounded-xl p-6"
+      style={{
+        backgroundColor: 'var(--surface)',
+        border: '1px solid var(--border)'
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
@@ -1591,7 +1941,14 @@ function MobileEndpointPanel({
           Loading mobile endpoint data...
         </div>
       ) : !linked ? (
-        <div className="rounded-lg border p-4 text-sm" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)', color: 'var(--muted)' }}>
+        <div
+          className="rounded-lg border p-4 text-sm"
+          style={{
+            borderColor: 'var(--border)',
+            backgroundColor: 'var(--surface-alt)',
+            color: 'var(--muted)'
+          }}
+        >
           Mobile platform detected, but no mobile device record is linked to this agent yet.
         </div>
       ) : (
@@ -1606,46 +1963,202 @@ function MobileEndpointPanel({
             <MobileMetric label="Apps" value={String(overview.app_inventory?.total ?? apps.length)} />
             <MobileMetric label="High risk" value={String(highRiskApps)} tone={highRiskApps > 0 ? 'high' : 'ok'} />
             <MobileMetric label="Sideloaded" value={String(sideloadedApps)} tone={sideloadedApps > 0 ? 'high' : 'ok'} />
-            <MobileMetric label="App Guard" value={String(overview.app_guard?.total_recent_events ?? appGuardEvents.length)} />
+            <MobileMetric
+              label="App Guard"
+              value={String(overview.app_guard?.total_recent_events ?? appGuardEvents.length)}
+            />
           </div>
 
-          <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+          <div
+            className="rounded-lg border p-4"
+            style={{
+              borderColor: 'var(--border)',
+              backgroundColor: 'var(--surface-alt)'
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
+                <TerminalIcon className="h-4 w-4" /> Mobile Response
+              </h3>
+              <span className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                {responseSummary.readyLabel}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
+              <MobileFact label="App commands" value={String(responseSummary.appCommandCount)} />
+              <MobileFact label="MDM commands" value={String(responseSummary.mdmCommandCount)} />
+              <MobileFact
+                label="Needs payload"
+                value={String(responseSummary.reviewCommandCount)}
+                danger={responseSummary.reviewCommandCount > 0}
+              />
+              <MobileFact
+                label="Blocked"
+                value={String(responseSummary.unsupportedCommandCount)}
+                danger={responseSummary.unsupportedCommandCount > 0}
+              />
+              <MobileFact label="Last status" value={responseSummary.lastStatus} />
+              <MobileFact label="Last command" value={responseSummary.lastCommand} />
+              <MobileFact label="Target" value={mobileCommandTargetLabel(overview)} />
+              <MobileFact label="Mode" value={responseSummary.mode} />
+            </div>
+          </div>
+
+          <div
+            className="rounded-lg border p-4"
+            style={{
+              borderColor: 'var(--border)',
+              backgroundColor: 'var(--surface-alt)'
+            }}
+          >
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
               <MobileFact label="Device" value={deviceLabel} />
               <MobileFact label="Device ID" value={device.device_id || posture.device_id || 'not reported'} />
               <MobileFact label="User" value={ownerLabel} />
-              <MobileFact label="Last assessment" value={formatMobileTimestamp(posture.last_assessment || device.last_seen_at)} />
+              <MobileFact
+                label="Last assessment"
+                value={formatMobileTimestamp(posture.last_assessment || device.last_seen_at)}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+            <div
+              className="rounded-lg border p-4"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--surface-alt)'
+              }}
+            >
               <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
                 <Shield className="h-4 w-4" /> Posture
               </h3>
               <div className="space-y-2 text-sm">
-                <MobileFact label="Compromised" value={posture.jailbroken_or_rooted ? 'Yes' : 'No'} danger={!!posture.jailbroken_or_rooted} />
-                <MobileFact label="Passcode" value={formatMobileBoolean(posture.passcode_enabled)} danger={posture.passcode_enabled === false} />
-                <MobileFact label="Encryption" value={formatMobileBoolean(posture.encryption_enabled)} danger={posture.encryption_enabled === false} />
-                <MobileFact label="USB debugging" value={formatMobileBoolean(posture.usb_debugging_enabled)} danger={posture.usb_debugging_enabled === true} />
-                <MobileFact label="Developer mode" value={formatMobileBoolean(posture.developer_mode_enabled)} danger={posture.developer_mode_enabled === true} />
-                <MobileFact label="Compliance" value={overview.compliance?.local_compliant === false ? 'Needs review' : 'Local checks pass'} danger={overview.compliance?.local_compliant === false} />
-                <MobileFact label="MDM compliance" value={mdmCompliance || 'not reported'} danger={String(mdmCompliance || '').toLowerCase().includes('non')} />
+                <MobileFact
+                  label="Compromised"
+                  value={posture.jailbroken_or_rooted ? 'Yes' : 'No'}
+                  danger={!!posture.jailbroken_or_rooted}
+                />
+                <MobileFact
+                  label="Passcode"
+                  value={formatMobileBoolean(posture.passcode_enabled)}
+                  danger={posture.passcode_enabled === false}
+                />
+                <MobileFact
+                  label="Encryption"
+                  value={formatMobileBoolean(posture.encryption_enabled)}
+                  danger={posture.encryption_enabled === false}
+                />
+                <MobileFact
+                  label="USB debugging"
+                  value={formatMobileBoolean(posture.usb_debugging_enabled)}
+                  danger={posture.usb_debugging_enabled === true}
+                />
+                <MobileFact
+                  label="Developer mode"
+                  value={formatMobileBoolean(posture.developer_mode_enabled)}
+                  danger={posture.developer_mode_enabled === true}
+                />
+                <MobileFact
+                  label="Debugger"
+                  value={formatMobileDetection(posture.debugger_detected)}
+                  danger={posture.debugger_detected === true}
+                />
+                <MobileFact
+                  label="Frida"
+                  value={formatMobileDetection(posture.frida_detected)}
+                  danger={posture.frida_detected === true}
+                />
+                <MobileFact
+                  label="Hook framework"
+                  value={formatMobileDetection(posture.hook_framework_detected)}
+                  danger={posture.hook_framework_detected === true}
+                />
+                <MobileFact
+                  label="Native hook"
+                  value={formatMobileDetection(posture.native_hook_detected)}
+                  danger={posture.native_hook_detected === true}
+                />
+                <MobileFact
+                  label="App integrity"
+                  value={formatMobileDetection(posture.app_integrity_violation)}
+                  danger={posture.app_integrity_violation === true}
+                />
+                <MobileFact
+                  label="Runtime tamper"
+                  value={formatMobileDetection(posture.runtime_memory_tamper_detected)}
+                  danger={posture.runtime_memory_tamper_detected === true}
+                />
+                <MobileFact
+                  label="Code signature"
+                  value={formatMobileCodeSignatureStatus(posture)}
+                  danger={posture.code_signature_drift_detected === true}
+                />
+                <MobileFact
+                  label="Policy store"
+                  value={formatMobilePolicyStore(posture.policy)}
+                />
+                <MobileFact
+                  label="App tamper"
+                  value={formatMobileDetection(posture.tampering_detected)}
+                  danger={posture.tampering_detected === true}
+                />
+                <MobileFact
+                  label="Spyware risk"
+                  value={formatMobileDetection(posture.commercial_spyware_suspected)}
+                  danger={posture.commercial_spyware_suspected === true}
+                />
+                <MobileFact
+                  label="Spyware IOC"
+                  value={formatMobileDetection(posture.spyware_indicator_match)}
+                  danger={posture.spyware_indicator_match === true}
+                />
+                <MobileFact
+                  label="Compliance"
+                  value={overview.compliance?.local_compliant === false ? 'Needs review' : 'Local checks pass'}
+                  danger={overview.compliance?.local_compliant === false}
+                />
+                <MobileFact
+                  label="MDM compliance"
+                  value={mdmCompliance || 'not reported'}
+                  danger={String(mdmCompliance || '')
+                    .toLowerCase()
+                    .includes('non')}
+                />
               </div>
             </div>
 
-            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+            <div
+              className="rounded-lg border p-4"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--surface-alt)'
+              }}
+            >
               <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
                 <Package className="h-4 w-4" /> App Inventory
               </h3>
               {apps.length === 0 ? (
-                <p className="text-sm" style={{ color: 'var(--muted)' }}>No app inventory reported yet</p>
+                <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                  No app inventory reported yet
+                </p>
               ) : (
                 <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                  {apps.slice(0, 8).map(app => (
-                    <div key={String(app.id || app.bundle_id)} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="truncate" style={{ color: 'var(--fg)' }}>{app.app_name || app.bundle_id}</span>
-                      <span className="text-xs shrink-0" style={{ color: app.risk_level === 'high' || app.risk_level === 'critical' ? 'var(--high)' : 'var(--muted)' }}>
+                  {apps.slice(0, 8).map((app) => (
+                    <div
+                      key={String(app.id || app.bundle_id)}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="truncate" style={{ color: 'var(--fg)' }}>
+                        {app.app_name || app.bundle_id}
+                      </span>
+                      <span
+                        className="text-xs shrink-0"
+                        style={{
+                          color:
+                            app.risk_level === 'high' || app.risk_level === 'critical' ? 'var(--high)' : 'var(--muted)'
+                        }}
+                      >
                         {app.risk_level || 'not scored'}
                       </span>
                     </div>
@@ -1654,7 +2167,13 @@ function MobileEndpointPanel({
               )}
             </div>
 
-            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+            <div
+              className="rounded-lg border p-4"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--surface-alt)'
+              }}
+            >
               <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
                 <Activity className="h-4 w-4" /> App Guard
               </h3>
@@ -1666,13 +2185,19 @@ function MobileEndpointPanel({
               ) : (
                 <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
                   <MobileFact label="Protected apps" value={String(protectedTotal)} />
-                  {appGuardEvents.slice(0, 8).map(event => (
+                  {appGuardEvents.slice(0, 8).map((event) => (
                     <div key={String(event.id)} className="text-sm">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="truncate" style={{ color: 'var(--fg)' }}>{event.event_type || event.title}</span>
-                        <span className="text-xs shrink-0" style={{ color: severityTextColor(event.severity) }}>{event.severity || 'info'}</span>
+                        <span className="truncate" style={{ color: 'var(--fg)' }}>
+                          {event.event_type || event.title}
+                        </span>
+                        <span className="text-xs shrink-0" style={{ color: severityTextColor(event.severity) }}>
+                          {event.severity || 'info'}
+                        </span>
                       </div>
-                      <p className="text-xs truncate" style={{ color: 'var(--muted)' }}>{event.app_bundle_id || event.app_name || 'protected app'}</p>
+                      <p className="text-xs truncate" style={{ color: 'var(--muted)' }}>
+                        {event.app_bundle_id || event.app_name || 'protected app'}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -1681,29 +2206,119 @@ function MobileEndpointPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(overview.commands || []).map(command => (
+            {(overview.commands || []).map((command) => (
               <button
                 key={command.id}
-                onClick={() => onCommand(command.id)}
-                disabled={!!commandLoading}
+                onClick={() => onCommand(command)}
+                disabled={!!commandLoading || command.supported_by_mobile_app === false}
+                title={
+                  command.supported_by_mobile_app === false
+                    ? 'This command is not reported as supported by the mobile app'
+                    : mobileCommandRequiresInput(command.id)
+                      ? 'Requires review and a non-empty command payload before queueing'
+                      : 'Queues with an empty payload'
+                }
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border disabled:opacity-50"
                 style={{
                   borderColor: command.destructive ? 'rgba(239, 68, 68, 0.4)' : 'var(--border)',
                   color: command.destructive ? 'var(--crit)' : 'var(--fg)',
-                  backgroundColor: 'var(--surface-alt)',
+                  backgroundColor: 'var(--surface-alt)'
                 }}
               >
-                {command.id === 'locate' ? <MapPin className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                {renderMobileCommandIcon(command.id)}
                 {commandLoading === command.id ? 'Sending...' : command.label}
-                {command.execution_scope === 'mdm_provider' ? (
-                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>MDM</span>
+                {command.execution_scope ? (
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                    {formatMobileCommandScope(command.execution_scope)}
+                  </span>
+                ) : null}
+                {command.supported_by_mobile_app === false ? (
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                    Unsupported
+                  </span>
+                ) : null}
+                {mobileCommandRequiresInput(command.id) ? (
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                    Review
+                  </span>
                 ) : null}
               </button>
             ))}
           </div>
 
+          {commandDraft && (
+            <div
+              className="rounded-lg border p-4 space-y-3"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--surface-alt)'
+              }}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold" style={{ color: 'var(--fg)' }}>
+                    {commandDraft.label}
+                  </h3>
+                  <p className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                    Target {mobileCommandTargetLabel(overview)} / scope{' '}
+                    {formatMobileCommandScope(commandDraft.executionScope || 'mobile_app_endpoint')} / non-empty payload
+                    required.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onDraftChange(null)}
+                  className="text-xs px-2 py-1 rounded border"
+                  style={{
+                    borderColor: 'var(--border)',
+                    color: 'var(--muted)'
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              <label className="block text-xs font-medium" style={{ color: 'var(--muted)' }}>
+                {commandDraft.fieldLabel}
+              </label>
+              <input
+                value={commandDraft.value}
+                onChange={(event) => onDraftChange({ ...commandDraft, value: event.target.value })}
+                placeholder={commandDraft.placeholder}
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                style={{
+                  borderColor: 'var(--border)',
+                  backgroundColor: 'var(--surface)',
+                  color: 'var(--fg)'
+                }}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <code className="text-xs break-all" style={{ color: 'var(--muted)' }}>
+                  {mobileCommandPayloadPreview(commandDraft)}
+                </code>
+                <button
+                  type="button"
+                  onClick={onDraftSubmit}
+                  disabled={!!commandLoading || !commandDraft.value.trim()}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border disabled:opacity-50"
+                  style={{
+                    borderColor: commandDraft.destructive ? 'rgba(239, 68, 68, 0.4)' : 'var(--border)',
+                    color: commandDraft.destructive ? 'var(--crit)' : 'var(--fg)'
+                  }}
+                >
+                  {commandLoading === commandDraft.command ? 'Sending...' : 'Send command'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {(overview.last_command || commandHistory.length > 0) && (
-            <div className="rounded-lg border p-4" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
+            <div
+              className="rounded-lg border p-4"
+              style={{
+                borderColor: 'var(--border)',
+                backgroundColor: 'var(--surface-alt)'
+              }}
+            >
               <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--fg)' }}>
                 <Activity className="h-4 w-4" /> Command Sync
               </h3>
@@ -1720,7 +2335,10 @@ function MobileEndpointPanel({
                     <div
                       key={`${String(entry.id || 'command')}-${String(entry.requested_at || index)}`}
                       className="rounded-md border px-3 py-2 text-sm"
-                      style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface)' }}
+                      style={{
+                        borderColor: 'var(--border)',
+                        backgroundColor: 'var(--surface)'
+                      }}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <span className="font-medium truncate" style={{ color: 'var(--fg)' }}>
@@ -1728,7 +2346,9 @@ function MobileEndpointPanel({
                         </span>
                         <span
                           className="text-xs uppercase"
-                          style={{ color: entry.status === 'failed' ? 'var(--high)' : 'var(--emerald-400)' }}
+                          style={{
+                            color: entry.status === 'failed' ? 'var(--high)' : 'var(--emerald-400)'
+                          }}
                         >
                           {formatMobileCommandValue(entry.status)}
                         </span>
@@ -1750,9 +2370,24 @@ function MobileEndpointPanel({
 
 function MobileMetric({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'high' }) {
   return (
-    <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-alt)' }}>
-      <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>{label}</p>
-      <p className="mt-1 text-lg font-semibold truncate" style={{ color: tone === 'high' ? 'var(--high)' : tone === 'ok' ? 'var(--emerald-400)' : 'var(--fg)' }}>{value}</p>
+    <div
+      className="rounded-lg border p-3"
+      style={{
+        borderColor: 'var(--border)',
+        backgroundColor: 'var(--surface-alt)'
+      }}
+    >
+      <p className="text-xs uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+        {label}
+      </p>
+      <p
+        className="mt-1 text-lg font-semibold truncate"
+        style={{
+          color: tone === 'high' ? 'var(--high)' : tone === 'ok' ? 'var(--emerald-400)' : 'var(--fg)'
+        }}
+      >
+        {value}
+      </p>
     </div>
   )
 }
@@ -1761,15 +2396,17 @@ function MobileFact({ label, value, danger }: { label: string; value: string; da
   return (
     <div className="flex items-center justify-between gap-3">
       <span style={{ color: 'var(--muted)' }}>{label}</span>
-      <span className="font-medium" style={{ color: danger ? 'var(--high)' : 'var(--fg)' }}>{value}</span>
+      <span className="font-medium" style={{ color: danger ? 'var(--high)' : 'var(--fg)' }}>
+        {value}
+      </span>
     </div>
   )
 }
 
 function formatMobileRiskScore(value: unknown): string {
-  if (value === undefined || value === null || value === '') return 'Unknown'
+  if (value === undefined || value === null || value === '') return 'Not reported'
   const score = Number(value)
-  return Number.isFinite(score) ? String(score) : 'Unknown'
+  return Number.isFinite(score) ? String(score) : 'Not reported'
 }
 
 function mobileRiskTone(value: unknown): 'ok' | 'high' | undefined {
@@ -1782,7 +2419,35 @@ function mobileRiskTone(value: unknown): 'ok' | 'high' | undefined {
 function formatMobileBoolean(value: unknown): string {
   if (value === true) return 'Enabled'
   if (value === false) return 'Disabled'
-  return 'Unknown'
+  return 'Not reported'
+}
+
+function formatMobileDetection(value: unknown): string {
+  if (value === true) return 'Observed'
+  if (value === false) return 'Not observed'
+  return 'Not reported'
+}
+
+function formatMobileCodeSignatureStatus(posture: Record<string, unknown>): string {
+  if (posture.code_signature_drift_detected === true) return 'Drift observed'
+  if (posture.code_signature_baseline_configured === false) return 'Baseline not configured'
+  if (posture.code_signature_drift_detected === false) return 'No drift observed'
+  return 'Not reported'
+}
+
+function formatMobilePolicyStore(policy: unknown): string {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return 'No policy reported'
+  const value = policy as Record<string, unknown>
+  if (value.status === 'no_durable_local_policy_store') return 'No durable store'
+  if (value.status === 'not_stored' || value.stored === false) return 'Not stored'
+  const storedLabel =
+    value.stored === true
+      ? 'Stored'
+      : formatMobileCommandValue(value.status || 'reported')
+  const enforcement =
+    value.enforced === true || value.applied === true ? 'enforced' : 'not enforced'
+  const id = value.policy_id || value.config_version || value.command_id
+  return [storedLabel, enforcement, id].filter(Boolean).join(' / ')
 }
 
 function formatMobileProvider(value: unknown): string {
@@ -1792,18 +2457,249 @@ function formatMobileProvider(value: unknown): string {
 }
 
 function formatMobileTimestamp(value: unknown): string {
-  if (!value) return 'not reported'
+  if (!value) return 'Not reported'
   return formatDate(String(value))
 }
 
 function formatMobileCommandValue(value: unknown): string {
   const text = String(value || '').trim()
-  return text ? text.replace(/_/g, ' ') : 'unknown'
+  const normalized = text.toLowerCase()
+  if (!text || normalized === 'none' || normalized === 'unknown' || normalized === 'not_reported') {
+    return 'Not reported'
+  }
+  return text.replace(/_/g, ' ')
+}
+
+function mobileCommandTargetId(overview?: MobileOverview | null): string {
+  return String(
+    overview?.command_identity?.command_device_id ||
+      overview?.command_device?.command_identity?.command_device_id ||
+      overview?.command_device?.id ||
+      overview?.command_device?.device_id ||
+      overview?.command_device?.command_identity?.background_sync_device_id ||
+      ''
+  ).trim()
+}
+
+function mobileLegacyDeviceId(overview?: MobileOverview | null): string {
+  return String(
+    overview?.device?.id ||
+      overview?.command_identity?.external_device_id ||
+      overview?.command_device?.command_identity?.external_device_id ||
+      ''
+  ).trim()
+}
+
+function mobileCommandTargetLabel(overview?: MobileOverview | null): string {
+  return (
+    mobileCommandTargetId(overview) ||
+    mobileLegacyDeviceId(overview) ||
+    String(overview?.command_identity?.agent_machine_id || '').trim() ||
+    String(overview?.command_device?.command_identity?.agent_machine_id || '').trim() ||
+    'unlinked'
+  )
+}
+
+function mobileCommandIdentity(overview?: MobileOverview | null): Record<string, any> {
+  return (overview?.command_identity || overview?.command_device?.command_identity || {}) as Record<string, any>
+}
+
+function effectiveMobileDevice(overview?: MobileOverview | null): Record<string, any> {
+  const device = (overview?.device || {}) as Record<string, any>
+  const posture = (overview?.posture || {}) as Record<string, any>
+  const commandDevice = (overview?.command_device || {}) as Record<string, any>
+  const commandIdentity = mobileCommandIdentity(overview)
+  const commandDeviceId =
+    commandIdentity.command_device_id ||
+    commandDevice.id ||
+    commandDevice.device_id ||
+    commandIdentity.background_sync_device_id
+  const externalDeviceId =
+    commandIdentity.external_device_id ||
+    commandDevice.device_id ||
+    device.device_id ||
+    device.id ||
+    commandDeviceId
+
+  return {
+    ...device,
+    id: device.id || commandDeviceId || externalDeviceId,
+    device_id: device.device_id || externalDeviceId || commandDeviceId,
+    platform: device.platform || commandDevice.platform || posture.platform,
+    status: device.status || commandDevice.status || (overview?.linked ? 'linked' : undefined)
+  }
+}
+
+function hasEffectiveMobileLink(overview?: MobileOverview | null, device: Record<string, any> = {}): boolean {
+  return Boolean(
+    device.id ||
+      device.device_id ||
+      mobileCommandTargetId(overview) ||
+      mobileLegacyDeviceId(overview) ||
+      overview?.posture?.device_id
+  )
+}
+
+function createMobileCommandDraft(command: MobileCommandOption): MobileCommandDraft | null {
+  const id = String(command.id || '').toLowerCase()
+
+  if (id === 'managed_shell') {
+    return {
+      command: command.id,
+      label: command.label,
+      fieldLabel: 'Managed shell command',
+      value: 'help',
+      placeholder: 'help',
+      required: true,
+      payloadKind: 'command',
+      executionScope: command.execution_scope,
+      destructive: command.destructive
+    }
+  }
+
+  if (id === 'shell_execute') {
+    return {
+      command: command.id,
+      label: command.label,
+      fieldLabel: 'Privileged shell command',
+      value: '',
+      placeholder: 'command to execute',
+      required: true,
+      payloadKind: 'command',
+      executionScope: command.execution_scope,
+      destructive: command.destructive
+    }
+  }
+
+  if (id === 'block_domain' || id === 'unblock_domain') {
+    return {
+      command: command.id,
+      label: command.label,
+      fieldLabel: id === 'block_domain' ? 'Domain to block' : 'Domain to unblock',
+      value: '',
+      placeholder: 'example.com',
+      required: true,
+      payloadKind: 'domain',
+      executionScope: command.execution_scope,
+      destructive: command.destructive
+    }
+  }
+
+  if (id === 'inspect_package' || id === 'remove_app') {
+    return {
+      command: command.id,
+      label: command.label,
+      fieldLabel: id === 'inspect_package' ? 'Package or bundle id to inspect' : 'Package or bundle id to remove',
+      value: '',
+      placeholder: 'com.example.app',
+      required: true,
+      payloadKind: 'package',
+      executionScope: command.execution_scope,
+      destructive: command.destructive
+    }
+  }
+
+  return null
+}
+
+function buildMobileCommandPayloadFromDraft(draft: MobileCommandDraft): Record<string, unknown> | null {
+  const value = draft.value.trim()
+  if (draft.required && !value) return null
+  if (draft.payloadKind === 'domain') return { domain: value }
+  if (draft.payloadKind === 'package') return { package_name: value, bundle_id: value }
+  return { command: value }
+}
+
+function mobileCommandPayloadPreview(draft: MobileCommandDraft): string {
+  return JSON.stringify(
+    buildMobileCommandPayloadFromDraft(draft) || {
+      [draft.payloadKind]: '<required>'
+    }
+  )
+}
+
+function buildMobileResponseSummary(
+  commands: MobileCommandOption[] = [],
+  history: Array<Record<string, any>> = [],
+  lastCommand?: Record<string, any> | null
+) {
+  const supported = commands.filter((command) => command.supported_by_mobile_app !== false)
+  const appCommandCount = supported.filter((command) => command.execution_scope !== 'mdm_provider').length
+  const mdmCommandCount = commands.filter((command) => command.execution_scope === 'mdm_provider').length
+  const unsupportedCommandCount = commands.filter((command) => command.supported_by_mobile_app === false).length
+  const reviewCommandCount = supported.filter((command) => mobileCommandRequiresInput(command.id)).length
+  const latest = lastCommand || history[0] || null
+  const lastStatus = formatMobileCommandValue(latest?.status || latest?.execution_status || 'none')
+  const lastCommandLabel = formatMobileCommandValue(
+    latest?.command_type || latest?.type || latest?.id || latest?.command_id || 'none'
+  )
+  const readyLabel =
+    appCommandCount > 0
+      ? 'mobile response ready'
+      : unsupportedCommandCount > 0
+        ? 'mdm/provider only'
+        : 'not linked'
+
+  return {
+    appCommandCount,
+    mdmCommandCount,
+    unsupportedCommandCount,
+    reviewCommandCount,
+    lastStatus,
+    lastCommand: lastCommandLabel,
+    readyLabel,
+    mode: appCommandCount > 0 ? 'mobile app endpoint' : mdmCommandCount > 0 ? 'MDM provider' : 'not available'
+  }
+}
+
+function mobileCommandRequiresInput(command: string): boolean {
+  return ['managed_shell', 'shell_execute', 'block_domain', 'unblock_domain', 'inspect_package', 'remove_app'].includes(
+    String(command || '').toLowerCase()
+  )
+}
+
+function formatMobileCommandScope(value: unknown): string {
+  const text = String(value || '').toLowerCase()
+  if (text === 'mobile_app_endpoint') return 'APP'
+  if (text === 'mdm_provider') return 'MDM'
+  if (text.includes('dns')) return 'DNS'
+  if (text.includes('packet')) return 'NET'
+  if (text.includes('package')) return 'PKG'
+  if (text.includes('privileged')) return 'PRIV'
+  return text.replace(/_/g, ' ').slice(0, 10)
+}
+
+function renderMobileCommandIcon(commandId: string) {
+  const id = String(commandId || '').toLowerCase()
+  if (id === 'locate') return <MapPin className="h-4 w-4" />
+  if (id.includes('shell')) return <TerminalIcon className="h-4 w-4" />
+  if (id.includes('dns') || id.includes('domain')) return <Server className="h-4 w-4" />
+  if (id.includes('network') || id.includes('flow') || id.includes('packet') || id.includes('vpn')) {
+    return <Network className="h-4 w-4" />
+  }
+  if (id.includes('package') || id.includes('app') || id.includes('inventory')) {
+    return <Package className="h-4 w-4" />
+  }
+  if (id.includes('diagnostic')) return <FileSearch className="h-4 w-4" />
+  return <Lock className="h-4 w-4" />
 }
 
 function formatMobileCommandDetail(entry: Record<string, any>): string {
   if (entry.error) return String(entry.error)
   const result = entry.result || {}
+  const flow = Array.isArray(result.flows) ? result.flows[0] : null
+  if (flow?.type === 'dns_forwarder_summary') {
+    const observed = Number(flow.queries_observed ?? 0)
+    const blocked = Number(flow.queries_blocked ?? 0)
+    const lastQuery = flow.last_query ? `, last ${flow.last_query}` : ''
+    return `DNS flows: ${observed} observed, ${blocked} blocked${lastQuery}`
+  }
+  if (result.coverage === 'dns_forwarder_counters_only_no_pcap') {
+    return 'DNS forwarder counters only; PCAP unavailable'
+  }
+  if (result.reason) return formatMobileCommandValue(result.reason)
+  if (result.error) return String(result.error)
+  if (result.output) return String(result.output).slice(0, 140)
   if (result.message) return String(result.message)
   if (result.status) return `Server status: ${result.status}`
   if (result.id) return `Command id: ${result.id}`
@@ -1838,14 +2734,14 @@ const DATA_SOURCE_LABELS: Record<DataSourceKey, string> = {
   registry: 'Registry',
   driver: 'Driver/ETW',
   ai: 'AI',
-  ndr: 'NDR',
+  ndr: 'NDR'
 }
 
 function DataSourcesHealthCard({
   health,
   loading,
   error,
-  onRefresh,
+  onRefresh
 }: {
   health: AgentDataSourceHealth | null
   loading: boolean
@@ -1853,7 +2749,13 @@ function DataSourcesHealthCard({
   onRefresh: () => void
 }) {
   return (
-    <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+    <div
+      className="card-sentinel rounded-xl p-6"
+      style={{
+        backgroundColor: 'var(--surface)',
+        border: '1px solid var(--border)'
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg)' }}>
@@ -1875,7 +2777,10 @@ function DataSourcesHealthCard({
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}>
+        <div
+          className="mb-4 rounded-lg border px-3 py-2 text-sm"
+          style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}
+        >
           {error}
         </div>
       )}
@@ -1887,17 +2792,34 @@ function DataSourcesHealthCard({
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
-          {DATA_SOURCE_KEYS.map(source => {
+          {DATA_SOURCE_KEYS.map((source) => {
             const sourceHealth = getSourceHealth(health, source)
             const state = dataSourceState(sourceHealth.status)
             return (
-              <div key={source} className="rounded-lg border p-3" style={{ backgroundColor: 'var(--surface-alt)', borderColor: 'var(--border)' }}>
+              <div
+                key={source}
+                className="rounded-lg border p-3"
+                style={{
+                  backgroundColor: 'var(--surface-alt)',
+                  borderColor: 'var(--border)'
+                }}
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{DATA_SOURCE_LABELS[source]}</span>
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: state.color }} title={state.title} />
+                  <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
+                    {DATA_SOURCE_LABELS[source]}
+                  </span>
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: state.color }}
+                    title={state.title}
+                  />
                 </div>
-                <div className="mt-3 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>{sourceHealth.count}</div>
-                <div className="text-xs capitalize" style={{ color: state.color }}>{sourceHealth.status}</div>
+                <div className="mt-3 text-2xl font-semibold" style={{ color: 'var(--fg)' }}>
+                  {sourceHealth.count}
+                </div>
+                <div className="text-xs capitalize" style={{ color: state.color }}>
+                  {sourceHealth.status}
+                </div>
                 <div className="mt-2 text-xs min-h-8" style={{ color: 'var(--muted)' }}>
                   {sourceHealth.lastSeen
                     ? `Last seen ${formatRelativeTime(new Date(sourceHealth.lastSeen).getTime())}`
@@ -1931,21 +2853,26 @@ function normalizeAgentDataSourceHealth(row: any): AgentDataSourceHealth | null 
           status: normalizeDataSourceStatus(source.status, count),
           count,
           lastSeen: source.lastSeen || source.last_seen || null,
-          missingReason: source.missingReason || source.missing_reason || null,
+          missingReason: source.missingReason || source.missing_reason || null
         }
       })
-      .filter(Boolean) as AgentDataSourceHealth['sources'],
+      .filter(Boolean) as AgentDataSourceHealth['sources']
   }
 }
 
-function getSourceHealth(health: AgentDataSourceHealth | null, source: DataSourceKey): AgentDataSourceHealth['sources'][number] {
-  return health?.sources.find(item => item.name === source) || {
-    name: source,
-    status: 'missing',
-    count: 0,
-    lastSeen: null,
-    missingReason: 'not_reported',
-  }
+function getSourceHealth(
+  health: AgentDataSourceHealth | null,
+  source: DataSourceKey
+): AgentDataSourceHealth['sources'][number] {
+  return (
+    health?.sources.find((item) => item.name === source) || {
+      name: source,
+      status: 'missing',
+      count: 0,
+      lastSeen: null,
+      missingReason: 'not_reported'
+    }
+  )
 }
 
 function normalizeDataSourceStatus(rawStatus: unknown, count: number): DataSourceStatus {
@@ -1970,30 +2897,87 @@ function PlatformCapabilitiesPanel({ capabilities }: { capabilities: PlatformCap
   if (capabilities.length === 0) return null
 
   return (
-    <div className="card-sentinel rounded-xl p-6" style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+    <div
+      className="card-sentinel rounded-xl p-6"
+      style={{
+        backgroundColor: 'var(--surface)',
+        border: '1px solid var(--border)'
+      }}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
-          <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>Platform Capability Maturity</h2>
+          <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>
+            Platform Capability Maturity
+          </h2>
           <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
             Conservative OS support status; live signals do not upgrade lab or partial features to fully supported.
           </p>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {capabilities.map(capability => {
+        {capabilities.map((capability) => {
           const status = capability.status || capability.maturity
           const style = capabilityMaturityStyle(status)
           return (
-            <div key={capability.id} className="rounded-lg border p-3" style={{ backgroundColor: 'var(--surface-alt)', borderColor: 'var(--border)' }}>
+            <div
+              key={capability.id}
+              className="rounded-lg border p-3"
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                borderColor: 'var(--border)'
+              }}
+            >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{capability.name}</span>
-                <span className="text-xs font-medium rounded px-2 py-0.5" style={{ backgroundColor: style.bg, color: style.color }}>
+                <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
+                  {capability.name}
+                </span>
+                <span
+                  className="text-xs font-medium rounded px-2 py-0.5"
+                  style={{ backgroundColor: style.bg, color: style.color }}
+                >
                   {status}
                 </span>
               </div>
               <p className="mt-2 text-xs" style={{ color: 'var(--muted)' }}>
-                {capability.observed === 'not_observed' ? 'No live signal observed.' : capability.detail || capability.observed || 'No signal detail.'}
+                {capability.observed === 'not_observed'
+                  ? 'No live signal observed.'
+                  : capability.detail || capability.observed || 'No signal detail.'}
               </p>
+              {capability.id === 'screen_capture' && capability.session_broker && (
+                <div
+                  className="mt-2 rounded border px-2 py-1.5 text-xs"
+                  style={{
+                    borderColor: 'var(--border)',
+                    color: 'var(--muted)'
+                  }}
+                >
+                  Session broker:{' '}
+                  <span className="font-medium" style={{ color: 'var(--fg-2)' }}>
+                    {capability.session_broker.state || 'broker_unavailable'}
+                  </span>
+                  {' / '}
+                  {capability.session_broker.capabilities?.length
+                    ? capability.session_broker.capabilities.join(', ')
+                    : 'no capabilities reported'}
+                </div>
+              )}
+              {capability.id === 'screen_capture' && capability.screen_capture_policy && (
+                <div
+                  className="mt-2 rounded border px-2 py-1.5 text-xs"
+                  style={{
+                    borderColor: 'var(--border)',
+                    color: 'var(--muted)'
+                  }}
+                >
+                  Effective policy:{' '}
+                  <span className="font-medium" style={{ color: 'var(--fg-2)' }}>
+                    {capability.screen_capture_policy.mode || 'disabled'}
+                  </span>
+                  {capability.screen_capture_policy.notify_timing
+                    ? ` / ${capability.screen_capture_policy.notify_timing}`
+                    : ''}
+                </div>
+              )}
             </div>
           )
         })}
@@ -2005,12 +2989,14 @@ function PlatformCapabilitiesPanel({ capabilities }: { capabilities: PlatformCap
 function normalizePlatformCapabilities(value: unknown): PlatformCapability[] {
   if (!Array.isArray(value)) return []
   return value
-    .map(item => {
+    .map((item) => {
       if (!item || typeof item !== 'object') return null
       const raw = item as Record<string, unknown>
       const id = String(raw.id || '')
       if (!id) return null
       const maturity = String(raw.maturity || raw.status || 'unavailable')
+      const broker = normalizeScreenSessionBrokerHealth(raw.session_broker)
+      const screenCapturePolicy = normalizeScreenCapturePolicyHealth(raw.screen_capture_policy)
       return {
         id,
         name: String(raw.name || id.replace(/_/g, ' ')),
@@ -2019,9 +3005,47 @@ function normalizePlatformCapabilities(value: unknown): PlatformCapability[] {
         status: raw.status ? String(raw.status) : maturity,
         observed: raw.observed ? String(raw.observed) : undefined,
         detail: raw.detail ? String(raw.detail) : undefined,
+        session_broker: broker,
+        screen_capture_policy: screenCapturePolicy
       }
     })
     .filter(Boolean) as PlatformCapability[]
+}
+
+function normalizeScreenCapturePolicyHealth(value: unknown): ScreenCapturePolicyHealth | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  const evidence =
+    raw.policy && typeof raw.policy === 'object' && !Array.isArray(raw.policy)
+      ? (raw.policy as Record<string, unknown>)
+      : {}
+  return {
+    mode: raw.mode ? String(raw.mode) : 'disabled',
+    notify_timing: raw.notify_timing ? String(raw.notify_timing) : null,
+    policy: {
+      id: evidence.id ? String(evidence.id) : undefined,
+      version: typeof evidence.version === 'number' ? evidence.version : undefined,
+      hash: evidence.hash ? String(evidence.hash) : undefined,
+      source: evidence.source ? String(evidence.source) : undefined,
+      issued_at: evidence.issued_at ? String(evidence.issued_at) : undefined,
+      expires_at: evidence.expires_at ? String(evidence.expires_at) : undefined,
+      issued_at_ms: typeof evidence.issued_at_ms === 'number' ? evidence.issued_at_ms : undefined,
+      expires_at_ms: typeof evidence.expires_at_ms === 'number' ? evidence.expires_at_ms : undefined
+    }
+  }
+}
+
+function normalizeScreenSessionBrokerHealth(value: unknown): ScreenSessionBrokerHealth | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  return {
+    schema_version: raw.schema_version ? String(raw.schema_version) : undefined,
+    state: raw.state ? String(raw.state) : 'broker_unavailable',
+    ready: raw.ready === true,
+    capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.map(String) : [],
+    observed_at: raw.observed_at ? String(raw.observed_at) : null,
+    detail: raw.detail ? String(raw.detail) : undefined
+  }
 }
 
 function capabilityMaturityStyle(maturity: CapabilityMaturity) {
@@ -2039,15 +3063,10 @@ function capabilityMaturityStyle(maturity: CapabilityMaturity) {
 
 function resolveAgentPlatform(agent: Agent): string | undefined {
   const raw = agent as unknown as Record<string, unknown>
-  const mobileDevice = raw.mobile_device && typeof raw.mobile_device === 'object'
-    ? raw.mobile_device as Record<string, unknown>
-    : {}
-  const device = raw.device && typeof raw.device === 'object'
-    ? raw.device as Record<string, unknown>
-    : {}
-  const posture = raw.posture && typeof raw.posture === 'object'
-    ? raw.posture as Record<string, unknown>
-    : {}
+  const mobileDevice =
+    raw.mobile_device && typeof raw.mobile_device === 'object' ? (raw.mobile_device as Record<string, unknown>) : {}
+  const device = raw.device && typeof raw.device === 'object' ? (raw.device as Record<string, unknown>) : {}
+  const posture = raw.posture && typeof raw.posture === 'object' ? (raw.posture as Record<string, unknown>) : {}
 
   const candidates = [
     raw.os_type,
@@ -2059,10 +3078,10 @@ function resolveAgentPlatform(agent: Agent): string | undefined {
     device.platform,
     device.os_type,
     posture.platform,
-    posture.os_type,
+    posture.os_type
   ]
 
-  const platform = candidates.find(value => typeof value === 'string' && value.trim())
+  const platform = candidates.find((value) => typeof value === 'string' && value.trim())
   return platform ? String(platform) : undefined
 }
 
@@ -2073,55 +3092,110 @@ function isMobilePlatform(osType?: string): boolean {
 
 function shouldUseMobileFallbackCapabilities(osType: string | undefined, capabilities: PlatformCapability[]): boolean {
   if (!isMobilePlatform(osType)) return false
-  return !capabilities.some(capability =>
+  return !capabilities.some((capability) =>
     ['mobile_posture', 'app_inventory', 'app_guard', 'commercial_spyware'].includes(capability.id)
   )
 }
 
 function capabilityAvailable(capabilities: PlatformCapability[], id: string): boolean {
-  const capability = capabilities.find(item => item.id === id)
+  const capability = capabilities.find((item) => item.id === id)
   if (!capability) return false
   const status = String(capability.status || capability.maturity || '').toLowerCase()
   return status !== 'unavailable'
 }
 
+const PLATFORM_CAPABILITY_NAMES: Record<string, string> = {
+  endpoint_telemetry: 'Endpoint telemetry',
+  kernel_sensor: 'Kernel / platform sensor',
+  registry_telemetry: 'Registry telemetry',
+  virtualization_host: 'Virtualization host',
+  mobile_posture: 'Mobile posture',
+  app_inventory: 'App inventory',
+  app_guard: 'App Guard / RASP',
+  commercial_spyware: 'Protected-app risk indicators',
+  live_response: 'Live response shell',
+  network_isolation: 'Network isolation',
+  prevention_policy: 'Prevention policy enforcement'
+}
+
 function fallbackPlatformCapabilities(osType?: string): PlatformCapability[] {
   const os = String(osType || '').toLowerCase()
-  const platform = os.includes('windows') ? 'windows' :
-    os.includes('linux') ? 'linux' :
-    os.includes('mac') || os.includes('darwin') ? 'macos' :
-    os.includes('android') ? 'android' :
-    os.includes('ios') || os.includes('iphone') || os.includes('ipad') ? 'ios' :
-    'unknown'
+  const platform = os.includes('windows')
+    ? 'windows'
+    : os.includes('linux')
+      ? 'linux'
+      : os.includes('mac') || os.includes('darwin')
+        ? 'macos'
+        : os.includes('android')
+          ? 'android'
+          : os.includes('ios') || os.includes('iphone') || os.includes('ipad')
+            ? 'ios'
+            : 'unknown'
   const maturityByPlatform: Record<string, Record<string, CapabilityMaturity>> = {
-    windows: { endpoint_telemetry: 'supported', kernel_sensor: 'lab', registry_telemetry: 'supported', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
-    linux: { endpoint_telemetry: 'partial', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'partial', network_isolation: 'partial', prevention_policy: 'partial' },
-    macos: { endpoint_telemetry: 'lab', kernel_sensor: 'lab', registry_telemetry: 'unavailable', live_response: 'lab', network_isolation: 'lab', prevention_policy: 'lab' },
-    android: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
-    ios: { endpoint_telemetry: 'partial', mobile_posture: 'supported', app_inventory: 'partial', app_guard: 'partial', commercial_spyware: 'lab', prevention_policy: 'partial' },
-    unknown: { endpoint_telemetry: 'unavailable', kernel_sensor: 'unavailable', registry_telemetry: 'unavailable', live_response: 'unavailable', network_isolation: 'unavailable', prevention_policy: 'unavailable' },
-  }
-  const names: Record<string, string> = {
-    endpoint_telemetry: 'Endpoint telemetry',
-    kernel_sensor: 'Kernel / platform sensor',
-    registry_telemetry: 'Registry telemetry',
-    mobile_posture: 'Mobile posture',
-    app_inventory: 'App inventory',
-    app_guard: 'App Guard / RASP',
-    commercial_spyware: 'Commercial spyware indicators',
-    live_response: 'Live response shell',
-    network_isolation: 'Network isolation',
-    prevention_policy: 'Prevention policy enforcement',
+    windows: {
+      endpoint_telemetry: 'supported',
+      kernel_sensor: 'lab',
+      registry_telemetry: 'supported',
+      virtualization_host: 'unavailable',
+      live_response: 'partial',
+      network_isolation: 'partial',
+      prevention_policy: 'partial'
+    },
+    linux: {
+      endpoint_telemetry: 'partial',
+      kernel_sensor: 'lab',
+      registry_telemetry: 'unavailable',
+      virtualization_host: 'lab',
+      live_response: 'partial',
+      network_isolation: 'partial',
+      prevention_policy: 'partial'
+    },
+    macos: {
+      endpoint_telemetry: 'lab',
+      kernel_sensor: 'lab',
+      registry_telemetry: 'unavailable',
+      virtualization_host: 'unavailable',
+      live_response: 'lab',
+      network_isolation: 'lab',
+      prevention_policy: 'lab'
+    },
+    android: {
+      endpoint_telemetry: 'partial',
+      virtualization_host: 'unavailable',
+      mobile_posture: 'supported',
+      app_inventory: 'partial',
+      app_guard: 'partial',
+      commercial_spyware: 'lab',
+      prevention_policy: 'partial'
+    },
+    ios: {
+      endpoint_telemetry: 'partial',
+      virtualization_host: 'unavailable',
+      mobile_posture: 'supported',
+      app_inventory: 'partial',
+      app_guard: 'partial',
+      commercial_spyware: 'lab',
+      prevention_policy: 'partial'
+    },
+    unknown: {
+      endpoint_telemetry: 'unavailable',
+      kernel_sensor: 'unavailable',
+      registry_telemetry: 'unavailable',
+      virtualization_host: 'unavailable',
+      live_response: 'unavailable',
+      network_isolation: 'unavailable',
+      prevention_policy: 'unavailable'
+    }
   }
 
   return Object.entries(maturityByPlatform[platform]).map(([id, maturity]) => ({
     id,
-    name: names[id],
+    name: PLATFORM_CAPABILITY_NAMES[id] || id.replace(/_/g, ' '),
     platform,
     maturity,
     status: maturity,
     observed: 'not_observed',
-    detail: 'Fallback OS maturity; no backend capability signal was included.',
+    detail: 'Fallback OS maturity; no backend capability signal was included.'
   }))
 }
 
@@ -2149,7 +3223,7 @@ function AlertStatusBadge({ status }: { status: Alert['status'] }) {
     open: 'Open',
     investigating: 'Investigating',
     resolved: 'Resolved',
-    false_positive: 'False Positive',
+    false_positive: 'False Positive'
   }
 
   const styles = getStatusStyles()

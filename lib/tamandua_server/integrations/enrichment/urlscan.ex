@@ -138,27 +138,6 @@ defmodule TamanduaServer.Integrations.Enrichment.URLScan do
     end
   end
 
-  defp do_submit_scan(state, url, opts) do
-    case submit_scan(state, url, opts) do
-      {:ok, response} ->
-        uuid = response["uuid"]
-
-        # Poll for results
-        case poll_for_results(state, uuid, opts[:timeout] || 60_000) do
-          {:ok, result} ->
-            new_stats = update_stat(state.stats, :scans_submitted)
-            {:reply, {:ok, result}, %{state | stats: new_stats}}
-
-          _error ->
-            # Return pending status with UUID
-            {:reply, {:ok, %{uuid: uuid, status: "pending", url: url}}, state}
-        end
-
-      error ->
-        {:reply, error, update_error_stat(state)}
-    end
-  end
-
   @impl true
   def handle_call({:get_result, uuid}, _from, state) do
     case check_cache(state, {:result, uuid}) do
@@ -259,6 +238,27 @@ defmodule TamanduaServer.Integrations.Enrichment.URLScan do
   @impl true
   def handle_call(:get_stats, _from, state) do
     {:reply, state.stats, state}
+  end
+
+  defp do_submit_scan(state, url, opts) do
+    case submit_scan(state, url, opts) do
+      {:ok, response} ->
+        uuid = response["uuid"]
+
+        # Poll for results
+        case poll_for_results(state, uuid, opts[:timeout] || 60_000) do
+          {:ok, result} ->
+            new_stats = update_stat(state.stats, :scans_submitted)
+            {:reply, {:ok, result}, %{state | stats: new_stats}}
+
+          _error ->
+            # Return pending status with UUID
+            {:reply, {:ok, %{uuid: uuid, status: "pending", url: url}}, state}
+        end
+
+      error ->
+        {:reply, error, update_error_stat(state)}
+    end
   end
 
   # ============================================================================

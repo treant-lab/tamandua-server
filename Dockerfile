@@ -1,55 +1,126 @@
-FROM elixir:1.16-alpine
+# Tamandua Server - release image
+#
+# Keep this file aligned with deploy/docker/Dockerfile.server. The lab-light
+# deploy script copies that Dockerfile into this path before remote builds, but
+# direct builds from apps/tamandua_server must also produce a release image.
 
-# Install build dependencies and minimal runtime tools needed by the lab-light bootstrap.
-# OpenSSL is required at runtime by the PKI/CSR enrollment path.
-RUN apk add --no-cache build-base git python3 inotify-tools npm nodejs postgresql-client curl openssl
+FROM elixir:1.16-otp-26-alpine AS builder
+
+ARG MIX_ENV=prod
+ARG NODE_ENV=production
+ARG WARNINGS_AS_ERRORS=false
+ARG SKIP_ASSETS_BUILD=false
+
+ENV MIX_ENV=${MIX_ENV} \
+    NODE_ENV=${NODE_ENV} \
+    LANG=C.UTF-8 \
+    ERL_FLAGS="+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none" \
+    HEX_HTTP_TIMEOUT=120000 \
+    HEX_HTTP_CONCURRENCY=1
+
+RUN apk add --no-cache \
+    build-base \
+    git \
+    nodejs \
+    npm \
+    python3 \
+    curl \
+    openssl-dev
 
 WORKDIR /app
 
-# Install hex + rebar
 RUN mix local.hex --force && \
     mix local.rebar --force
 
-# Set env
-ENV MIX_ENV=prod
-ENV GUARDIAN_SECRET_KEY=dev_secret_key_change_in_production
-ENV SECRET_KEY_BASE=dev_secret_key_base_change_in_production_min_64_chars_required_here
-ENV ERL_COMPILER_OPTIONS=nowarn_unused_vars
-# Lab-light VMs are memory constrained. Keep BEAM compile/runtime scheduler
-# fanout low enough that full image rebuilds do not get OOM-killed.
-ENV ELIXIR_ERL_OPTIONS="+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
-ENV ERL_FLAGS="+S 2:2 +sbwt none +sbwtdcpu none +sbwtdio none"
+COPY mix.exs mix.lock ./
+COPY config/config.exs config/prod.exs config/
 
-# Copy mix/config files first for better dependency caching.
-COPY mix.exs ./
-COPY mix.lock ./
-COPY config ./config/
-
-RUN mix deps.get --only prod
+RUN mix deps.get --only ${MIX_ENV}
 RUN mix deps.compile
 
-# Copy priv (migrations, etc)
-COPY priv ./priv/
+COPY assets/package.json assets/package-lock.json assets/
+RUN if [ "$SKIP_ASSETS_BUILD" = "true" ]; then \
+      echo "Skipping npm install; using prebuilt priv/static assets"; \
+    else \
+      cd assets && npm ci --production=false; \
+    fi
 
-# Install frontend dependencies before copying the whole asset tree so UI-only
-# rebuilds can reuse the npm dependency layer.
-COPY assets/package*.json ./assets/
-RUN npm ci --prefix assets --no-audit --no-fund \
-    --fetch-retries=5 \
-    --fetch-retry-mintimeout=20000 \
-    --fetch-retry-maxtimeout=120000
+COPY assets assets
+RUN if [ "$SKIP_ASSETS_BUILD" = "true" ]; then \
+      echo "Skipping frontend build; using prebuilt priv/static assets"; \
+    else \
+      cd assets && npm run build; \
+    fi
 
-COPY assets ./assets/
+COPY priv priv
+COPY lib lib
+COPY config/runtime.exs config/
 
-# Copy lib
-COPY lib ./lib/
+RUN if [ "$WARNINGS_AS_ERRORS" = "true" ]; then \
+      ERL_FLAGS="+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none" mix compile --warnings-as-errors; \
+    else \
+      ERL_FLAGS="+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none" mix compile; \
+    fi
 
-RUN mix compile
+RUN if [ "$SKIP_ASSETS_BUILD" = "true" ]; then \
+      echo "Skipping phx.digest; using pre-digested priv/static assets"; \
+      test -s priv/static/assets/manifest.json; \
+      test -s priv/static/cache_manifest.json; \
+    else \
+      mix phx.digest; \
+    fi
 
-# Build Phoenix/Tailwind assets and the React/Inertia frontend. The
-# assets.deploy alias already runs the Vite build and phx.digest.
-RUN mix assets.deploy
+RUN ERL_FLAGS="+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none" mix release
+
+FROM alpine:3.24 AS runtime
+
+ARG APP_VERSION=0.1.0
+ARG INSTALL_CHROMIUM=true
+
+LABEL org.opencontainers.image.title="Tamandua Server" \
+      org.opencontainers.image.description="Tamandua EDR Backend Server" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.vendor="Treant Lab" \
+      org.opencontainers.image.source="https://github.com/treant-lab/tamandua-community" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      io.tamandua.component="backend"
+
+RUN apk add --no-cache \
+    libstdc++ \
+    openssl \
+    ncurses-libs \
+    libgcc \
+    curl \
+    postgresql-client \
+    tini \
+    && if [ "$INSTALL_CHROMIUM" = "true" ]; then apk add --no-cache chromium; fi \
+    && rm -rf /var/cache/apk/*
+
+RUN addgroup -g 1000 tamandua && \
+    adduser -u 1000 -G tamandua -h /app -D tamandua
+
+WORKDIR /app
+
+COPY --from=builder --chown=tamandua:tamandua /app/_build/prod/rel/tamandua_server ./
+RUN test -x /app/bin/tamandua_server
+COPY --chown=tamandua:tamandua priv/yara_rules ./priv/yara_rules
+COPY --chown=tamandua:tamandua priv/sigma_rules ./priv/sigma_rules
+
+RUN mkdir -p /app/tmp /app/logs && \
+    chown tamandua:tamandua /app/tmp /app/logs
+
+USER tamandua
+
+ENV HOME=/app \
+    PHX_SERVER=true \
+    LANG=C.UTF-8 \
+    RELEASE_TMP=/app/tmp \
+    RELEASE_COOKIE=${RELEASE_COOKIE:-tamandua_secret_cookie}
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:4000/api/v1/health || exit 1
 
 EXPOSE 4000
 
-CMD ["mix", "phx.server"]
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["bin/tamandua_server", "start"]

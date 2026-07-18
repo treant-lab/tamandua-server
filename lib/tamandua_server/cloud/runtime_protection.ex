@@ -38,8 +38,7 @@ defmodule TamanduaServer.Cloud.RuntimeProtection do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Alerts, Telemetry}
-  alias TamanduaServer.Cloud.Finding
+  alias TamanduaServer.{Alerts}
   alias TamanduaServer.Agents.OrgLookup
 
   # ETS tables for runtime state
@@ -54,16 +53,18 @@ defmodule TamanduaServer.Cloud.RuntimeProtection do
     "nbminer", "phoenixminer", "t-rex", "gminer", "lolminer"
   ]
 
-  @reverse_shell_patterns [
-    ~r/bash\s+-i\s+>&\s+\/dev\/tcp/,
-    ~r/nc\s+.*-e\s+(\/bin\/)?(ba)?sh/,
-    ~r/python.*socket.*connect.*spawn/,
-    ~r/perl.*socket.*INET.*exec/,
-    ~r/ruby.*TCPSocket.*exec/,
-    ~r/php.*fsockopen.*\/bin\/(ba)?sh/,
-    ~r/socat.*exec.*sh/,
-    ~r/mkfifo.*nc.*sh/
-  ]
+  defp reverse_shell_patterns do
+    [
+      ~r/bash\s+-i\s+>&\s+\/dev\/tcp/,
+      ~r/nc\s+.*-e\s+(\/bin\/)?(ba)?sh/,
+      ~r/python.*socket.*connect.*spawn/,
+      ~r/perl.*socket.*INET.*exec/,
+      ~r/ruby.*TCPSocket.*exec/,
+      ~r/php.*fsockopen.*\/bin\/(ba)?sh/,
+      ~r/socat.*exec.*sh/,
+      ~r/mkfifo.*nc.*sh/
+    ]
+  end
 
   @privilege_escalation_commands [
     "sudo", "su", "pkexec", "doas", "setuid", "setgid",
@@ -312,7 +313,7 @@ defmodule TamanduaServer.Cloud.RuntimeProtection do
   # Private Functions - Runtime Analysis
 
   defp analyze_runtime_event(agent_id, event, state) do
-    event_type = event["type"] || event[:type]
+    _event_type = event["type"] || event[:type]
     workload_id = event["workload_id"] || event[:workload_id] || event["container_id"]
 
     # Update workload state
@@ -407,7 +408,7 @@ defmodule TamanduaServer.Cloud.RuntimeProtection do
     cmdline = event["cmdline"] || ""
 
     is_reverse_shell =
-      Enum.any?(@reverse_shell_patterns, fn pattern ->
+      Enum.any?(reverse_shell_patterns(), fn pattern ->
         Regex.match?(pattern, cmdline)
       end)
 

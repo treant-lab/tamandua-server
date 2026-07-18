@@ -81,7 +81,6 @@ defmodule TamanduaServer.Alerts.FilterBuilder do
   """
 
   import Ecto.Query, warn: false
-  alias TamanduaServer.Alerts.Alert
 
   @type filter_condition :: %{
           required(:field) => String.t(),

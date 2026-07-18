@@ -1113,7 +1113,7 @@ defmodule TamanduaServer.Serverless.AzureFunctions do
 
   defp check_cosmosdb_security(binding, type) when type in ["cosmosDB", "cosmosDBTrigger"] do
     connection_value = binding["connectionStringValue"] || binding[:connectionStringValue] || ""
-    preferred_locations = binding["preferredLocations"] || binding[:preferredLocations]
+    _preferred_locations = binding["preferredLocations"] || binding[:preferredLocations]
 
     findings = []
 

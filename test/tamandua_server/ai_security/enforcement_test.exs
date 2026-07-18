@@ -86,9 +86,41 @@ defmodule TamanduaServer.AISecurity.EnforcementTest do
     assert {:ok, %{action: "block_domain", target: "api.openai.com"}} =
              Enforcement.enforce_event(event, command_sender: sender, now_ms: 1_000)
 
-    assert_received {:queued, "agent-1", "block_domain", %{"domain" => "api.openai.com"}}
+    assert_received {:queued, "agent-1", "block_domain",
+                     %{
+                       "domain" => "api.openai.com",
+                       "idempotency_key" => "ai_gateway:" <> _digest
+                     }}
 
     assert {:skipped, :duplicate, _} =
              Enforcement.enforce_event(event, command_sender: sender, now_ms: 1_001)
+  end
+
+  test "summarizes decision-only and requested endpoint bridge states honestly" do
+    decision_only = %{
+      agent_id: "agent-1",
+      domain: "api.openai.com",
+      policy_decision: "block",
+      policy_enforced: false
+    }
+
+    assert %{
+             status: "decision_only",
+             requested: false,
+             inline_proxy: false,
+             result_tracked: false
+           } = Enforcement.summarize_event(decision_only)
+
+    requested = %{decision_only | policy_enforced: true}
+
+    assert %{
+             status: "requested",
+             requested: true,
+             action: "block_domain",
+             target: "api.openai.com",
+             inline_proxy: false,
+             result_tracked: false,
+             idempotency_key: "ai_gateway:" <> _digest
+           } = Enforcement.summarize_event(requested)
   end
 end

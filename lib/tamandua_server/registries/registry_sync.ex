@@ -260,7 +260,7 @@ defmodule TamanduaServer.Registries.RegistrySync do
   end
 
   defp find_registry(registries, registry_name) do
-    Enum.find(registries, fn {module, config} ->
+    Enum.find(registries, fn {module, _config} ->
       registry_module_to_name(module) == registry_name
     end)
   end

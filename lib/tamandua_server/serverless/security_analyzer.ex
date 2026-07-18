@@ -39,7 +39,8 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
   @scans_table :serverless_security_scans
 
   # Secret patterns for environment variable and code scanning
-  @secret_patterns [
+  defp secret_patterns do
+    [
     # AWS credentials
     {~r/AKIA[0-9A-Z]{16}/i, "AWS Access Key ID", :critical},
     {~r/[A-Za-z0-9\/+=]{40}/i, "Potential AWS Secret Key", :high},
@@ -66,7 +67,8 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
     {~r/sq0[a-z]{3}-[A-Za-z0-9\-_]{22,43}/i, "Square API Key", :high},
     {~r/sk_live_[A-Za-z0-9]{24}/i, "Stripe Secret Key", :critical},
     {~r/pk_live_[A-Za-z0-9]{24}/i, "Stripe Publishable Key", :medium}
-  ]
+    ]
+  end
 
   # Dangerous IAM permissions by provider
   @dangerous_aws_permissions [
@@ -117,7 +119,8 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
   ]
 
   # Suspicious code patterns
-  @suspicious_code_patterns [
+  defp suspicious_code_patterns do
+    [
     {~r/eval\s*\(/i, "Dynamic code evaluation (eval)", :high, "T1059"},
     {~r/exec\s*\(/i, "Code execution (exec)", :high, "T1059"},
     {~r/child_process\.exec/i, "Child process execution", :high, "T1059"},
@@ -137,7 +140,8 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
     {~r/\$\{IFS\}/i, "Command injection via IFS", :high, "T1059"},
     {~r/\$\(.*\)/i, "Command substitution", :medium, "T1059"},
     {~r/`.*`/i, "Backtick command execution", :medium, "T1059"}
-  ]
+    ]
+  end
 
   # Vulnerable dependency patterns (simplified - real impl would query CVE databases)
   @vulnerable_packages [
@@ -504,7 +508,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
   defp get_function_id(_, _), do: nil
 
   defp do_detect_secrets(content) when is_binary(content) do
-    @secret_patterns
+    secret_patterns()
     |> Enum.flat_map(fn {pattern, name, severity} ->
       case Regex.scan(pattern, content, capture: :first) do
         [] -> []
@@ -726,7 +730,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
   end
 
   defp do_scan_code(code) when is_binary(code) do
-    @suspicious_code_patterns
+    suspicious_code_patterns()
     |> Enum.flat_map(fn {pattern, name, severity, technique} ->
       if Regex.match?(pattern, code) do
         # Find line numbers
@@ -861,7 +865,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
     # Check timeout
     timeout = func.timeout || 3
     if timeout > 300 do
-      findings = [%Finding{
+      _findings = [%Finding{
         id: Ecto.UUID.generate(),
         function_id: function_id,
         provider: :aws,
@@ -878,7 +882,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
     # Check memory
     memory = func.memory_size || 128
     if memory > 3008 do
-      findings = [%Finding{
+      _findings = [%Finding{
         id: Ecto.UUID.generate(),
         function_id: function_id,
         provider: :aws,
@@ -900,7 +904,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
 
     # Check authentication
     if is_nil(func.authentication) || func.authentication == %{"enabled" => false} do
-      findings = [%Finding{
+      _findings = [%Finding{
         id: Ecto.UUID.generate(),
         function_id: function_id,
         provider: :azure,
@@ -924,7 +928,7 @@ defmodule TamanduaServer.Serverless.SecurityAnalyzer do
     if func.https_trigger do
       security = func.https_trigger["securityLevel"] || "SECURE_ALWAYS"
       if security == "SECURE_OPTIONAL" do
-        findings = [%Finding{
+        _findings = [%Finding{
           id: Ecto.UUID.generate(),
           function_id: function_id,
           provider: :gcp,

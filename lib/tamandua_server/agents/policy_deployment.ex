@@ -44,7 +44,10 @@ defmodule TamanduaServer.Agents.PolicyDeployment do
     belongs_to :organization, Organization
     belongs_to :deployed_by, User, foreign_key: :deployed_by_id
 
-    has_many :deployment_results, PolicyDeploymentResult
+    # The results table column is `deployment_id` (see the
+    # agent_policy_deployment_results migration), not Ecto's default
+    # `policy_deployment_id`.
+    has_many :deployment_results, PolicyDeploymentResult, foreign_key: :deployment_id
 
     timestamps(type: :utc_datetime)
   end

@@ -30,7 +30,6 @@ defmodule TamanduaServer.Serverless.Lambda do
   require Logger
 
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Serverless.Analyzer
 
   @functions_table :lambda_functions
   @executions_table :lambda_executions
@@ -38,7 +37,8 @@ defmodule TamanduaServer.Serverless.Lambda do
   @metrics_table :lambda_metrics
 
   # Secret patterns for environment variable scanning
-  @secret_patterns [
+  defp secret_patterns do
+    [
     ~r/^AWS_SECRET/i,
     ~r/^AWS_ACCESS/i,
     ~r/^DB_PASSWORD/i,
@@ -60,7 +60,8 @@ defmodule TamanduaServer.Serverless.Lambda do
     ~r/^GITLAB_TOKEN/i,
     ~r/^SLACK_TOKEN/i,
     ~r/^WEBHOOK_SECRET/i
-  ]
+    ]
+  end
 
   # Dangerous IAM permissions
   @dangerous_permissions [
@@ -85,7 +86,8 @@ defmodule TamanduaServer.Serverless.Lambda do
   ]
 
   # Suspicious function patterns
-  @suspicious_function_patterns [
+  defp suspicious_function_patterns do
+    [
     ~r/crypto/i,
     ~r/miner/i,
     ~r/xmr/i,
@@ -97,7 +99,8 @@ defmodule TamanduaServer.Serverless.Lambda do
     ~r/c2/i,
     ~r/callback/i,
     ~r/exfil/i
-  ]
+    ]
+  end
 
   # Types
   defmodule Function do
@@ -487,7 +490,7 @@ defmodule TamanduaServer.Serverless.Lambda do
     end
   end
 
-  defp process_and_store_function(func_data, region) do
+  defp process_and_store_function(func_data, _region) do
     now = DateTime.utc_now()
 
     function = %Function{
@@ -563,7 +566,7 @@ defmodule TamanduaServer.Serverless.Lambda do
     amz_date = Calendar.strftime(now, "%Y%m%dT%H%M%SZ")
 
     uri = URI.parse(url)
-    host = uri.host
+    _host = uri.host
     canonical_uri = uri.path || "/"
     canonical_querystring = uri.query || ""
 
@@ -1248,12 +1251,14 @@ defmodule TamanduaServer.Serverless.Lambda do
   ]
 
   # Admin policy ARNs and patterns
-  @admin_policy_patterns [
-    "arn:aws:iam::aws:policy/AdministratorAccess",
-    "arn:aws:iam::aws:policy/PowerUserAccess",
-    ~r/Admin/i,
-    ~r/FullAccess/i
-  ]
+  defp admin_policy_patterns do
+    [
+      "arn:aws:iam::aws:policy/AdministratorAccess",
+      "arn:aws:iam::aws:policy/PowerUserAccess",
+      ~r/Admin/i,
+      ~r/FullAccess/i
+    ]
+  end
 
   defp extract_role_name(role_arn) do
     case String.split(role_arn, "/") do
@@ -1281,7 +1286,7 @@ defmodule TamanduaServer.Serverless.Lambda do
           apply(ExAws.IAM, :list_attached_role_policies, [role_name])
           |> then(&apply(ExAws, :request, [&1]))
 
-        all_policies = []
+        _all_policies = []
 
         # Process inline policies
         all_policies = case inline_policies_result do
@@ -1574,8 +1579,8 @@ defmodule TamanduaServer.Serverless.Lambda do
       policy_arn = policy[:arn] || ""
 
       # Check if it's a known admin policy
-      policy_arn in @admin_policy_patterns or
-        Enum.any?(@admin_policy_patterns, fn
+      policy_arn in admin_policy_patterns() or
+        Enum.any?(admin_policy_patterns(), fn
           pattern when is_binary(pattern) -> pattern == policy_arn
           %Regex{} = pattern -> Regex.match?(pattern, policy_name) or Regex.match?(pattern, policy_arn)
         end)
@@ -1708,7 +1713,7 @@ defmodule TamanduaServer.Serverless.Lambda do
   defp check_environment_secrets(env) do
     findings = env
     |> Enum.filter(fn {key, _value} ->
-      Enum.any?(@secret_patterns, &Regex.match?(&1, key))
+      Enum.any?(secret_patterns(), &Regex.match?(&1, key))
     end)
     |> Enum.map(fn {key, _value} ->
       %{
@@ -1814,7 +1819,7 @@ defmodule TamanduaServer.Serverless.Lambda do
 
   defp check_function_name_patterns(nil), do: {[], 0}
   defp check_function_name_patterns(name) do
-    if Enum.any?(@suspicious_function_patterns, &Regex.match?(&1, name)) do
+    if Enum.any?(suspicious_function_patterns(), &Regex.match?(&1, name)) do
       {[%{
         type: :suspicious_name,
         severity: "medium",

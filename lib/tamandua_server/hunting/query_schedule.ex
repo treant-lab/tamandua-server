@@ -115,7 +115,7 @@ defmodule TamanduaServer.Hunting.QuerySchedule do
     put_change(changeset, :next_execution_at, next_execution)
   end
 
-  defp calculate_cron_next_execution(changeset, now) do
+  defp calculate_cron_next_execution(_changeset, now) do
     # Simplified cron calculation - in production, use a library like Quantum
     # For now, default to 1 hour
     DateTime.add(now, 3600, :second)

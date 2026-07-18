@@ -21,7 +21,6 @@ defmodule TamanduaServer.Alerts.SupplyChainEnricher do
 
   alias TamanduaServer.Alerts.Alert
 
-  @risk_types [:known_malicious, :typosquatting, :malicious_script, :anomalous_behavior]
 
   @ecosystem_display %{
     npm: "npm",

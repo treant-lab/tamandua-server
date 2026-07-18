@@ -250,7 +250,7 @@ defmodule TamanduaServer.Detection.DSL.Compiler do
   end
 
   defp compile_evaluator(ast) do
-    fn event, state ->
+    fn _event, state ->
       # Single-event evaluation (for non-sequence detections)
       cond do
         ast.sequence == nil ->
@@ -279,7 +279,7 @@ defmodule TamanduaServer.Detection.DSL.Compiler do
         started_at: nil
       })
 
-      current_step = sequence_state.current_step
+      _current_step = sequence_state.current_step
 
       # Check if we've timed out
       if sequence_state.started_at && sequence.temporal_constraint do

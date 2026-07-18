@@ -25,8 +25,41 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
     file = nested_map(payload, :file)
     network = nested_map(payload, :network)
     dns = nested_map(payload, :dns)
+    identity = nested_map(payload, :identity)
 
     %{
+      identity:
+        compact(%{
+          baseline_key:
+            first_present(payload, identity, [
+              :baseline_key,
+              :subject,
+              :target,
+              :subject_account,
+              :target_account,
+              :user,
+              :username,
+              :account_name
+            ]),
+          subject:
+            first_present(payload, identity, [
+              :subject,
+              :subject_account,
+              :account_name,
+              :user,
+              :username
+            ]),
+          target:
+            first_present(payload, identity, [
+              :target,
+              :target_account,
+              :destination_user,
+              :dst_user
+            ]),
+          source_event_id: first_present(payload, identity, [:source_event_id, :event_id]),
+          logon_type: first_present(payload, identity, [:logon_type]),
+          auth_package: first_present(payload, identity, [:auth_package, :authentication_package])
+        }),
       process:
         compact(%{
           pid: first_present(payload, process, [:pid, :process_id]),
@@ -185,6 +218,12 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
         35,
         "same domain or sni",
         "domain"
+      )
+      |> maybe_add(
+        same_identity?(left_entities, right_entities),
+        45,
+        "same identity baseline key",
+        "identity"
       )
       |> maybe_add(
         same_supported_mitre?(left_entities, right_entities),
@@ -578,6 +617,9 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
       String.starts_with?(event_type, "dns") ->
         [[:dns, :domain], [:process, :pid], [:process, :name]]
 
+      String.starts_with?(event_type, "auth") or String.starts_with?(event_type, "identity") ->
+        [[:identity, :baseline_key]]
+
       String.starts_with?(event_type, "registry") ->
         [[:process, :pid], [:process, :name]]
 
@@ -660,6 +702,13 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
     present_equal?(left_domain, right_domain) and not common_domain?(left_domain)
   end
 
+  defp same_identity?(left, right) do
+    present_equal?(
+      normalize_identity(get_in(left, [:identity, :baseline_key])),
+      normalize_identity(get_in(right, [:identity, :baseline_key]))
+    )
+  end
+
   defp same_supported_mitre?(left, right) do
     left_techniques = MapSet.new(get_in(left, [:detection, :mitre_techniques]) || [])
     right_techniques = MapSet.new(get_in(right, [:detection, :mitre_techniques]) || [])
@@ -669,6 +718,7 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
   defp graph_entities(entities) do
     [
       graph_entity("process_guid", get_in(entities, [:process, :process_guid])),
+      graph_entity("identity", get_in(entities, [:identity, :baseline_key])),
       graph_entity("file_hash", get_in(entities, [:file, :sha256])),
       graph_entity("file_path", get_in(entities, [:file, :path])),
       graph_entity("remote_ip", get_in(entities, [:network, :remote_ip])),
@@ -705,6 +755,14 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
 
     if present?(domain) and not common_domain?(domain) do
       %{type: "domain", value: domain, label: domain, strength: "strong"}
+    end
+  end
+
+  defp graph_entity("identity", value) do
+    identity = normalize_identity(value)
+
+    if present?(identity) do
+      %{type: "identity", value: identity, label: identity, strength: "strong"}
     end
   end
 
@@ -858,6 +916,14 @@ defmodule TamanduaServer.Telemetry.CorrelationEvidence do
   end
 
   defp normalize_domain(_), do: nil
+
+  defp normalize_identity(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_identity(_), do: nil
 
   defp noisy_path?(nil), do: false
 

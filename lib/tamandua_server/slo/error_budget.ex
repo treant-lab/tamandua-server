@@ -258,7 +258,7 @@ defmodule TamanduaServer.SLO.ErrorBudget do
     total_budget_minutes = calculate_total_budget_minutes(time_window_days)
 
     # Calculate actual downtime
-    total_samples = length(uptime_samples)
+    _total_samples = length(uptime_samples)
     down_samples = Enum.count(uptime_samples, &(&1 == 0))
 
     # Assume samples are taken every minute

@@ -135,7 +135,7 @@ defmodule TamanduaServer.Quarantine.ModelQuarantineHandler do
   Handles restoration completion notification from an agent.
   """
   @spec handle_restoration_complete(String.t(), map()) :: :ok | {:error, term()}
-  def handle_restoration_complete(agent_id, result) do
+  def handle_restoration_complete(_agent_id, result) do
     receipt_id = result["receipt_id"]
     success = result["success"]
 

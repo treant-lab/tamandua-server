@@ -17,7 +17,6 @@ defmodule TamanduaServer.Detection.BaselinePatterns do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Detection.Baseline.Pattern
-  alias TamanduaServer.Detection.Baseline.LearningStatus
 
   # Minimum occurrences before a pattern is considered "common"
   @common_threshold 10

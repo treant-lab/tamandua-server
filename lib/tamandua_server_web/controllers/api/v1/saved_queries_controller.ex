@@ -11,11 +11,14 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   List saved queries with optional filters.
   """
   def index(conn, params) do
+    organization_id = current_organization_id(conn)
+
     opts = [
       query_type: params["type"],
       category: params["category"],
       templates_only: params["templates"] == "true",
       public_only: params["public"] == "true",
+      organization_id: organization_id,
       limit: parse_int(params["limit"], 50)
     ]
 
@@ -34,7 +37,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Get a single saved query.
   """
   def show(conn, %{"id" => id}) do
-    case SavedQueries.get_saved_query(id) do
+    case SavedQueries.get_saved_query(id, scoped_query_opts(conn, include_global_templates: true)) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -85,7 +88,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Update a saved query.
   """
   def update(conn, %{"id" => id} = params) do
-    case SavedQueries.get_saved_query(id) do
+    case SavedQueries.get_saved_query(id, scoped_query_opts(conn)) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -120,7 +123,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Delete a saved query.
   """
   def delete(conn, %{"id" => id}) do
-    case SavedQueries.get_saved_query(id) do
+    case SavedQueries.get_saved_query(id, scoped_query_opts(conn)) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -144,7 +147,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Record that a query was used (increments counter).
   """
   def record_use(conn, %{"id" => id}) do
-    case SavedQueries.get_saved_query(id) do
+    case SavedQueries.get_saved_query(id, scoped_query_opts(conn, include_global_templates: true)) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -161,7 +164,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Search saved queries.
   """
   def search(conn, %{"q" => search_term} = params) do
-    opts = [limit: parse_int(params["limit"], 20)]
+    opts = [organization_id: current_organization_id(conn), limit: parse_int(params["limit"], 20)]
 
     # Add user context
     opts = case conn.assigns[:current_user] do
@@ -178,9 +181,23 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   Get query templates by category.
   """
   def templates(conn, params) do
+    organization_id = current_organization_id(conn)
+
     queries = case params["category"] do
-      nil -> SavedQueries.list_saved_queries(templates_only: true, limit: 50)
-      category -> SavedQueries.get_templates_by_category(category)
+      nil ->
+        SavedQueries.list_saved_queries(
+          templates_only: true,
+          organization_id: organization_id,
+          include_global_templates: true,
+          limit: 50
+        )
+
+      category ->
+        SavedQueries.get_templates_by_category(
+          category,
+          organization_id: organization_id,
+          include_global_templates: true
+        )
     end
 
     json(conn, %{data: Enum.map(queries, &serialize/1)})
@@ -192,7 +209,7 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
   """
   def popular(conn, params) do
     limit = parse_int(params["limit"], 10)
-    queries = SavedQueries.get_popular_queries(limit)
+    queries = SavedQueries.get_popular_queries(limit, organization_id: current_organization_id(conn))
     json(conn, %{data: Enum.map(queries, &serialize/1)})
   end
 
@@ -265,6 +282,18 @@ defmodule TamanduaServerWeb.API.V1.SavedQueriesController do
       created_at: format_datetime(query.inserted_at),
       updated_at: format_datetime(query.updated_at)
     }
+  end
+
+  defp current_organization_id(conn) do
+    case conn.assigns[:current_user] do
+      nil -> nil
+      user -> user.organization_id
+    end
+  end
+
+  defp scoped_query_opts(conn, extra \\ []) do
+    [organization_id: current_organization_id(conn)]
+    |> Keyword.merge(extra)
   end
 
   defp serialize_history(history) do

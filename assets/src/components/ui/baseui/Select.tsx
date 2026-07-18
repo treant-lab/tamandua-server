@@ -25,6 +25,7 @@ interface SelectProps {
   disabled?: boolean
   children: React.ReactNode
   className?: string
+  'data-testid'?: string
   /** Triggers full-width fill. Default: false. */
   fullWidth?: boolean
 }
@@ -37,11 +38,13 @@ export function Select({
   disabled,
   children,
   className,
+  'data-testid': dataTestId,
   fullWidth,
 }: SelectProps) {
   return (
     <BaseSelect.Root value={value} defaultValue={defaultValue} onValueChange={onValueChange} disabled={disabled}>
       <BaseSelect.Trigger
+        data-testid={dataTestId}
         className={cn(className)}
         style={{
           display: 'inline-flex',

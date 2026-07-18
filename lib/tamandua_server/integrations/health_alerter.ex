@@ -26,8 +26,7 @@ defmodule TamanduaServer.Integrations.HealthAlerter do
   require Logger
   import Ecto.Query
 
-  alias TamanduaServer.Integrations.Schemas.{HealthMetric, Incident}
-  alias TamanduaServer.Notifications
+  alias TamanduaServer.Integrations.Schemas.{Incident}
   alias Phoenix.PubSub
 
   @pubsub TamanduaServer.PubSub
@@ -377,7 +376,7 @@ defmodule TamanduaServer.Integrations.HealthAlerter do
 
   defp send_notification(integration, incident, message) do
     # Send via notification system
-    notification_attrs = %{
+    _notification_attrs = %{
       title: "Integration Health Alert: #{integration.name}",
       message: message,
       severity: incident.severity,

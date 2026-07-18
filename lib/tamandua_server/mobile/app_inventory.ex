@@ -17,7 +17,7 @@ defmodule TamanduaServer.Mobile.AppInventory do
   alias TamanduaServer.Repo
   alias TamanduaServer.Mobile.{MobileApp, DeviceRegistry}
 
-  # Dangerous permission combinations grouped by threat type
+  # Potentially invasive permission combinations grouped by risk type
   @dangerous_combos %{
     spyware: [
       ["android.permission.CAMERA", "android.permission.INTERNET", "android.permission.SEND_SMS"],

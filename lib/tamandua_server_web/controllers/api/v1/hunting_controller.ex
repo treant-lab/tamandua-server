@@ -516,11 +516,24 @@ defmodule TamanduaServerWeb.API.V1.HuntingController do
   """
   def templates(conn, params) do
     category = params["category"]
+    organization_id = get_organization_id(conn)
 
     # Try to get templates from database first
     db_templates = case category do
-      nil -> SavedQueries.list_saved_queries(templates_only: true, limit: 100)
-      cat -> SavedQueries.get_templates_by_category(cat)
+      nil ->
+        SavedQueries.list_saved_queries(
+          templates_only: true,
+          organization_id: organization_id,
+          include_global_templates: true,
+          limit: 100
+        )
+
+      cat ->
+        SavedQueries.get_templates_by_category(
+          cat,
+          organization_id: organization_id,
+          include_global_templates: true
+        )
     end
 
     if Enum.empty?(db_templates) do
@@ -532,37 +545,44 @@ defmodule TamanduaServerWeb.API.V1.HuntingController do
         SavedQueries.default_templates()
       end
 
-      templates_by_category = static_templates
-      |> Enum.group_by(& &1.category)
-      |> Enum.sort_by(fn {cat, _} ->
-        category_order()
-        |> Enum.find_index(&(&1 == cat)) || 99
-      end)
-      |> Enum.into(%{})
+      templates_by_category =
+        static_templates
+        |> Enum.map(&serialize_static_template/1)
+        |> Enum.group_by(& &1.category)
+        |> Enum.sort_by(fn {cat, _} ->
+          category_order()
+          |> Enum.find_index(&(&1 == cat)) || 99
+        end)
+        |> Enum.into(%{})
 
       json(conn, %{
         data: %{
           templates: templates_by_category,
           categories: category_order(),
-          source: "static"
+          source: "static",
+          static: true,
+          degraded: true
         }
       })
     else
       # Use database templates
-      templates_by_category = db_templates
-      |> Enum.map(&serialize_template/1)
-      |> Enum.group_by(& &1.category)
-      |> Enum.sort_by(fn {cat, _} ->
-        category_order()
-        |> Enum.find_index(&(&1 == cat)) || 99
-      end)
-      |> Enum.into(%{})
+      templates_by_category =
+        db_templates
+        |> Enum.map(&serialize_template/1)
+        |> Enum.group_by(& &1.category)
+        |> Enum.sort_by(fn {cat, _} ->
+          category_order()
+          |> Enum.find_index(&(&1 == cat)) || 99
+        end)
+        |> Enum.into(%{})
 
       json(conn, %{
         data: %{
           templates: templates_by_category,
           categories: category_order(),
-          source: "database"
+          source: "database",
+          static: false,
+          degraded: false
         }
       })
     end
@@ -583,8 +603,21 @@ defmodule TamanduaServerWeb.API.V1.HuntingController do
       query: template.query,
       description: template.description,
       category: template.category,
-      use_count: template.use_count || 0
+      use_count: template.use_count || 0,
+      source: "database",
+      static: false,
+      degraded: false
     }
+  end
+
+  defp serialize_static_template(template) do
+    template
+    |> serialize_template()
+    |> Map.merge(%{
+      source: "static",
+      static: true,
+      degraded: true
+    })
   end
 
   defp serialize_template(%{} = template) do

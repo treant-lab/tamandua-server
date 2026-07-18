@@ -32,7 +32,8 @@ defmodule TamanduaServer.Integrations.CollaborationSecurity do
   @medium_risk_threshold 40
 
   # PII patterns for sensitive data detection
-  @pii_patterns [
+  defp pii_patterns do
+    [
     {:ssn, ~r/\b\d{3}-\d{2}-\d{4}\b/},
     {:credit_card, ~r/\b(?:\d{4}[-\s]?){3}\d{4}\b/},
     {:email, ~r/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/},
@@ -43,17 +44,20 @@ defmodule TamanduaServer.Integrations.CollaborationSecurity do
     {:private_key, ~r/-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/},
     {:password, ~r/\b(?:password|passwd|pwd)[=:\s]+['"]?[^\s'"]{6,}['"]?\b/i},
     {:bearer_token, ~r/\bBearer\s+[A-Za-z0-9_\-\.]+\b/i}
-  ]
+    ]
+  end
 
   # Known malicious URL patterns
-  @malicious_url_patterns [
+  defp malicious_url_patterns do
+    [
     ~r/bit\.ly\/[a-zA-Z0-9]+/,
     ~r/tinyurl\.com\/[a-zA-Z0-9]+/,
     ~r/t\.co\/[a-zA-Z0-9]+/,
     ~r/\.ru\/[a-zA-Z0-9]+\.exe$/i,
     ~r/\.cn\/[a-zA-Z0-9]+\.exe$/i,
     ~r/\.(exe|scr|bat|cmd|ps1|vbs|js)$/i
-  ]
+    ]
+  end
 
   # High-risk file extensions
   @risky_file_extensions [
@@ -400,7 +404,7 @@ defmodule TamanduaServer.Integrations.CollaborationSecurity do
   end
 
   @impl true
-  def handle_call({:analyze_risks, opts}, _from, state) do
+  def handle_call({:analyze_risks, _opts}, _from, state) do
     # Comprehensive risk analysis across collaboration platforms
     analysis = %{
       overall_risk_score: calculate_overall_risk_score(state),
@@ -682,7 +686,7 @@ defmodule TamanduaServer.Integrations.CollaborationSecurity do
   ## Private Functions - Sensitive Data Detection
 
   defp detect_sensitive_data(content) when is_binary(content) do
-    @pii_patterns
+    pii_patterns()
     |> Enum.flat_map(fn {type, pattern} ->
       case Regex.scan(pattern, content) do
         [] -> []
@@ -744,7 +748,7 @@ defmodule TamanduaServer.Integrations.CollaborationSecurity do
 
   defp perform_url_check(url) do
     # Check against known malicious patterns
-    pattern_match = Enum.find(@malicious_url_patterns, fn pattern ->
+    pattern_match = Enum.find(malicious_url_patterns(), fn pattern ->
       Regex.match?(pattern, url)
     end)
 

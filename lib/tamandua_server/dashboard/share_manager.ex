@@ -7,7 +7,6 @@ defmodule TamanduaServer.Dashboard.ShareManager do
   import Ecto.Query, warn: false
   alias TamanduaServer.Repo
   alias TamanduaServer.Dashboard.{Share, ShareView}
-  alias TamanduaServer.Dashboards.Layout
 
   require Logger
 
@@ -173,7 +172,7 @@ defmodule TamanduaServer.Dashboard.ShareManager do
     end
   end
 
-  defp check_ip(share, nil), do: :ok
+  defp check_ip(_share, nil), do: :ok
 
   defp check_ip(share, ip_address) do
     if Share.ip_allowed?(share, ip_address) do
@@ -183,7 +182,7 @@ defmodule TamanduaServer.Dashboard.ShareManager do
     end
   end
 
-  defp check_domain(share, nil), do: :ok
+  defp check_domain(_share, nil), do: :ok
 
   defp check_domain(share, domain) do
     if Share.domain_allowed?(share, domain) do

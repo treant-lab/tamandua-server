@@ -51,8 +51,13 @@ defmodule TamanduaServer.Alerts.AttackCampaign do
     belongs_to :created_by, User
     belongs_to :assigned_to, User
 
-    has_many :campaign_alerts, CampaignAlert
-    many_to_many :alerts, Alert, join_through: CampaignAlert
+    # The join table column is `campaign_id` (see the campaign_alerts
+    # migration), not Ecto's default `attack_campaign_id`.
+    has_many :campaign_alerts, CampaignAlert, foreign_key: :campaign_id
+
+    many_to_many :alerts, Alert,
+      join_through: CampaignAlert,
+      join_keys: [campaign_id: :id, alert_id: :id]
 
     timestamps()
   end

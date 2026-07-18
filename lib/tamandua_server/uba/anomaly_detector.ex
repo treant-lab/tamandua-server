@@ -16,12 +16,11 @@ defmodule TamanduaServer.UBA.AnomalyDetector do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.UBA.{UserBehavior, UserBaseline, UserAnomaly, BaselineLearner, RiskScorer}
+  alias TamanduaServer.UBA.{UserBehavior, UserAnomaly, BaselineLearner, RiskScorer}
   import Ecto.Query
 
   # Statistical thresholds
   @outlier_threshold 3.0  # Standard deviations
-  @impossible_travel_kmh 1000  # Max travel speed in km/h
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)

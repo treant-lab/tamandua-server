@@ -92,7 +92,7 @@ defmodule TamanduaServer.Mobile.DeviceRegistry do
     "com.happymod.apk"
   ]
 
-  # Dangerous permission combinations that suggest spyware
+  # Potentially invasive permission combinations that increase privacy risk
   @spyware_permission_combos [
     ["android.permission.CAMERA", "android.permission.INTERNET", "android.permission.SEND_SMS"],
     ["android.permission.RECORD_AUDIO", "android.permission.INTERNET", "android.permission.ACCESS_FINE_LOCATION"],

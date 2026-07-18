@@ -16,12 +16,13 @@ defmodule TamanduaServer.Agents.Geofencing do
   alias TamanduaServer.Repo
   alias TamanduaServer.Agents.{
     Agent,
-    AgentLocation,
+    AgentCommand,
     GeofencingRule,
     GeoPolicy,
     GeoPolicyEnforcement,
     GeoTravelRequest,
-    LocationTracker
+    LocationTracker,
+    Registry
   }
   alias TamanduaServer.Alerts.Alert
 
@@ -106,7 +107,7 @@ defmodule TamanduaServer.Agents.Geofencing do
   @doc """
   Evaluate a geofencing rule against a location.
   """
-  def evaluate_rule(rule, location, agent) do
+  def evaluate_rule(rule, location, _agent) do
     result = %{
       violation: false,
       type: nil,
@@ -192,34 +193,52 @@ defmodule TamanduaServer.Agents.Geofencing do
     enforcements = []
 
     # MFA required
-    if policy.require_mfa do
-      enforcements = [enforce_mfa(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if policy.require_mfa do
+        [enforce_mfa(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     # Feature restrictions
-    if not Enum.empty?(policy.disable_features) do
-      enforcements = [enforce_feature_restrictions(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if not Enum.empty?(policy.disable_features) do
+        [enforce_feature_restrictions(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     # File restrictions
-    if policy.restrict_file_downloads || policy.restrict_file_uploads do
-      enforcements = [enforce_file_restrictions(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if policy.restrict_file_downloads || policy.restrict_file_uploads do
+        [enforce_file_restrictions(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     # Enhanced monitoring
-    if policy.enhanced_monitoring do
-      enforcements = [enforce_enhanced_monitoring(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if policy.enhanced_monitoring do
+        [enforce_enhanced_monitoring(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     # Auto-isolate
-    if policy.auto_isolate do
-      enforcements = [enforce_isolation(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if policy.auto_isolate do
+        [enforce_isolation(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     # Send alert
-    if policy.send_alert do
-      enforcements = [send_policy_alert(policy, agent, location) | enforcements]
-    end
+    enforcements =
+      if policy.send_alert do
+        [send_policy_alert(policy, agent, location) | enforcements]
+      else
+        enforcements
+      end
 
     enforcements
   end
@@ -248,7 +267,7 @@ defmodule TamanduaServer.Agents.Geofencing do
     Repo.all(query)
   end
 
-  defp check_travel_approval(agent_id, location) do
+  defp check_travel_approval(agent_id, _location) do
     today = Date.utc_today()
 
     query =
@@ -356,11 +375,40 @@ defmodule TamanduaServer.Agents.Geofencing do
   end
 
   defp enforce_isolation(policy, agent, location) do
-    # Isolate the agent
-    case TamanduaServer.Response.Executor.isolate_agent(agent.id) do
-      {:ok, _} ->
+    attrs = %{
+      agent_id: agent.id,
+      command_type: "isolate_network",
+      command_params: %{
+        reason: "geo_policy_enforcement",
+        policy_id: policy.id,
+        location_id: location.id,
+        source: "geofencing"
+      },
+      status: "pending",
+      priority: 9,
+      expires_at: AgentCommand.utc_now_second() |> DateTime.add(3600, :second),
+      idempotency_key: "geofencing-isolate:#{policy.id}:#{agent.id}:#{location.id}"
+    }
+
+    case AgentCommand.insert_new(attrs) do
+      {:ok, command} ->
+        notify_agent_command_worker(agent.id)
+
         log_enforcement(policy, agent, location, "isolated", %{
           success: true,
+          queued: true,
+          command_id: command.id,
+          reason: "geo_policy_enforcement"
+        })
+
+      {:existing, command} ->
+        notify_agent_command_worker(agent.id)
+
+        log_enforcement(policy, agent, location, "isolated", %{
+          success: true,
+          queued: true,
+          existing: true,
+          command_id: command.id,
           reason: "geo_policy_enforcement"
         })
 
@@ -375,6 +423,13 @@ defmodule TamanduaServer.Agents.Geofencing do
             error: inspect(reason)
           }
         )
+    end
+  end
+
+  defp notify_agent_command_worker(agent_id) do
+    case Registry.get(agent_id) do
+      {:ok, %{worker_pid: pid}} when is_pid(pid) -> send(pid, :send_pending_commands)
+      _ -> :ok
     end
   end
 

@@ -35,7 +35,6 @@ defmodule TamanduaServer.Detection.ThreatIntel.Shodan do
   require Logger
 
   @api_base "https://api.shodan.io"
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   # Rate limiting: 1 request per second for free tier

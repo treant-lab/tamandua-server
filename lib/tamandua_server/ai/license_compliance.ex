@@ -232,10 +232,13 @@ defmodule TamanduaServer.AI.LicenseCompliance do
         state = update_stats(state, entry)
 
         # Generate alerts for issues
-        if generate_alerts && entry.compliance_level not in [:compliant, :attribution_required] do
-          generate_compliance_alert(entry, agent_id)
-          state = update_in(state, [:stats, :alerts_generated], &(&1 + 1))
-        end
+        state =
+          if generate_alerts && entry.compliance_level not in [:compliant, :attribution_required] do
+            generate_compliance_alert(entry, agent_id)
+            update_in(state, [:stats, :alerts_generated], &(&1 + 1))
+          else
+            state
+          end
 
         # Broadcast update
         broadcast_compliance_update(entry)

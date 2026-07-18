@@ -13,7 +13,6 @@ defmodule TamanduaServer.RemoteShell.SessionManager do
 
   alias TamanduaServer.{Repo, Accounts, Agents}
   alias TamanduaServer.ShellSessions
-  alias TamanduaServer.RemoteShell.AuditLogger
 
   @session_check_interval :timer.minutes(1)
   @recording_dir "priv/shell_recordings"
@@ -189,7 +188,7 @@ defmodule TamanduaServer.RemoteShell.SessionManager do
       nil ->
         {:noreply, state}
 
-      session ->
+      _session ->
         # Update database
         case ShellSessions.get_session_by_session_id(session_id) do
           nil ->
@@ -293,7 +292,7 @@ defmodule TamanduaServer.RemoteShell.SessionManager do
     # In production, merge permissions from all roles
     case user.roles do
       [] -> %{max_concurrent_sessions: 1, session_timeout_minutes: 15}
-      [role | _] ->
+      [_role | _] ->
         # Query shell_permissions table
         %{max_concurrent_sessions: 5, session_timeout_minutes: 30}
     end

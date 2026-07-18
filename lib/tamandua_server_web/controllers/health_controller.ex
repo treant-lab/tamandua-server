@@ -27,13 +27,15 @@ defmodule TamanduaServerWeb.HealthController do
   def ready(conn, _params) do
     db_check = check_database()
     ch_check = check_clickhouse()
+    ioc_check = check_ioc_snapshot()
 
     checks = %{
       database: if(db_check == :ok, do: "ok", else: elem(db_check, 1)),
-      clickhouse: ch_check
+      clickhouse: ch_check,
+      ioc_snapshot: ioc_check
     }
 
-    all_ok = db_check == :ok
+    all_ok = db_check == :ok and ioc_check == "ok"
 
     if all_ok do
       json(conn, %{
@@ -126,6 +128,24 @@ defmodule TamanduaServerWeb.HealthController do
     :exit, _ -> "unavailable"
   end
 
+  defp check_ioc_snapshot do
+    case Process.whereis(TamanduaServer.Detection.IOCReconciler) do
+      nil ->
+        "not_initialized"
+
+      _pid ->
+        case TamanduaServer.Detection.IOCReconciler.status() do
+          %{healthy: true, pending: false} -> "ok"
+          %{pending: true} -> "pending"
+          _ -> "unhealthy"
+        end
+    end
+  rescue
+    _ -> "unavailable"
+  catch
+    :exit, _ -> "unavailable"
+  end
+
   defp check_clickhouse_status do
     if ClickHouse.enabled?() do
       writer_stats = ClickHouseWriter.get_stats()
@@ -155,9 +175,11 @@ defmodule TamanduaServerWeb.HealthController do
   be accessible in production without proper authentication.
   """
   def debug_sessions(conn, _params) do
-    tokens = :ets.tab2list(:user_session_tokens) |> Enum.map(fn {token, user_id, created_at} ->
-      %{token: token, user_id: user_id, created_at: to_string(created_at)}
-    end)
+    tokens =
+      :ets.tab2list(:user_session_tokens)
+      |> Enum.map(fn {token, user_id, created_at} ->
+        %{token: token, user_id: user_id, created_at: to_string(created_at)}
+      end)
 
     json(conn, %{
       session_tokens: tokens,
@@ -214,60 +236,81 @@ defmodule TamanduaServerWeb.HealthController do
   """
   def debug_network_events(conn, _params) do
     import Ecto.Query
-    alias TamanduaServer.Telemetry
 
     # Get total event count
     total_count = Repo.aggregate(TamanduaServer.Telemetry.Event, :count, :id)
 
     # Get event type distribution
-    event_types = Repo.all(
-      from e in TamanduaServer.Telemetry.Event,
-      select: e.event_type,
-      distinct: true
-    )
+    event_types =
+      Repo.all(
+        from(e in TamanduaServer.Telemetry.Event,
+          select: e.event_type,
+          distinct: true
+        )
+      )
 
     # Get network_connect count
-    network_count = Repo.one(
-      from e in TamanduaServer.Telemetry.Event,
-      where: e.event_type == "network_connect",
-      select: count()
-    )
+    network_count =
+      Repo.one(
+        from(e in TamanduaServer.Telemetry.Event,
+          where: e.event_type == "network_connect",
+          select: count()
+        )
+      )
 
     # Get sample network events (raw from DB)
-    raw_events = Repo.all(
-      from e in TamanduaServer.Telemetry.Event,
-      where: e.event_type == "network_connect",
-      limit: 3,
-      order_by: [desc: e.timestamp]
-    )
+    raw_events =
+      Repo.all(
+        from(e in TamanduaServer.Telemetry.Event,
+          where: e.event_type == "network_connect",
+          limit: 3,
+          order_by: [desc: e.timestamp]
+        )
+      )
 
     # Transform using the same logic as InertiaController
-    transformed_events = Enum.map(raw_events, fn event ->
-      payload = event.payload || %{}
+    transformed_events =
+      Enum.map(raw_events, fn event ->
+        payload = event.payload || %{}
 
-      # Helper to get value with both atom and string key fallbacks
-      get_val = fn keys, default ->
-        Enum.find_value(keys, default, fn key ->
-          payload[key] || payload[to_string(key)]
-        end)
-      end
+        # Helper to get value with both atom and string key fallbacks
+        get_val = fn keys, default ->
+          Enum.find_value(keys, default, fn key ->
+            payload[key] || payload[to_string(key)]
+          end)
+        end
 
-      %{
-        id: event.id,
-        agentId: event.agent_id,
-        sourceIp: get_val.([:local_ip, :source_ip, "local_ip", "source_ip"], nil),
-        sourcePort: get_val.([:local_port, :source_port, "local_port", "source_port"], 0),
-        destIp: get_val.([:remote_ip, :dest_ip, :destination_ip, "remote_ip", "dest_ip", "destination_ip"], nil),
-        destPort: get_val.([:remote_port, :dest_port, :destination_port, "remote_port", "dest_port", "destination_port"], 0),
-        protocol: get_val.([:protocol, "protocol"], "tcp"),
-        processName: get_val.([:process_name, :name, "process_name", "name"], "unknown"),
-        processPid: get_val.([:pid, "pid"], 0),
-        direction: get_val.([:direction, "direction"], "outbound"),
-        status: get_val.([:status, "status"], "established"),
-        # Debug: show raw payload
-        _raw_payload: payload
-      }
-    end)
+        %{
+          id: event.id,
+          agentId: event.agent_id,
+          sourceIp: get_val.([:local_ip, :source_ip, "local_ip", "source_ip"], nil),
+          sourcePort: get_val.([:local_port, :source_port, "local_port", "source_port"], 0),
+          destIp:
+            get_val.(
+              [:remote_ip, :dest_ip, :destination_ip, "remote_ip", "dest_ip", "destination_ip"],
+              nil
+            ),
+          destPort:
+            get_val.(
+              [
+                :remote_port,
+                :dest_port,
+                :destination_port,
+                "remote_port",
+                "dest_port",
+                "destination_port"
+              ],
+              0
+            ),
+          protocol: get_val.([:protocol, "protocol"], "tcp"),
+          processName: get_val.([:process_name, :name, "process_name", "name"], "unknown"),
+          processPid: get_val.([:pid, "pid"], 0),
+          direction: get_val.([:direction, "direction"], "outbound"),
+          status: get_val.([:status, "status"], "established"),
+          # Debug: show raw payload
+          _raw_payload: payload
+        }
+      end)
 
     json(conn, %{
       total_events: total_count,
@@ -301,9 +344,10 @@ defmodule TamanduaServerWeb.HealthController do
 
       event_type_counts =
         Repo.all(
-          from e in TamanduaServer.Telemetry.Event,
+          from(e in TamanduaServer.Telemetry.Event,
             group_by: e.event_type,
             select: {e.event_type, count(e.id)}
+          )
         )
         |> Map.new()
 

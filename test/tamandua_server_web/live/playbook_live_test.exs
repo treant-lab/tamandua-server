@@ -17,7 +17,7 @@ defmodule TamanduaServerWeb.PlaybookLiveTest do
             %{"action" => "isolate_host", "params" => %{}}
           ],
           enabled: true
-        })
+        }, :system)
 
       {:ok, pb2} =
         Playbook.create_playbook(%{
@@ -28,7 +28,7 @@ defmodule TamanduaServerWeb.PlaybookLiveTest do
             %{"action" => "kill_process", "params" => %{}}
           ],
           enabled: false
-        })
+        }, :system)
 
       %{playbook1: pb1, playbook2: pb2}
     end
@@ -97,7 +97,7 @@ defmodule TamanduaServerWeb.PlaybookLiveTest do
       |> element("button[phx-click='toggle_enabled'][phx-value-id='#{pb1.id}']")
       |> render_click()
 
-      {:ok, updated} = Playbook.get_playbook(pb1.id)
+      {:ok, updated} = Playbook.get_playbook(pb1.id, :system)
       assert updated.enabled == false
     end
 
@@ -155,7 +155,7 @@ defmodule TamanduaServerWeb.PlaybookLiveTest do
       |> element("button[phx-click='confirm_delete']")
       |> render_click()
 
-      assert {:error, :not_found} = Playbook.get_playbook(pb1.id)
+      assert {:error, :not_found} = Playbook.get_playbook(pb1.id, :system)
     end
 
     test "clones playbook", %{conn: conn, playbook1: pb1} do
@@ -179,7 +179,7 @@ defmodule TamanduaServerWeb.PlaybookLiveTest do
           trigger_type: "manual",
           steps: [],
           enabled: true
-        })
+        }, :system)
 
       %{playbook: playbook}
     end

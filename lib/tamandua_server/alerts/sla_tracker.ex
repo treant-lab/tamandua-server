@@ -26,7 +26,6 @@ defmodule TamanduaServer.Alerts.SLATracker do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.{Alert, SLAPolicy}
-  alias TamanduaServer.Accounts.Organization
 
   @default_thresholds %{
     "critical" => %{acknowledge: 15, resolve: 240},
@@ -477,10 +476,10 @@ defmodule TamanduaServer.Alerts.SLATracker do
     # This is a simplified version - a full implementation would need to
     # account for holidays, multi-day calculations, etc.
 
-    timezone = policy.timezone || "UTC"
-    business_start = policy.business_hours_start || ~T[09:00:00]
-    business_end = policy.business_hours_end || ~T[17:00:00]
-    business_days = policy.business_days || [1, 2, 3, 4, 5]
+    _timezone = policy.timezone || "UTC"
+    _business_start = policy.business_hours_start || ~T[09:00:00]
+    _business_end = policy.business_hours_end || ~T[17:00:00]
+    _business_days = policy.business_days || [1, 2, 3, 4, 5]
 
     # For now, use simple calculation
     # TODO: Implement full business hours calculation
@@ -558,14 +557,40 @@ defmodule TamanduaServer.Alerts.SLATracker do
     Float.round(compliant / total, 2)
   end
 
+  # Notifier never exposed send_sla_warning/send_sla_breach; the real surface
+  # for SLA notices is NotificationCenter.Dispatcher.dispatch/4, whose
+  # Notification schema explicitly supports the "sla_warning"/"sla_breach"
+  # types and routes to the alert assignee (or org admins) by resource id.
   defp send_sla_warning_notification(alert, deadline_type) do
     Logger.info("[SLA] Sending warning for alert #{alert.id} - #{deadline_type} deadline approaching")
-    TamanduaServer.Alerts.Notifier.send_sla_warning(alert, deadline_type)
+
+    TamanduaServer.NotificationCenter.Dispatcher.dispatch(
+      "sla_warning",
+      "SLA warning: #{deadline_type} deadline approaching",
+      "Alert #{alert.id} (#{alert.title}) is approaching its #{deadline_type} SLA deadline.",
+      %{
+        organization_id: alert.organization_id,
+        related_resource_type: "alert",
+        related_resource_id: alert.id,
+        priority: "high"
+      }
+    )
   end
 
   defp send_sla_breach_notification(alert, deadline_type) do
     Logger.warning("[SLA] Alert #{alert.id} #{deadline_type} SLA breached")
-    TamanduaServer.Alerts.Notifier.send_sla_breach(alert, deadline_type)
+
+    TamanduaServer.NotificationCenter.Dispatcher.dispatch(
+      "sla_breach",
+      "SLA breached: #{deadline_type}",
+      "Alert #{alert.id} (#{alert.title}) has breached its #{deadline_type} SLA deadline.",
+      %{
+        organization_id: alert.organization_id,
+        related_resource_type: "alert",
+        related_resource_id: alert.id,
+        priority: "critical"
+      }
+    )
   end
 end
 

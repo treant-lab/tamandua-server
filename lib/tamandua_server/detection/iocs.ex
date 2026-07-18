@@ -30,12 +30,34 @@ defmodule TamanduaServer.Detection.IOCs do
 
   @valid_types ~w(hash_md5 hash_sha256 hash_sha1 ip domain url email filename)
 
+  @doc """
+  Selects IOC rules visible to an organization.
+
+  Global rules are visible to every organization. Private rules are visible
+  only to their owning organization and override a global rule with the same
+  type/value. Without an organization, only global rules are returned.
+  """
+  def visible_for_organization(iocs, organization_id) when is_list(iocs) do
+    iocs
+    |> Enum.filter(&visible_ioc?(&1, organization_id))
+    |> Enum.sort_by(&scope_priority(&1, organization_id))
+    |> Enum.reduce(%{}, fn ioc, visible ->
+      Map.put(visible, {ioc_field(ioc, :type), ioc_field(ioc, :value)}, ioc)
+    end)
+    |> Map.values()
+    |> Enum.sort_by(&{to_string(ioc_field(&1, :type)), to_string(ioc_field(&1, :value))})
+  end
+
   # ============================================================================
   # Lookup Functions
   # ============================================================================
 
   @doc """
-  Lookup an IOC by type and value.
+  Lookup a shared global IOC by type and value.
+
+  This legacy API deliberately excludes tenant-private indicators. Runtime
+  consumers with authoritative tenant context must use
+  `lookup_for_organization/3`.
 
   Returns `{:ok, ioc}` if found, `{:error, :not_found}` otherwise.
 
@@ -48,19 +70,58 @@ defmodule TamanduaServer.Detection.IOCs do
       {:error, :not_found}
   """
   @spec lookup(String.t(), String.t()) :: {:ok, IOC.t()} | {:error, :not_found}
-  def lookup(indicator_type, indicator_value) when is_binary(indicator_type) and is_binary(indicator_value) do
+  def lookup(indicator_type, indicator_value)
+      when is_binary(indicator_type) and is_binary(indicator_value) do
+    lookup_for_organization(indicator_type, indicator_value, nil)
+  end
+
+  @doc """
+  Looks up an enabled IOC visible to one organization.
+
+  Tenant-owned indicators override the shared global indicator with the same
+  type and normalized value. A missing or invalid organization deliberately
+  exposes only the global catalog.
+  """
+  @spec lookup_for_organization(String.t(), String.t(), String.t() | nil) ::
+          {:ok, IOC.t()} | {:error, :not_found}
+  def lookup_for_organization(indicator_type, indicator_value, organization_id)
+      when is_binary(indicator_type) and is_binary(indicator_value) do
     normalized_value = normalize_value(indicator_type, indicator_value)
+    organization_id = valid_organization_id(organization_id)
 
     query =
-      from(i in IOC,
-        where: i.type == ^indicator_type and i.value == ^normalized_value and i.enabled == true,
-        limit: 1
+      IOC
+      |> where(
+        [i],
+        i.type == ^indicator_type and i.value == ^normalized_value and i.enabled == true
       )
+      |> visible_scope_query(organization_id)
+
+    query =
+      if organization_id do
+        order_by(
+          query,
+          [i],
+          desc: fragment("CASE WHEN ? = ? THEN 1 ELSE 0 END", i.organization_id, ^organization_id)
+        )
+      else
+        query
+      end
+
+    query = limit(query, 1)
 
     case Repo.one(query) do
       nil -> {:error, :not_found}
       ioc -> {:ok, ioc}
     end
+  end
+
+  def lookup_for_organization(indicator_type, indicator_value, organization_id) do
+    lookup_for_organization(
+      to_string(indicator_type),
+      to_string(indicator_value),
+      organization_id
+    )
   end
 
   def lookup(indicator_type, indicator_value) do
@@ -164,15 +225,124 @@ defmodule TamanduaServer.Detection.IOCs do
   end
 
   @doc """
+  Returns the count of enabled IOCs for a single source.
+
+  ## Examples
+
+      iex> count_by_source("urlhaus_urls")
+      1000
+  """
+  @spec count_by_source(String.t()) :: non_neg_integer()
+  def count_by_source(source) when is_binary(source) do
+    from(i in IOC,
+      where: i.enabled == true and i.source == ^source,
+      select: count(i.id)
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Returns the count of enabled IOCs that ONLY this source provides,
+  i.e. whose value does not appear under any other source.
+
+  Used by feed analytics to measure feed uniqueness/coverage.
+  """
+  @spec count_unique_by_source(String.t()) :: non_neg_integer()
+  def count_unique_by_source(source) when is_binary(source) do
+    other_sources =
+      from(o in IOC,
+        where: o.enabled == true and o.source != ^source,
+        select: o.value
+      )
+
+    from(i in IOC,
+      where:
+        i.enabled == true and i.source == ^source and
+          i.value not in subquery(other_sources),
+      select: count(i.id)
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  List all enabled IOCs for a given source.
+
+  ## Options
+    - `:limit` - Maximum number of results (default: no limit)
+
+  ## Examples
+
+      iex> get_by_source("feodo_ip_blocklist")
+      [%IOC{source: "feodo_ip_blocklist"}, ...]
+  """
+  @spec get_by_source(String.t(), keyword()) :: [IOC.t()]
+  def get_by_source(source, opts \\ []) when is_binary(source) do
+    query =
+      from(i in IOC,
+        where: i.enabled == true and i.source == ^source,
+        order_by: [desc: i.inserted_at]
+      )
+
+    query =
+      case Keyword.get(opts, :limit) do
+        nil -> query
+        limit -> limit(query, ^limit)
+      end
+
+    Repo.all(query)
+  end
+
+  @doc """
+  Get the most recently inserted IOC for a source (freshness probe).
+
+  Returns the IOC struct or `nil` when the source has no IOCs.
+  """
+  @spec get_most_recent_by_source(String.t()) :: IOC.t() | nil
+  def get_most_recent_by_source(source) when is_binary(source) do
+    from(i in IOC,
+      where: i.source == ^source,
+      order_by: [desc: i.inserted_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc """
   List the most recently added IOCs.
+
+  Accepts either a plain integer limit or a keyword list of options:
+
+    - `:limit` - Maximum number of results (default: 10)
+    - `:since` - Only IOCs inserted at/after this datetime
 
   ## Examples
 
       iex> list_recent(10)
       [%IOC{}, ...]
+
+      iex> list_recent(since: ~U[2026-01-01 00:00:00Z], limit: 100)
+      [%IOC{}, ...]
   """
-  @spec list_recent(non_neg_integer()) :: [IOC.t()]
-  def list_recent(limit \\ 10) do
+  @spec list_recent(non_neg_integer() | keyword()) :: [IOC.t()]
+  def list_recent(limit_or_opts \\ 10)
+
+  def list_recent(opts) when is_list(opts) do
+    limit = Keyword.get(opts, :limit, 10)
+    since = Keyword.get(opts, :since)
+
+    query =
+      from(i in IOC,
+        where: i.enabled == true,
+        order_by: [desc: i.inserted_at],
+        limit: ^limit
+      )
+
+    query = if since, do: where(query, [i], i.inserted_at >= ^since), else: query
+
+    Repo.all(query)
+  end
+
+  def list_recent(limit) when is_integer(limit) do
     from(i in IOC,
       where: i.enabled == true,
       order_by: [desc: i.inserted_at],
@@ -258,6 +428,13 @@ defmodule TamanduaServer.Detection.IOCs do
     |> apply_list_filters(rest)
   end
 
+  defp apply_list_filters(query, [{:organization_id, organization_id} | rest])
+       when is_binary(organization_id) and organization_id != "" do
+    query
+    |> where([i], is_nil(i.organization_id) or i.organization_id == ^organization_id)
+    |> apply_list_filters(rest)
+  end
+
   defp apply_list_filters(query, [_ | rest]), do: apply_list_filters(query, rest)
 
   @doc """
@@ -289,6 +466,28 @@ defmodule TamanduaServer.Detection.IOCs do
   """
   def get_ioc(id), do: Repo.get(IOC, id)
 
+  @doc "Gets an IOC visible to an organization (shared global or tenant-owned)."
+  def get_ioc_for_organization(organization_id, id)
+      when is_binary(organization_id) and organization_id != "" do
+    Repo.one(
+      from(i in IOC,
+        where:
+          i.id == ^id and
+            (is_nil(i.organization_id) or i.organization_id == ^organization_id)
+      )
+    )
+  end
+
+  def get_ioc_for_organization(_organization_id, _id), do: nil
+
+  @doc "Gets a tenant-owned IOC for mutation; global catalog entries are excluded."
+  def get_owned_ioc_for_organization(organization_id, id)
+      when is_binary(organization_id) and organization_id != "" do
+    Repo.get_by(IOC, id: id, organization_id: organization_id)
+  end
+
+  def get_owned_ioc_for_organization(_organization_id, _id), do: nil
+
   @doc """
   Add a new IOC.
 
@@ -300,13 +499,28 @@ defmodule TamanduaServer.Detection.IOCs do
       iex> add(%{type: "invalid", value: "test"})
       {:error, %Ecto.Changeset{}}
   """
-  @spec add(map()) :: {:ok, IOC.t()} | {:error, Ecto.Changeset.t()}
+  @spec add(map()) :: {:ok, IOC.t()} | {:error, Ecto.Changeset.t() | :organization_required}
   def add(ioc_data) when is_map(ioc_data) do
     attrs = normalize_attrs(ioc_data)
 
-    %IOC{}
-    |> IOC.changeset(attrs)
-    |> Repo.insert()
+    if present_organization_id?(attrs) do
+      insert_ioc(attrs)
+    else
+      {:error, :organization_required}
+    end
+  end
+
+  @doc """
+  Adds an IOC to the shared global feed catalog.
+
+  The explicit function name is the system-only capability boundary; request
+  paths must use `add/1`, which requires an organization.
+  """
+  def add_global(ioc_data) when is_map(ioc_data) do
+    ioc_data
+    |> normalize_attrs()
+    |> Map.delete(:organization_id)
+    |> insert_ioc()
   end
 
   @doc """
@@ -318,8 +532,13 @@ defmodule TamanduaServer.Detection.IOCs do
   Update an IOC.
   """
   def update_ioc(%IOC{} = ioc, attrs) do
+    safe_attrs =
+      attrs
+      |> normalize_attrs()
+      |> Map.delete(:organization_id)
+
     ioc
-    |> IOC.changeset(normalize_attrs(attrs))
+    |> IOC.changeset(safe_attrs)
     |> Repo.update()
   end
 
@@ -374,24 +593,61 @@ defmodule TamanduaServer.Detection.IOCs do
       iex> bulk_add([%{type: "invalid", value: "test"}])
       {:ok, %{successful: 0, failed: 1, errors: [...]}}
   """
-  @spec bulk_add([map()], keyword()) :: {:ok, map()}
-  def bulk_add(iocs, opts \\ []) when is_list(iocs) do
+  @spec bulk_add([map()], keyword()) :: {:ok, map()} | {:error, term()}
+  def bulk_add(iocs, opts \\ [])
+
+  def bulk_add([], _opts), do: {:ok, %{successful: 0, failed: 0, errors: []}}
+
+  def bulk_add(iocs, opts) when is_list(iocs) do
     raw_on_conflict = Keyword.get(opts, :on_conflict, :nothing)
-    conflict_target = Keyword.get(opts, :conflict_target, [:type, :value])
+
+    with {:ok, scope, scoped_iocs} <- prepare_bulk_scope(iocs, opts) do
+      do_bulk_add(scoped_iocs, scope, raw_on_conflict, opts)
+    end
+  end
+
+  @doc "Bulk-adds shared feed IOCs through an explicit system-only path."
+  def bulk_add_global(iocs, opts \\ []) when is_list(iocs) do
+    bulk_add(iocs, Keyword.merge(opts, scope: :global, system: true))
+  end
+
+  defp do_bulk_add(iocs, scope, raw_on_conflict, opts) do
+    # The conflict target is derived exclusively from the validated scope.
+    # Accepting a caller override would let a tenant batch target the global
+    # uniqueness boundary (or vice versa).
+    conflict_target = conflict_target_for_scope(scope)
 
     # Ecto doesn't accept :update as on_conflict value; translate it to
     # {:replace, updatable_fields} which replaces the listed columns on conflict.
     on_conflict =
       case raw_on_conflict do
         :update ->
-          {:replace, [
-            :description, :severity, :confidence, :tags, :metadata,
-            :source, :source_ref, :first_seen, :last_seen, :expires_at,
-            :malware_family, :threat_actor, :campaign,
-            :mitre_tactics, :mitre_techniques, :enabled, :updated_at
-          ]}
-        :replace_all -> :replace_all
-        other -> other
+          {:replace,
+           [
+             :description,
+             :severity,
+             :confidence,
+             :tags,
+             :metadata,
+             :source,
+             :source_ref,
+             :first_seen,
+             :last_seen,
+             :expires_at,
+             :malware_family,
+             :threat_actor,
+             :campaign,
+             :mitre_tactics,
+             :mitre_techniques,
+             :enabled,
+             :updated_at
+           ]}
+
+        :replace_all ->
+          :replace_all
+
+        other ->
+          other
       end
 
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
@@ -423,7 +679,9 @@ defmodule TamanduaServer.Detection.IOCs do
     entries =
       entries
       |> Enum.reverse()
-      |> Enum.uniq_by(fn e -> {Map.get(e, :type), Map.get(e, :value)} end)
+      |> Enum.uniq_by(fn e ->
+        {Map.get(e, :organization_id), Map.get(e, :type), Map.get(e, :value)}
+      end)
       |> Enum.reverse()
 
     # PostgreSQL protocol supports max 65 535 parameters per query.
@@ -440,6 +698,7 @@ defmodule TamanduaServer.Detection.IOCs do
               on_conflict: on_conflict,
               conflict_target: conflict_target
             )
+
           {acc + n, result}
         end)
       else
@@ -453,11 +712,58 @@ defmodule TamanduaServer.Detection.IOCs do
         %{attrs: attrs, errors: changeset.errors}
       end)
 
-    {:ok, %{
-      successful: inserted_count,
-      failed: length(invalid),
-      errors: errors
-    }}
+    {:ok,
+     %{
+       successful: inserted_count,
+       failed: length(invalid),
+       errors: errors
+     }}
+  end
+
+  defp prepare_bulk_scope(iocs, opts) do
+    requested_scope = Keyword.get(opts, :scope)
+    normalized = Enum.map(iocs, &normalize_attrs/1)
+    organization_ids = normalized |> Enum.map(&Map.get(&1, :organization_id)) |> Enum.uniq()
+
+    case requested_scope do
+      {:tenant, organization_id} when is_binary(organization_id) ->
+        if Enum.all?(organization_ids, &(&1 in [nil, organization_id])) do
+          {:ok, {:tenant, organization_id},
+           Enum.map(normalized, &Map.put(&1, :organization_id, organization_id))}
+        else
+          {:error, :mixed_ioc_scopes}
+        end
+
+      :global ->
+        if Keyword.get(opts, :system, false) and Enum.all?(organization_ids, &is_nil/1) do
+          {:ok, :global, normalized}
+        else
+          {:error, :system_scope_required}
+        end
+
+      nil ->
+        case organization_ids do
+          [organization_id] when is_binary(organization_id) ->
+            {:ok, {:tenant, organization_id}, normalized}
+
+          _ ->
+            {:error, :ioc_scope_required}
+        end
+
+      _ ->
+        {:error, :invalid_ioc_scope}
+    end
+  end
+
+  defp conflict_target_for_scope({:tenant, _organization_id}),
+    do: [:type, :value, :organization_id]
+
+  defp conflict_target_for_scope(:global) do
+    if Application.get_env(:tamandua_server, :ioc_partial_global_unique_index, false) do
+      {:unsafe_fragment, "(type, value) WHERE organization_id IS NULL"}
+    else
+      [:type, :value]
+    end
   end
 
   defp valid_ioc_attrs?(attrs) do
@@ -494,12 +800,28 @@ defmodule TamanduaServer.Detection.IOCs do
   # ensuring insert_all never receives unknown columns.
   defp ioc_schema_fields do
     [
-      :id, :type, :value, :description, :enabled, :source, :source_ref,
-      :severity, :confidence, :tags, :metadata,
-      :first_seen, :last_seen, :expires_at,
-      :malware_family, :threat_actor, :campaign,
-      :mitre_tactics, :mitre_techniques,
-      :organization_id, :inserted_at, :updated_at
+      :id,
+      :type,
+      :value,
+      :description,
+      :enabled,
+      :source,
+      :source_ref,
+      :severity,
+      :confidence,
+      :tags,
+      :metadata,
+      :first_seen,
+      :last_seen,
+      :expires_at,
+      :malware_family,
+      :threat_actor,
+      :campaign,
+      :mitre_tactics,
+      :mitre_techniques,
+      :organization_id,
+      :inserted_at,
+      :updated_at
     ]
   end
 
@@ -551,9 +873,9 @@ defmodule TamanduaServer.Detection.IOCs do
       from(i in IOC,
         where:
           ilike(i.value, ^search_pattern) or
-          ilike(i.description, ^search_pattern) or
-          ilike(i.source, ^search_pattern) or
-          fragment("array_to_string(?, ',') ILIKE ?", i.tags, ^search_pattern),
+            ilike(i.description, ^search_pattern) or
+            ilike(i.source, ^search_pattern) or
+            fragment("array_to_string(?, ',') ILIKE ?", i.tags, ^search_pattern),
         order_by: [desc: i.inserted_at],
         limit: ^limit
       )
@@ -586,7 +908,12 @@ defmodule TamanduaServer.Detection.IOCs do
   on the unindexed value column. For exact matches, use `lookup/2` instead.
   """
   def search_by_value(value) when is_binary(value) do
-    escaped = value |> String.replace("\\", "\\\\") |> String.replace("%", "\\%") |> String.replace("_", "\\_")
+    escaped =
+      value
+      |> String.replace("\\", "\\\\")
+      |> String.replace("%", "\\%")
+      |> String.replace("_", "\\_")
+
     pattern = "%#{escaped}%"
 
     from(i in IOC,
@@ -602,21 +929,23 @@ defmodule TamanduaServer.Detection.IOCs do
   # ============================================================================
 
   @doc """
-  Check if a value matches any enabled IOC.
+  Check if a value matches an enabled shared global IOC.
   Returns the matching IOC or nil.
   """
   def match?(value, type) do
-    normalized_value = normalize_value(type, value)
+    match_for_organization(value, type, nil)
+  end
 
-    from(i in IOC,
-      where: i.value == ^normalized_value and i.type == ^type and i.enabled == true,
-      limit: 1
-    )
-    |> Repo.one()
+  @doc "Returns the matching global or tenant-owned IOC, preferring tenant scope."
+  def match_for_organization(value, type, organization_id) do
+    case lookup_for_organization(to_string(type), to_string(value), organization_id) do
+      {:ok, ioc} -> ioc
+      {:error, :not_found} -> nil
+    end
   end
 
   @doc """
-  Check multiple values against IOCs and return all matches.
+  Check multiple values against shared global IOCs and return all matches.
 
   ## Examples
 
@@ -625,6 +954,12 @@ defmodule TamanduaServer.Detection.IOCs do
   """
   @spec match_batch([{String.t(), String.t()}]) :: [IOC.t()]
   def match_batch(indicators) when is_list(indicators) do
+    match_batch_for_organization(indicators, nil)
+  end
+
+  @doc "Matches a batch against the global catalog plus one tenant's private indicators."
+  @spec match_batch_for_organization([{String.t(), String.t()}], String.t() | nil) :: [IOC.t()]
+  def match_batch_for_organization(indicators, organization_id) when is_list(indicators) do
     # Group by type for efficient querying
     grouped =
       indicators
@@ -636,8 +971,10 @@ defmodule TamanduaServer.Detection.IOCs do
       from(i in IOC,
         where: i.type == ^type and i.value in ^values and i.enabled == true
       )
+      |> visible_scope_query(organization_id)
       |> Repo.all()
     end)
+    |> visible_for_organization(valid_organization_id(organization_id))
   end
 
   # ============================================================================
@@ -679,6 +1016,52 @@ defmodule TamanduaServer.Detection.IOCs do
   # Helper Functions
   # ============================================================================
 
+  defp visible_ioc?(ioc, organization_id) do
+    owner = ioc_field(ioc, :organization_id)
+    scope = ioc_field(ioc, :scope)
+
+    (is_nil(owner) && scope in [nil, :global]) ||
+      (is_binary(organization_id) && owner == organization_id &&
+         scope in [nil, {:tenant, organization_id}])
+  end
+
+  defp visible_scope_query(query, organization_id) do
+    case valid_organization_id(organization_id) do
+      nil -> where(query, [i], is_nil(i.organization_id))
+      organization_id -> where(query, [i], is_nil(i.organization_id) or i.organization_id == ^organization_id)
+    end
+  end
+
+  defp valid_organization_id(organization_id)
+       when is_binary(organization_id) and organization_id != "",
+       do: organization_id
+
+  defp valid_organization_id(_organization_id), do: nil
+
+  defp scope_priority(ioc, organization_id) do
+    if ioc_field(ioc, :organization_id) == organization_id ||
+         ioc_field(ioc, :scope) == {:tenant, organization_id},
+       do: 1,
+       else: 0
+  end
+
+  defp ioc_field(ioc, field) when is_map(ioc) do
+    Map.get(ioc, field) || Map.get(ioc, Atom.to_string(field))
+  end
+
+  defp present_organization_id?(attrs) do
+    case Map.get(attrs, :organization_id) do
+      organization_id when is_binary(organization_id) and organization_id != "" -> true
+      _ -> false
+    end
+  end
+
+  defp insert_ioc(attrs) do
+    %IOC{}
+    |> IOC.changeset(attrs)
+    |> Repo.insert()
+  end
+
   defp normalize_attrs(attrs) when is_map(attrs) do
     attrs
     |> atomize_keys()
@@ -694,13 +1077,17 @@ defmodule TamanduaServer.Detection.IOCs do
     map
     |> Enum.map(fn
       {k, v} when is_binary(k) ->
-        key = try do
-          String.to_existing_atom(k)
-        rescue
-          ArgumentError -> k
-        end
+        key =
+          try do
+            String.to_existing_atom(k)
+          rescue
+            ArgumentError -> k
+          end
+
         {key, v}
-      {k, v} -> {k, v}
+
+      {k, v} ->
+        {k, v}
     end)
     |> Map.new()
   end
@@ -731,7 +1118,8 @@ defmodule TamanduaServer.Detection.IOCs do
     end
   end
 
-  defp normalize_value(type, value) when type in ["hash_md5", "hash_sha1", "hash_sha256", :hash_md5, :hash_sha1, :hash_sha256] do
+  defp normalize_value(type, value)
+       when type in ["hash_md5", "hash_sha1", "hash_sha256", :hash_md5, :hash_sha1, :hash_sha256] do
     value
     |> String.trim()
     |> String.downcase()

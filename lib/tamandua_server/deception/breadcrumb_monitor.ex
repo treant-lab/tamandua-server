@@ -6,7 +6,7 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
   - File access event monitoring for deployed breadcrumbs
   - High-severity alert generation on breadcrumb access
   - Tamper detection (modifications, moves, deletions)
-  - Automated response execution
+  - Policy-gated automated response planning
   - Access analytics and effectiveness tracking
 
   Comparable to Attivo/SentinelOne Singularity Hologram detection capabilities.
@@ -18,6 +18,7 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts
   alias TamanduaServer.Response.Playbook
+  alias TamanduaServer.Response.HoneyfileAutoResponse
   alias TamanduaServer.Deception.BreadcrumbAccessLog
   alias TamanduaServer.Deception.BreadcrumbDeployment
 
@@ -41,6 +42,9 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
           kill_process: boolean(),
           create_snapshot: boolean(),
           escalate_to_soc: boolean(),
+          dry_run: boolean(),
+          mode: atom() | String.t(),
+          allow_autonomous_containment: boolean(),
           trigger_playbook_id: String.t() | nil
         }
 
@@ -55,13 +59,7 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
               by_agent: %{},
               time_to_detection: []
             },
-            response_config: %{
-              isolate_agent: false,
-              kill_process: true,
-              create_snapshot: false,
-              escalate_to_soc: true,
-              trigger_playbook_id: nil
-            }
+            response_config: %{}
 
   # ============================================================================
   # GenServer API
@@ -125,7 +123,8 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
     breadcrumbs_cache = load_breadcrumbs_cache()
 
     state = %__MODULE__{
-      breadcrumbs_cache: breadcrumbs_cache
+      breadcrumbs_cache: breadcrumbs_cache,
+      response_config: HoneyfileAutoResponse.normalize_config(%{})
     }
 
     # Schedule periodic cache refresh
@@ -165,7 +164,11 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
 
   @impl true
   def handle_call({:configure_response, config}, _from, state) do
-    new_config = Map.merge(state.response_config, config)
+    new_config =
+      state.response_config
+      |> Map.merge(config)
+      |> HoneyfileAutoResponse.normalize_config()
+
     new_state = %{state | response_config: new_config}
 
     Logger.info("Updated breadcrumb response configuration: #{inspect(new_config)}")
@@ -419,43 +422,17 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
   end
 
   defp trigger_automated_response(breadcrumb, event, alert, config) do
-    agent_id = event[:agent_id] || breadcrumb.agent_id
+    plan = HoneyfileAutoResponse.plan(breadcrumb, event, alert, config)
+    audit_honeyfile_response_plan(plan)
+    broadcast_honeyfile_response_plan(plan)
 
-    # Execute configured automated responses
-    if config.kill_process && event[:pid] do
-      Logger.info("Killing process #{event[:pid]} on agent #{agent_id}")
-
-      spawn(fn ->
-        case TamanduaServer.Response.Executor.kill_process(agent_id, event[:pid], force: true) do
-          {:ok, _} -> Logger.info("Successfully killed process #{event[:pid]}")
-          {:error, reason} -> Logger.error("Failed to kill process: #{inspect(reason)}")
-        end
-      end)
-    end
-
-    if config.isolate_agent do
-      Logger.info("Isolating agent #{agent_id} due to breadcrumb access")
-
-      spawn(fn ->
-        case TamanduaServer.Response.Executor.isolate_host(agent_id) do
-          {:ok, _} -> Logger.info("Successfully isolated agent #{agent_id}")
-          {:error, reason} -> Logger.error("Failed to isolate agent: #{inspect(reason)}")
-        end
-      end)
-    end
-
-    if config.create_snapshot do
-      Logger.info("Creating forensic snapshot for agent #{agent_id}")
-
-      spawn(fn ->
-        TamanduaServer.Response.Executor.collect_forensics(agent_id, %{
-          type: "breadcrumb_access",
-          memory_dump: false,
-          process_list: true,
-          network_connections: true,
-          event_logs: true
-        })
-      end)
+    if HoneyfileAutoResponse.executable?(plan) do
+      execute_honeyfile_response_plan(plan)
+    else
+      Logger.info(
+        "Honeyfile response planned in #{plan.policy_gate} mode " <>
+          "(dry_run=#{plan.dry_run}, actions=#{length(plan.actions)})"
+      )
     end
 
     if config.trigger_playbook_id && alert do
@@ -470,6 +447,81 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
       Logger.info("Escalating breadcrumb access to SOC")
       escalate_to_soc(breadcrumb, event, alert)
     end
+  end
+
+  defp execute_honeyfile_response_plan(%{actions: actions}) do
+    Enum.each(actions, fn action ->
+      spawn(fn -> execute_honeyfile_action(action) end)
+    end)
+  end
+
+  defp execute_honeyfile_action(%{action_type: "kill_process", agent_id: agent_id, params: %{pid: pid}}) do
+    case TamanduaServer.Response.Executor.kill_process(agent_id, pid, force: true, actor: :system) do
+      {:ok, _} -> Logger.info("Successfully killed honeyfile-touching process #{pid}")
+      {:error, reason} -> Logger.error("Failed to kill honeyfile-touching process: #{inspect(reason)}")
+    end
+  end
+
+  defp execute_honeyfile_action(%{action_type: "isolate_network", agent_id: agent_id, params: params}) do
+    opts = [
+      allowed_ips: Map.get(params, :allowed_ips, []),
+      duration: Map.get(params, :duration_seconds, 0),
+      actor: :system
+    ]
+
+    case TamanduaServer.Response.Executor.isolate_network(agent_id, opts) do
+      {:ok, _} -> Logger.info("Successfully isolated agent #{agent_id} after honeyfile access")
+      {:error, reason} -> Logger.error("Failed to isolate agent after honeyfile access: #{inspect(reason)}")
+    end
+  end
+
+  defp execute_honeyfile_action(%{action_type: "collect_forensics", agent_id: agent_id, params: params}) do
+    TamanduaServer.Response.Executor.collect_forensics(agent_id, Map.put(params, :actor, :system))
+  end
+
+  defp execute_honeyfile_action(action) do
+    Logger.warning("Unsupported honeyfile response action: #{inspect(action)}")
+  end
+
+  defp audit_honeyfile_response_plan(plan) do
+    TamanduaServer.Response.Audit.log_action(
+      "honeyfile_auto_response_planned",
+      %{
+        dry_run: plan.dry_run,
+        policy_gate: to_string(plan.policy_gate),
+        trigger: to_string(plan.trigger),
+        confidence: plan.confidence,
+        actions: Enum.map(plan.actions, &Map.take(&1, [:action_type, :params, :reason])),
+        metadata: plan.metadata
+      },
+      plan.metadata.agent_id,
+      :system
+    )
+  rescue
+    e ->
+      Logger.warning("Failed to audit honeyfile response plan: #{inspect(e)}")
+      :ok
+  end
+
+  defp broadcast_honeyfile_response_plan(plan) do
+    :telemetry.execute(
+      [:tamandua, :response, :honeyfile_auto_response, :planned],
+      %{actions: length(plan.actions), confidence: plan.confidence},
+      %{
+        dry_run: plan.dry_run,
+        policy_gate: plan.policy_gate,
+        agent_id: plan.metadata.agent_id,
+        alert_id: plan.metadata.alert_id
+      }
+    )
+
+    Phoenix.PubSub.broadcast(
+      TamanduaServer.PubSub,
+      "autonomous_response:decisions",
+      {:autonomous_decision, plan}
+    )
+  rescue
+    _ -> :ok
   end
 
   defp escalate_to_soc(breadcrumb, event, alert) do
@@ -609,7 +661,7 @@ defmodule TamanduaServer.Deception.BreadcrumbMonitor do
     _ -> []
   end
 
-  defp generate_effectiveness_report(state) do
+  defp generate_effectiveness_report(_state) do
     import Ecto.Query
 
     # Get deployment and access counts by type

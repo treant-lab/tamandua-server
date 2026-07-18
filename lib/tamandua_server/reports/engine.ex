@@ -19,9 +19,7 @@ defmodule TamanduaServer.Reports.Engine do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Reports
-  alias TamanduaServer.Reports.{Report, Scheduler}
   alias TamanduaServer.Mailer
 
   import Swoosh.Email

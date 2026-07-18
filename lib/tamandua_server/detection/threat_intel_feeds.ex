@@ -17,8 +17,6 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
 
   alias TamanduaServer.Detection.IOCs
 
-  @default_sync_interval :timer.hours(4)
-
   # ============================================================================
   # Feed URLs (Free Feeds - No API Key Required)
   # ============================================================================
@@ -56,7 +54,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     spamhaus_edrop: "https://www.spamhaus.org/drop/edrop.txt",
 
     # FireHOL IP Lists (aggregated)
-    firehol_level1: "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+    firehol_level1:
+      "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
 
     # Tor Exit Nodes
     tor_exit_nodes: "https://check.torproject.org/torbulkexitlist",
@@ -69,7 +68,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     ransomware_abuse: "https://ransomware.abuse.ch/downloads/RW_IPBL.txt",
 
     # C2 Intel Feeds
-    c2_all_domains: "https://raw.githubusercontent.com/drb-ra/C2IntelFeeds/master/feeds/domainC2swithURLwithIP.csv"
+    c2_all_domains:
+      "https://raw.githubusercontent.com/drb-ra/C2IntelFeeds/master/feeds/domainC2swithURLwithIP.csv"
   }
 
   # ============================================================================
@@ -124,13 +124,22 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     # Read configuration from application env, falling back to opts and defaults
     app_config = Application.get_env(:tamandua_server, __MODULE__, [])
 
-    enabled = Keyword.get(opts, :enabled,
-      if(is_list(app_config), do: Keyword.get(app_config, :enabled, true), else: true))
+    enabled =
+      Keyword.get(
+        opts,
+        :enabled,
+        if(is_list(app_config), do: Keyword.get(app_config, :enabled, true), else: true)
+      )
 
-    sync_interval_hours = if is_list(app_config), do: Keyword.get(app_config, :sync_interval_hours, 4), else: 4
+    sync_interval_hours =
+      if is_list(app_config), do: Keyword.get(app_config, :sync_interval_hours, 4), else: 4
+
     sync_interval = Keyword.get(opts, :sync_interval, :timer.hours(sync_interval_hours))
 
-    initial_delay_seconds = if is_list(app_config), do: Keyword.get(app_config, :initial_sync_delay_seconds, 30), else: 30
+    initial_delay_seconds =
+      if is_list(app_config),
+        do: Keyword.get(app_config, :initial_sync_delay_seconds, 30),
+        else: 30
 
     feed_config = if is_list(app_config), do: Keyword.get(app_config, :feeds, %{}), else: %{}
 
@@ -158,20 +167,31 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     if state.enabled do
       # Log feed configuration on startup
       free_feed_count = map_size(@abusech_feeds) + map_size(@external_free_feeds)
-      enabled_config_feeds = Enum.count(feed_config, fn {_name, cfg} ->
-        is_map(cfg) and Map.get(cfg, :enabled, false)
-      end)
 
-      Logger.info("[ThreatIntelFeeds] Enabled with #{free_feed_count} built-in feeds, #{enabled_config_feeds} configured feeds")
-      Logger.info("[ThreatIntelFeeds] Sync interval: #{sync_interval_hours}h, initial sync in #{initial_delay_seconds}s")
+      enabled_config_feeds =
+        Enum.count(feed_config, fn {_name, cfg} ->
+          is_map(cfg) and Map.get(cfg, :enabled, false)
+        end)
+
+      Logger.info(
+        "[ThreatIntelFeeds] Enabled with #{free_feed_count} built-in feeds, #{enabled_config_feeds} configured feeds"
+      )
+
+      Logger.info(
+        "[ThreatIntelFeeds] Sync interval: #{sync_interval_hours}h, initial sync in #{initial_delay_seconds}s"
+      )
 
       if otx_key, do: Logger.info("[ThreatIntelFeeds] AlienVault OTX API key configured")
-      if misp_key && misp_url, do: Logger.info("[ThreatIntelFeeds] MISP configured at #{misp_url}")
+
+      if misp_key && misp_url,
+        do: Logger.info("[ThreatIntelFeeds] MISP configured at #{misp_url}")
 
       # Log individual free feed status
       Enum.each(feed_config, fn {name, cfg} ->
         if is_map(cfg) and Map.get(cfg, :enabled, false) do
-          Logger.debug("[ThreatIntelFeeds] Feed enabled: #{name} - #{Map.get(cfg, :description, "")}")
+          Logger.debug(
+            "[ThreatIntelFeeds] Feed enabled: #{name} - #{Map.get(cfg, :description, "")}"
+          )
         end
       end)
 
@@ -190,20 +210,24 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   @impl true
   def handle_cast(:sync_all, state) do
     parent = self()
+
     Task.start(fn ->
       results = do_sync_all_with_results(state)
       send(parent, {:sync_complete, results})
     end)
+
     {:noreply, %{state | last_sync: DateTime.utc_now()}}
   end
 
   @impl true
   def handle_cast({:sync_feed, feed_name}, state) do
     parent = self()
+
     Task.start(fn ->
       result = do_sync_feed_with_result(feed_name, state)
       send(parent, {:feed_sync_complete, feed_name, result})
     end)
+
     {:noreply, state}
   end
 
@@ -213,15 +237,25 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     stale_threshold = state.sync_interval * 2
     {total_iocs, iocs_by_type, iocs_by_source} = feed_ioc_counts(state)
 
-    feed_health = Enum.reduce(state.sync_status, %{}, fn {name, info}, acc ->
-      health = cond do
-        info[:status] == :error -> "error"
-        info[:last_sync] == nil -> "pending"
-        DateTime.diff(DateTime.utc_now(), info[:last_sync], :millisecond) > stale_threshold -> "stale"
-        true -> "ok"
-      end
-      Map.put(acc, name, Map.put(info, :health, health))
-    end)
+    feed_health =
+      Enum.reduce(state.sync_status, %{}, fn {name, info}, acc ->
+        health =
+          cond do
+            info[:status] == :error ->
+              "error"
+
+            info[:last_sync] == nil ->
+              "pending"
+
+            DateTime.diff(DateTime.utc_now(), info[:last_sync], :millisecond) > stale_threshold ->
+              "stale"
+
+            true ->
+              "ok"
+          end
+
+        Map.put(acc, name, Map.put(info, :health, health))
+      end)
 
     status = %{
       enabled: state.enabled,
@@ -237,13 +271,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       iocs_by_type: iocs_by_type,
       iocs_by_source: iocs_by_source
     }
+
     {:reply, status, state}
-  end
-
-  defp feed_ioc_counts(%{enabled: false}), do: {0, %{}, %{}}
-
-  defp feed_ioc_counts(_state) do
-    {IOCs.count(), IOCs.count_by_type(), IOCs.count_by_source()}
   end
 
   @impl true
@@ -263,6 +292,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       confidence: Keyword.get(opts, :confidence, 0.7),
       headers: Keyword.get(opts, :headers, [])
     }
+
     {:reply, :ok, %{state | custom_feeds: [feed | state.custom_feeds]}}
   end
 
@@ -270,6 +300,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   def handle_info(:initial_sync, state) do
     Logger.info("[ThreatIntelFeeds] Starting initial sync...")
     parent = self()
+
     Task.start(fn ->
       try do
         results = do_sync_all_with_results(state)
@@ -280,6 +311,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
         :exit, reason -> Logger.error("[ThreatIntelFeeds] Sync task exited: #{inspect(reason)}")
       end
     end)
+
     {:noreply, %{state | last_sync: DateTime.utc_now()}}
   end
 
@@ -287,6 +319,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   def handle_info(:periodic_sync, state) do
     Logger.info("[ThreatIntelFeeds] Starting periodic sync...")
     parent = self()
+
     Task.start(fn ->
       try do
         results = do_sync_all_with_results(state)
@@ -294,29 +327,38 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       rescue
         e -> Logger.error("[ThreatIntelFeeds] Periodic sync crashed: #{Exception.message(e)}")
       catch
-        :exit, reason -> Logger.error("[ThreatIntelFeeds] Periodic sync exited: #{inspect(reason)}")
+        :exit, reason ->
+          Logger.error("[ThreatIntelFeeds] Periodic sync exited: #{inspect(reason)}")
       end
     end)
+
     schedule_sync(state.sync_interval)
     {:noreply, %{state | last_sync: DateTime.utc_now()}}
   end
 
   @impl true
   def handle_info({:sync_complete, results}, state) do
-    Logger.info("[ThreatIntelFeeds] Sync complete, updating status for #{map_size(results)} feeds")
+    Logger.info(
+      "[ThreatIntelFeeds] Sync complete, updating status for #{map_size(results)} feeds"
+    )
+
     new_status = Map.merge(state.sync_status, results)
-    # Reload IOCs in Detection Engine after sync
-    try do
-      TamanduaServer.Detection.Engine.reload_rules()
-    catch
-      _, _ -> :ok
+    # Admit a durable, coalesced IOC snapshot rebuild after all feed writes.
+    reload_receipt = TamanduaServer.Detection.IOCReload.schedule()
+
+    if match?({:error, _}, reload_receipt) do
+      Logger.error("[ThreatIntelFeeds] IOC reload admission failed: #{inspect(reload_receipt)}")
     end
 
     # Trigger retroactive scan for newly inserted IOCs
     try do
       new_iocs = collect_new_iocs_from_results(results)
+
       if length(new_iocs) > 0 do
-        Logger.info("[ThreatIntelFeeds] Triggering retroactive scan for #{length(new_iocs)} new IOCs")
+        Logger.info(
+          "[ThreatIntelFeeds] Triggering retroactive scan for #{length(new_iocs)} new IOCs"
+        )
+
         TamanduaServer.ThreatIntel.RetroactiveScanner.scan_new_iocs(new_iocs)
       end
     catch
@@ -330,12 +372,27 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   def handle_info({:feed_sync_complete, feed_name, result}, state) do
     Logger.info("[ThreatIntelFeeds] Feed #{feed_name} sync complete")
     new_status = Map.put(state.sync_status, feed_name, result)
+
+    case TamanduaServer.Detection.IOCReload.schedule() do
+      {:ok, _receipt} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("[ThreatIntelFeeds] IOC reload admission failed: #{inspect(reason)}")
+    end
+
     {:noreply, %{state | sync_status: new_status}}
   end
 
   @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  defp feed_ioc_counts(%{enabled: false}), do: {0, %{}, %{}}
+
+  defp feed_ioc_counts(_state) do
+    {IOCs.count(), IOCs.count_by_type(), IOCs.count_by_source()}
   end
 
   # ============================================================================
@@ -358,25 +415,29 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     results = Map.merge(results, external_results)
 
     # Sync premium feeds if configured
-    results = if state.api_keys.otx.key do
-      otx_result = sync_otx_feed_with_result(state.api_keys.otx.key)
-      Map.put(results, :alienvault_otx, otx_result)
-    else
-      results
-    end
+    results =
+      if state.api_keys.otx.key do
+        otx_result = sync_otx_feed_with_result(state.api_keys.otx.key)
+        Map.put(results, :alienvault_otx, otx_result)
+      else
+        results
+      end
 
-    results = if state.api_keys.misp.key do
-      misp_result = sync_misp_feed_with_result(state.api_keys.misp)
-      Map.put(results, :misp, misp_result)
-    else
-      results
-    end
+    results =
+      if state.api_keys.misp.key do
+        misp_result = sync_misp_feed_with_result(state.api_keys.misp)
+        Map.put(results, :misp, misp_result)
+      else
+        results
+      end
 
     # Sync custom feeds
-    custom_results = Enum.reduce(state.custom_feeds, %{}, fn feed, acc ->
-      result = sync_custom_feed_with_result(feed)
-      Map.put(acc, String.to_atom(feed.name), result)
-    end)
+    custom_results =
+      Enum.reduce(state.custom_feeds, %{}, fn feed, acc ->
+        result = sync_custom_feed_with_result(feed)
+        Map.put(acc, String.to_atom(feed.name), result)
+      end)
+
     results = Map.merge(results, custom_results)
 
     Logger.info("[ThreatIntelFeeds] Sync complete - #{map_size(results)} feeds processed")
@@ -445,17 +506,19 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     Logger.info("[ThreatIntelFeeds] Syncing Abuse.ch feeds...")
 
     Enum.reduce(@abusech_feeds, %{}, fn {name, url}, acc ->
-      result = try do
-        fetch_and_parse_feed_with_result(name, url)
-      rescue
-        e ->
-          Logger.error("[ThreatIntelFeeds] Failed to sync #{name}: #{inspect(e)}")
-          %{status: :error, error: Exception.message(e), last_sync: nil, count: 0}
-      catch
-        :exit, reason ->
-          Logger.error("[ThreatIntelFeeds] Process exit syncing #{name}: #{inspect(reason)}")
-          %{status: :error, error: "process_exit", last_sync: nil, count: 0}
-      end
+      result =
+        try do
+          fetch_and_parse_feed_with_result(name, url)
+        rescue
+          e ->
+            Logger.error("[ThreatIntelFeeds] Failed to sync #{name}: #{inspect(e)}")
+            %{status: :error, error: Exception.message(e), last_sync: nil, count: 0}
+        catch
+          :exit, reason ->
+            Logger.error("[ThreatIntelFeeds] Process exit syncing #{name}: #{inspect(reason)}")
+            %{status: :error, error: "process_exit", last_sync: nil, count: 0}
+        end
+
       Map.put(acc, name, result)
     end)
   end
@@ -468,17 +531,19 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     Logger.info("[ThreatIntelFeeds] Syncing external free feeds...")
 
     Enum.reduce(@external_free_feeds, %{}, fn {name, url}, acc ->
-      result = try do
-        fetch_and_parse_feed_with_result(name, url)
-      rescue
-        e ->
-          Logger.error("[ThreatIntelFeeds] Failed to sync #{name}: #{inspect(e)}")
-          %{status: :error, error: Exception.message(e), last_sync: nil, count: 0}
-      catch
-        :exit, reason ->
-          Logger.error("[ThreatIntelFeeds] Process exit syncing #{name}: #{inspect(reason)}")
-          %{status: :error, error: "process_exit", last_sync: nil, count: 0}
-      end
+      result =
+        try do
+          fetch_and_parse_feed_with_result(name, url)
+        rescue
+          e ->
+            Logger.error("[ThreatIntelFeeds] Failed to sync #{name}: #{inspect(e)}")
+            %{status: :error, error: Exception.message(e), last_sync: nil, count: 0}
+        catch
+          :exit, reason ->
+            Logger.error("[ThreatIntelFeeds] Process exit syncing #{name}: #{inspect(reason)}")
+            %{status: :error, error: "process_exit", last_sync: nil, count: 0}
+        end
+
       Map.put(acc, name, result)
     end)
   end
@@ -495,18 +560,30 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
         iocs = parse_feed_content(name, body)
         Logger.info("[ThreatIntelFeeds] Parsed #{length(iocs)} IOCs from #{name}")
 
-        # Store IOCs using bulk_add for efficiency
-        {:ok, result} = IOCs.bulk_add(iocs, on_conflict: :nothing)
-        inserted = result.successful
+        # This trusted feed populates the shared IOC catalog.
+        case IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
+          {:ok, result} ->
+            Logger.info("[ThreatIntelFeeds] Stored #{result.successful} new IOCs from #{name}")
 
-        Logger.info("[ThreatIntelFeeds] Stored #{inserted} new IOCs from #{name}")
+            %{
+              status: :ok,
+              last_sync: DateTime.utc_now(),
+              count: length(iocs),
+              inserted: result.successful
+            }
 
-        %{
-          status: :ok,
-          last_sync: DateTime.utc_now(),
-          count: length(iocs),
-          inserted: inserted
-        }
+          {:error, reason} ->
+            Logger.error(
+              "[ThreatIntelFeeds] Failed to store IOCs from #{name}: #{inspect(reason)}"
+            )
+
+            %{
+              status: :error,
+              error: "IOC storage failed",
+              last_sync: nil,
+              count: length(iocs)
+            }
+        end
 
       {:ok, %Finch.Response{status: code}} ->
         Logger.warning("[ThreatIntelFeeds] HTTP #{code} for #{name}")
@@ -560,7 +637,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     |> Enum.reject(&(String.starts_with?(&1, "#") or &1 == ""))
     |> Enum.map(fn line ->
       # Handle CIDR notation
-      value = if String.contains?(line, "/"), do: String.split(line, "/") |> List.first(), else: line
+      value =
+        if String.contains?(line, "/"), do: String.split(line, "/") |> List.first(), else: line
 
       %{
         type: ioc_type,
@@ -579,7 +657,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
 
     body
     |> String.split("\n")
-    |> Enum.drop(1)  # Skip header
+    # Skip header
+    |> Enum.drop(1)
     |> Enum.reject(&(String.starts_with?(&1, "#") or &1 == ""))
     |> Enum.map(fn line ->
       parts = String.split(line, ",")
@@ -631,6 +710,7 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       {:ok, data} when is_list(data) ->
         Enum.map(data, fn entry ->
           malware = Map.get(entry, "malware", "unknown")
+
           %{
             type: "ip",
             value: Map.get(entry, "ip_address", Map.get(entry, "ip", "")),
@@ -692,14 +772,33 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     headers = [{"X-OTX-API-KEY", api_key}]
     url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50"
 
-    case Finch.build(:get, url, headers) |> Finch.request(TamanduaServer.Finch, receive_timeout: 60_000) do
+    case Finch.build(:get, url, headers)
+         |> Finch.request(TamanduaServer.Finch, receive_timeout: 60_000) do
       {:ok, %Finch.Response{status: 200, body: body}} ->
         case Jason.decode(body) do
           {:ok, %{"results" => pulses}} ->
             iocs = Enum.flat_map(pulses, &parse_otx_pulse/1)
             Logger.info("[ThreatIntelFeeds] Parsed #{length(iocs)} IOCs from OTX")
-            {:ok, result} = IOCs.bulk_add(iocs, on_conflict: :nothing)
-            %{status: :ok, last_sync: DateTime.utc_now(), count: length(iocs), inserted: result.successful}
+
+            case IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
+              {:ok, result} ->
+                %{
+                  status: :ok,
+                  last_sync: DateTime.utc_now(),
+                  count: length(iocs),
+                  inserted: result.successful
+                }
+
+              {:error, reason} ->
+                Logger.error("[ThreatIntelFeeds] Failed to store OTX IOCs: #{inspect(reason)}")
+
+                %{
+                  status: :error,
+                  error: "IOC storage failed",
+                  last_sync: nil,
+                  count: length(iocs)
+                }
+            end
 
           _ ->
             Logger.warning("[ThreatIntelFeeds] Failed to parse OTX response")
@@ -738,7 +837,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     sync_misp_feed_with_result(config)
   end
 
-  defp sync_misp_feed_with_result(%{url: url, key: api_key, verify_ssl: _verify_ssl}) when is_binary(url) and is_binary(api_key) do
+  defp sync_misp_feed_with_result(%{url: url, key: api_key, verify_ssl: _verify_ssl})
+       when is_binary(url) and is_binary(api_key) do
     Logger.info("[ThreatIntelFeeds] Syncing MISP...")
 
     headers = [
@@ -748,20 +848,40 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
     ]
 
     # Get recent events (last 30 days)
-    body = Jason.encode!(%{
-      "returnFormat" => "json",
-      "timestamp" => "30d",
-      "enforceWarninglist" => true
-    })
+    body =
+      Jason.encode!(%{
+        "returnFormat" => "json",
+        "timestamp" => "30d",
+        "enforceWarninglist" => true
+      })
 
-    case Finch.build(:post, "#{url}/events/restSearch", headers, body) |> Finch.request(TamanduaServer.Finch, receive_timeout: 120_000) do
+    case Finch.build(:post, "#{url}/events/restSearch", headers, body)
+         |> Finch.request(TamanduaServer.Finch, receive_timeout: 120_000) do
       {:ok, %Finch.Response{status: 200, body: response_body}} ->
         case Jason.decode(response_body) do
           {:ok, %{"response" => events}} ->
             iocs = Enum.flat_map(events, &parse_misp_event/1)
             Logger.info("[ThreatIntelFeeds] Parsed #{length(iocs)} IOCs from MISP")
-            {:ok, result} = IOCs.bulk_add(iocs, on_conflict: :nothing)
-            %{status: :ok, last_sync: DateTime.utc_now(), count: length(iocs), inserted: result.successful}
+
+            case IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
+              {:ok, result} ->
+                %{
+                  status: :ok,
+                  last_sync: DateTime.utc_now(),
+                  count: length(iocs),
+                  inserted: result.successful
+                }
+
+              {:error, reason} ->
+                Logger.error("[ThreatIntelFeeds] Failed to store MISP IOCs: #{inspect(reason)}")
+
+                %{
+                  status: :error,
+                  error: "IOC storage failed",
+                  last_sync: nil,
+                  count: length(iocs)
+                }
+            end
 
           _ ->
             Logger.warning("[ThreatIntelFeeds] Failed to parse MISP response")
@@ -809,12 +929,33 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
 
     headers = Enum.map(feed.headers, fn {k, v} -> {k, v} end)
 
-    case Finch.build(:get, feed.url, headers) |> Finch.request(TamanduaServer.Finch, receive_timeout: 60_000) do
+    case Finch.build(:get, feed.url, headers)
+         |> Finch.request(TamanduaServer.Finch, receive_timeout: 60_000) do
       {:ok, %Finch.Response{status: 200, body: body}} ->
         iocs = parse_custom_feed(body, feed)
         Logger.info("[ThreatIntelFeeds] Parsed #{length(iocs)} IOCs from #{feed.name}")
-        {:ok, result} = IOCs.bulk_add(iocs, on_conflict: :nothing)
-        %{status: :ok, last_sync: DateTime.utc_now(), count: length(iocs), inserted: result.successful}
+
+        case IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
+          {:ok, result} ->
+            %{
+              status: :ok,
+              last_sync: DateTime.utc_now(),
+              count: length(iocs),
+              inserted: result.successful
+            }
+
+          {:error, reason} ->
+            Logger.error(
+              "[ThreatIntelFeeds] Failed to store custom feed #{feed.name} IOCs: #{inspect(reason)}"
+            )
+
+            %{
+              status: :error,
+              error: "IOC storage failed",
+              last_sync: nil,
+              count: length(iocs)
+            }
+        end
 
       {:ok, %Finch.Response{status: code}} ->
         Logger.warning("[ThreatIntelFeeds] Custom feed #{feed.name} returned HTTP #{code}")
@@ -875,14 +1016,15 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
   # can search historical telemetry for matches. We fetch the most recent IOCs
   # from the database that match the inserted count from each feed sync.
   defp collect_new_iocs_from_results(results) do
-    total_inserted = results
-    |> Enum.map(fn {_feed, result} ->
-      cond do
-        is_map(result) -> Map.get(result, :inserted, 0)
-        true -> 0
-      end
-    end)
-    |> Enum.sum()
+    total_inserted =
+      results
+      |> Enum.map(fn {_feed, result} ->
+        cond do
+          is_map(result) -> Map.get(result, :inserted, 0)
+          true -> 0
+        end
+      end)
+      |> Enum.sum()
 
     if total_inserted > 0 do
       # Fetch the most recently inserted IOCs (these are the new ones)
@@ -974,7 +1116,8 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
       Regex.match?(~r/^https?:\/\//, value) -> "url"
       valid_ipv4?(value) or valid_ipv6?(value) -> "ip"
       valid_domain?(value) -> "domain"
-      true -> "filename"  # Default to filename for unknown types
+      # Default to filename for unknown types
+      true -> "filename"
     end
   end
 
@@ -1054,8 +1197,10 @@ defmodule TamanduaServer.Detection.ThreatIntelFeeds do
 
   defp get_configured_providers(state) do
     %{
-      abusech: true,  # Always enabled
-      external_feeds: true,  # Always enabled
+      # Always enabled
+      abusech: true,
+      # Always enabled
+      external_feeds: true,
       otx: state.api_keys.otx.key != nil,
       misp: state.api_keys.misp.key != nil,
       virustotal: state.api_keys.virustotal.key != nil,

@@ -3,20 +3,23 @@ import { Head, Link, router } from '@inertiajs/react';
 import { MainLayout } from '@/layouts/MainLayout';
 import {
   AlertTriangle, Cpu, File, Globe, Server, Settings,
-  ZoomIn, ZoomOut, Maximize2, RefreshCw, ChevronRight,
+  ZoomIn, ZoomOut, Maximize2, RefreshCw,
   Clock, Shield, Target, Activity, Download, Share2,
-  Filter, Eye, EyeOff, Play, Pause, ChevronDown,
+  Filter, Eye, Play, Pause, ChevronDown,
   ArrowLeft, Copy, ExternalLink, AlertCircle, Info,
   Crosshair, GitBranch, Layers, User, Lock, Trash2,
-  FileText, Network, Database, Terminal, ChevronUp,
-  SkipBack, SkipForward, Volume2, Square, Circle,
-  Minus, Plus, Move, MousePointer, X, Check, Search
+  FileText, Network, Database, Terminal, BarChart3,
+  SkipBack, SkipForward, Square,
+  Minus, Plus, X, Check, Search
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PageProps, Detection } from '@/types';
 import { logger } from '@/lib/logger';
 import { safeCapitalize } from '@/lib/utils';
 import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
+import AIEvidenceSummary from '@/components/AIEvidenceSummary';
+import { collectModelObservations, ModelObservationsPanel } from '@/components/ModelObservationsPanel';
+import { TrustPostureTransitionSummary } from '@/components/TrustPosturePanel';
 
 function getCsrfToken(): string {
   return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
@@ -245,8 +248,58 @@ interface StorylinePageProps extends PageProps {
   pid?: number;
   storyline: StorylineData | null;
   analysis: Analysis | null;
+  responseActions?: PersistedResponseAction[];
+  trust_posture?: unknown;
   layout: string;
   error?: string;
+}
+
+type ResponseActionName = 'isolate' | 'kill' | 'quarantine';
+type ResponseActionResultState = 'accepted' | 'degraded' | 'failed';
+
+interface PersistedResponseAction {
+  id: string;
+  action_type?: string;
+  actionType?: string;
+  status?: string;
+  parameters?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error_message?: string | null;
+  errorMessage?: string | null;
+  executed_at?: string | null;
+  executedAt?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
+  command?: {
+    id?: string;
+    command_type?: string;
+    commandType?: string;
+    status?: string;
+    error?: string | null;
+    completed_at?: string | null;
+    completedAt?: string | null;
+    updated_at?: string | null;
+    updatedAt?: string | null;
+  } | null;
+  rollback?: {
+    available?: boolean;
+    action_type?: string | null;
+    actionType?: string | null;
+    reason?: string | null;
+  } | null;
+}
+
+interface ResponseActionAudit {
+  action: ResponseActionName;
+  label: string;
+  state: ResponseActionResultState;
+  status: string;
+  target: string;
+  commandId?: string;
+  capability?: string;
+  caveat?: string;
+  error?: string;
+  recordedAt: string;
 }
 
 // ============================================================================
@@ -389,14 +442,14 @@ function relaxLayoutCollisions(
         const otherPosition = next.get(other.id);
         if (!otherPosition) continue;
 
-        const dx = otherPosition.x - currentPosition.x;
-        const dy = otherPosition.y - currentPosition.y;
+        const dx: number = otherPosition.x - currentPosition.x;
+        const dy: number = otherPosition.y - currentPosition.y;
         if (Math.abs(dx) >= minGapX || Math.abs(dy) >= minGapY) continue;
 
-        const directionX = dx === 0 ? (j % 2 === 0 ? 1 : -1) : Math.sign(dx);
-        const directionY = dy === 0 ? (j % 3 === 0 ? 1 : -1) : Math.sign(dy);
+        const directionX: number = dx === 0 ? (j % 2 === 0 ? 1 : -1) : Math.sign(dx);
+        const directionY: number = dy === 0 ? (j % 3 === 0 ? 1 : -1) : Math.sign(dy);
         const pushX = (minGapX - Math.abs(dx)) / 2 + 12;
-        const pushY = (minGapY - Math.abs(dy)) / 2 + 10;
+        const pushY: number = (minGapY - Math.abs(dy)) / 2 + 10;
 
         currentPosition = {
           x: currentPosition.x - directionX * pushX * 0.35,
@@ -669,6 +722,51 @@ function huntQueryForNode(node: StorylineNode | null, alertId?: string | null): 
   return alertId ? `alert:${alertId}` : node.label;
 }
 
+const ALERT_DETAIL_TABS = new Set(['graph', 'timeline', 'events', 'related', 'evidence', 'process-chain']);
+
+function normalizeAlertReturnTab(value?: string | null): string | null {
+  const tab = asText(value).trim();
+  return ALERT_DETAIL_TABS.has(tab) ? tab : null;
+}
+
+function buildAlertReturnHref(
+  alertId?: string | null,
+  returnTab?: string | null,
+  returnQuery?: string | null,
+  fallbackTab?: string
+): string {
+  if (!alertId) return '/app/alerts';
+
+  const params = new URLSearchParams(returnQuery || '');
+  const tab = normalizeAlertReturnTab(returnTab) || normalizeAlertReturnTab(params.get('tab')) || fallbackTab;
+  if (tab) params.set('tab', tab);
+
+  const query = params.toString();
+  return `/app/alerts/${alertId}${query ? `?${query}` : ''}`;
+}
+
+function huntQueryForStoryline(storyline: StorylineData, selectedNode: StorylineNode | null): string {
+  const nodeQuery = huntQueryForNode(selectedNode, storyline.alert_id);
+  if (selectedNode || storyline.threat_indicators.length === 0) return nodeQuery;
+
+  const indicatorQueries = storyline.threat_indicators
+    .slice(0, 4)
+    .map((indicator) => {
+      const value = asText(indicator.value).trim();
+      if (!value) return '';
+      const quoted = JSON.stringify(value);
+      const type = asText(indicator.type).toLowerCase();
+      if (type === 'hash') return `file.hash.sha256:${quoted} or process.hash.sha256:${quoted}`;
+      if (type === 'domain' || type === 'dns') return `dns.question.name:${quoted} or destination.domain:${quoted}`;
+      if (type === 'ip') return `destination.ip:${quoted} or source.ip:${quoted}`;
+      if (type === 'url') return `url.full:${quoted} or url.original:${quoted}`;
+      return `message:${quoted} or event.original:${quoted}`;
+    })
+    .filter(Boolean);
+
+  return [nodeQuery, ...indicatorQueries.map((query) => `(${query})`)].filter(Boolean).join(' or ');
+}
+
 function summarizeStorylineNode(node: StorylineNode, edges: StorylineEdge[], allNodes: StorylineNode[]): string {
   const incoming = edges.filter((edge) => edge.target === node.id);
   const outgoing = edges.filter((edge) => edge.source === node.id);
@@ -734,6 +832,199 @@ function valuesFromNodes(nodes: StorylineNode[], keys: string[], fallback?: (nod
   );
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nestedRecord(root: Record<string, unknown>, path: string[]): Record<string, unknown> {
+  return path.reduce<Record<string, unknown>>((current, key) => asRecord(current[key]), root);
+}
+
+function nestedValue(root: Record<string, unknown>, path: string[]): unknown {
+  return path.reduce<unknown>((current, key) => asRecord(current)[key], root);
+}
+
+function firstNestedText(root: Record<string, unknown> | null, paths: string[][]): string {
+  if (!root) return '';
+
+  for (const path of paths) {
+    const text = asText(nestedValue(root, path)).trim();
+    if (text) return text;
+  }
+
+  return '';
+}
+
+async function readJsonBody(response: Response): Promise<Record<string, unknown> | null> {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) return null;
+
+  try {
+    return asRecord(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+function buildResponseActionAudit({
+  action,
+  label,
+  target,
+  response,
+  body,
+}: {
+  action: ResponseActionName;
+  label: string;
+  target: string;
+  response: Response;
+  body: Record<string, unknown> | null;
+}): ResponseActionAudit {
+  const commandId = firstNestedText(body, [
+    ['command_id'],
+    ['commandId'],
+    ['id'],
+    ['command', 'id'],
+    ['command', 'command_id'],
+    ['data', 'command_id'],
+    ['data', 'id'],
+  ]);
+  const status = firstNestedText(body, [
+    ['status'],
+    ['command_status'],
+    ['state'],
+    ['command', 'status'],
+    ['command', 'state'],
+    ['data', 'status'],
+  ]) || `${response.status} ${response.statusText || 'Accepted'}`.trim();
+  const responseTarget = firstNestedText(body, [
+    ['target'],
+    ['target_id'],
+    ['agent_id'],
+    ['command', 'target'],
+    ['data', 'target'],
+  ]);
+  const capability = firstNestedText(body, [
+    ['capability'],
+    ['capability_status'],
+    ['capability_caveat'],
+    ['platform_capability'],
+    ['command', 'capability'],
+    ['data', 'capability'],
+  ]);
+  const caveat = firstNestedText(body, [
+    ['caveat'],
+    ['capability_caveat'],
+    ['degraded_reason'],
+    ['reason'],
+    ['message'],
+    ['warning'],
+    ['command', 'caveat'],
+    ['data', 'caveat'],
+  ]);
+
+  return {
+    action,
+    label,
+    state: commandId ? 'accepted' : 'degraded',
+    status,
+    target: responseTarget || target,
+    commandId: commandId || undefined,
+    capability: capability || undefined,
+    caveat: caveat || (commandId ? undefined : 'API accepted the request but did not return a command record for audit.'),
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+interface StorylineContextSignal {
+  label: string;
+  detail?: string;
+  severity?: string;
+}
+
+interface StorylinePayloadContext {
+  eventType: string;
+  mobileEventId?: string;
+  app: Array<{ label: string; value: string }>;
+  device: Array<{ label: string; value: string }>;
+  signals: StorylineContextSignal[];
+  response: string[];
+  gaps: string[];
+}
+
+function buildStorylinePayloadContext(storyline: StorylineData | null): StorylinePayloadContext | null {
+  if (!storyline?.timeline.length) return null;
+
+  const rawPayload = asRecord(storyline.timeline[0]?.payload);
+  const eventPayload = asRecord(rawPayload.payload);
+  const app = nestedRecord(rawPayload, ['payload', 'app']);
+  const device = nestedRecord(rawPayload, ['payload', 'device']);
+  const evidence = nestedRecord(rawPayload, ['payload', 'evidence']);
+  const response = nestedRecord(rawPayload, ['payload', 'response']);
+  const activeSignals = Array.isArray(evidence.active_signals) ? evidence.active_signals : [];
+
+  const field = (label: string, value: unknown) => {
+    const text = asText(value).trim();
+    return text ? { label, value: text } : null;
+  };
+
+  const appFields = [
+    field('App', app.display_name),
+    field('Package', app.package_or_bundle_id),
+    field('Version', app.version),
+    field('Build', app.build),
+    field('Signing', app.signing_hash),
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+
+  const deviceFields = [
+    field('Device', device.device_id || eventPayload.device_id),
+    field('Model', device.model),
+    field('OS', device.os_version),
+    field('Manufacturer', device.manufacturer),
+    field('Managed', device.managed == null ? undefined : String(device.managed)),
+    field('MDM', device.mdm_provider),
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+
+  const signals: StorylineContextSignal[] = activeSignals
+    .flatMap((signal): StorylineContextSignal[] => {
+      const item = asRecord(signal);
+      const label = asText(item.name || item.signal || item.type).trim();
+      if (!label) return [];
+      return [{
+        label,
+        detail: asText(item.description || item.detail || item.reason).trim() || undefined,
+        severity: asText(item.severity || item.risk || rawPayload.severity).trim() || undefined,
+      }];
+    });
+
+  const responseItems = uniqueCompact([
+    response.action,
+    response.recommendation,
+    response.recommended_action,
+    response.policy,
+    nestedValue(rawPayload, ['payload', 'recommended_action']),
+    nestedValue(rawPayload, ['payload', 'remediation']),
+  ], 6);
+
+  const gaps = uniqueCompact([
+    rawPayload.evidence_gap,
+    rawPayload.evidence_quality,
+    rawPayload.collection_status,
+    evidence.gap,
+    evidence.quality,
+    evidence.collection_status,
+  ], 4);
+
+  return {
+    eventType: asText(rawPayload.event_type || storyline.timeline[0]?.event_type, 'event'),
+    mobileEventId: asText(rawPayload.mobile_event_id || eventPayload.event_id).trim() || undefined,
+    app: appFields,
+    device: deviceFields,
+    signals,
+    response: responseItems,
+    gaps,
+  };
+}
+
 // ============================================================================
 // Helper Components
 // ============================================================================
@@ -779,6 +1070,131 @@ function CollapsibleSection({ title, icon: Icon, defaultOpen = true, badge, badg
       </button>
       {isOpen && <div className="pt-3">{children}</div>}
     </div>
+  );
+}
+
+function PayloadContextPanel({ context }: { context: StorylinePayloadContext | null }) {
+  if (!context) return null;
+
+  const hasApp = context.app.length > 0;
+  const hasDevice = context.device.length > 0;
+  const hasSignals = context.signals.length > 0;
+  const hasResponse = context.response.length > 0;
+
+  return (
+    <CollapsibleSection
+      title="Captured App Guard Context"
+      icon={Shield}
+      badge={context.eventType}
+      badgeColor="var(--emerald-400)"
+    >
+      <div className="space-y-3">
+        <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                Event
+              </div>
+              <div className="text-sm font-mono truncate" style={{ color: 'var(--fg)' }}>
+                {context.eventType}
+              </div>
+            </div>
+            {context.mobileEventId && (
+              <div className="text-right min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+                  Mobile event
+                </div>
+                <div className="text-xs font-mono truncate max-w-[170px]" style={{ color: 'var(--fg-2)' }} title={context.mobileEventId}>
+                  {context.mobileEventId}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3">
+          {hasApp && (
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <FileText size={13} style={{ color: 'var(--med)' }} />
+                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Application</span>
+              </div>
+              <div className="space-y-1">
+                {context.app.map((item) => (
+                  <div key={`${item.label}-${item.value}`} className="grid grid-cols-[82px_minmax(0,1fr)] gap-2 text-xs">
+                    <span style={{ color: 'var(--muted)' }}>{item.label}</span>
+                    <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }} title={item.value}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasDevice && (
+            <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <Server size={13} style={{ color: 'var(--sol-cyan)' }} />
+                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Device</span>
+              </div>
+              <div className="space-y-1">
+                {context.device.map((item) => (
+                  <div key={`${item.label}-${item.value}`} className="grid grid-cols-[82px_minmax(0,1fr)] gap-2 text-xs">
+                    <span style={{ color: 'var(--muted)' }}>{item.label}</span>
+                    <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }} title={item.value}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {hasSignals && (
+          <div className="rounded-lg p-3" style={{ backgroundColor: 'color-mix(in srgb, var(--crit) 7%, var(--bg-2))', border: '1px solid color-mix(in srgb, var(--crit) 22%, var(--border))' }}>
+            <div className="flex items-center gap-2 mb-2">
+              <AlertTriangle size={13} style={{ color: 'var(--crit)' }} />
+              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--crit)' }}>Active Signals</span>
+            </div>
+            <div className="space-y-2">
+              {context.signals.slice(0, 8).map((signal) => (
+                <div key={`${signal.label}-${signal.detail || ''}`} className="text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium" style={{ color: 'var(--fg)' }}>{signal.label}</span>
+                    {signal.severity && (
+                      <span className="badge-sentinel" style={{ color: 'var(--high)', backgroundColor: 'var(--high-bg)' }}>
+                        {signal.severity}
+                      </span>
+                    )}
+                  </div>
+                  {signal.detail && <div className="mt-0.5" style={{ color: 'var(--muted)' }}>{signal.detail}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasResponse && (
+          <div className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)' }}>
+            <div className="flex items-center gap-2 mb-2">
+              <Activity size={13} style={{ color: 'var(--emerald-400)' }} />
+              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Response Context</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {context.response.map((item) => (
+                <span key={item} className="text-xs px-2 py-1 rounded" style={{ backgroundColor: 'var(--surface-2)', color: 'var(--fg-2)' }}>
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {context.gaps.length > 0 && (
+          <div className="text-xs rounded-lg p-2" style={{ backgroundColor: 'color-mix(in srgb, var(--med) 8%, transparent)', color: 'var(--muted)' }}>
+            Evidence caveats: {context.gaps.join(', ')}
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }
 
@@ -886,6 +1302,124 @@ function ActionButton({ icon: Icon, label, onClick, variant = 'secondary', disab
       )}
       {label}
     </button>
+  );
+}
+
+function ResponseActionAuditPanel({ audit }: { audit: ResponseActionAudit | null }) {
+  if (!audit) {
+    return (
+      <div className="rounded-lg p-3 text-xs" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
+        No response command has been recorded from this storyline view yet.
+      </div>
+    );
+  }
+
+  const stateColor = audit.state === 'failed' ? 'var(--crit)' : audit.state === 'degraded' ? 'var(--high)' : 'var(--emerald-400)';
+  const stateLabel = audit.state === 'failed' ? 'Failed' : audit.state === 'degraded' ? 'Degraded' : 'Accepted';
+
+  return (
+    <div className="rounded-lg p-3 space-y-3" style={{ backgroundColor: 'var(--bg-2)', border: `1px solid ${stateColor}` }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+            Last response action
+          </div>
+          <div className="text-sm font-medium truncate" style={{ color: 'var(--fg)' }}>
+            {audit.label}
+          </div>
+        </div>
+        <span className="badge-sentinel" style={{ color: stateColor, backgroundColor: 'var(--surface-2)' }}>
+          {stateLabel}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs">
+        <span style={{ color: 'var(--muted)' }}>Status</span>
+        <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }} title={audit.status}>{audit.status}</span>
+
+        <span style={{ color: 'var(--muted)' }}>Command</span>
+        <span className="font-mono truncate" style={{ color: audit.commandId ? 'var(--fg-2)' : 'var(--high)' }} title={audit.commandId || audit.caveat}>
+          {audit.commandId || 'No command record returned'}
+        </span>
+
+        <span style={{ color: 'var(--muted)' }}>Target</span>
+        <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }} title={audit.target}>{audit.target}</span>
+
+        {audit.capability && (
+          <>
+            <span style={{ color: 'var(--muted)' }}>Capability</span>
+            <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }} title={audit.capability}>{audit.capability}</span>
+          </>
+        )}
+
+        <span style={{ color: 'var(--muted)' }}>Recorded</span>
+        <span className="font-mono truncate" style={{ color: 'var(--fg-2)' }}>{new Date(audit.recordedAt).toLocaleString()}</span>
+      </div>
+
+      {(audit.caveat || audit.error) && (
+        <div className="rounded p-2 text-xs" style={{ backgroundColor: 'var(--surface-2)', color: audit.error ? 'var(--crit)' : 'var(--muted)' }}>
+          {audit.error || audit.caveat}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PersistedResponseHistoryPanel({ actions }: { actions: PersistedResponseAction[] }) {
+  if (!actions.length) {
+    return (
+      <div className="rounded-lg p-3 text-xs" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
+        No persisted containment or remediation action is attached to this alert yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg p-3 space-y-2" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+          Persisted response status
+        </div>
+        <span className="badge-sentinel" style={{ color: 'var(--fg-2)', backgroundColor: 'var(--surface-2)' }}>
+          {actions.length}
+        </span>
+      </div>
+
+      {actions.slice(0, 4).map((action) => {
+        const command = action.command || null;
+        const rollback = action.rollback || null;
+        const status = asText(action.status, 'unknown');
+        const actionType = asText(action.action_type || action.actionType, 'response');
+        const commandStatus = asText(command?.status);
+        const timestamp = asText(action.executed_at || action.executedAt || action.created_at || action.createdAt);
+        const rollbackAction = asText(rollback?.action_type || rollback?.actionType);
+
+        return (
+          <div key={action.id} className="rounded p-2" style={{ backgroundColor: 'var(--surface-2)' }}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium" style={{ color: 'var(--fg)' }}>
+                {safeCapitalize(actionType.replace(/_/g, ' '))}
+              </span>
+              <span className="rounded px-1.5 py-0.5 text-[10px] uppercase" style={{ color: status === 'failed' || status === 'timeout' ? 'var(--crit)' : status === 'pending' || status === 'executing' ? 'var(--med)' : 'var(--low)', backgroundColor: 'var(--surface)' }}>
+                {status}
+              </span>
+            </div>
+            <div className="mt-1 truncate text-[10px] font-mono" style={{ color: command?.id ? 'var(--fg-2)' : 'var(--muted)' }} title={command?.id || undefined}>
+              Command: {command?.id || 'not linked'}
+              {commandStatus ? ` / ${commandStatus}` : ''}
+            </div>
+            <div className="mt-1 truncate text-[10px]" style={{ color: rollback?.available ? 'var(--emerald-400)' : 'var(--muted)' }} title={asText(rollback?.reason)}>
+              {rollback?.available ? `Rollback available${rollbackAction ? `: ${rollbackAction}` : ''}` : asText(rollback?.reason, 'Rollback unavailable')}
+            </div>
+            {timestamp && (
+              <div className="mt-1 text-[10px]" style={{ color: 'var(--subtle)' }}>
+                {new Date(timestamp).toLocaleString()}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1114,9 +1648,11 @@ export default function Storyline({
   page_title,
   alert_id,
   agent_id,
-  pid,
+  pid: _pid,
   storyline: rawStoryline,
   analysis: rawAnalysis,
+  responseActions = [],
+  trust_posture,
   layout: initialLayout,
   error
 }: StorylinePageProps) {
@@ -1240,6 +1776,14 @@ export default function Storyline({
       attack_narrative: asText(rawAnalysis.attack_narrative),
     };
   }, [rawAnalysis]);
+  const payloadContext = useMemo(() => buildStorylinePayloadContext(storyline), [storyline]);
+  const modelObservations = useMemo(
+    () => collectModelObservations(
+      ...(storyline?.timeline.map(entry => entry.payload) || []),
+      ...(storyline?.nodes.map(node => node.data) || []),
+    ),
+    [storyline],
+  );
 
   // SVG canvas state
   const svgRef = useRef<SVGSVGElement>(null);
@@ -1279,6 +1823,7 @@ export default function Storyline({
 
   // Action states
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [responseActionAudit, setResponseActionAudit] = useState<ResponseActionAudit | null>(null);
   const [pendingKill, setPendingKill] = useState<{ pid: number } | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
@@ -1486,7 +2031,7 @@ export default function Storyline({
   const handleZoomIn = () => setZoom(z => Math.min(3, z + 0.2));
   const handleZoomOut = () => setZoom(z => Math.max(0.2, z - 0.2));
 
-  const handleFitView = (positions = nodePositions) => {
+  const handleFitView = (positions: Map<string, { x: number; y: number }> = nodePositions) => {
     if (filteredNodes.length === 0) return;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1567,54 +2112,99 @@ export default function Storyline({
     });
   };
 
-  // Action handlers
-  const handleIsolateEndpoint = async () => {
-    if (!storyline?.agent_id) return;
-    setActionLoading('isolate');
+  const recordResponseFailure = (
+    action: ResponseActionName,
+    label: string,
+    target: string,
+    status: string,
+    errorMessage: string,
+  ) => {
+    setResponseActionAudit({
+      action,
+      label,
+      state: 'failed',
+      status,
+      target,
+      error: errorMessage,
+      recordedAt: new Date().toISOString(),
+    });
+  };
+
+  const submitResponseAction = async ({
+    action,
+    label,
+    target,
+    url,
+    body,
+    successToast,
+    degradedToast,
+    failureToast,
+  }: {
+    action: ResponseActionName;
+    label: string;
+    target: string;
+    url: string;
+    body?: Record<string, unknown>;
+    successToast: string;
+    degradedToast: string;
+    failureToast: string;
+  }) => {
+    setActionLoading(action);
     try {
-      const response = await fetch(`/api/v1/agents/${storyline.agent_id}/isolate`, {
+      const response = await fetch(url, {
         method: 'POST',
         credentials: 'include',
         headers: jsonApiHeaders(),
+        ...(body ? { body: JSON.stringify(body) } : {}),
       });
+      const responseBody = await readJsonBody(response);
+
       if (response.ok) {
-        toast.success('Endpoint isolated');
+        const audit = buildResponseActionAudit({ action, label, target, response, body: responseBody });
+        setResponseActionAudit(audit);
+        toast[audit.state === 'accepted' ? 'success' : 'warning'](audit.state === 'accepted' ? successToast : degradedToast);
       } else {
-        toast.error(`Failed to isolate endpoint: ${response.status} ${response.statusText}`);
+        const status = `${response.status} ${response.statusText}`.trim();
+        const errorMessage = firstNestedText(responseBody, [['error'], ['message'], ['reason']]) || status;
+        recordResponseFailure(action, label, target, status, errorMessage);
+        toast.error(`${failureToast}: ${status}`);
       }
     } catch (err) {
-      logger.error('Failed to isolate:', err);
-      toast.error(`Failed to isolate endpoint: ${(err as Error).message}`);
+      logger.error(`Failed response action ${action}:`, err);
+      const errorMessage = (err as Error).message;
+      recordResponseFailure(action, label, target, 'Network/client error', errorMessage);
+      toast.error(`${failureToast}: ${errorMessage}`);
     } finally {
       setActionLoading(null);
     }
   };
 
+  // Action handlers
+  const handleIsolateEndpoint = async () => {
+    if (!storyline?.agent_id) return;
+    await submitResponseAction({
+      action: 'isolate',
+      label: 'Isolate endpoint',
+      target: storyline.agent_id,
+      url: `/api/v1/agents/${storyline.agent_id}/isolate`,
+      successToast: 'Endpoint isolate command recorded',
+      degradedToast: 'Endpoint isolate request accepted without command record',
+      failureToast: 'Failed to isolate endpoint',
+    });
+  };
+
   const performKillProcess = async (pid: number) => {
     if (!storyline?.agent_id) return;
-    setActionLoading('kill');
-    try {
-      const response = await fetch('/api/v1/response/kill', {
-        method: 'POST',
-        credentials: 'include',
-        headers: jsonApiHeaders(),
-        body: JSON.stringify({
-          agent_id: storyline.agent_id,
-          pid,
-          force: true,
-        }),
-      });
-      if (response.ok) {
-        toast.success('Process kill command sent');
-      } else {
-        toast.error(`Failed to kill process: ${response.status} ${response.statusText}`);
-      }
-    } catch (err) {
-      logger.error('Failed to kill process:', err);
-      toast.error(`Failed to kill process: ${(err as Error).message}`);
-    } finally {
-      setActionLoading(null);
-    }
+    await submitResponseAction({
+      action: 'kill',
+      label: 'Kill process',
+      target: `agent ${storyline.agent_id} / pid ${pid}`,
+      url: '/api/v1/response/kill',
+      body: { agent_id: storyline.agent_id, pid, force: true },
+      successToast: 'Process kill command recorded',
+      degradedToast: 'Process kill request accepted without command record',
+      failureToast: 'Failed to kill process',
+    });
   };
 
   const handleKillProcess = () => {
@@ -1631,29 +2221,18 @@ export default function Storyline({
 
   const handleQuarantineFile = async () => {
     if (!storyline?.agent_id || !selectedNode || selectedNode.type !== 'file') return;
+    const target = asText(selectedNode.data.path || selectedNode.full_label, selectedNode.label);
 
-    setActionLoading('quarantine');
-    try {
-      const response = await fetch('/api/v1/response/quarantine', {
-        method: 'POST',
-        credentials: 'include',
-        headers: jsonApiHeaders(),
-        body: JSON.stringify({
-          agent_id: storyline.agent_id,
-          path: selectedNode.data.path || selectedNode.full_label,
-        }),
-      });
-      if (response.ok) {
-        toast.success('File quarantined');
-      } else {
-        toast.error(`Failed to quarantine file: ${response.status} ${response.statusText}`);
-      }
-    } catch (err) {
-      logger.error('Failed to quarantine:', err);
-      toast.error(`Failed to quarantine file: ${(err as Error).message}`);
-    } finally {
-      setActionLoading(null);
-    }
+    await submitResponseAction({
+      action: 'quarantine',
+      label: 'Quarantine file',
+      target,
+      url: '/api/v1/response/quarantine',
+      body: { agent_id: storyline.agent_id, path: target },
+      successToast: 'File quarantine command recorded',
+      degradedToast: 'File quarantine request accepted without command record',
+      failureToast: 'Failed to quarantine file',
+    });
   };
 
   // Export handlers
@@ -1705,6 +2284,16 @@ export default function Storyline({
   };
 
   const effectiveAgentId = storyline?.agent_id || agent_id;
+  const returnState = useMemo(() => {
+    if (typeof window === 'undefined') return { returnTab: null, returnQuery: null };
+    const params = new URLSearchParams(window.location.search);
+    return {
+      returnTab: params.get('returnTab'),
+      returnQuery: params.get('returnQuery'),
+    };
+  }, []);
+  const alertReturnHref = buildAlertReturnHref(alert_id || storyline?.alert_id, returnState.returnTab, returnState.returnQuery);
+  const alertEventsHref = buildAlertReturnHref(alert_id || storyline?.alert_id, 'events', returnState.returnQuery, 'events');
 
   // Render error state
   if (error) {
@@ -1717,7 +2306,7 @@ export default function Storyline({
             <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--fg)' }}>Failed to Load Storyline</h2>
             <p className="mb-4" style={{ color: 'var(--muted)' }}>{error}</p>
             <Link
-              href={alert_id ? `/app/alerts/${alert_id}` : '/app/alerts'}
+              href={alertReturnHref}
               className="btn-sentinel btn-sentinel-primary"
             >
               <ArrowLeft className="inline-block mr-2" size={16} />
@@ -1741,7 +2330,7 @@ export default function Storyline({
             <p className="mb-4" style={{ color: 'var(--muted)' }}>No events found to build a storyline.</p>
             <div className="flex items-center justify-center gap-3">
               <Link
-                href={alert_id ? `/app/alerts/${alert_id}` : '/app/alerts'}
+                href={alertReturnHref}
                 className="btn-sentinel btn-sentinel-primary"
               >
                 <ArrowLeft className="inline-block mr-2" size={16} />
@@ -1749,7 +2338,7 @@ export default function Storyline({
               </Link>
               {alert_id && (
                 <Link
-                  href={`/app/alerts/${alert_id}?tab=events`}
+                  href={alertEventsHref}
                   className="btn-sentinel btn-sentinel-secondary"
                 >
                   <ExternalLink className="inline-block mr-2" size={16} />
@@ -1860,7 +2449,8 @@ export default function Storyline({
 
     const isSelected = selectedNode?.id === node.id;
     const isHovered = hoveredNode === node.id;
-    const isHighlighted = Boolean(node.highlighted || node.suspicious);
+    const isSuspicious = Boolean(node.suspicious);
+    const isHighlighted = Boolean(node.highlighted || isSuspicious);
     const isRootCause = storyline?.root_cause?.node_id === node.id;
     const isCollapsed = collapsedNodes.has(node.id);
 
@@ -1909,7 +2499,7 @@ export default function Storyline({
           <circle
             r={36}
             fill="none"
-            stroke={node.suspicious ? 'var(--crit)' : 'var(--high)'}
+            stroke={isSuspicious ? 'var(--crit)' : 'var(--high)'}
             strokeWidth={1}
             opacity={0.4}
             className="animate-ping"
@@ -1927,7 +2517,7 @@ export default function Storyline({
         </foreignObject>
 
         {/* Elevated badge for process nodes */}
-        {node.type === 'process' && node.data.is_elevated && (
+        {node.type === 'process' && Boolean(node.data.is_elevated) && (
           <g transform="translate(-18, -18)">
             <circle r={8} fill="var(--high)" />
             <foreignObject x={-5} y={-5} width={10} height={10}>
@@ -2131,7 +2721,7 @@ export default function Storyline({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link
-                href={alert_id ? `/app/alerts/${alert_id}` : '/app/alerts'}
+                href={alertReturnHref}
                 className="p-2 rounded-lg transition-colors"
                 style={{ color: 'var(--muted)' }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--surface-2)'}
@@ -2252,6 +2842,7 @@ export default function Storyline({
               </div>
             )}
           </div>
+          <AIEvidenceSummary compact sources={storyline.timeline.map(entry => entry.payload)} />
         </div>
 
         {/* Main content area */}
@@ -2376,7 +2967,7 @@ export default function Storyline({
                 <ZoomOut size={16} />
               </button>
               <button
-                onClick={handleFitView}
+                onClick={() => handleFitView()}
                 className="btn-sentinel btn-sentinel-secondary btn-sentinel-icon"
                 title="Fit to View"
               >
@@ -2540,6 +3131,10 @@ export default function Storyline({
                       detectedPhases={detectedPhases}
                     />
 
+                    <PayloadContextPanel context={payloadContext} />
+                    <ModelObservationsPanel observations={modelObservations} compact />
+                    <TrustPostureTransitionSummary posture={trust_posture} />
+
                     {/* Root Cause */}
                     {storyline.root_cause && (
                     <CollapsibleSection title="Root Cause" icon={Crosshair} badge={`${Math.round(storyline.root_cause.confidence_score * 100)}%`} badgeColor="var(--crit)">
@@ -2683,14 +3278,38 @@ export default function Storyline({
                     )}
                   </div>
                 ) : (
-                  <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
-                    <div className="flex items-center gap-2 mb-2">
-                      <BarChart3 size={16} style={{ color: 'var(--emerald-400)' }} />
-                      <h3 className="text-sm font-semibold" style={{ color: 'var(--fg)' }}>Analysis pending</h3>
+                  <div className="space-y-4">
+                    <div className="rounded-lg p-4" style={{ backgroundColor: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <BarChart3 size={16} style={{ color: 'var(--emerald-400)' }} />
+                        <h3 className="text-sm font-semibold" style={{ color: 'var(--fg)' }}>Analysis pending</h3>
+                      </div>
+                      <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                        The backend did not return a formal analysis object yet. The context below is extracted from the captured event payload so the investigation is still usable.
+                      </p>
                     </div>
-                    <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                      Storyline data loaded, but no analysis payload is available for this investigation yet.
-                    </p>
+                    <PayloadContextPanel context={payloadContext} />
+                    <ModelObservationsPanel observations={modelObservations} compact />
+                    <TrustPostureTransitionSummary posture={trust_posture} />
+                    {storyline.timeline.length > 0 && (
+                      <CollapsibleSection title="Captured Timeline Evidence" icon={Clock} badge={storyline.timeline.length}>
+                        <div className="space-y-2">
+                          {storyline.timeline.slice(0, 5).map((entry) => (
+                            <div key={entry.id} className="rounded-lg p-3" style={{ backgroundColor: 'var(--bg-2)' }}>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{entry.summary}</span>
+                                <span className="text-xs" style={{ color: 'var(--muted)' }}>{entry.timestamp}</span>
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap text-xs" style={{ color: 'var(--muted)' }}>
+                                <span className="font-mono">{entry.event_type}</span>
+                                <span>{entry.severity}</span>
+                                {entry.detections.length > 0 && <span>{entry.detections.length} detection(s)</span>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </CollapsibleSection>
+                    )}
                   </div>
                 )
               )}
@@ -2756,10 +3375,10 @@ export default function Storyline({
                       </div>
 
                       {/* Timestamp */}
-                      {selectedNode.timestamp && (
+                      {Boolean(selectedNode.timestamp) && (
                         <div className="text-xs flex items-center gap-1" style={{ color: 'var(--muted)' }}>
                           <Clock size={12} />
-                          {selectedNode.timestamp}
+                          {asText(selectedNode.timestamp)}
                         </div>
                       )}
 
@@ -2779,7 +3398,7 @@ export default function Storyline({
                       />
 
                       {/* Command line for process nodes */}
-                      {selectedNode.type === 'process' && selectedNode.data.cmdline && (
+                      {selectedNode.type === 'process' && Boolean(selectedNode.data.cmdline) && (
                         <div className="card-sentinel">
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-xs font-medium" style={{ color: 'var(--muted)' }}>Command Line</span>
@@ -2962,6 +3581,9 @@ export default function Storyline({
                         variant="primary"
                         disabled={!storyline?.agent_id}
                       />
+
+                      <ResponseActionAuditPanel audit={responseActionAudit} />
+                      <PersistedResponseHistoryPanel actions={responseActions} />
                     </div>
                   </CollapsibleSection>
 
@@ -2972,7 +3594,7 @@ export default function Storyline({
                         icon={Search}
                         label="Hunt Related Events"
                         onClick={() => {
-                          const query = huntQueryForNode(selectedNode, storyline.alert_id);
+                          const query = huntQueryForStoryline(storyline, selectedNode);
                           router.visit(`/app/hunt?q=${encodeURIComponent(query)}`);
                         }}
                         variant="secondary"

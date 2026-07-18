@@ -18,7 +18,7 @@ defmodule TamanduaServer.Response.Playbook do
   require Logger
   import Ecto.Query
 
-  alias TamanduaServer.{Repo, Agents, Alerts}
+  alias TamanduaServer.{Repo}
   alias TamanduaServer.Response.Executor
   alias TamanduaServer.Response.ConditionEvaluator
 
@@ -44,6 +44,7 @@ defmodule TamanduaServer.Response.Playbook do
       field :success_count, :integer, default: 0
       field :last_executed_at, :utc_datetime
       field :created_by, :binary_id
+      field :organization_id, :binary_id
 
       timestamps()
     end
@@ -56,7 +57,7 @@ defmodule TamanduaServer.Response.Playbook do
       |> cast(attrs, [
         :name, :description, :trigger_type, :trigger_conditions, :steps,
         :enabled, :require_approval, :approval_timeout_minutes, :tags,
-        :severity_threshold, :created_by
+        :severity_threshold, :created_by, :organization_id
       ])
       |> validate_required([:name, :steps])
       |> maybe_set_trigger_type()
@@ -186,6 +187,7 @@ defmodule TamanduaServer.Response.Playbook do
       field :approved_at, :utc_datetime
       field :execution_context, :map, default: %{}
       field :dry_run, :boolean, default: false
+      field :organization_id, :binary_id
 
       timestamps()
     end
@@ -195,7 +197,7 @@ defmodule TamanduaServer.Response.Playbook do
       |> cast(attrs, [
         :playbook_id, :trigger_event, :status, :steps_completed,
         :current_step, :error_message, :started_at, :completed_at,
-        :approved_by, :approved_at, :execution_context, :dry_run
+        :approved_by, :approved_at, :execution_context, :dry_run, :organization_id
       ])
       |> validate_required([:playbook_id, :status])
     end
@@ -277,43 +279,43 @@ defmodule TamanduaServer.Response.Playbook do
   @doc """
   Create a new playbook
   """
-  def create_playbook(attrs) do
-    GenServer.call(__MODULE__, {:create_playbook, attrs})
+  def create_playbook(attrs, scope \\ nil) do
+    GenServer.call(__MODULE__, {:create_playbook, attrs, scope})
   end
 
   @doc """
   List all playbooks
   """
-  def list_playbooks(filters \\ %{}) do
-    GenServer.call(__MODULE__, {:list_playbooks, filters})
+  def list_playbooks(filters \\ %{}, scope \\ nil) do
+    GenServer.call(__MODULE__, {:list_playbooks, filters, scope})
   end
 
   @doc """
   Get a playbook by ID
   """
-  def get_playbook(id) do
-    GenServer.call(__MODULE__, {:get_playbook, id})
+  def get_playbook(id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_playbook, id, scope})
   end
 
   @doc """
   Update a playbook
   """
-  def update_playbook(id, attrs) do
-    GenServer.call(__MODULE__, {:update_playbook, id, attrs})
+  def update_playbook(id, attrs, scope \\ nil) do
+    GenServer.call(__MODULE__, {:update_playbook, id, attrs, scope})
   end
 
   @doc """
   Delete a playbook
   """
-  def delete_playbook(id) do
-    GenServer.call(__MODULE__, {:delete_playbook, id})
+  def delete_playbook(id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:delete_playbook, id, scope})
   end
 
   @doc """
   Execute a playbook manually
   """
-  def execute_playbook(playbook_id, context \\ %{}) do
-    GenServer.call(__MODULE__, {:execute_playbook, playbook_id, context})
+  def execute_playbook(playbook_id, context \\ %{}, scope \\ nil) do
+    GenServer.call(__MODULE__, {:execute_playbook, playbook_id, context, scope})
   end
 
   @doc """
@@ -333,29 +335,29 @@ defmodule TamanduaServer.Response.Playbook do
   @doc """
   Approve a pending execution
   """
-  def approve_execution(execution_id, approver_id) do
-    GenServer.call(__MODULE__, {:approve_execution, execution_id, approver_id})
+  def approve_execution(execution_id, approver_id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:approve_execution, execution_id, approver_id, scope})
   end
 
   @doc """
   Reject/cancel a pending execution
   """
-  def cancel_execution(execution_id, reason) do
-    GenServer.call(__MODULE__, {:cancel_execution, execution_id, reason})
+  def cancel_execution(execution_id, reason, scope \\ nil) do
+    GenServer.call(__MODULE__, {:cancel_execution, execution_id, reason, scope})
   end
 
   @doc """
   Get execution history
   """
-  def get_execution_history(playbook_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:get_history, playbook_id, opts})
+  def get_execution_history(playbook_id, opts \\ [], scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_history, playbook_id, opts, scope})
   end
 
   @doc """
   Get pending approvals
   """
-  def get_pending_approvals do
-    GenServer.call(__MODULE__, :get_pending_approvals)
+  def get_pending_approvals(scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_pending_approvals, scope})
   end
 
   ## Server Callbacks
@@ -379,42 +381,48 @@ defmodule TamanduaServer.Response.Playbook do
   end
 
   @impl true
-  def handle_call({:create_playbook, attrs}, _from, state) do
-    case create_playbook_record(attrs) do
+  def handle_call({:create_playbook, attrs, scope}, _from, state) do
+    with {:ok, scoped_attrs} <- scope_create_attrs(attrs, scope),
+         {:ok, playbook} <- create_playbook_record(scoped_attrs) do
+      new_playbooks = Map.put(state.playbooks, playbook.id, playbook)
+      {:reply, {:ok, playbook}, %{state | playbooks: new_playbooks}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:list_playbooks, filters, scope}, _from, state) do
+    case validate_scope(scope) do
+      {:ok, normalized_scope} ->
+        playbooks =
+          state.playbooks
+          |> Map.values()
+          |> Enum.filter(&scope_allows?(normalized_scope, &1))
+          |> filter_playbooks(filters)
+          |> Enum.sort_by(& &1.name)
+
+        {:reply, {:ok, playbooks}, state}
+
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:get_playbook, id, scope}, _from, state) do
+    case scoped_playbook(state, id, scope) do
+      {:ok, playbook} -> {:reply, {:ok, playbook}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:update_playbook, id, attrs, scope}, _from, state) do
+    case scoped_playbook(state, id, scope) do
       {:ok, playbook} ->
-        new_playbooks = Map.put(state.playbooks, playbook.id, playbook)
-        {:reply, {:ok, playbook}, %{state | playbooks: new_playbooks}}
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
-  end
+        immutable_attrs = put_attr(attrs, :organization_id, playbook.organization_id)
 
-  @impl true
-  def handle_call({:list_playbooks, filters}, _from, state) do
-    playbooks = state.playbooks
-      |> Map.values()
-      |> filter_playbooks(filters)
-      |> Enum.sort_by(& &1.name)
-
-    {:reply, {:ok, playbooks}, state}
-  end
-
-  @impl true
-  def handle_call({:get_playbook, id}, _from, state) do
-    case Map.get(state.playbooks, id) do
-      nil -> {:reply, {:error, :not_found}, state}
-      playbook -> {:reply, {:ok, playbook}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:update_playbook, id, attrs}, _from, state) do
-    case Map.get(state.playbooks, id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
-
-      playbook ->
-        case update_playbook_record(playbook, attrs) do
+        case update_playbook_record(playbook, immutable_attrs) do
           {:ok, updated} ->
             new_playbooks = Map.put(state.playbooks, id, updated)
             {:reply, {:ok, updated}, %{state | playbooks: new_playbooks}}
@@ -422,16 +430,16 @@ defmodule TamanduaServer.Response.Playbook do
           {:error, reason} ->
             {:reply, {:error, reason}, state}
         end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:delete_playbook, id}, _from, state) do
-    case Map.get(state.playbooks, id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
-
-      playbook ->
+  def handle_call({:delete_playbook, id, scope}, _from, state) do
+    case scoped_playbook(state, id, scope) do
+      {:ok, playbook} ->
         case delete_playbook_record(playbook) do
           {:ok, _} ->
             new_playbooks = Map.delete(state.playbooks, id)
@@ -440,97 +448,142 @@ defmodule TamanduaServer.Response.Playbook do
           {:error, reason} ->
             {:reply, {:error, reason}, state}
         end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:execute_playbook, playbook_id, context}, _from, state) do
-    case Map.get(state.playbooks, playbook_id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+  def handle_call({:execute_playbook, playbook_id, context, scope}, _from, state) do
+    case scoped_playbook(state, playbook_id, scope) do
+      {:ok, playbook} ->
+        case start_execution(playbook, context) do
+          {:ok, execution} ->
+            if playbook.require_approval do
+              new_pending = Map.put(state.pending_approvals, execution.id, execution)
+              {:reply, {:ok, execution}, %{state | pending_approvals: new_pending}}
+            else
+              new_state = execute_playbook_async(state, execution, playbook)
+              {:reply, {:ok, execution}, new_state}
+            end
 
-      playbook ->
-        execution = start_execution(playbook, context)
-
-        if playbook.require_approval do
-          # Wait for approval
-          new_pending = Map.put(state.pending_approvals, execution.id, execution)
-          {:reply, {:ok, execution}, %{state | pending_approvals: new_pending}}
-        else
-          # Execute immediately
-          new_state = execute_playbook_async(state, execution, playbook)
-          {:reply, {:ok, execution}, new_state}
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
         end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:approve_execution, execution_id, approver_id}, _from, state) do
+  def handle_call({:approve_execution, execution_id, approver_id, scope}, _from, state) do
     case Map.get(state.pending_approvals, execution_id) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       execution ->
-        playbook = Map.get(state.playbooks, execution.playbook_id)
-        approved_execution = %{execution |
-          status: "running",
-          approved_by: approver_id,
-          approved_at: DateTime.utc_now()
-        }
+        if scope_allows?(scope, execution) do
+          playbook = Map.get(state.playbooks, execution.playbook_id)
 
-        new_pending = Map.delete(state.pending_approvals, execution_id)
-        new_state = execute_playbook_async(%{state | pending_approvals: new_pending}, approved_execution, playbook)
-        {:reply, {:ok, approved_execution}, new_state}
+          approved_execution = %{
+            execution
+            | status: "running",
+              approved_by: approver_id,
+              approved_at: DateTime.utc_now()
+          }
+
+          case persist_execution(approved_execution) do
+            {:ok, persisted_execution} ->
+              new_pending = Map.delete(state.pending_approvals, execution_id)
+
+              new_state =
+                execute_playbook_async(
+                  %{state | pending_approvals: new_pending},
+                  persisted_execution,
+                  playbook
+                )
+
+              {:reply, {:ok, persisted_execution}, new_state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+        else
+          {:reply, {:error, :not_found}, state}
+        end
     end
   end
 
   @impl true
-  def handle_call({:cancel_execution, execution_id, reason}, _from, state) do
+  def handle_call({:cancel_execution, execution_id, reason, scope}, _from, state) do
     case Map.get(state.pending_approvals, execution_id) || Map.get(state.active_executions, execution_id) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       execution ->
-        cancelled = %{execution |
-          status: "cancelled",
-          error_message: reason,
-          completed_at: DateTime.utc_now()
-        }
+        if scope_allows?(scope, execution) do
+          cancelled = %{
+            execution
+            | status: "cancelled",
+              error_message: reason,
+              completed_at: DateTime.utc_now()
+          }
 
-        save_execution(cancelled)
+          case persist_execution(cancelled) do
+            {:ok, persisted} ->
+              new_pending = Map.delete(state.pending_approvals, execution_id)
+              new_active = Map.delete(state.active_executions, execution_id)
 
-        new_pending = Map.delete(state.pending_approvals, execution_id)
-        new_active = Map.delete(state.active_executions, execution_id)
+              {:reply, {:ok, persisted},
+               %{state | pending_approvals: new_pending, active_executions: new_active}}
 
-        {:reply, {:ok, cancelled}, %{state | pending_approvals: new_pending, active_executions: new_active}}
+            {:error, persist_reason} ->
+              {:reply, {:error, persist_reason}, state}
+          end
+        else
+          {:reply, {:error, :not_found}, state}
+        end
     end
   end
 
   @impl true
-  def handle_call(:get_pending_approvals, _from, state) do
-    approvals = state.pending_approvals
-      |> Map.values()
-      |> Enum.map(fn execution ->
-        playbook = Map.get(state.playbooks, execution.playbook_id)
-        %{execution: execution, playbook: playbook}
-      end)
+  def handle_call({:get_pending_approvals, scope}, _from, state) do
+    case validate_scope(scope) do
+      {:ok, normalized_scope} ->
+        approvals =
+          state.pending_approvals
+          |> Map.values()
+          |> Enum.filter(&scope_allows?(normalized_scope, &1))
+          |> Enum.map(fn execution ->
+            playbook = Map.get(state.playbooks, execution.playbook_id)
+            %{execution: execution, playbook: playbook}
+          end)
 
-    {:reply, {:ok, approvals}, state}
+        {:reply, {:ok, approvals}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
-  def handle_call({:get_history, playbook_id, opts}, _from, state) do
-    history = load_execution_history(playbook_id, opts)
-    {:reply, {:ok, history}, state}
+  def handle_call({:get_history, playbook_id, opts, scope}, _from, state) do
+    case scoped_playbook(state, playbook_id, scope) do
+      {:ok, _playbook} ->
+        history = load_execution_history(playbook_id, opts, scope)
+        {:reply, {:ok, history}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
-  def handle_call({:clone_playbook, playbook_id, new_name}, _from, state) do
-    case Map.get(state.playbooks, playbook_id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
-
-      playbook ->
+  def handle_call({:clone_playbook, playbook_id, new_name, scope}, _from, state) do
+    case scoped_playbook(state, playbook_id, scope) do
+      {:ok, playbook} ->
         new_id = generate_id()
         cloned = %{playbook |
           id: new_id,
@@ -544,16 +597,18 @@ defmodule TamanduaServer.Response.Playbook do
         save_playbook(cloned)
 
         {:reply, {:ok, cloned}, %{state | playbooks: new_playbooks}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
   def handle_call({:execute, playbook_id, context, opts}, _from, state) do
-    case Map.get(state.playbooks, playbook_id) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+    scope = Map.get(opts, :scope)
 
-      playbook ->
+    case scoped_playbook(state, playbook_id, scope) do
+      {:ok, playbook} ->
         # Check if playbook is enabled
         unless playbook.enabled do
           {:reply, {:error, :playbook_disabled}, state}
@@ -561,22 +616,37 @@ defmodule TamanduaServer.Response.Playbook do
           # Check severity threshold if provided
           severity = Map.get(context, :severity, "medium")
           if meets_severity_threshold?(severity, playbook.severity_threshold) do
-            execution = start_execution(playbook, context)
+            dry_run = Map.get(opts, :dry_run, false)
 
-            # Check if approval is required and not skipped
-            skip_approval = Map.get(opts, :skip_approval, false)
+            case start_execution(playbook, context, opts) do
+              {:ok, execution} when dry_run ->
+                # A dry run is a persisted simulation result. It must never
+                # enter active_executions or dispatch a response step.
+                {:reply, {:ok, execution}, state}
 
-            if playbook.require_approval and not skip_approval do
-              new_pending = Map.put(state.pending_approvals, execution.id, execution)
-              {:reply, {:ok, %{execution | status: "pending_approval"}}, %{state | pending_approvals: new_pending}}
-            else
-              new_state = execute_playbook_async(state, execution, playbook)
-              {:reply, {:ok, execution}, new_state}
+              {:ok, execution} ->
+                skip_approval = Map.get(opts, :skip_approval, false)
+
+                if playbook.require_approval and not skip_approval do
+                  new_pending = Map.put(state.pending_approvals, execution.id, execution)
+
+                  {:reply, {:ok, %{execution | status: "pending_approval"}},
+                   %{state | pending_approvals: new_pending}}
+                else
+                  new_state = execute_playbook_async(state, execution, playbook)
+                  {:reply, {:ok, execution}, new_state}
+                end
+
+              {:error, reason} ->
+                {:reply, {:error, reason}, state}
             end
           else
             {:reply, {:error, :severity_threshold_not_met}, state}
           end
         end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -584,25 +654,35 @@ defmodule TamanduaServer.Response.Playbook do
   def handle_call({:list_executions, playbook_id, opts}, _from, state) do
     limit = Map.get(opts, :limit, 100)
     status_filter = Map.get(opts, :status)
+    scope = Map.get(opts, :scope)
 
-    # Get from history plus any active executions
-    history = load_execution_history(playbook_id, limit: limit + 10)
+    case scoped_playbook(state, playbook_id, scope) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
-    active = state.active_executions
-    |> Map.values()
-    |> Enum.filter(&(&1.playbook_id == playbook_id))
+      {:ok, _playbook} ->
+        # Get from history plus any active executions.
+        history = load_execution_history(playbook_id, [limit: limit + 10], scope)
 
-    pending = state.pending_approvals
-    |> Map.values()
-    |> Enum.filter(&(&1.playbook_id == playbook_id))
+        active =
+          state.active_executions
+          |> Map.values()
+          |> Enum.filter(&(&1.playbook_id == playbook_id and scope_allows?(scope, &1)))
 
-    all_executions = (active ++ pending ++ history)
-    |> Enum.uniq_by(& &1.id)
-    |> maybe_filter_by_status(status_filter)
-    |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
-    |> Enum.take(limit)
+        pending =
+          state.pending_approvals
+          |> Map.values()
+          |> Enum.filter(&(&1.playbook_id == playbook_id and scope_allows?(scope, &1)))
 
-    {:reply, {:ok, all_executions}, state}
+        all_executions =
+          (active ++ pending ++ history)
+          |> Enum.uniq_by(& &1.id)
+          |> maybe_filter_by_status(status_filter)
+          |> Enum.sort_by(& &1.started_at, {:desc, DateTime})
+          |> Enum.take(limit)
+
+        {:reply, {:ok, all_executions}, state}
+    end
   end
 
   defp meets_severity_threshold?(severity, threshold) do
@@ -641,10 +721,13 @@ defmodule TamanduaServer.Response.Playbook do
 
   @impl true
   def handle_cast({:trigger_for_alert, alert}, state) do
-    matching_playbooks = state.playbooks
+    organization_id = value_from(alert, :organization_id)
+
+    matching_playbooks =
+      state.playbooks
       |> Map.values()
       |> Enum.filter(fn pb ->
-        pb.enabled and
+        is_binary(organization_id) and pb.organization_id == organization_id and pb.enabled and
         pb.trigger_type == "alert" and
         matches_trigger_conditions?(pb.trigger_conditions, alert)
       end)
@@ -655,16 +738,22 @@ defmodule TamanduaServer.Response.Playbook do
         agent_id: alert.agent_id,
         severity: alert.severity,
         detection_type: alert.detection_type,
-        mitre_tactics: alert.mitre_tactics || []
+        mitre_tactics: alert.mitre_tactics || [],
+        organization_id: organization_id
       }
 
-      execution = start_execution(playbook, context)
+      case start_execution(playbook, context) do
+        {:ok, execution} ->
+          if playbook.require_approval do
+            new_pending = Map.put(acc_state.pending_approvals, execution.id, execution)
+            %{acc_state | pending_approvals: new_pending}
+          else
+            execute_playbook_async(acc_state, execution, playbook)
+          end
 
-      if playbook.require_approval do
-        new_pending = Map.put(acc_state.pending_approvals, execution.id, execution)
-        %{acc_state | pending_approvals: new_pending}
-      else
-        execute_playbook_async(acc_state, execution, playbook)
+        {:error, reason} ->
+          Logger.error("Refusing alert-triggered playbook without persisted execution: #{inspect(reason)}")
+          acc_state
       end
     end)
 
@@ -673,23 +762,31 @@ defmodule TamanduaServer.Response.Playbook do
 
   @impl true
   def handle_cast({:trigger_for_detection, detection}, state) do
-    matching_playbooks = state.playbooks
+    organization_id = value_from(detection, :organization_id)
+
+    matching_playbooks =
+      state.playbooks
       |> Map.values()
       |> Enum.filter(fn pb ->
-        pb.enabled and
+        is_binary(organization_id) and pb.organization_id == organization_id and pb.enabled and
         pb.trigger_type == "detection" and
         matches_trigger_conditions?(pb.trigger_conditions, detection)
       end)
 
     new_state = Enum.reduce(matching_playbooks, state, fn playbook, acc_state ->
-      context = build_detection_context(detection)
-      execution = start_execution(playbook, context)
+      context = build_detection_context(detection, organization_id)
+      case start_execution(playbook, context) do
+        {:ok, execution} ->
+          if playbook.require_approval do
+            new_pending = Map.put(acc_state.pending_approvals, execution.id, execution)
+            %{acc_state | pending_approvals: new_pending}
+          else
+            execute_playbook_async(acc_state, execution, playbook)
+          end
 
-      if playbook.require_approval do
-        new_pending = Map.put(acc_state.pending_approvals, execution.id, execution)
-        %{acc_state | pending_approvals: new_pending}
-      else
-        execute_playbook_async(acc_state, execution, playbook)
+        {:error, reason} ->
+          Logger.error("Refusing detection-triggered playbook without persisted execution: #{inspect(reason)}")
+          acc_state
       end
     end)
 
@@ -746,12 +843,19 @@ defmodule TamanduaServer.Response.Playbook do
     scheduled = state.playbooks
       |> Map.values()
       |> Enum.filter(fn pb ->
-        pb.enabled and pb.trigger_type == "schedule" and should_run_now?(pb, now)
+        is_binary(pb.organization_id) and pb.organization_id != "" and pb.enabled and
+          pb.trigger_type == "schedule" and should_run_now?(pb, now)
       end)
 
     new_state = Enum.reduce(scheduled, state, fn playbook, acc_state ->
-      execution = start_execution(playbook, %{scheduled: true, timestamp: now})
-      execute_playbook_async(acc_state, execution, playbook)
+      case start_execution(playbook, %{scheduled: true, timestamp: now}) do
+        {:ok, execution} ->
+          execute_playbook_async(acc_state, execution, playbook)
+
+        {:error, reason} ->
+          Logger.error("Refusing scheduled playbook without persisted execution: #{inspect(reason)}")
+          acc_state
+      end
     end)
 
     schedule_scheduled_playbooks()
@@ -821,31 +925,102 @@ defmodule TamanduaServer.Response.Playbook do
     end)
   end
 
-  defp start_execution(playbook, context) do
+  defp validate_scope(:system), do: {:ok, :system}
+
+  defp validate_scope({:organization, organization_id})
+       when is_binary(organization_id) and organization_id != "" do
+    {:ok, {:organization, organization_id}}
+  end
+
+  defp validate_scope(_scope), do: {:error, :tenant_required}
+
+  defp scope_create_attrs(attrs, scope) do
+    case validate_scope(scope) do
+      {:ok, :system} -> {:ok, attrs}
+      {:ok, {:organization, organization_id}} ->
+        {:ok, put_attr(attrs, :organization_id, organization_id)}
+
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp scoped_playbook(state, id, scope) do
+    with {:ok, normalized_scope} <- validate_scope(scope),
+         %Schema{} = playbook <- Map.get(state.playbooks, id),
+         true <- scope_allows?(normalized_scope, playbook) do
+      {:ok, playbook}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp scope_allows?(:system, _resource), do: true
+
+  defp scope_allows?({:organization, organization_id}, resource)
+       when is_binary(organization_id) and organization_id != "" do
+    value_from(resource, :organization_id) == organization_id
+  end
+
+  defp scope_allows?(_scope, _resource), do: false
+
+  defp put_attr(attrs, key, value) when is_map(attrs) do
+    attrs
+    |> Map.delete(key)
+    |> Map.delete(Atom.to_string(key))
+    |> Map.put(key, value)
+  end
+
+  defp value_from(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp value_from(_value, _key), do: nil
+
+  defp start_execution(playbook, context, opts \\ %{}) do
+    dry_run = Map.get(opts, :dry_run, false)
+    skip_approval = Map.get(opts, :skip_approval, false)
+    now = DateTime.utc_now()
+
+    status =
+      cond do
+        dry_run -> "completed"
+        playbook.require_approval and not skip_approval -> "pending_approval"
+        true -> "running"
+      end
+
     execution = %Execution{
       id: Ecto.UUID.generate(),
       playbook_id: playbook.id,
       trigger_event: context,
-      status: if(playbook.require_approval, do: "pending_approval", else: "running"),
-      started_at: DateTime.utc_now(),
-      execution_context: context
+      organization_id: playbook.organization_id,
+      status: status,
+      started_at: now,
+      completed_at: if(dry_run, do: now),
+      execution_context: context,
+      dry_run: dry_run
     }
 
-    save_execution(execution)
-    execution
+    persist_execution(execution)
   end
 
   defp save_execution(execution) do
-    try do
-      %Execution{}
-      |> Execution.changeset(Map.from_struct(execution))
-      |> Repo.insert(on_conflict: :replace_all, conflict_target: :id)
-    rescue
-      _ -> :ok
-    end
+    persist_execution(execution)
   end
 
-  defp execute_playbook_async(state, execution, playbook) do
+  defp persist_execution(execution) do
+    execution
+    |> Execution.changeset(Map.from_struct(execution))
+    |> Repo.insert(on_conflict: :replace_all, conflict_target: :id)
+    |> case do
+      {:ok, persisted_execution} -> {:ok, persisted_execution}
+      {:error, reason} -> {:error, {:execution_persistence_failed, reason}}
+    end
+  rescue
+    error -> {:error, {:execution_persistence_failed, error}}
+  end
+
+  defp execute_playbook_async(state, execution, _playbook) do
     # Add to active executions
     new_active = Map.put(state.active_executions, execution.id, execution)
     new_state = %{state | active_executions: new_active}
@@ -889,6 +1064,24 @@ defmodule TamanduaServer.Response.Playbook do
 
           %{state | active_executions: new_active}
 
+        {:partial, step_result, reason} when is_binary(reason) ->
+          step_record = %{
+            index: step_index,
+            action: step["action"],
+            status: "partial",
+            result: step_result,
+            error: reason,
+            completed_at: DateTime.utc_now()
+          }
+
+          updated_execution = %{
+            execution
+            | steps_completed: execution.steps_completed ++ [step_record],
+              error_message: reason
+          }
+
+          complete_execution(state, updated_execution, :failed)
+
         {:wait, duration_ms} ->
           # Schedule continuation after wait
           Process.send_after(self(), {:execute_step, execution.id, step_index + 1}, duration_ms)
@@ -918,7 +1111,19 @@ defmodule TamanduaServer.Response.Playbook do
     end
   end
 
-  defp execute_single_step(step, execution) do
+  @doc """
+  Execute a single playbook step against an execution's context.
+
+  Public because `TamanduaServer.Response.PlaybookEngine` delegates its
+  fallback step actions here (backward compatibility with the original step
+  implementations); previously this was private, so that delegation raised
+  `UndefinedFunctionError` at runtime.
+
+  Expects `step` as a map with `"action"`/`"params"` keys and an `execution`
+  exposing `execution_context`. Returns `{:ok, result}`, `{:wait, ms}`,
+  `{:branch, index}`, `{:partial, result, reason}`, or `{:error, reason}`.
+  """
+  def execute_single_step(step, execution) do
     action = step["action"]
     params = step["params"] || %{}
     context = execution.execution_context
@@ -926,101 +1131,78 @@ defmodule TamanduaServer.Response.Playbook do
     case action do
       "isolate_host" ->
         agent_id = params["agent_id"] || context[:agent_id] || context["agent_id"]
-        if agent_id do
-          case Executor.isolate_host(agent_id) do
+
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) do
+          case Executor.isolate_network(agent_id, actor: actor) do
             {:ok, response} -> {:ok, Map.merge(%{agent_id: agent_id, action: "isolated"}, response || %{})}
             {:error, reason} -> {:error, "Failed to isolate: #{inspect(reason)}"}
           end
         else
-          {:error, "No agent_id specified"}
+          false -> {:error, "No agent_id specified"}
+          {:error, reason} -> {:error, reason}
         end
 
       "kill_process" ->
         agent_id = params["agent_id"] || context[:agent_id] || context["agent_id"]
         pid = params["pid"] || context[:pid] || context["pid"]
-        if agent_id && pid do
-          case Executor.kill_process(agent_id, pid) do
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) and not is_nil(pid) do
+          case Executor.kill_process(agent_id, pid, actor: actor) do
             {:ok, response} -> {:ok, Map.merge(%{pid: pid, action: "killed"}, response || %{})}
             {:error, reason} -> {:error, "Failed to kill process: #{inspect(reason)}"}
           end
         else
-          {:error, "Missing agent_id or pid"}
+          false -> {:error, "Missing agent_id or pid"}
+          {:error, reason} -> {:error, reason}
         end
 
       "quarantine_file" ->
         agent_id = params["agent_id"] || context[:agent_id] || context["agent_id"]
         path = params["path"] || context[:file_path] || context["file_path"]
-        if agent_id && path do
-          case Executor.quarantine_file(agent_id, path) do
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) and is_binary(path) do
+          case Executor.quarantine_file(agent_id, path, actor: actor) do
             {:ok, response} -> {:ok, Map.merge(%{path: path, action: "quarantined"}, response || %{})}
             {:error, reason} -> {:error, "Failed to quarantine: #{inspect(reason)}"}
           end
         else
-          {:error, "Missing agent_id or path"}
+          false -> {:error, "Missing agent_id or path"}
+          {:error, reason} -> {:error, reason}
         end
 
       "block_ip" ->
         ip = params["ip"] || context[:remote_ip]
-        if ip do
+        agent_id = params["agent_id"] || context[:agent_id] || context["agent_id"]
+
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(ip) and is_binary(agent_id) do
           reason = params["reason"] || "Blocked by playbook #{execution.playbook_id}"
-          agent_id = params["agent_id"] || context[:agent_id]
 
-          # Send firewall block command to the target agent (or all online agents)
-          agent_results = if agent_id do
-            # Block on a specific agent
-            case Executor.execute_action(agent_id, "block_ip", %{ip: ip, direction: "both"}) do
-              {:ok, resp} -> [{agent_id, :ok, resp}]
-              {:error, err} -> [{agent_id, :error, err}]
-            end
-          else
-            # Broadcast block to all online agents via the registry
-            online_agents = try do
-              TamanduaServer.Agents.Registry.list_by_status(:online)
-            rescue
-              _ -> []
-            catch
-              _, _ -> []
-            end
+          case Executor.execute_action(
+                 agent_id,
+                 "block_ip",
+                 %{ip: ip, direction: "both"},
+                 actor: actor
+               ) do
+            {:ok, response} ->
+              {:ok, %{ip: ip, action: "blocked", reason: reason, agent_id: agent_id, result: response}}
 
-            Enum.map(online_agents, fn agent ->
-              aid = agent[:agent_id] || agent[:id]
-              case Executor.execute_action(aid, "block_ip", %{ip: ip, direction: "both"}) do
-                {:ok, resp} -> {aid, :ok, resp}
-                {:error, err} -> {aid, :error, err}
-              end
-            end)
+            {:error, error} ->
+              {:error, "Failed to block IP: #{inspect(error)}"}
           end
-
-          # Also store in the IOC blocklist for future reference
-          try do
-            TamanduaServer.ThreatIntel.add_ioc(%{
-              type: "ip",
-              value: ip,
-              source: "playbook",
-              description: reason,
-              severity: "high"
-            })
-          rescue
-            _ -> :ok
-          catch
-            _, _ -> :ok
-          end
-
-          successful = Enum.count(agent_results, fn {_, status, _} -> status == :ok end)
-          failed = Enum.count(agent_results, fn {_, status, _} -> status == :error end)
-          Logger.info("block_ip #{ip}: #{successful} agent(s) succeeded, #{failed} failed")
-
-          {:ok, %{ip: ip, action: "blocked", reason: reason, agents_succeeded: successful, agents_failed: failed}}
         else
-          {:error, "No IP specified"}
+          false -> {:error, "block_ip requires both ip and agent_id; tenant-wide broadcast is disabled"}
+          {:error, reason} -> {:error, reason}
         end
 
       "block_domain" ->
         domain = params["domain"] || context[:domain]
-        if domain do
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(domain) do
           reason = params["reason"] || "Blocked by playbook #{execution.playbook_id}"
           agent_id = params["agent_id"] || context[:agent_id]
-          organization_id = organization_id_from_context(context, agent_id)
+          organization_id = actor.organization_id
 
           # Add to the tenant-scoped DNS blocklist for future enforcement.
           dns_result = try do
@@ -1040,51 +1222,84 @@ defmodule TamanduaServer.Response.Playbook do
               {:error, inspect(e)}
           end
 
-          # Also send block_domain command to the target agent if specified
-          agent_result = if agent_id do
-            case Executor.execute_action(agent_id, "block_domain", %{domain: domain}) do
-              {:ok, resp} -> %{agent_id: agent_id, status: "blocked", detail: resp}
-              {:error, err} -> %{agent_id: agent_id, status: "failed", detail: inspect(err)}
-            end
-          else
-            %{agent_id: nil, status: "no_agent_targeted"}
-          end
-
-          # Store as IOC for threat intel
-          try do
-            TamanduaServer.ThreatIntel.add_ioc(%{
-              type: "domain",
-              value: domain,
-              source: "playbook",
-              description: reason,
-              severity: "high"
-            })
-          rescue
-            _ -> :ok
-          catch
-            _, _ -> :ok
-          end
-
           case dns_result do
-            {:ok, count} ->
-              Logger.info("block_domain #{domain}: added to DNS blocklist (#{count} entries added)")
-              {:ok, %{domain: domain, action: "blocked", reason: reason, dns_blocklist_added: count, agent_result: agent_result}}
+            {:ok, [applied_domain] = applied_domains} ->
+              Logger.info(
+                "block_domain #{domain}: added to DNS blocklist (#{length(applied_domains)} entries added)"
+              )
+
+              durable_result = %{
+                domain: domain,
+                reason: reason,
+                durable_applied: true,
+                dns_blocklist_added: length(applied_domains),
+                applied_domains: applied_domains
+              }
+
+              if is_binary(agent_id) do
+                case Executor.execute_action(
+                       agent_id,
+                       "block_domain",
+                       %{domain: applied_domain},
+                       actor: actor
+                     ) do
+                  {:ok, response} ->
+                    {:ok,
+                     Map.merge(durable_result, %{
+                       action: "blocked",
+                       endpoint_dispatch: %{
+                         agent_id: agent_id,
+                         status: :queued,
+                         detail: response
+                       }
+                     })}
+
+                  {:error, error} ->
+                    {:partial,
+                     Map.merge(durable_result, %{
+                       action: "blocklist_updated",
+                       endpoint_dispatch: %{
+                         agent_id: agent_id,
+                         status: :failed,
+                         reason: inspect(error)
+                       }
+                     }), "Endpoint dispatch failed after durable DNS blocklist update"}
+                end
+              else
+                {:ok,
+                 Map.merge(durable_result, %{
+                   action: "blocklist_updated",
+                   endpoint_dispatch: %{agent_id: nil, status: :no_agent_targeted}
+                 })}
+              end
+
+            {:ok, _unexpected} ->
+              {:error, "DNS blocklist returned an invalid result"}
+
+            {:error, :mutation_outcome_unknown} ->
+              {:error,
+               "DNS blocklist mutation outcome is unknown; cache reconciliation was requested"}
+
             {:error, err} ->
-              {:error, "Failed to block domain: #{err}"}
+              {:error, "Failed to block domain: #{inspect(err)}"}
           end
         else
-          {:error, "No domain specified"}
+          false -> {:error, "No domain specified"}
+          {:error, reason} -> {:error, reason}
         end
 
       "collect_forensics" ->
         agent_id = params["agent_id"] || context[:agent_id]
-        if agent_id do
-          case Executor.collect_forensics(agent_id, params) do
+
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) do
+          case Executor.collect_forensics(agent_id, Map.put(params, :actor, actor)) do
             {:ok, collection_id} -> {:ok, %{collection_id: collection_id}}
             {:error, reason} -> {:error, "Failed to collect forensics: #{reason}"}
           end
         else
-          {:error, "No agent_id specified"}
+          false -> {:error, "No agent_id specified"}
+          {:error, reason} -> {:error, reason}
         end
 
       "create_ticket" ->
@@ -1201,14 +1416,17 @@ defmodule TamanduaServer.Response.Playbook do
       "trigger_scan" ->
         agent_id = params["agent_id"] || context[:agent_id]
         path = params["path"] || "/"
-        if agent_id do
-          case Executor.trigger_scan(agent_id, path) do
+
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) do
+          case Executor.scan_path(agent_id, path, actor: actor) do
             {:ok, response} -> {:ok, Map.merge(%{agent_id: agent_id, path: path, action: "scan_triggered"}, response || %{})}
             :ok -> {:ok, %{agent_id: agent_id, path: path, action: "scan_triggered"}}
             {:error, reason} -> {:error, "Failed to trigger scan: #{reason}"}
           end
         else
-          {:error, "No agent_id specified"}
+          false -> {:error, "No agent_id specified"}
+          {:error, reason} -> {:error, reason}
         end
 
       "run_script" ->
@@ -1217,12 +1435,13 @@ defmodule TamanduaServer.Response.Playbook do
         script_type = params["script_type"] || "powershell"
         timeout = params["timeout"] || 120
 
-        if agent_id && script do
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(agent_id) and is_binary(script) do
           case Executor.execute_action(agent_id, "run_script", %{
             script: script,
             script_type: script_type,
             timeout: timeout
-          }) do
+          }, actor: actor) do
             {:ok, response} ->
               Logger.info("Script executed on agent #{agent_id}: #{script_type}")
               {:ok, Map.merge(%{agent_id: agent_id, script_type: script_type, action: "script_executed"}, response || %{})}
@@ -1230,14 +1449,16 @@ defmodule TamanduaServer.Response.Playbook do
               {:error, "Failed to run script: #{inspect(reason)}"}
           end
         else
-          {:error, "Missing agent_id or script"}
+          false -> {:error, "Missing agent_id or script"}
+          {:error, reason} -> {:error, reason}
         end
 
       "disable_user" ->
         username = params["username"] || context[:username] || context["username"]
         domain = params["domain"] || context[:domain] || context["domain"]
 
-        if username do
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_binary(username) do
           # Send disable_user command to the relevant agent
           agent_id = params["agent_id"] || context[:agent_id] || context["agent_id"]
 
@@ -1245,7 +1466,7 @@ defmodule TamanduaServer.Response.Playbook do
             case Executor.execute_action(agent_id, "disable_user", %{
               username: username,
               domain: domain
-            }) do
+            }, actor: actor) do
               {:ok, response} ->
                 Logger.info("User #{username} disabled on agent #{agent_id}")
                 {:ok, Map.merge(%{username: username, action: "user_disabled"}, response || %{})}
@@ -1253,75 +1474,49 @@ defmodule TamanduaServer.Response.Playbook do
                 {:error, "Failed to disable user: #{inspect(reason)}"}
             end
           else
-            # No specific agent -- log the intent for manual follow-up
-            Logger.warning("disable_user: no agent_id specified for user #{username}, skipping agent command")
-            {:ok, %{username: username, action: "disable_user_requested", note: "No agent targeted -- manual action required"}}
+            {:error, "disable_user requires agent_id"}
           end
         else
-          {:error, "No username specified"}
+          false -> {:error, "No username specified"}
+          {:error, reason} -> {:error, reason}
         end
 
       "update_blocklist" ->
         blocklist_type = params["blocklist_type"] || "ip"
         values = params["values"] || []
         reason = params["reason"] || "Added by playbook #{execution.playbook_id}"
-        organization_id = organization_id_from_context(context, params["agent_id"] || context[:agent_id])
-
         values = if is_binary(values), do: [values], else: values
 
-        if length(values) > 0 do
-          results = Enum.map(values, fn value ->
-            case blocklist_type do
-              "ip" ->
-                try do
-                  TamanduaServer.ThreatIntel.add_ioc(%{
-                    type: "ip", value: value, source: "playbook",
-                    description: reason, severity: "high"
-                  })
-                  {:ok, value}
-                rescue
-                  e -> {:error, "#{value}: #{Exception.message(e)}"}
-                end
+        with {:ok, actor} <- actor_for_execution(execution),
+             true <- is_list(values) and values != [],
+             true <- blocklist_type == "domain" do
+          case TamanduaServer.Detection.DNSAnalyzer.add_to_blocklist(
+                 values,
+                 reason,
+                 "playbook:#{execution.playbook_id}",
+                 actor.organization_id
+               ) do
+            {:ok, applied_domains} ->
+              Logger.info(
+                "update_blocklist: #{length(applied_domains)} added (type: #{blocklist_type})"
+              )
 
-              "domain" ->
-                try do
-                  TamanduaServer.Detection.DNSAnalyzer.add_to_blocklist(
-                    [value], reason, "playbook:#{execution.playbook_id}", organization_id
-                  )
-                  TamanduaServer.ThreatIntel.add_ioc(%{
-                    type: "domain", value: value, source: "playbook",
-                    description: reason, severity: "high"
-                  })
-                  {:ok, value}
-                rescue
-                  e -> {:error, "#{value}: #{Exception.message(e)}"}
-                catch
-                  _, e -> {:error, "#{value}: #{inspect(e)}"}
-                end
+              {:ok,
+               %{
+                 blocklist_type: blocklist_type,
+                 added: length(applied_domains),
+                 failed: 0,
+                 applied_domains: applied_domains,
+                 action: "blocklist_updated"
+               }}
 
-              "hash" ->
-                try do
-                  TamanduaServer.ThreatIntel.add_ioc(%{
-                    type: "hash", value: value, source: "playbook",
-                    description: reason, severity: "high"
-                  })
-                  {:ok, value}
-                rescue
-                  e -> {:error, "#{value}: #{Exception.message(e)}"}
-                end
-
-              _ ->
-                {:error, "Unknown blocklist type: #{blocklist_type}"}
-            end
-          end)
-
-          successful = Enum.count(results, fn {s, _} -> s == :ok end)
-          failed = Enum.count(results, fn {s, _} -> s == :error end)
-          Logger.info("update_blocklist: #{successful} added, #{failed} failed (type: #{blocklist_type})")
-
-          {:ok, %{blocklist_type: blocklist_type, added: successful, failed: failed, action: "blocklist_updated"}}
+            {:error, error} ->
+              {:error, "Failed to update blocklist: #{inspect(error)}"}
+          end
         else
-          {:error, "No values specified for blocklist update"}
+          false when values == [] -> {:error, "No values specified for blocklist update"}
+          false -> {:error, "Only tenant-scoped domain blocklists are supported by playbooks"}
+          {:error, reason} -> {:error, reason}
         end
 
       _ ->
@@ -1353,7 +1548,7 @@ defmodule TamanduaServer.Response.Playbook do
   defp update_playbook_stats(playbooks, playbook_id, status) do
     case Map.get(playbooks, playbook_id) do
       nil -> :ok
-      playbook ->
+      _playbook ->
         success_increment = if status == :success, do: 1, else: 0
         try do
           Repo.update_all(
@@ -1367,13 +1562,21 @@ defmodule TamanduaServer.Response.Playbook do
     end
   end
 
-  defp organization_id_from_context(context, agent_id) do
-    context[:organization_id] ||
-      context["organization_id"] ||
-      (agent_id && TamanduaServer.Agents.OrgLookup.get_org_id(agent_id))
-  rescue
-    _ -> nil
+  defp actor_for_execution(%Execution{organization_id: organization_id} = execution)
+       when is_binary(organization_id) and organization_id != "" do
+    context = execution.execution_context || %{}
+
+    {:ok,
+     %{
+       organization_id: organization_id,
+       user_id:
+         execution.approved_by || value_from(context, :current_user_id) ||
+           value_from(context, :requested_by)
+     }}
   end
+
+  defp actor_for_execution(_execution),
+    do: {:error, "Playbook execution is missing organization_id"}
 
   defp matches_trigger_conditions?(nil, _), do: true
   defp matches_trigger_conditions?(conditions, context) when is_map(conditions) do
@@ -1399,7 +1602,7 @@ defmodule TamanduaServer.Response.Playbook do
     end)
   end
 
-  defp build_detection_context(detection) do
+  defp build_detection_context(detection, organization_id) do
     %{
       detection_type: detection.detection_type,
       rule_name: detection.rule_name,
@@ -1409,7 +1612,8 @@ defmodule TamanduaServer.Response.Playbook do
       process_name: detection.process_name,
       pid: detection.pid,
       mitre_tactics: detection.mitre_tactics || [],
-      mitre_techniques: detection.mitre_techniques || []
+      mitre_techniques: detection.mitre_techniques || [],
+      organization_id: organization_id
     }
   end
 
@@ -1660,15 +1864,30 @@ defmodule TamanduaServer.Response.Playbook do
     end
   end
 
-  defp load_execution_history(playbook_id, opts) do
+  defp load_execution_history(playbook_id, opts, scope) do
     limit = Keyword.get(opts, :limit, 100)
 
     try do
-      from(e in Execution,
-        where: e.playbook_id == ^playbook_id,
-        order_by: [desc: e.started_at],
-        limit: ^limit
-      )
+      query =
+        from(e in Execution,
+          where: e.playbook_id == ^playbook_id,
+          order_by: [desc: e.started_at],
+          limit: ^limit
+        )
+
+      query =
+        case scope do
+          {:organization, organization_id} ->
+            from(e in query, where: e.organization_id == ^organization_id)
+
+          :system ->
+            query
+
+          _ ->
+            from(e in query, where: false)
+        end
+
+      query
       |> Repo.all()
     rescue
       _ -> []
@@ -1696,8 +1915,8 @@ defmodule TamanduaServer.Response.Playbook do
   @doc """
   Clone an existing playbook with a new name.
   """
-  def clone_playbook(playbook_id, new_name) do
-    GenServer.call(__MODULE__, {:clone_playbook, playbook_id, new_name})
+  def clone_playbook(playbook_id, new_name, scope \\ nil) do
+    GenServer.call(__MODULE__, {:clone_playbook, playbook_id, new_name, scope})
   end
 
   @doc """
@@ -1720,19 +1939,37 @@ defmodule TamanduaServer.Response.Playbook do
   @spec list_recent_executions(keyword()) :: {:ok, [map()]}
   def list_recent_executions(opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
+    scope = Keyword.get(opts, :scope)
 
-    executions =
-      try do
-        from(e in Execution,
-          order_by: [desc: e.started_at],
-          limit: ^limit
-        )
-        |> Repo.all()
-      rescue
-        _ -> []
-      end
+    case validate_scope(scope) do
+      {:error, reason} ->
+        {:error, reason}
 
-    {:ok, executions}
+      {:ok, normalized_scope} ->
+        executions =
+          try do
+            query =
+              from(e in Execution,
+                order_by: [desc: e.started_at],
+                limit: ^limit
+              )
+
+            query =
+              case normalized_scope do
+                {:organization, organization_id} ->
+                  from(e in query, where: e.organization_id == ^organization_id)
+
+                :system ->
+                  query
+              end
+
+            Repo.all(query)
+          rescue
+            _ -> []
+          end
+
+        {:ok, executions}
+    end
   end
 end
 
@@ -1742,7 +1979,6 @@ defmodule TamanduaServer.Response.Playbook.Templates do
   Pre-built playbook templates for common scenarios
   """
 
-  alias TamanduaServer.Response.Playbook
 
   @doc """
   Create a ransomware response playbook

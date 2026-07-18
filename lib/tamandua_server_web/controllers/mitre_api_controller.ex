@@ -343,34 +343,55 @@ defmodule TamanduaServerWeb.MitreAPIController do
   }
   """
   def import_attack_data(conn, params) do
-    # Require admin permission for this
-    unless conn.assigns.current_user.is_admin do
+    # Import mutates the shared ATT&CK dataset — admin only. The previous
+    # `unless ... do {:error, :forbidden} end` discarded its result, so the
+    # check never gated anything (and `.is_admin` does not exist on the User
+    # schema — the real field is `role`). Fail closed: unknown/missing user
+    # shapes are forbidden, and `{:error, :forbidden}` is rendered as 403 by
+    # the FallbackController wired via `action_fallback` above.
+    if admin?(conn.assigns[:current_user]) do
+      source = Map.get(params, "source")
+      force = Map.get(params, "force", false)
+
+      case AttackFramework.import_attack_data(source: source, force: force) do
+        # The specific atom result must be matched before the generic
+        # {:ok, stats} clause, otherwise `stats.techniques` raises on
+        # `:already_imported`.
+        {:ok, :already_imported} ->
+          json(conn, %{message: "Data already imported, use force=true to re-import"})
+
+        {:ok, stats} ->
+          json(conn, %{
+            message: "Import completed successfully",
+            techniques: stats.techniques,
+            actors: stats.actors
+          })
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
       {:error, :forbidden}
-    end
-
-    source = Map.get(params, "source")
-    force = Map.get(params, "force", false)
-
-    case AttackFramework.import_attack_data(source: source, force: force) do
-      {:ok, stats} ->
-        json(conn, %{
-          message: "Import completed successfully",
-          techniques: stats.techniques,
-          actors: stats.actors
-        })
-
-      {:ok, :already_imported} ->
-        json(conn, %{message: "Data already imported, use force=true to re-import"})
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
   # Private helpers
 
+  # Same fail-closed shape as VulnerabilityController.vulnerability_sync_admin?/1:
+  # accept both %User{role: ...} structs and plain claim maps; anything else
+  # (nil, string-keyed maps, missing role) is not admin.
+  defp admin?(%{is_admin: true}), do: true
+  defp admin?(%{role: role}) when role in ["admin", :admin], do: true
+  defp admin?(_), do: false
+
+  # `conn.assigns[:current_user]` is a %User{} struct on authenticated
+  # pipelines; Access syntax (`user[:organization_id]`) raises on structs, so
+  # pattern match instead. Nil/unknown shapes yield nil (org-unscoped).
   defp get_org_id(conn) do
-    conn.assigns[:current_user][:organization_id]
+    case conn.assigns[:current_user] do
+      %{organization_id: org_id} -> org_id
+      _ -> nil
+    end
   end
 
   defp bounded_days(value, default), do: value |> parse_int(default) |> max(1) |> min(365)

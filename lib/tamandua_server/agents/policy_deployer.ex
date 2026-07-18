@@ -15,7 +15,6 @@ defmodule TamanduaServer.Agents.PolicyDeployer do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Agents.{
-    Policy,
     PolicyDeployment,
     PolicyDeploymentResult,
     PolicyManager,
@@ -414,7 +413,7 @@ defmodule TamanduaServer.Agents.PolicyDeployer do
     |> Repo.update!()
 
     # Get policy and agent
-    policy = PolicyManager.get_policy(deployment.policy_id)
+    _policy = PolicyManager.get_policy(deployment.policy_id)
     agent = Repo.get(Agent, result.agent_id)
 
     # Compute effective policy for this agent

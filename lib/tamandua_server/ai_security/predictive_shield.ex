@@ -16,13 +16,12 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Alerts, Telemetry, Repo}
+  alias TamanduaServer.{Alerts, Telemetry}
   alias TamanduaServer.Agents.Registry, as: AgentRegistry
   alias TamanduaServer.Response.Executor
 
   # Configuration constants
   @prediction_interval :timer.seconds(30)
-  @risk_history_window :timer.hours(24)
   @high_risk_threshold 70
   @critical_risk_threshold 85
   @auto_mitigation_threshold 90
@@ -453,6 +452,34 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     }
 
     {:reply, {:ok, result}, state}
+  end
+
+  # Handle get_accuracy_history
+  @impl true
+  def handle_call(:get_accuracy_history, _from, state) do
+    history = generate_accuracy_history(state)
+    {:reply, {:ok, history}, state}
+  end
+
+  # Handle get_predictions
+  @impl true
+  def handle_call(:get_predictions, _from, state) do
+    predictions = generate_current_predictions(state)
+    {:reply, {:ok, predictions}, state}
+  end
+
+  # Handle detect_vulnerable_software
+  @impl true
+  def handle_call({:detect_vulnerable_software, agent_id}, _from, state) do
+    vulnerabilities = do_detect_vulnerable_software(agent_id, state)
+    {:reply, {:ok, vulnerabilities}, state}
+  end
+
+  # Handle detect_misconfigurations
+  @impl true
+  def handle_call({:detect_misconfigurations, agent_id}, _from, state) do
+    misconfigs = do_detect_misconfigurations(agent_id, state)
+    {:reply, {:ok, misconfigs}, state}
   end
 
   defp aggregate_tactics(paths) do
@@ -1315,7 +1342,7 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
 
     (recommendations ++ path_recommendations ++ surface_recommendations ++ risk_recommendations)
     |> Enum.uniq_by(& &1.id)
-    |> prioritize_recommendations()
+    |> sort_recommendations_by_priority()
     |> Enum.take(10)
   end
 
@@ -1380,7 +1407,13 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
     end)
   end
 
-  defp prioritize_recommendations(recommendations) do
+  # Sorts recommendation maps by priority, keeping the full maps (unlike
+  # prioritize_recommendations/1, which returns only the ordered IDs for
+  # `implementation_order`). This clause previously shadowed/duplicated
+  # prioritize_recommendations/1 and was unreachable; callers of
+  # generate_recommendations/2 consume `.priority` downstream, so they need
+  # the full maps.
+  defp sort_recommendations_by_priority(recommendations) do
     priority_order = %{critical: 0, high: 1, medium: 2, low: 3}
 
     Enum.sort_by(recommendations, fn r ->
@@ -2603,34 +2636,6 @@ defmodule TamanduaServer.AISecurity.PredictiveShield do
   @spec detect_misconfigurations(String.t()) :: {:ok, [map()]}
   def detect_misconfigurations(agent_id) do
     GenServer.call(__MODULE__, {:detect_misconfigurations, agent_id})
-  end
-
-  # Handle get_accuracy_history
-  @impl true
-  def handle_call(:get_accuracy_history, _from, state) do
-    history = generate_accuracy_history(state)
-    {:reply, {:ok, history}, state}
-  end
-
-  # Handle get_predictions
-  @impl true
-  def handle_call(:get_predictions, _from, state) do
-    predictions = generate_current_predictions(state)
-    {:reply, {:ok, predictions}, state}
-  end
-
-  # Handle detect_vulnerable_software
-  @impl true
-  def handle_call({:detect_vulnerable_software, agent_id}, _from, state) do
-    vulnerabilities = do_detect_vulnerable_software(agent_id, state)
-    {:reply, {:ok, vulnerabilities}, state}
-  end
-
-  # Handle detect_misconfigurations
-  @impl true
-  def handle_call({:detect_misconfigurations, agent_id}, _from, state) do
-    misconfigs = do_detect_misconfigurations(agent_id, state)
-    {:reply, {:ok, misconfigs}, state}
   end
 
   # ============================================================================

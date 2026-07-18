@@ -9,7 +9,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.TeamsWorker do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.NotificationCenter.{Notification, NotificationDelivery}
+  alias TamanduaServer.NotificationCenter.{NotificationDelivery}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"delivery_id" => delivery_id}}) do
@@ -130,10 +130,18 @@ defmodule TamanduaServer.NotificationCenter.Channels.TeamsWorker do
 
   defp build_alert_url(_), do: TamanduaServerWeb.Endpoint.url()
 
+  # Org-scoped settings live on Organization.settings (string-keyed map);
+  # TamanduaServer.Settings is the global ETS store and has no per-org API.
   defp get_teams_webhook(organization_id) do
-    case TamanduaServer.Settings.get_setting("teams_webhook_url", organization_id) do
-      {:ok, url} -> url
-      _ -> nil
+    case TamanduaServer.Accounts.get_organization(organization_id) do
+      %{settings: settings} when is_map(settings) ->
+        case settings["teams_webhook_url"] do
+          url when is_binary(url) and url != "" -> url
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 end

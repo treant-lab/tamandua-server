@@ -14,7 +14,7 @@ defmodule TamanduaServer.Cost.Forecaster do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Cost.{CostEntry, CostForecast, Tracker}
+  alias TamanduaServer.Cost.{CostEntry, CostForecast}
   import Ecto.Query
 
   @forecast_interval :timer.hours(24) # Generate forecasts daily
@@ -279,7 +279,7 @@ defmodule TamanduaServer.Cost.Forecaster do
     max(0.0, daily_forecast * 30)
   end
 
-  defp calculate_forecast_breakdown(organization_id, total_forecast, historical_costs) do
+  defp calculate_forecast_breakdown(organization_id, total_forecast, _historical_costs) do
     # Get recent distribution by resource type (last 30 days)
     to_date = Date.utc_today()
     from_date = Date.add(to_date, -30)

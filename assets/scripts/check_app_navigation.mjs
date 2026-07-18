@@ -145,18 +145,17 @@ function duplicateValues(values) {
   return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value).sort();
 }
 
-function quickActionIds(arrayName) {
-  const content = read('assets/src/components/GlobalSearch.tsx');
-  const match = content.match(new RegExp(`const ${arrayName}: QuickAction\\[\\] = \\[([\\s\\S]*?)\\n\\]`));
-  if (!match) return [];
-  return [...match[1].matchAll(/id:\s*['"]([^'"]+)['"]/g)].map((item) => item[1]);
-}
-
-const layoutNavigationHrefs = collectNavigationHrefs('assets/src/layouts/MainLayout.tsx');
-const globalSearchHrefs = new Set(collectNavigationHrefs('assets/src/components/GlobalSearch.tsx'));
-const missingSearchEntries = layoutNavigationHrefs.filter((href) => !globalSearchHrefs.has(href));
-const duplicateQuickActionIds = duplicateValues(quickActionIds('quickActions'));
-const duplicateSearchPageIds = duplicateValues(quickActionIds('searchablePages'));
+const catalogFile = 'assets/src/navigation/catalog.ts';
+const catalogContent = read(catalogFile);
+const layoutContent = read('assets/src/layouts/MainLayout.tsx');
+const globalSearchContent = read('assets/src/components/GlobalSearch.tsx');
+const catalogNavigationHrefs = collectNavigationHrefs(catalogFile);
+const catalogIds = [...catalogContent.matchAll(/\bid:\s*['"]([^'"]+)['"]/g)].map((item) => item[1]);
+const duplicateCatalogIds = duplicateValues(catalogIds);
+const missingCatalogConsumers = [
+  ['MainLayout', layoutContent],
+  ['GlobalSearch', globalSearchContent],
+].filter(([, content]) => !content.includes("@/navigation/catalog")).map(([name]) => name);
 
 const inertiaController = read('lib/tamandua_server_web/controllers/inertia_controller.ex');
 const renderedPages = unique(
@@ -175,9 +174,8 @@ if (
   missingAppRoutes.length ||
   missingLiveRoutes.length ||
   missingPages.length ||
-  missingSearchEntries.length ||
-  duplicateQuickActionIds.length ||
-  duplicateSearchPageIds.length
+  duplicateCatalogIds.length ||
+  missingCatalogConsumers.length
 ) {
   if (missingAppRoutes.length) {
     console.error('Missing /app routes for static navigation hrefs:');
@@ -200,28 +198,19 @@ if (
     }
   }
 
-  if (missingSearchEntries.length) {
-    console.error('MainLayout navigation hrefs missing from GlobalSearch searchable pages:');
-    for (const href of missingSearchEntries) {
-      console.error(`- ${href}`);
-    }
-  }
-
-  if (duplicateQuickActionIds.length) {
-    console.error('Duplicate GlobalSearch quick action ids:');
-    for (const id of duplicateQuickActionIds) {
+  if (duplicateCatalogIds.length) {
+    console.error('Duplicate navigation catalog ids:');
+    for (const id of duplicateCatalogIds) {
       console.error(`- ${id}`);
     }
   }
 
-  if (duplicateSearchPageIds.length) {
-    console.error('Duplicate GlobalSearch searchable page ids:');
-    for (const id of duplicateSearchPageIds) {
-      console.error(`- ${id}`);
-    }
+  if (missingCatalogConsumers.length) {
+    console.error('Navigation consumers not using the canonical catalog:');
+    for (const consumer of missingCatalogConsumers) console.error(`- ${consumer}`);
   }
 
   process.exit(1);
 }
 
-console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages, ${layoutNavigationHrefs.length} side-nav hrefs searchable, GlobalSearch ids unique.`);
+console.log(`Navigation OK: ${hrefs.length} hrefs, ${appRoutes.length} /app routes, ${liveRoutes.length} /live routes, ${renderedPages.length} Inertia pages, ${catalogNavigationHrefs.length} catalog routes shared by sidebar and search, catalog ids unique.`);

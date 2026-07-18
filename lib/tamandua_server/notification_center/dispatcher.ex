@@ -12,8 +12,7 @@ defmodule TamanduaServer.NotificationCenter.Dispatcher do
     Notification,
     UserPreference,
     NotificationDelivery,
-    EscalationPolicy,
-    EscalationInstance
+    EscalationPolicy
   }
 
   @doc """

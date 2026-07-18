@@ -145,7 +145,7 @@ defmodule TamanduaServer.InsiderThreat.PeerGroup do
   Check if user is an outlier compared to peer group baseline.
   """
   @spec is_outlier?(t(), Ecto.UUID.t(), atom(), float()) :: boolean()
-  def is_outlier?(%__MODULE__{baseline: baseline}, user_id, metric, user_value) do
+  def is_outlier?(%__MODULE__{baseline: baseline}, _user_id, metric, user_value) do
     case get_in(baseline, [metric]) do
       nil ->
         false

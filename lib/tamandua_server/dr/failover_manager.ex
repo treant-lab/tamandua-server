@@ -425,7 +425,7 @@ defmodule TamanduaServer.DR.FailoverManager do
     _ -> false
   end
 
-  defp check_replication_lag(endpoint) do
+  defp check_replication_lag(_endpoint) do
     # Query replication lag
     query = """
     SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) AS lag

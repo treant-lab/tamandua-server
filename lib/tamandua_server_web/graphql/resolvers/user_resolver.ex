@@ -4,7 +4,6 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
   """
 
   alias TamanduaServer.{Accounts, Agents, Repo}
-  alias TamanduaServer.Accounts.{User, Organization}
   alias TamanduaServer.Alerts.Alert
   import Ecto.Query
 
@@ -25,10 +24,13 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     user = Accounts.get_user(id)
 
     cond do
+      is_nil(org_id) ->
+        {:error, "User not found"}
+
       user == nil ->
         {:error, "User not found"}
 
-      org_id != nil && user.organization_id != org_id ->
+      user.organization_id != org_id ->
         {:error, "User not found"}
 
       true ->
@@ -36,14 +38,17 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     end
   end
 
-  def list_users(_parent, args, %{context: context}) do
-    org_id = context[:organization_id]
+  def list_users(_parent, _args, %{context: context}) do
+    case context[:organization_id] do
+      nil ->
+        # Fail-closed: this branch used to return ALL users across every
+        # organization ("admin view") without any authorization check. Until
+        # a real admin authorization path exists, refuse instead of leaking
+        # the cross-tenant user list.
+        {:error, "Not authorized"}
 
-    if org_id do
-      {:ok, Accounts.list_users(org_id)}
-    else
-      # Admin view - list all users (would need proper authorization)
-      {:ok, Repo.all(User)}
+      org_id ->
+        {:ok, Accounts.list_users(org_id)}
     end
   end
 
@@ -53,10 +58,13 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     org = Accounts.get_organization(id)
 
     cond do
+      is_nil(org_id) ->
+        {:error, "Organization not found"}
+
       org == nil ->
         {:error, "Organization not found"}
 
-      org_id != nil && org.id != org_id ->
+      org.id != org_id ->
         {:error, "Organization not found"}
 
       true ->
@@ -64,57 +72,91 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     end
   end
 
-  def list_organizations(_parent, _args, _resolution) do
-    {:ok, Accounts.list_organizations()}
+  def list_organizations(_parent, _args, %{context: context}) do
+    user = context[:current_user_id] && Accounts.get_user(context[:current_user_id])
+
+    if TamanduaServerWeb.GraphQL.Middleware.SystemOperatorAuthorization.system_operator?(user) do
+      {:ok, Accounts.list_organizations()}
+    else
+      {:error, "Not authorized"}
+    end
   end
 
   # Field resolvers
 
-  def organization(user, _args, _resolution) do
-    if user.organization_id do
+  def organization(user, _args, %{context: context}) do
+    if user.organization_id && user.organization_id == context[:organization_id] do
       {:ok, Accounts.get_organization(user.organization_id)}
     else
       {:ok, nil}
     end
   end
 
-  def roles(user, _args, _resolution) do
-    roles = Accounts.get_user_roles(user)
-    {:ok, roles}
+  def roles(user, _args, %{context: context}) do
+    org_id = context[:organization_id]
+
+    if org_id && user.organization_id == org_id do
+      roles =
+        user
+        |> Accounts.get_user_roles()
+        |> Enum.filter(&role_available_to_org?(&1, org_id))
+
+      {:ok, roles}
+    else
+      {:ok, []}
+    end
   rescue
     _ -> {:ok, []}
   end
 
-  def permissions(user, _args, _resolution) do
-    permissions = Accounts.get_user_permissions(user)
-    {:ok, MapSet.to_list(permissions)}
+  def permissions(user, _args, %{context: context}) do
+    if user.organization_id == context[:organization_id] do
+      permissions = Accounts.get_user_permissions(user)
+      {:ok, MapSet.to_list(permissions)}
+    else
+      {:ok, []}
+    end
   rescue
     _ -> {:ok, []}
   end
 
-  def assigned_alerts(user, args, _resolution) do
+  def assigned_alerts(user, args, %{context: context}) do
     limit = args[:limit] || 20
     status = args[:status]
+    org_id = context[:organization_id]
 
-    query = from(a in Alert,
-      where: a.assigned_to_id == ^user.id,
-      order_by: [desc: a.inserted_at],
-      limit: ^limit
-    )
+    if org_id && user.organization_id == org_id do
+      query =
+        from(a in Alert,
+          where: a.assigned_to_id == ^user.id and a.organization_id == ^org_id,
+          order_by: [desc: a.inserted_at],
+          limit: ^limit
+        )
 
-    query = if status, do: where(query, [a], a.status == ^status), else: query
+      query = if status, do: where(query, [a], a.status == ^status), else: query
 
-    {:ok, Repo.all(query)}
+      {:ok, Repo.all(query)}
+    else
+      {:ok, []}
+    end
   end
 
-  def agent_count(organization, _args, _resolution) do
-    count = Agents.count_agents_for_org(organization.id)
-    {:ok, count}
+  def agent_count(organization, _args, %{context: context}) do
+    if organization.id == context[:organization_id] do
+      count = Agents.count_agents_for_org(organization.id)
+      {:ok, count}
+    else
+      {:ok, 0}
+    end
   end
 
-  def organization_users(organization, _args, _resolution) do
-    users = Accounts.list_users(organization.id)
-    {:ok, users}
+  def organization_users(organization, _args, %{context: context}) do
+    if organization.id == context[:organization_id] do
+      users = Accounts.list_users(organization.id)
+      {:ok, users}
+    else
+      {:ok, []}
+    end
   end
 
   # Mutation resolvers
@@ -134,12 +176,13 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
               {:error, "Invalid MFA code"}
             end
           else
-            {:ok, %{
-              token: nil,
-              user: nil,
-              expires_at: nil,
-              requires_mfa: true
-            }}
+            {:ok,
+             %{
+               token: nil,
+               user: nil,
+               expires_at: nil,
+               requires_mfa: true
+             }}
           end
         else
           generate_auth_result(user)
@@ -151,14 +194,24 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
   end
 
   def create_user(_parent, %{input: input}, %{context: context}) do
-    org_id = context[:organization_id] || input[:organization_id]
+    caller = context[:current_user_id] && Accounts.get_user(context[:current_user_id])
 
-    attrs = input
-    |> Map.put(:organization_id, org_id)
+    case context[:organization_id] do
+      nil ->
+        {:error, "Not authorized"}
 
-    case Accounts.create_user(attrs) do
-      {:ok, user} -> {:ok, user}
-      {:error, changeset} -> {:error, format_errors(changeset)}
+      org_id ->
+        if Map.has_key?(input, :role) and
+             (is_nil(caller) or not Accounts.user_can?(caller, :users_role_assign)) do
+          {:error, "Insufficient permissions"}
+        else
+          attrs = Map.put(input, :organization_id, org_id)
+
+          case Accounts.create_user(attrs) do
+            {:ok, user} -> {:ok, user}
+            {:error, changeset} -> {:error, format_errors(changeset)}
+          end
+        end
     end
   end
 
@@ -169,18 +222,25 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     user = Accounts.get_user(id)
 
     cond do
+      is_nil(org_id) ->
+        {:error, "User not found"}
+
       user == nil ->
         {:error, "User not found"}
 
-      org_id != nil && user.organization_id != org_id ->
+      user.organization_id != org_id ->
         {:error, "User not found"}
 
+      Map.has_key?(input, :role) and
+          (is_nil(caller) or not Accounts.user_can?(caller, :users_role_assign)) ->
+        {:error, "Insufficient permissions"}
+
       true ->
-        # Only admins may change the (legacy) role field. For everyone else it is
-        # stripped, so an authenticated non-admin cannot escalate themselves (or a
-        # peer) to "admin" via the generic user-update mutation.
+        # The schema conditionally requires :users_role_assign whenever the
+        # legacy role field is present. Mirror that check here so direct resolver
+        # callers cannot widen the update surface.
         allowed_fields =
-          if caller && caller.role == "admin" do
+          if caller && Accounts.user_can?(caller, :users_role_assign) do
             [:name, :role, :mfa_enabled]
           else
             [:name, :mfa_enabled]
@@ -199,10 +259,13 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
     user = Accounts.get_user(id)
 
     cond do
+      is_nil(org_id) ->
+        {:ok, %{success: false, id: id, message: "User not found"}}
+
       user == nil ->
         {:ok, %{success: false, id: id, message: "User not found"}}
 
-      org_id != nil && user.organization_id != org_id ->
+      user.organization_id != org_id ->
         {:ok, %{success: false, id: id, message: "User not found"}}
 
       true ->
@@ -214,13 +277,27 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
   end
 
   def assign_role(_parent, %{user_id: user_id, role_id: role_id}, %{context: context}) do
+    org_id = context[:organization_id]
     actor = context[:current_user_id] && Accounts.get_user(context[:current_user_id])
     user = Accounts.get_user(user_id)
-    role = TamanduaServer.Authorization.RBAC.get_role(role_id)
+    role = Accounts.get_role(role_id)
 
     cond do
-      user == nil -> {:error, "User not found"}
-      role == nil -> {:error, "Role not found"}
+      is_nil(org_id) or is_nil(actor) or actor.organization_id != org_id ->
+        {:error, "User not found"}
+
+      user == nil ->
+        {:error, "User not found"}
+
+      user.organization_id != org_id ->
+        {:error, "User not found"}
+
+      role == nil ->
+        {:error, "Role not found"}
+
+      not role_available_to_org?(role, org_id) ->
+        {:error, "Role not found"}
+
       true ->
         case Accounts.assign_role_to_user(user, role, actor: actor) do
           {:ok, _} -> {:ok, Accounts.get_user_with_roles(user_id)}
@@ -230,13 +307,27 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
   end
 
   def revoke_role(_parent, %{user_id: user_id, role_id: role_id}, %{context: context}) do
+    org_id = context[:organization_id]
     actor = context[:current_user_id] && Accounts.get_user(context[:current_user_id])
     user = Accounts.get_user(user_id)
-    role = TamanduaServer.Authorization.RBAC.get_role(role_id)
+    role = Accounts.get_role(role_id)
 
     cond do
-      user == nil -> {:error, "User not found"}
-      role == nil -> {:error, "Role not found"}
+      is_nil(org_id) or is_nil(actor) or actor.organization_id != org_id ->
+        {:error, "User not found"}
+
+      user == nil ->
+        {:error, "User not found"}
+
+      user.organization_id != org_id ->
+        {:error, "User not found"}
+
+      role == nil ->
+        {:error, "Role not found"}
+
+      not role_available_to_org?(role, org_id) ->
+        {:error, "Role not found"}
+
       true ->
         case Accounts.revoke_role_from_user(user, role, actor: actor) do
           {:ok, _} -> {:ok, Accounts.get_user_with_roles(user_id)}
@@ -247,18 +338,23 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.UserResolver do
 
   # Private helpers
 
+  defp role_available_to_org?(role, org_id) do
+    role.organization_id == org_id || (is_nil(role.organization_id) && role.builtin == true)
+  end
+
   defp generate_auth_result(user) do
     token = Accounts.generate_user_session_token(user)
     expires_at = DateTime.utc_now() |> DateTime.add(24 * 60 * 60, :second)
 
     Accounts.update_last_login(user)
 
-    {:ok, %{
-      token: token,
-      user: user,
-      expires_at: expires_at,
-      requires_mfa: false
-    }}
+    {:ok,
+     %{
+       token: token,
+       user: user,
+       expires_at: expires_at,
+       requires_mfa: false
+     }}
   end
 
   defp format_errors(changeset) do

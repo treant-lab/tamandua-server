@@ -15,13 +15,9 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
   - POST   /api/v1/admin/installation-tokens     — generate token
   - DELETE /api/v1/admin/installation-tokens/:id  — revoke token
 
-  ## CSR-Based Enrollment (Recommended)
-
-  The CSR-based flow is more secure because the private key never leaves the agent:
-  1. Agent generates RSA keypair locally
-  2. Agent sends CSR (public key) to server
-  3. Server validates token and signs CSR with intermediate CA
-  4. Server returns signed certificate + CA bundle
+  CSR enrollment is temporarily fail-closed until the durable signing-intent
+  protocol is implemented. Certificate renewal for an already authenticated
+  agent remains a separate endpoint.
 
   The legacy `/exchange` endpoint generates both cert and private key server-side,
   which means the private key is transmitted over the network (even if encrypted).
@@ -45,23 +41,18 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
   """
   def validate(conn, %{"token" => token}) do
     case Enrollment.validate_token(token) do
-      {:ok, record} ->
+      {:ok, _record} ->
         json(conn, %{
-          valid: true,
-          org_id: record.organization_id
+          valid: true
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{valid: false, error: enrollment_error(reason)})
+        render_public_enrollment_error(conn, reason, valid: false)
     end
   end
 
   def validate(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "Missing required field: token"})
+    render_public_enrollment_error(conn, :invalid_enrollment_token, valid: false)
   end
 
   @doc """
@@ -85,88 +76,29 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
         })
 
       {:error, reason} ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: enrollment_error(reason)})
+        render_public_enrollment_error(conn, reason)
     end
   end
 
   def exchange(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "Missing required field: token"})
+    render_public_enrollment_error(conn, :invalid_enrollment_token)
   end
 
   @doc """
-  CSR-based enrollment (secure - private key never leaves agent).
+  CSR-based enrollment (currently unavailable).
 
   POST /api/v1/enrollment/csr
   Body: {"token": "...", "csr": "<base64-encoded CSR PEM>", "agent_info": {...}}
 
-  This is the recommended enrollment flow where:
-  1. Agent generates RSA keypair locally
-  2. Agent sends CSR (containing public key) to server
-  3. Server validates token and signs CSR
-  4. Server returns signed certificate + CA bundle
-
-  The private key never leaves the agent device.
+  Phase 2 must add a durable signing intent before this public route is enabled.
   """
   def csr_enroll(conn, %{"token" => token, "csr" => csr_b64} = params) do
-    agent_info = Map.get(params, "agent_info", %{})
-
-    # Decode CSR from base64
-    case Base.decode64(csr_b64) do
-      {:ok, csr_pem} ->
-        case Enrollment.enroll_with_csr(token, csr_pem, agent_info) do
-          {:ok, result} ->
-            conn
-            |> put_status(:created)
-            |> json(%{
-              agent_id: result.agent_id,
-              jwt: result.jwt,
-              org_id: result.org_id,
-              organization_id: result.org_id,
-              certificate: Base.encode64(result.certificate),
-              ca_bundle: Base.encode64(result.ca_bundle),
-              server_url: default_agent_socket_url(conn)
-            })
-
-          {:error, :invalid_csr} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Invalid CSR format"})
-
-          {:error, :no_cn_in_csr} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "CSR must contain a Common Name (CN) for the agent ID"})
-
-          {:error, {:signing_failed, reason}} ->
-            render_csr_enrollment_error(conn, {:signing_failed, reason})
-
-          {:error, {:pki_not_ready, reason}} ->
-            render_csr_enrollment_error(conn, {:pki_not_ready, reason})
-
-          {:error, reason} when is_binary(reason) ->
-            conn
-            |> put_status(:unauthorized)
-            |> json(%{error: reason})
-
-          {:error, reason} ->
-            render_csr_enrollment_error(conn, reason)
-        end
-
-      :error ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Invalid base64 encoding for CSR"})
-    end
+    _ = {token, csr_b64, params}
+    render_public_enrollment_error(conn, :enrollment_unavailable)
   end
 
   def csr_enroll(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "Missing required fields: token, csr"})
+    render_public_enrollment_error(conn, :enrollment_unavailable)
   end
 
   @doc """
@@ -263,9 +195,7 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
     if is_binary(token) and token != "" do
       enroll(conn, Map.put(params, "token", token))
     else
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Missing required field: token"})
+      render_public_enrollment_error(conn, :invalid_enrollment_token)
     end
   end
 
@@ -456,17 +386,41 @@ defmodule TamanduaServerWeb.API.V1.EnrollmentController do
     end)
   end
 
+  defp format_errors(other), do: inspect(other)
+
   defp changeset_error_opt(opts, "count"), do: Keyword.get(opts, :count, "count")
   defp changeset_error_opt(opts, "validation"), do: Keyword.get(opts, :validation, "validation")
   defp changeset_error_opt(opts, "kind"), do: Keyword.get(opts, :kind, "kind")
   defp changeset_error_opt(opts, "type"), do: Keyword.get(opts, :type, "type")
   defp changeset_error_opt(_opts, key), do: key
 
-  defp format_errors(other), do: inspect(other)
-
   defp enrollment_error(reason) when is_binary(reason), do: reason
   defp enrollment_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp enrollment_error(reason), do: inspect(reason)
+
+  defp render_public_enrollment_error(conn, reason, opts \\ [])
+
+  defp render_public_enrollment_error(conn, :enrollment_unavailable, opts) do
+    payload = %{error: "enrollment_unavailable"}
+
+    payload =
+      if Keyword.has_key?(opts, :valid), do: Map.put(payload, :valid, opts[:valid]), else: payload
+
+    conn
+    |> put_status(:service_unavailable)
+    |> json(payload)
+  end
+
+  defp render_public_enrollment_error(conn, _reason, opts) do
+    payload = %{error: "invalid_enrollment_token"}
+
+    payload =
+      if Keyword.has_key?(opts, :valid), do: Map.put(payload, :valid, opts[:valid]), else: payload
+
+    conn
+    |> put_status(:unauthorized)
+    |> json(payload)
+  end
 
   defp render_csr_enrollment_error(conn, {:pki_not_ready, reason}) do
     Logger.error("CSR enrollment PKI is not ready: #{inspect(reason)}")

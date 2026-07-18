@@ -32,7 +32,7 @@ defmodule TamanduaServer.Licensing.License do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Licensing.{LicenseKey, LicenseUsage, FeatureLicense}
+  alias TamanduaServer.Licensing.{LicenseKey, LicenseUsage}
   alias TamanduaServer.Accounts.Organization
 
   import Ecto.Query

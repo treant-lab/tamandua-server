@@ -25,7 +25,7 @@ defmodule TamanduaServer.HttpClient do
   """
   def get(url, headers \\ [], opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
+    _recv_timeout = Keyword.get(opts, :recv_timeout, @default_recv_timeout)
 
     request_headers = to_charlist_headers(headers)
 

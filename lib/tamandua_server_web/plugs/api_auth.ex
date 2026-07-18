@@ -13,41 +13,102 @@ defmodule TamanduaServerWeb.Plugs.APIAuth do
 
   def init(opts), do: opts
 
+  @doc false
+  def normalize_organization_id(value)
+  def normalize_organization_id(nil), do: nil
+
+  def normalize_organization_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  def normalize_organization_id(value), do: value
+
   def call(conn, _opts) do
     # First try Bearer token authentication
-    case get_bearer_token(conn) do
-      nil ->
+    case bearer_credentials(conn) do
+      :absent ->
         # Fall back to session-based authentication for internal frontend
         case get_session_user(conn) do
           nil ->
             unauthorized(conn, "Missing authorization header or session")
 
-          user ->
-            assign_user_context(conn, user)
+          {:ok, user, session_ref} ->
+            assign_user_context(conn, user, session_ref)
         end
 
-      token ->
+      {:ok, token} ->
         case verify_token(token) do
           {:ok, user} ->
-            assign_user_context(conn, user)
+            assign_user_context(conn, user, nil)
 
           {:error, reason} ->
             unauthorized(conn, reason)
         end
+
+      {:error, reason} ->
+        unauthorized(conn, reason)
     end
   end
 
-  defp assign_user_context(conn, user) do
+  defp assign_user_context(conn, user, persistent_session_ref) do
+    organization_id = request_organization_id(conn, user)
+
     conn
     |> assign(:current_user, user)
-    |> assign(:organization_id, Map.get(user, :organization_id))
-    |> assign(:current_organization_id, Map.get(user, :organization_id))
+    |> assign(:organization_id, organization_id)
+    |> assign(:current_organization_id, organization_id)
+    |> assign(:persistent_session_ref, persistent_session_ref)
   end
 
-  defp get_bearer_token(conn) do
+  defp request_organization_id(conn, user) do
+    user_organization_id =
+      user
+      |> user_organization_id()
+      |> valid_organization_id()
+
+    requested_organization_id =
+      conn
+      |> get_req_header("x-tenant-id")
+      |> List.first()
+      |> valid_organization_id()
+
+    cond do
+      is_nil(requested_organization_id) -> user_organization_id
+      requested_organization_id == user_organization_id -> user_organization_id
+      super_admin?(user) -> requested_organization_id
+      true -> user_organization_id
+    end
+  end
+
+  defp valid_organization_id(value) when is_binary(value) do
+    value = String.trim(value)
+
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
+
+  defp valid_organization_id(_value), do: nil
+
+  defp super_admin?(user) do
+    Map.get(user, :role) == "super_admin" or Map.get(user, :is_super_admin) == true
+  end
+
+  defp user_organization_id(user) when is_map(user) do
+    Map.get(user, :organization_id) || Map.get(user, "organization_id")
+  end
+
+  defp user_organization_id(_user), do: nil
+
+  defp bearer_credentials(conn) do
     case get_req_header(conn, "authorization") do
-      ["Bearer " <> token] -> token
-      _ -> nil
+      [] -> :absent
+      ["Bearer " <> token] when byte_size(token) > 0 -> {:ok, token}
+      _ -> {:error, "Malformed authorization header"}
     end
   end
 
@@ -81,7 +142,23 @@ defmodule TamanduaServerWeb.Plugs.APIAuth do
     user_token = get_session(conn, :user_token)
 
     if user_token do
-      Accounts.get_user_by_session_token(user_token)
+      binding = get_session(conn, :persistent_session_binding)
+
+      if is_binary(binding) do
+        case Accounts.get_user_by_persistent_session(user_token, binding) do
+          {:ok, user, session_ref} -> {:ok, user, session_ref}
+          _ -> nil
+        end
+      else
+        if TamanduaServer.Accounts.PersistentUserSessionStore.enabled?() do
+          nil
+        else
+          case Accounts.get_user_by_session_token(user_token) do
+            nil -> nil
+            user -> {:ok, user, nil}
+          end
+        end
+      end
     else
       nil
     end

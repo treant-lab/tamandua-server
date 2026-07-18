@@ -34,8 +34,7 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
-  alias TamanduaServer.XDR.{Correlator, DataLake}
+  alias TamanduaServer.XDR.{DataLake}
 
   # ETS tables for caching and saved searches
   @search_cache_table :unified_search_cache
@@ -425,7 +424,7 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
     end
   end
 
-  defp search_source(:alerts, parsed_query, time_range, _opts, config) do
+  defp search_source(:alerts, _parsed_query, _time_range, _opts, _config) do
     # Search alerts from database
     try do
       # Query alerts from database
@@ -436,7 +435,7 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
     end
   end
 
-  defp search_source(:data_lake, parsed_query, time_range, opts, config) do
+  defp search_source(:data_lake, parsed_query, time_range, _opts, config) do
     # Search data lake
     try do
       query_map = %{
@@ -676,15 +675,6 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
     {filters, operators, Enum.reverse(raw_query)}
   end
 
-  # Resolve a user-supplied field name to an existing atom without growing the
-  # global atom table. All legitimate field atoms exist as compile-time literals
-  # in @indexed_fields; anything else returns nil so callers can fall back.
-  defp safe_field_atom(field) do
-    String.to_existing_atom(field)
-  rescue
-    ArgumentError -> nil
-  end
-
   defp parse_tokens([token | rest], filters, operators, raw_query) do
     cond do
       token in @operators ->
@@ -716,6 +706,15 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
         # Treat as text search
         parse_tokens(rest, [{:_text, token} | filters], operators, [token | raw_query])
     end
+  end
+
+  # Resolve a user-supplied field name to an existing atom without growing the
+  # global atom table. All legitimate field atoms exist as compile-time literals
+  # in @indexed_fields; anything else returns nil so callers can fall back.
+  defp safe_field_atom(field) do
+    String.to_existing_atom(field)
+  rescue
+    ArgumentError -> nil
   end
 
   defp do_validate_query(query_string) do
@@ -770,7 +769,7 @@ defmodule TamanduaServer.XDR.UnifiedSearch do
   # Suggestions
   # ============================================================================
 
-  defp generate_suggestions(partial_query, opts, state) do
+  defp generate_suggestions(partial_query, _opts, state) do
     # Parse partial query to determine context
     tokens = tokenize_query(partial_query)
     last_token = List.last(tokens) || ""

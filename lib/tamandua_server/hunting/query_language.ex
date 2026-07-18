@@ -1089,7 +1089,7 @@ defmodule TamanduaServer.Hunting.QueryLanguage do
 
   # -- column resolution ------------------------------------------------------
 
-  defp resolve_column(field, table) do
+  defp resolve_column(field, _table) do
     # 1. Check the explicit field map
     case Map.get(@field_map, field) do
       {_table, col} -> col
@@ -1455,4 +1455,60 @@ defmodule TamanduaServer.Hunting.QueryLanguage do
     end
   end
   def func_datetime(value), do: value
+
+  @doc "tolower() - lowercase a string (nil for non-strings)."
+  def func_tolower(value) when is_binary(value), do: String.downcase(value)
+  def func_tolower(_), do: nil
+
+  @doc "toupper() - uppercase a string (nil for non-strings)."
+  def func_toupper(value) when is_binary(value), do: String.upcase(value)
+  def func_toupper(_), do: nil
+
+  @doc "strlen() - number of characters in a string (nil for non-strings)."
+  def func_strlen(value) when is_binary(value), do: String.length(value)
+  def func_strlen(_), do: nil
+
+  @doc "base64_decode() - decode a Base64 string (nil on invalid input)."
+  def func_base64_decode(value) when is_binary(value) do
+    case Base.decode64(value, ignore: :whitespace) do
+      {:ok, decoded} ->
+        decoded
+
+      :error ->
+        case Base.decode64(value, ignore: :whitespace, padding: false) do
+          {:ok, decoded} -> decoded
+          :error -> nil
+        end
+    end
+  end
+
+  def func_base64_decode(_), do: nil
+
+  @doc """
+  ipv4_is_private() - true when the IPv4 address is in an RFC 1918 private
+  range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16); nil for invalid input.
+  """
+  def func_ipv4_is_private(ip) when is_binary(ip) do
+    case :inet.parse_address(String.to_charlist(ip)) do
+      {:ok, {10, _, _, _}} -> true
+      {:ok, {172, b, _, _}} when b >= 16 and b <= 31 -> true
+      {:ok, {192, 168, _, _}} -> true
+      {:ok, {_, _, _, _}} -> false
+      _ -> nil
+    end
+  end
+
+  def func_ipv4_is_private(_), do: nil
+
+  @doc "coalesce() - first non-nil value in the argument list."
+  def func_coalesce(values) when is_list(values) do
+    Enum.find(values, &(not is_nil(&1)))
+  end
+
+  def func_coalesce(_), do: nil
+
+  @doc "iif() - conditional: returns true_val when condition is truthy."
+  def func_iif(condition, true_val, false_val) do
+    if condition, do: true_val, else: false_val
+  end
 end

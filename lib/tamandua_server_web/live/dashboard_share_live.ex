@@ -76,7 +76,7 @@ defmodule TamanduaServerWeb.DashboardShareLive do
       |> parse_share_params()
 
     case Dashboard.create_share(attrs) do
-      {:ok, share} ->
+      {:ok, _share} ->
         {:noreply,
          socket
          |> put_flash(:info, "Dashboard share created successfully!")
@@ -487,7 +487,7 @@ defmodule TamanduaServerWeb.DashboardShareLive do
             </div>
 
             <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full">
-              <.form :let={f} for={%{}} phx-submit="create_share">
+              <.form :let={_f} for={%{}} phx-submit="create_share">
                 <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
                   <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
                     Create Dashboard Share

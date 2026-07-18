@@ -43,7 +43,7 @@ import {
   CreditCard
 } from 'lucide-react';
 import { safeCapitalize } from '@/lib/utils';
-import { Checkbox, Dialog, DialogFooter } from '@/components/ui/baseui';
+import { Checkbox, Dialog, DialogFooter, Select, SelectItem } from '@/components/ui/baseui';
 
 // Types
 interface Tenant {
@@ -509,40 +509,40 @@ const MSSPPortal: React.FC = () => {
               />
             </div>
 
-            <select
+            <Select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onValueChange={setStatusFilter}
               className="px-3 py-2 bg-[var(--surface)] border border-[var(--surface-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="trial">Trial</option>
-              <option value="suspended">Suspended</option>
-              <option value="expired">Expired</option>
-            </select>
+              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="trial">Trial</SelectItem>
+              <SelectItem value="suspended">Suspended</SelectItem>
+              <SelectItem value="expired">Expired</SelectItem>
+            </Select>
 
-            <select
+            <Select
               value={tierFilter}
-              onChange={(e) => setTierFilter(e.target.value)}
+              onValueChange={setTierFilter}
               className="px-3 py-2 bg-[var(--surface)] border border-[var(--surface-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="all">All Tiers</option>
-              <option value="trial">Trial</option>
-              <option value="pro">Pro</option>
-              <option value="enterprise">Enterprise</option>
-            </select>
+              <SelectItem value="all">All Tiers</SelectItem>
+              <SelectItem value="trial">Trial</SelectItem>
+              <SelectItem value="pro">Pro</SelectItem>
+              <SelectItem value="enterprise">Enterprise</SelectItem>
+            </Select>
 
-            <select
+            <Select
               value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
+              onValueChange={setSortBy}
               className="px-3 py-2 bg-[var(--surface)] border border-[var(--surface-border)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              <option value="name">Sort by Name</option>
-              <option value="agents">Sort by Agents</option>
-              <option value="health">Sort by Health</option>
-              <option value="alerts">Sort by Alerts</option>
-              <option value="critical">Sort by Critical</option>
-            </select>
+              <SelectItem value="name">Sort by Name</SelectItem>
+              <SelectItem value="agents">Sort by Agents</SelectItem>
+              <SelectItem value="health">Sort by Health</SelectItem>
+              <SelectItem value="alerts">Sort by Alerts</SelectItem>
+              <SelectItem value="critical">Sort by Critical</SelectItem>
+            </Select>
           </div>
 
           <div className="flex items-center space-x-2">

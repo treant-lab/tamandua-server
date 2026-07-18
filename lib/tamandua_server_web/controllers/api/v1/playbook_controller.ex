@@ -8,6 +8,16 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   """
   use TamanduaServerWeb, :controller
 
+  plug TamanduaServerWeb.Plugs.Authorize, :playbooks_read
+       when action in [:index, :show, :templates, :recent_executions, :execution_history]
+
+  plug TamanduaServerWeb.Plugs.Authorize, :playbooks_create
+       when action in [:create, :clone]
+
+  plug TamanduaServerWeb.Plugs.Authorize, :playbooks_update when action in [:update]
+  plug TamanduaServerWeb.Plugs.Authorize, :playbooks_delete when action in [:delete]
+  plug TamanduaServerWeb.Plugs.Authorize, :playbooks_execute when action in [:execute]
+
   require Logger
 
   alias TamanduaServer.AuditLog
@@ -28,11 +38,12 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
     - trigger_type: Filter by trigger type
   """
   def index(conn, params) do
+    scope = tenant_scope(conn)
     filters = %{}
     filters = if params["status"], do: Map.put(filters, :enabled, params["status"] == "active"), else: filters
     filters = if params["trigger_type"], do: Map.put(filters, :trigger_type, params["trigger_type"]), else: filters
 
-    case safe_playbook_call(fn -> Playbook.list_playbooks(filters) end, "Playbook.list_playbooks") do
+    case safe_playbook_call(fn -> Playbook.list_playbooks(filters, scope) end, "Playbook.list_playbooks") do
       {:ok, playbooks} ->
         json(conn, %{
           data: Enum.map(playbooks, &serialize_playbook/1),
@@ -51,7 +62,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   conditions, and configuration.
   """
   def show(conn, %{"id" => id}) do
-    case Playbook.get_playbook(id) do
+    case Playbook.get_playbook(id, tenant_scope(conn)) do
       {:ok, playbook} ->
         json(conn, %{
           data: serialize_playbook_detail(playbook)
@@ -76,7 +87,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
     - enabled: Whether the playbook is active
   """
   def create(conn, %{"playbook" => playbook_params}) do
-    case Playbook.create_playbook(playbook_params) do
+    case Playbook.create_playbook(playbook_params, tenant_scope(conn)) do
       {:ok, playbook} ->
         user = conn.assigns[:current_user]
         AuditLog.log_config_change(user, "playbook_created", %{
@@ -107,10 +118,11 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   Update an existing playbook.
   """
   def update(conn, %{"id" => id} = params) do
+    scope = tenant_scope(conn)
     playbook_params = Map.get(params, "playbook", params)
       |> Map.drop(["id", :id])
 
-    case Playbook.update_playbook(id, playbook_params) do
+    case Playbook.update_playbook(id, playbook_params, scope) do
       {:ok, updated} ->
         user = conn.assigns[:current_user]
         AuditLog.log_config_change(user, "playbook_updated", %{
@@ -139,7 +151,7 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   Delete a playbook.
   """
   def delete(conn, %{"id" => id}) do
-    case Playbook.delete_playbook(id) do
+    case Playbook.delete_playbook(id, tenant_scope(conn)) do
       {:ok, _} ->
         user = conn.assigns[:current_user]
         AuditLog.log_config_change(user, "playbook_deleted", %{
@@ -167,22 +179,28 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
     - dry_run: If true, simulate execution without taking actions
   """
   def execute(conn, %{"id" => id} = params) do
+    scope = tenant_scope(conn)
     user = conn.assigns[:current_user]
 
     context = params
       |> Map.get("context", %{})
       |> atomize_keys()
+      |> Map.put(:organization_id, elem(scope, 1))
+      |> Map.put(:current_user_id, user && user.id)
 
     dry_run = Map.get(params, "dry_run", false)
 
-    opts = if dry_run, do: %{skip_approval: true}, else: %{}
+    opts =
+      if dry_run,
+        do: %{skip_approval: true, dry_run: true, scope: scope},
+        else: %{scope: scope}
 
     case Playbook.execute(id, context, opts) do
       {:ok, execution} ->
         status = if dry_run, do: :ok, else: :accepted
 
         # Get playbook for response and logging
-        {playbook_name, playbook} = case Playbook.get_playbook(id) do
+        {playbook_name, playbook} = case Playbook.get_playbook(id, scope) do
           {:ok, pb} -> {pb.name, pb}
           _ -> {"Unknown", nil}
         end
@@ -231,9 +249,10 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   creating variants of existing playbooks.
   """
   def clone(conn, %{"id" => id} = params) do
+    scope = tenant_scope(conn)
     new_name = Map.get(params, "name", "Copy of playbook")
 
-    case Playbook.clone_playbook(id, new_name) do
+    case Playbook.clone_playbook(id, new_name, scope) do
       {:ok, cloned} ->
         user = conn.assigns[:current_user]
         AuditLog.log_config_change(user, "playbook_cloned", %{
@@ -267,9 +286,13 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   status and results.
   """
   def execution_history(conn, %{"id" => id} = params) do
+    scope = tenant_scope(conn)
     limit = params |> Map.get("per_page", "20") |> bounded_limit(20, 200)
 
-    case safe_playbook_call(fn -> Playbook.list_executions(id, %{limit: limit}) end, "Playbook.list_executions") do
+    case safe_playbook_call(
+           fn -> Playbook.list_executions(id, %{limit: limit, scope: scope}) end,
+           "Playbook.list_executions"
+         ) do
       {:ok, executions} ->
         json(conn, %{
           data: Enum.map(executions, &serialize_execution/1),
@@ -288,9 +311,13 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
   Get recent executions across all playbooks.
   """
   def recent_executions(conn, params) do
+    scope = tenant_scope(conn)
     limit = params |> Map.get("limit", "50") |> bounded_limit(50, 200)
 
-    case safe_playbook_call(fn -> Playbook.list_recent_executions(limit: limit) end, "Playbook.list_recent_executions") do
+    case safe_playbook_call(
+           fn -> Playbook.list_recent_executions(limit: limit, scope: scope) end,
+           "Playbook.list_recent_executions"
+         ) do
       {:ok, executions} ->
         json(conn, %{
           data: Enum.map(executions, &serialize_execution/1)
@@ -540,6 +567,21 @@ defmodule TamanduaServerWeb.API.V1.PlaybookController do
 
   defp bounded_limit(val, default, max_limit),
     do: val |> to_integer(default) |> max(1) |> min(max_limit)
+
+  defp tenant_scope(conn) do
+    user_organization_id =
+      case conn.assigns[:current_user] do
+        %{organization_id: organization_id} -> organization_id
+        _ -> nil
+      end
+
+    organization_id =
+      conn.assigns[:current_organization_id] ||
+        conn.assigns[:organization_id] ||
+        user_organization_id
+
+    {:organization, organization_id}
+  end
 
   defp format_datetime(nil), do: nil
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)

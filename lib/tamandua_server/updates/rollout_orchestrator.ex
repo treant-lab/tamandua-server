@@ -14,8 +14,8 @@ defmodule Tamandua.Updates.RolloutOrchestrator do
 
   use GenServer
   require Logger
-  alias Tamandua.Updates.{VersionManager, RolloutState, UpdateHealth}
-  alias Tamandua.Repo
+  alias Tamandua.Updates.{RolloutState, UpdateHealth}
+  alias TamanduaServer.Repo
   import Ecto.Query
 
   @type rollout_id :: String.t()
@@ -223,7 +223,7 @@ defmodule Tamandua.Updates.RolloutOrchestrator do
                 {:reply, :ok, state}
 
               {:error, reason} ->
-                Logger.warn("Cannot advance rollout #{rollout_id}: #{inspect(reason)}")
+                Logger.warning("Cannot advance rollout #{rollout_id}: #{inspect(reason)}")
                 {:reply, {:error, reason}, state}
             end
         end
@@ -425,7 +425,7 @@ defmodule Tamandua.Updates.RolloutOrchestrator do
           emergency_rollback(rollout_id)
 
         {:error, reason} ->
-          Logger.warn("Rollout #{rollout_id} health check failed: #{inspect(reason)}")
+          Logger.warning("Rollout #{rollout_id} health check failed: #{inspect(reason)}")
       end
     end)
 

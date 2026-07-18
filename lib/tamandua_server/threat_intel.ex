@@ -542,7 +542,6 @@ defmodule TamanduaServer.ThreatIntel do
   # HTTP helpers
   # ------------------------------------------------------------------
 
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   defp http_get(url, headers) do

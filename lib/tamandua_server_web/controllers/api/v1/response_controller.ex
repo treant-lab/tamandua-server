@@ -2,14 +2,65 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Agents
+  alias TamanduaServer.Alerts
   alias TamanduaServer.AuditLog
   alias TamanduaServer.Response
   alias TamanduaServer.Response.Executor
+  alias TamanduaServer.Response.ResponseActor
   alias TamanduaServer.Response.Remediation
   alias TamanduaServer.Response.DecisionEngine
   alias TamanduaServer.Detection.DNSAnalyzer
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_contain
+    when action in [
+           :kill_process,
+           :quarantine_file,
+           :block_ip,
+           :unblock_ip,
+           :block_domain,
+           :unblock_domain
+         ]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_execute
+    when action in [
+           :collect_artifact,
+           :scan_path,
+           :create_snapshot,
+           :list_snapshots,
+           :find_encrypted_files
+         ]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    [
+      :response_execute,
+      :response_contain,
+      :response_remediate,
+      :response_approve,
+      :response_rollback
+    ]
+    when action in [:metrics]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_remediate
+    when action in [:delete_snapshot, :restore_files, :ransomware_remediate]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_rollback
+    when action in [:rollback]
+  )
 
   # Helper to authorize agent access within the current organization
   defp authorize_agent!(conn, agent_id) do
@@ -25,45 +76,63 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
 
     force? = truthy_param?(Map.get(params, "force", false))
 
-    case Executor.kill_process(agent_id, pid, force: force?) do
+    executor_opts = [
+      force: force?,
+      reason: params["reason"],
+      alert_id: scoped_alert_id(conn, params["alert_id"]),
+      actor: response_actor(conn)
+    ]
+
+    case Executor.kill_process(agent_id, pid, executor_opts) do
       :ok ->
         # Log the response action
-        AuditLog.log_response_action(user, "kill_process", agent_id, %{
-          pid: pid,
-          force: force?,
-          result: "success"
-        }, request_metadata(conn))
-        record_response_action(conn, user, "kill_process", agent_id, params, "success", %{"message" => "Process kill command sent"})
-
-        json(conn, %{success: true, message: "Process kill command sent"})
-
-      {:ok, result_data} ->
-        AuditLog.log_response_action(user, "kill_process", agent_id, %{
-          pid: pid,
-          force: force?,
-          result: "success"
-        }, request_metadata(conn))
-
-        record_response_action(
-          conn,
+        AuditLog.log_response_action(
           user,
           "kill_process",
           agent_id,
-          params,
-          "success",
-          Map.merge(%{"message" => "Process kill command sent"}, stringify_keys(result_data))
+          %{
+            pid: pid,
+            force: force?,
+            result: "success"
+          },
+          request_metadata(conn)
         )
 
         json(conn, %{success: true, message: "Process kill command sent"})
 
+      {:ok, result_data} ->
+        AuditLog.log_response_action(
+          user,
+          "kill_process",
+          agent_id,
+          %{
+            pid: pid,
+            force: force?,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
+
+        json(conn, %{
+          success: true,
+          message: "Process kill command sent",
+          action_id: result_data[:action_id],
+          audit_status: result_data[:audit_status]
+        })
+
       {:error, reason} ->
-        AuditLog.log_response_action(user, "kill_process", agent_id, %{
-          pid: pid,
-          force: force?,
-          result: "failed",
-          error: reason
-        }, request_metadata(conn))
-        record_response_action(conn, user, "kill_process", agent_id, params, "failed", nil, inspect(reason))
+        AuditLog.log_response_action(
+          user,
+          "kill_process",
+          agent_id,
+          %{
+            pid: pid,
+            force: force?,
+            result: "failed",
+            error: reason
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -86,23 +155,59 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     # Validate agent belongs to current organization before executing action
     _agent = authorize_agent!(conn, agent_id)
 
-    case Executor.quarantine_file(agent_id, path) do
+    executor_opts = [
+      reason: params["reason"],
+      delete_after: truthy_param?(Map.get(params, "delete_after", params["delete_original"])),
+      alert_id: scoped_alert_id(conn, params["alert_id"]),
+      actor: response_actor(conn)
+    ]
+
+    case Executor.quarantine_file(agent_id, path, executor_opts) do
       :ok ->
-        AuditLog.log_response_action(user, "quarantine_file", agent_id, %{
-          path: path,
-          result: "success"
-        }, request_metadata(conn))
-        record_response_action(conn, user, "quarantine_file", agent_id, params, "success", %{"message" => "File quarantine command sent"})
+        AuditLog.log_response_action(
+          user,
+          "quarantine_file",
+          agent_id,
+          %{
+            path: path,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{success: true, message: "File quarantine command sent"})
 
+      {:ok, result_data} ->
+        AuditLog.log_response_action(
+          user,
+          "quarantine_file",
+          agent_id,
+          %{
+            path: path,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
+
+        json(conn, %{
+          success: true,
+          message: "File quarantine command sent",
+          action_id: result_data[:action_id],
+          audit_status: result_data[:audit_status]
+        })
+
       {:error, reason} ->
-        AuditLog.log_response_action(user, "quarantine_file", agent_id, %{
-          path: path,
-          result: "failed",
-          error: reason
-        }, request_metadata(conn))
-        record_response_action(conn, user, "quarantine_file", agent_id, params, "failed", nil, inspect(reason))
+        AuditLog.log_response_action(
+          user,
+          "quarantine_file",
+          agent_id,
+          %{
+            path: path,
+            result: "failed",
+            error: reason
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -117,27 +222,42 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     # Validate agent belongs to current organization before executing action
     _agent = authorize_agent!(conn, agent_id)
 
-    case Executor.collect_artifact(agent_id, path, artifact_type) do
-      :ok ->
-        AuditLog.log_response_action(user, "collect_artifact", agent_id, %{
-          path: path,
-          artifact_type: artifact_type,
-          result: "success"
-        }, request_metadata(conn))
+    with {:ok, actor} <-
+           ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+      case Executor.collect_artifact(agent_id, path, artifact_type, actor: actor) do
+        :ok ->
+          AuditLog.log_response_action(
+            user,
+            "collect_artifact",
+            agent_id,
+            %{
+              path: path,
+              artifact_type: artifact_type,
+              result: "success"
+            },
+            request_metadata(conn)
+          )
 
-        json(conn, %{success: true, message: "Artifact collection command sent"})
+          json(conn, %{success: true, message: "Artifact collection command sent"})
 
-      {:error, reason} ->
-        AuditLog.log_response_action(user, "collect_artifact", agent_id, %{
-          path: path,
-          artifact_type: artifact_type,
-          result: "failed",
-          error: reason
-        }, request_metadata(conn))
+        {:error, reason} ->
+          AuditLog.log_response_action(
+            user,
+            "collect_artifact",
+            agent_id,
+            %{
+              path: path,
+              artifact_type: artifact_type,
+              result: "failed",
+              error: reason
+            },
+            request_metadata(conn)
+          )
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: reason})
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: reason})
+      end
     end
   end
 
@@ -152,45 +272,80 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
       max_depth: Map.get(params, "max_depth", 5)
     ]
 
-    case Executor.scan_path(agent_id, path, opts) do
-      {:ok, result} ->
-        AuditLog.log_response_action(user, "scan_path", agent_id, %{
-          path: path,
-          recursive: opts[:recursive],
-          result: "success",
-          files_scanned: get_in(result, ["result_data", "files_scanned"]) || 0,
-          threats_found: get_in(result, ["result_data", "threats_found"]) || 0
-        }, request_metadata(conn))
-        record_response_action(conn, user, "scan_path", agent_id, params, "success", result)
+    with {:ok, actor} <-
+           ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+      case Executor.scan_path(agent_id, path, Keyword.put(opts, :actor, actor)) do
+        {:ok, result} ->
+          AuditLog.log_response_action(
+            user,
+            "scan_path",
+            agent_id,
+            %{
+              path: path,
+              recursive: opts[:recursive],
+              result: "success",
+              files_scanned: get_in(result, ["result_data", "files_scanned"]) || 0,
+              threats_found: get_in(result, ["result_data", "threats_found"]) || 0
+            },
+            request_metadata(conn)
+          )
 
-        json(conn, %{
-          success: true,
-          message: "Scan completed",
-          files_scanned: get_in(result, ["result_data", "files_scanned"]) || 0,
-          threats_found: get_in(result, ["result_data", "threats_found"]) || 0,
-          threats: get_in(result, ["result_data", "threats"]) || []
-        })
+          record_response_action(conn, user, "scan_path", agent_id, params, "success", result)
 
-      :ok ->
-        AuditLog.log_response_action(user, "scan_path", agent_id, %{
-          path: path,
-          result: "sent"
-        }, request_metadata(conn))
-        record_response_action(conn, user, "scan_path", agent_id, params, "success", %{"message" => "Scan command sent"})
+          json(conn, %{
+            success: true,
+            message: "Scan completed",
+            files_scanned: get_in(result, ["result_data", "files_scanned"]) || 0,
+            threats_found: get_in(result, ["result_data", "threats_found"]) || 0,
+            threats: get_in(result, ["result_data", "threats"]) || []
+          })
 
-        json(conn, %{success: true, message: "Scan command sent"})
+        :ok ->
+          AuditLog.log_response_action(
+            user,
+            "scan_path",
+            agent_id,
+            %{
+              path: path,
+              result: "sent"
+            },
+            request_metadata(conn)
+          )
 
-      {:error, reason} ->
-        AuditLog.log_response_action(user, "scan_path", agent_id, %{
-          path: path,
-          result: "failed",
-          error: reason
-        }, request_metadata(conn))
-        record_response_action(conn, user, "scan_path", agent_id, params, "failed", nil, inspect(reason))
+          record_response_action(conn, user, "scan_path", agent_id, params, "success", %{
+            "message" => "Scan command sent"
+          })
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: reason})
+          json(conn, %{success: true, message: "Scan command sent"})
+
+        {:error, reason} ->
+          AuditLog.log_response_action(
+            user,
+            "scan_path",
+            agent_id,
+            %{
+              path: path,
+              result: "failed",
+              error: reason
+            },
+            request_metadata(conn)
+          )
+
+          record_response_action(
+            conn,
+            user,
+            "scan_path",
+            agent_id,
+            params,
+            "failed",
+            nil,
+            inspect(reason)
+          )
+
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: reason})
+      end
     end
   end
 
@@ -204,19 +359,45 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
       reason: Map.get(params, "reason", "manual_block")
     }
 
-    case Executor.execute_action(agent_id, "block_ip", payload) do
-      {:ok, result} ->
-        AuditLog.log_response_action(user, "block_ip", agent_id, Map.put(payload, :result, "success"), request_metadata(conn))
-        record_response_action(conn, user, "block_ip", agent_id, params, "success", result)
-        json(conn, %{success: true, message: "IP block command sent", result: result})
+    with {:ok, actor} <-
+           ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+      case Executor.execute_action(agent_id, "block_ip", payload, actor: actor) do
+        {:ok, result} ->
+          AuditLog.log_response_action(
+            user,
+            "block_ip",
+            agent_id,
+            Map.put(payload, :result, "success"),
+            request_metadata(conn)
+          )
 
-      {:error, reason} ->
-        AuditLog.log_response_action(user, "block_ip", agent_id, Map.merge(payload, %{result: "failed", error: inspect(reason)}), request_metadata(conn))
-        record_response_action(conn, user, "block_ip", agent_id, params, "failed", nil, inspect(reason))
+          record_response_action(conn, user, "block_ip", agent_id, params, "success", result)
+          json(conn, %{success: true, message: "IP block command sent", result: result})
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+        {:error, reason} ->
+          AuditLog.log_response_action(
+            user,
+            "block_ip",
+            agent_id,
+            Map.merge(payload, %{result: "failed", error: inspect(reason)}),
+            request_metadata(conn)
+          )
+
+          record_response_action(
+            conn,
+            user,
+            "block_ip",
+            agent_id,
+            params,
+            "failed",
+            nil,
+            inspect(reason)
+          )
+
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: inspect(reason)})
+      end
     end
   end
 
@@ -226,17 +407,33 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
 
     payload = %{ip: ip}
 
-    case Executor.execute_action(agent_id, "unblock_ip", payload) do
-      {:ok, result} ->
-        AuditLog.log_response_action(user, "unblock_ip", agent_id, Map.put(payload, :result, "success"), request_metadata(conn))
-        json(conn, %{success: true, message: "IP unblock command sent", result: result})
+    with {:ok, actor} <-
+           ResponseActor.from_user_scope(user, current_organization_id(conn)) do
+      case Executor.execute_action(agent_id, "unblock_ip", payload, actor: actor) do
+        {:ok, result} ->
+          AuditLog.log_response_action(
+            user,
+            "unblock_ip",
+            agent_id,
+            Map.put(payload, :result, "success"),
+            request_metadata(conn)
+          )
 
-      {:error, reason} ->
-        AuditLog.log_response_action(user, "unblock_ip", agent_id, Map.merge(payload, %{result: "failed", error: inspect(reason)}), request_metadata(conn))
+          json(conn, %{success: true, message: "IP unblock command sent", result: result})
 
-        conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+        {:error, reason} ->
+          AuditLog.log_response_action(
+            user,
+            "unblock_ip",
+            agent_id,
+            Map.merge(payload, %{result: "failed", error: inspect(reason)}),
+            request_metadata(conn)
+          )
+
+          conn
+          |> put_status(400)
+          |> json(%{success: false, error: inspect(reason)})
+      end
     end
   end
 
@@ -245,22 +442,88 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     _agent = authorize_agent!(conn, agent_id)
 
     reason = Map.get(params, "reason", "manual_block")
-    payload = %{domain: domain, reason: reason}
+    organization_id = current_organization_id(conn)
 
-    case Executor.execute_action(agent_id, "block_domain", payload) do
-      {:ok, result} ->
-        DNSAnalyzer.add_to_blocklist([domain], reason, user_identifier(user), current_organization_id(conn))
-        AuditLog.log_response_action(user, "block_domain", agent_id, Map.put(payload, :result, "success"), request_metadata(conn))
-        record_response_action(conn, user, "block_domain", agent_id, params, "success", result)
-        json(conn, %{success: true, message: "Domain block command sent", result: result})
+    case DNSAnalyzer.add_to_blocklist(
+           [domain],
+           reason,
+           user_identifier(user),
+           organization_id
+         ) do
+      {:ok, [applied_domain] = applied_domains} ->
+        payload = %{domain: applied_domain, reason: reason}
 
-      {:error, reason_error} ->
-        AuditLog.log_response_action(user, "block_domain", agent_id, Map.merge(payload, %{result: "failed", error: inspect(reason_error)}), request_metadata(conn))
-        record_response_action(conn, user, "block_domain", agent_id, params, "failed", nil, inspect(reason_error))
+        case Executor.execute_action(agent_id, "block_domain", payload,
+               actor: response_actor(conn)
+             ) do
+          {:ok, result} ->
+            AuditLog.log_response_action(
+              user,
+              "block_domain",
+              agent_id,
+              Map.put(payload, :result, "success"),
+              request_metadata(conn)
+            )
+
+            record_response_action(
+              conn,
+              user,
+              "block_domain",
+              agent_id,
+              params,
+              "success",
+              result
+            )
+
+            json(conn, %{
+              success: true,
+              message: "Domain block command sent",
+              result: result,
+              applied_domains: applied_domains
+            })
+
+          {:error, dispatch_error} ->
+            record_response_action(
+              conn,
+              user,
+              "block_domain",
+              agent_id,
+              params,
+              "partial",
+              nil,
+              inspect(dispatch_error)
+            )
+
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{
+              success: false,
+              durable_applied: true,
+              applied_domains: applied_domains,
+              error: "Domain persisted but agent command failed"
+            })
+        end
+
+      {:ok, _unexpected} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{success: false, error: "Durable blocklist returned an invalid result"})
+
+      {:error, persistence_error} ->
+        record_response_action(
+          conn,
+          user,
+          "block_domain",
+          agent_id,
+          params,
+          "failed",
+          nil,
+          inspect(persistence_error)
+        )
 
         conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason_error)})
+        |> put_status(:service_unavailable)
+        |> json(%{success: false, error: "Durable blocklist update failed"})
     end
   end
 
@@ -268,20 +531,54 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     user = conn.assigns[:current_user]
     _agent = authorize_agent!(conn, agent_id)
 
-    payload = %{domain: domain}
+    case DNSAnalyzer.remove_from_blocklist(domain, current_organization_id(conn)) do
+      {:ok, [applied_domain] = applied_domains} ->
+        payload = %{domain: applied_domain}
 
-    case Executor.execute_action(agent_id, "unblock_domain", payload) do
-      {:ok, result} ->
-        DNSAnalyzer.remove_from_blocklist(domain, current_organization_id(conn))
-        AuditLog.log_response_action(user, "unblock_domain", agent_id, Map.put(payload, :result, "success"), request_metadata(conn))
-        json(conn, %{success: true, message: "Domain unblock command sent", result: result})
+        case Executor.execute_action(agent_id, "unblock_domain", payload,
+               actor: response_actor(conn)
+             ) do
+          {:ok, result} ->
+            AuditLog.log_response_action(
+              user,
+              "unblock_domain",
+              agent_id,
+              Map.put(payload, :result, "success"),
+              request_metadata(conn)
+            )
 
-      {:error, reason} ->
-        AuditLog.log_response_action(user, "unblock_domain", agent_id, Map.merge(payload, %{result: "failed", error: inspect(reason)}), request_metadata(conn))
+            json(conn, %{
+              success: true,
+              message: "Domain unblock command sent",
+              result: result,
+              applied_domains: applied_domains
+            })
 
+          {:error, dispatch_error} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{
+              success: false,
+              durable_applied: true,
+              applied_domains: applied_domains,
+              error: "Domain removal persisted but agent command failed",
+              detail: inspect(dispatch_error)
+            })
+        end
+
+      {:ok, _unexpected} ->
         conn
-        |> put_status(400)
-        |> json(%{success: false, error: inspect(reason)})
+        |> put_status(:service_unavailable)
+        |> json(%{success: false, error: "Durable blocklist returned an invalid result"})
+
+      {:error, persistence_error} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          success: false,
+          error: "Durable blocklist update failed",
+          detail: inspect(persistence_error)
+        })
     end
   end
 
@@ -300,10 +597,16 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
 
     case Remediation.create_snapshot(agent_id, volume) do
       {:ok, result} ->
-        AuditLog.log_response_action(user, "create_snapshot", agent_id, %{
-          volume: volume,
-          result: "success"
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "create_snapshot",
+          agent_id,
+          %{
+            volume: volume,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{
           success: true,
@@ -312,11 +615,17 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         })
 
       {:error, reason} ->
-        AuditLog.log_response_action(user, "create_snapshot", agent_id, %{
-          volume: volume,
-          result: "failed",
-          error: inspect(reason)
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "create_snapshot",
+          agent_id,
+          %{
+            volume: volume,
+            result: "failed",
+            error: inspect(reason)
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -362,10 +671,16 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
 
     case Remediation.delete_snapshot(agent_id, snapshot_id) do
       {:ok, _result} ->
-        AuditLog.log_response_action(user, "delete_snapshot", agent_id, %{
-          snapshot_id: snapshot_id,
-          result: "success"
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "delete_snapshot",
+          agent_id,
+          %{
+            snapshot_id: snapshot_id,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{
           success: true,
@@ -374,11 +689,17 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         })
 
       {:error, reason} ->
-        AuditLog.log_response_action(user, "delete_snapshot", agent_id, %{
-          snapshot_id: snapshot_id,
-          result: "failed",
-          error: inspect(reason)
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "delete_snapshot",
+          agent_id,
+          %{
+            snapshot_id: snapshot_id,
+            result: "failed",
+            error: inspect(reason)
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -402,11 +723,17 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         # Single file restore
         case Remediation.restore_file(agent_id, snapshot_id, file_path) do
           {:ok, result} ->
-            AuditLog.log_response_action(user, "restore_file", agent_id, %{
-              snapshot_id: snapshot_id,
-              file_path: file_path,
-              result: "success"
-            }, request_metadata(conn))
+            AuditLog.log_response_action(
+              user,
+              "restore_file",
+              agent_id,
+              %{
+                snapshot_id: snapshot_id,
+                file_path: file_path,
+                result: "success"
+              },
+              request_metadata(conn)
+            )
 
             json(conn, %{
               success: true,
@@ -416,12 +743,18 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
             })
 
           {:error, reason} ->
-            AuditLog.log_response_action(user, "restore_file", agent_id, %{
-              snapshot_id: snapshot_id,
-              file_path: file_path,
-              result: "failed",
-              error: inspect(reason)
-            }, request_metadata(conn))
+            AuditLog.log_response_action(
+              user,
+              "restore_file",
+              agent_id,
+              %{
+                snapshot_id: snapshot_id,
+                file_path: file_path,
+                result: "failed",
+                error: inspect(reason)
+              },
+              request_metadata(conn)
+            )
 
             conn
             |> put_status(400)
@@ -432,13 +765,19 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         # Multiple files restore
         case Remediation.restore_files(agent_id, snapshot_id, file_paths) do
           {:ok, result} ->
-            AuditLog.log_response_action(user, "restore_files", agent_id, %{
-              snapshot_id: snapshot_id,
-              file_count: length(file_paths),
-              restored_count: result["restored_count"] || 0,
-              failed_count: result["failed_count"] || 0,
-              result: "success"
-            }, request_metadata(conn))
+            AuditLog.log_response_action(
+              user,
+              "restore_files",
+              agent_id,
+              %{
+                snapshot_id: snapshot_id,
+                file_count: length(file_paths),
+                restored_count: result["restored_count"] || 0,
+                failed_count: result["failed_count"] || 0,
+                result: "success"
+              },
+              request_metadata(conn)
+            )
 
             json(conn, %{
               success: true,
@@ -449,12 +788,18 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
             })
 
           {:error, reason} ->
-            AuditLog.log_response_action(user, "restore_files", agent_id, %{
-              snapshot_id: snapshot_id,
-              file_count: length(file_paths),
-              result: "failed",
-              error: inspect(reason)
-            }, request_metadata(conn))
+            AuditLog.log_response_action(
+              user,
+              "restore_files",
+              agent_id,
+              %{
+                snapshot_id: snapshot_id,
+                file_count: length(file_paths),
+                result: "failed",
+                error: inspect(reason)
+              },
+              request_metadata(conn)
+            )
 
             conn
             |> put_status(400)
@@ -502,23 +847,30 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
     # Validate agent belongs to current organization before executing action
     _agent = authorize_agent!(conn, agent_id)
 
-    opts = [
-      path: Map.get(params, "path", "C:\\Users"),
-      encrypted_files: Map.get(params, "encrypted_files"),
-      dry_run: Map.get(params, "dry_run", false)
-    ]
-    |> Enum.filter(fn {_k, v} -> v != nil end)
+    opts =
+      [
+        path: Map.get(params, "path", "C:\\Users"),
+        encrypted_files: Map.get(params, "encrypted_files"),
+        dry_run: Map.get(params, "dry_run", false)
+      ]
+      |> Enum.filter(fn {_k, v} -> v != nil end)
 
     user = conn.assigns[:current_user]
 
     case Remediation.ransomware_remediate(agent_id, opts) do
       {:ok, result} ->
-        AuditLog.log_response_action(user, "ransomware_remediate", agent_id, %{
-          path: opts[:path],
-          dry_run: opts[:dry_run],
-          restored_count: result["restored_count"],
-          result: "success"
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "ransomware_remediate",
+          agent_id,
+          %{
+            path: opts[:path],
+            dry_run: opts[:dry_run],
+            restored_count: result["restored_count"],
+            result: "success"
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{
           success: true,
@@ -531,11 +883,17 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         })
 
       {:error, reason} ->
-        AuditLog.log_response_action(user, "ransomware_remediate", agent_id, %{
-          path: opts[:path],
-          result: "failed",
-          error: inspect(reason)
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "ransomware_remediate",
+          agent_id,
+          %{
+            path: opts[:path],
+            result: "failed",
+            error: inspect(reason)
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -553,8 +911,9 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
   """
   def metrics(conn, params) do
     time_range = Map.get(params, "time_range", "24h")
+    scope = response_scope(conn)
 
-    case DecisionEngine.get_response_metrics() do
+    case DecisionEngine.get_response_metrics(scope) do
       {:ok, metrics} ->
         # Generate sample timeline events (in production, this would come from DB)
         timeline = generate_sample_timeline()
@@ -579,13 +938,20 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
   """
   def rollback(conn, %{"response_id" => response_id}) do
     user = conn.assigns[:current_user]
+    scope = response_scope(conn)
 
-    case DecisionEngine.rollback_response(response_id) do
+    case DecisionEngine.rollback_response(response_id, scope) do
       {:ok, result} ->
-        AuditLog.log_response_action(user, "rollback", nil, %{
-          response_id: response_id,
-          result: "success"
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "rollback",
+          nil,
+          %{
+            response_id: response_id,
+            result: "success"
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{
           success: true,
@@ -599,11 +965,17 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
         |> json(%{success: false, error: "Response not found"})
 
       {:error, reason} ->
-        AuditLog.log_response_action(user, "rollback", nil, %{
-          response_id: response_id,
-          result: "failed",
-          error: inspect(reason)
-        }, request_metadata(conn))
+        AuditLog.log_response_action(
+          user,
+          "rollback",
+          nil,
+          %{
+            response_id: response_id,
+            result: "failed",
+            error: inspect(reason)
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(400)
@@ -715,11 +1087,34 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
       (conn.assigns[:current_user] && conn.assigns[:current_user].organization_id)
   end
 
-  defp record_response_action(conn, user, action_type, agent_id, params, status, result, error_message \\ nil) do
+  defp response_scope(conn) do
+    case current_organization_id(conn) do
+      org_id when is_binary(org_id) and org_id != "" -> {:organization, org_id}
+      _ -> nil
+    end
+  end
+
+  defp response_actor(conn) do
+    %{
+      organization_id: current_organization_id(conn),
+      user_id: conn.assigns[:current_user] && conn.assigns[:current_user].id
+    }
+  end
+
+  defp record_response_action(
+         conn,
+         user,
+         action_type,
+         agent_id,
+         params,
+         status,
+         result,
+         error_message \\ nil
+       ) do
     attrs = %{
       agent_id: agent_id,
       action_type: action_type,
-      alert_id: Map.get(params, "alert_id"),
+      alert_id: scoped_alert_id(conn, Map.get(params, "alert_id")),
       executed_by_id: user && user.id,
       organization_id: current_organization_id(conn),
       parameters: Map.drop(params, ["agent_id"]),
@@ -735,8 +1130,21 @@ defmodule TamanduaServerWeb.API.V1.ResponseController do
 
       {:error, changeset} ->
         require Logger
-        Logger.warning("Failed to persist response action #{action_type}: #{inspect(changeset.errors)}")
+
+        Logger.warning(
+          "Failed to persist response action #{action_type}: #{inspect(changeset.errors)}"
+        )
+
         :error
+    end
+  end
+
+  defp scoped_alert_id(_conn, nil), do: nil
+
+  defp scoped_alert_id(conn, alert_id) do
+    case Alerts.get_alert_for_org(current_organization_id(conn), alert_id) do
+      {:ok, _alert} -> alert_id
+      _ -> raise Ecto.NoResultsError
     end
   end
 

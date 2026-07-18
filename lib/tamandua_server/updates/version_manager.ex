@@ -8,8 +8,8 @@ defmodule Tamandua.Updates.VersionManager do
 
   use GenServer
   require Logger
-  alias Tamandua.Repo
-  alias Tamandua.Updates.{Version, DeltaPatch, RolloutState}
+  alias TamanduaServer.Repo
+  alias Tamandua.Updates.{Version, DeltaPatch}
   import Ecto.Query
 
   @type version_string :: String.t()

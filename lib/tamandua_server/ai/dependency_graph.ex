@@ -63,7 +63,7 @@ defmodule TamanduaServer.AI.DependencyGraph do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.AI.DependencyGraph.{Edge, Node}
+  alias TamanduaServer.AI.DependencyGraph.{Edge}
 
   @nodes_table :ai_dependency_nodes
   @edges_table :ai_dependency_edges

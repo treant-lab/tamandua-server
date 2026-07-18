@@ -10,8 +10,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.EmailWorker do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.NotificationCenter.{Notification, NotificationDelivery, NotificationTemplate}
-  alias TamanduaServer.Mailer
+  alias TamanduaServer.NotificationCenter.{NotificationDelivery, NotificationTemplate}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"delivery_id" => delivery_id}}) do
@@ -30,7 +29,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.EmailWorker do
 
     # Send email
     case send_email(notification.user, subject, body) do
-      {:ok, response} ->
+      {:ok, _response} ->
         delivery
         |> NotificationDelivery.sent_changeset(%{provider: "email"})
         |> Repo.update()
@@ -57,7 +56,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.EmailWorker do
     |> Repo.one()
   end
 
-  defp default_template(type) do
+  defp default_template(_type) do
     %{
       subject_template: "[Tamandua EDR] <%= notification.title %>",
       body_template: """

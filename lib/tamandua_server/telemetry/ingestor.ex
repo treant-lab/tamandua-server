@@ -13,6 +13,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   require Logger
 
   alias Broadway.Message
+  alias TamanduaServer.Agents.RuntimeIntegrityPreview
   alias TamanduaServer.Detection.Engine
   alias TamanduaServer.Telemetry.ClickHouse
   alias TamanduaServer.Telemetry.ClickHouseWriter
@@ -110,19 +111,22 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   @doc """
   Push a batch of telemetry events for processing.
   """
-  @spec push_batch(map()) :: :ok
-  def push_batch(telemetry_batch) do
-    events = telemetry_batch[:events] || []
-    agent_id = telemetry_batch[:agent_id]
+  @spec push_batch(map(), keyword()) :: :ok | {:error, :unavailable}
+  def push_batch(telemetry_batch, opts \\ []) do
+    events = telemetry_batch[:events] || telemetry_batch["events"] || []
+    agent_id = telemetry_batch[:agent_id] || telemetry_batch["agent_id"]
+    push = Keyword.get(opts, :push, &IngestorProducer.push_messages/1)
 
     messages =
       Enum.map(events, fn event ->
-        Map.put(event, :agent_id, agent_id)
+        event
+        |> Map.drop([:agent_id, "agent_id", :organization_id, "organization_id"])
+        |> Map.put(:agent_id, agent_id)
       end)
 
-    IngestorProducer.push_messages(messages)
+    result = push.(messages)
     Logger.debug("Pushed batch of #{length(messages)} events")
-    :ok
+    result
   end
 
   @doc """
@@ -160,6 +164,32 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     event_type = event["event_type"] || event[:event_type]
 
     cond do
+      RuntimeIntegrityPreview.reserved_inbound?(event) ->
+        # Canonical Preview rows are server-authored only. Discard the full
+        # inbound value so a forged type, authority marker, or direct v1
+        # payload cannot enter generic persistence or downstream processing.
+        message
+        |> Message.update_data(fn _ -> %{_skip_persist: true} end)
+        |> Message.put_batcher(:default)
+
+      RuntimeIntegrityPreview.authorized_envelope?(event) ->
+        # Runtime page-content Preview is evidence-only. Persist the authorized
+        # envelope for audit, but never send it through enrichment, Detection
+        # Engine, alert synthesis, NDR, AI Security, package correlation, or
+        # response paths.
+        {:ok, canonical_event} = RuntimeIntegrityPreview.canonical_event(event)
+
+        message
+        |> Message.update_data(fn _ -> canonical_event end)
+        |> Message.put_batcher(:default)
+
+      RuntimeIntegrityPreview.raw_runtime_integrity_envelope?(event) ->
+        # A raw runtime-integrity envelope that misses strict authorization is
+        # privacy-sensitive malformed input, never generic telemetry.
+        message
+        |> Message.update_data(fn _ -> %{_skip_persist: true} end)
+        |> Message.put_batcher(:default)
+
       offline_verdict_sync_event?(event_type, event) ->
         handle_offline_verdict_sync_event(event)
 
@@ -380,7 +410,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
   defp offline_verdict_to_detection_event(verdict, parent_event) when is_map(verdict) do
     agent_id = parent_event["agent_id"] || parent_event[:agent_id]
-    org_id = parent_event["organization_id"] || parent_event[:organization_id] || OrgLookup.get_org_id(agent_id)
+
+    org_id =
+      parent_event["organization_id"] || parent_event[:organization_id] ||
+        OrgLookup.get_org_id(agent_id)
+
     file_path = verdict["file_path"] || verdict[:file_path]
     file_hash = verdict["file_hash"] || verdict[:file_hash]
     combined_verdict = verdict["combined_verdict"] || verdict[:combined_verdict] || "unknown"
@@ -398,7 +432,9 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       "event_type" => "ml_detection",
       "agent_id" => agent_id,
       "organization_id" => org_id,
-      "timestamp" => verdict["timestamp"] || verdict[:timestamp] || parent_event["timestamp"] || parent_event[:timestamp],
+      "timestamp" =>
+        verdict["timestamp"] || verdict[:timestamp] || parent_event["timestamp"] ||
+          parent_event[:timestamp],
       "severity" => offline_verdict_severity(combined_verdict, ml_score),
       "payload" => %{
         "path" => file_path,
@@ -421,7 +457,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
   defp offline_verdict_to_detection_event(_verdict, parent_event), do: parent_event
 
-  defp maybe_add_offline_ml_detection(detections, _verdict, nil, _ml_verdict, _file_path), do: detections
+  defp maybe_add_offline_ml_detection(detections, _verdict, nil, _ml_verdict, _file_path),
+    do: detections
 
   defp maybe_add_offline_ml_detection(detections, verdict, ml_score, ml_verdict, file_path) do
     combined_verdict = verdict["combined_verdict"] || verdict[:combined_verdict] || "unknown"
@@ -432,7 +469,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
           "detection_type" => "ml",
           "rule_name" => "OFFLINE_ML_#{ml_verdict || combined_verdict}",
           "confidence" => ml_score,
-          "description" => "Offline ML classified #{file_path || "file"} as #{ml_verdict || combined_verdict}",
+          "description" =>
+            "Offline ML classified #{file_path || "file"} as #{ml_verdict || combined_verdict}",
           "mitre_tactics" => ["Execution"],
           "mitre_techniques" => []
         }
@@ -443,7 +481,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     end
   end
 
-  defp add_offline_yara_detections(detections, yara_matches, file_path) when is_list(yara_matches) do
+  defp add_offline_yara_detections(detections, yara_matches, file_path)
+       when is_list(yara_matches) do
     yara_detections =
       Enum.map(yara_matches, fn rule ->
         %{
@@ -593,7 +632,14 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     software = software_inventory_items(payload)
 
     if agent_id && software != [] do
-      case AssetScanner.scan_agent_inventory(agent_id, software) do
+      scanner_result =
+        if authoritative_inventory_snapshot?(payload) do
+          AssetScanner.reconcile_agent_inventory_snapshot(agent_id, software)
+        else
+          AssetScanner.scan_agent_inventory(agent_id, software)
+        end
+
+      case scanner_result do
         {:ok, result} ->
           Logger.debug(
             "[Ingestor] Software inventory projected agent=#{agent_id} scanned=#{result.software_scanned} vulns=#{result.vulnerabilities_found}"
@@ -626,6 +672,15 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   defp software_inventory_items(_payload), do: []
+
+  defp authoritative_inventory_snapshot?(%{} = payload) do
+    scope = payload["inventory_scope"] || payload[:inventory_scope]
+    snapshot_complete = payload["snapshot_complete"] || payload[:snapshot_complete]
+
+    scope == "full" or truthy?(snapshot_complete)
+  end
+
+  defp authoritative_inventory_snapshot?(_payload), do: false
 
   defp handle_software_uninstall_event(event) do
     agent_id = event["agent_id"] || event[:agent_id]
@@ -1060,7 +1115,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
         event
         |> Map.put("detections", merged)
         |> Map.put(:detections, merged)
-        |> put_event_value(:severity, strongest_detection_severity(merged, event["severity"] || event[:severity]))
+        |> put_event_value(
+          :severity,
+          strongest_detection_severity(merged, event["severity"] || event[:severity])
+        )
       end
     else
       event
@@ -1083,6 +1141,7 @@ defmodule TamanduaServer.Telemetry.Ingestor do
          present?(tamper_type) do
       existing = normalize_event_detections(event["detections"] || event[:detections] || [])
       severity = normalize_alert_severity(event["severity"] || event[:severity] || "critical")
+
       description =
         payload["description"] || payload[:description] ||
           "Agent self-protection reported #{tamper_type}."
@@ -1110,13 +1169,19 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       event
       |> Map.put("detections", merged)
       |> Map.put(:detections, merged)
-      |> put_event_value(:severity, strongest_detection_severity(merged, event["severity"] || event[:severity]))
+      |> put_event_value(
+        :severity,
+        strongest_detection_severity(merged, event["severity"] || event[:severity])
+      )
     else
       event
     end
   rescue
     e ->
-      Logger.warning("[Ingestor] Agent protection detection enrichment failed: #{Exception.message(e)}")
+      Logger.warning(
+        "[Ingestor] Agent protection detection enrichment failed: #{Exception.message(e)}"
+      )
+
       event
   end
 
@@ -1254,8 +1319,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
         String.contains?(process, "security")
 
     if suspicious_location and
-         (not trusted_windows_binary_path?(normalized_path) or command_references_untrusted_executable) and
-         (String.ends_with?(process, ".exe") or String.contains?(normalized_command_evidence, ".exe")) and
+         (not trusted_windows_binary_path?(normalized_path) or
+            command_references_untrusted_executable) and
+         (String.ends_with?(process, ".exe") or
+            String.contains?(normalized_command_evidence, ".exe")) and
          masquerade_name do
       detection(
         "process_masquerade_outside_system32",
@@ -1270,14 +1337,28 @@ defmodule TamanduaServer.Telemetry.Ingestor do
           "process_path" => path,
           "command_line" => cmdline,
           "decoded_command_line" => decoded,
-          "basis" => ["executable_path_or_decoded_script", "untrusted_location", "masquerade_name"]
+          "basis" => [
+            "executable_path_or_decoded_script",
+            "untrusted_location",
+            "masquerade_name"
+          ]
         },
         event
       )
     end
   end
 
-  defp detection(rule_name, detection_type, description, tactics, techniques, severity, confidence, evidence, event) do
+  defp detection(
+         rule_name,
+         detection_type,
+         description,
+         tactics,
+         techniques,
+         severity,
+         confidence,
+         evidence,
+         event
+       ) do
     %{
       "rule_name" => rule_name,
       "name" => rule_name,
@@ -1298,8 +1379,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     (existing ++ generated)
     |> Enum.filter(&is_map/1)
     |> Enum.uniq_by(fn detection ->
-      {Map.get(detection, "rule_name") || Map.get(detection, :rule_name) || Map.get(detection, "name"),
-       Map.get(detection, "detection_type") || Map.get(detection, :detection_type) || Map.get(detection, "type")}
+      {Map.get(detection, "rule_name") || Map.get(detection, :rule_name) ||
+         Map.get(detection, "name"),
+       Map.get(detection, "detection_type") || Map.get(detection, :detection_type) ||
+         Map.get(detection, "type")}
     end)
   end
 
@@ -1333,7 +1416,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   defp process_path(payload) do
-    first_text_value(payload, [:exe_path, :executable_path, :process_path, :image_path, :path]) || ""
+    first_text_value(payload, [:exe_path, :executable_path, :process_path, :image_path, :path]) ||
+      ""
   end
 
   defp process_command_line(payload) do
@@ -1384,7 +1468,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
     severity =
       normalize_alert_severity(
-        event["severity"] || event[:severity] || detection[:severity] || detection["severity"] || "medium"
+        event["severity"] || event[:severity] || detection[:severity] || detection["severity"] ||
+          "medium"
       )
 
     confidence >= min_confidence or severity in ["high", "critical"]
@@ -1417,8 +1502,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
   defp detection_confidence(detection) when is_map(detection) do
     case detection[:confidence] || detection["confidence"] do
-      value when is_float(value) -> value
-      value when is_integer(value) -> value / 1.0
+      value when is_float(value) ->
+        value
+
+      value when is_integer(value) ->
+        value / 1.0
 
       value when is_binary(value) ->
         case Float.parse(value) do
@@ -1518,8 +1606,13 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
     %{
       "source" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: "agent"),
-      "detection_source" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: "agent"),
-      "detection_type" => if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: to_string(first_detection[:type] || "agent")),
+      "detection_source" =>
+        if(Enum.any?(detections, &ml_agent_detection?/1), do: "ml", else: "agent"),
+      "detection_type" =>
+        if(Enum.any?(detections, &ml_agent_detection?/1),
+          do: "ml",
+          else: to_string(first_detection[:type] || "agent")
+        ),
       "rule_name" => first_detection[:name] || first_detection[:rule_name],
       "confidence" => max_detection_confidence(detections),
       "prediction" => payload["ml_verdict"] || payload[:ml_verdict],
@@ -1530,8 +1623,13 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   end
 
   defp ml_agent_detection?(detection) when is_map(detection) do
-    type = detection[:type] || detection["type"] || detection[:detection_type] || detection["detection_type"]
-    name = detection[:name] || detection["name"] || detection[:rule_name] || detection["rule_name"] || ""
+    type =
+      detection[:type] || detection["type"] || detection[:detection_type] ||
+        detection["detection_type"]
+
+    name =
+      detection[:name] || detection["name"] || detection[:rule_name] || detection["rule_name"] ||
+        ""
 
     normalize_ingestor_text(type) == "ml" or
       String.starts_with?(to_string(name), "OFFLINE_ML")
@@ -1552,9 +1650,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
         event_type = event["event_type"] || event[:event_type] || "unknown"
         event_type = to_string(event_type)
         timestamp = event["timestamp"] || event[:timestamp]
+
         payload =
           (event["payload"] || event[:payload] || %{})
           |> canonicalize_payload(event_type)
+
         severity = event["severity"] || event[:severity] || "info"
         severity = normalize_ingested_event_severity(event_type, payload, severity)
         payload = normalize_ingested_event_payload(event_type, payload)
@@ -1658,8 +1758,17 @@ defmodule TamanduaServer.Telemetry.Ingestor do
         }
       end)
 
-    # Filter out events with nil agent_id (FK constraint requires it)
+    # Filter out events with nil agent_id (FK constraint requires it), but make
+    # the loss visible because these events cannot participate in correlation.
+    original_count = length(event_maps)
     event_maps = Enum.filter(event_maps, fn em -> is_binary(em[:agent_id]) end)
+    dropped_count = original_count - length(event_maps)
+
+    if dropped_count > 0 do
+      Logger.warning(
+        "[Telemetry] Dropped #{dropped_count} event(s) without agent_id before persistence"
+      )
+    end
 
     if Enum.empty?(event_maps) do
       {:ok, 0}
@@ -1674,8 +1783,6 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       Logger.error("Database error persisting #{length(events)} events: #{Exception.message(e)}")
       {:error, e}
   end
-
-  defp insert_event_maps([], _attempts_left), do: {:ok, 0}
 
   defp canonicalize_payload(payload, event_type) when is_map(payload) do
     category = EventContract.category(event_type)
@@ -1694,6 +1801,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     payload
     |> put_alias_if_present("hostname", ["host", "computer_name", "device_name"])
     |> put_alias_if_present("user", ["username", "user_name", "account"])
+    |> put_alias_if_present("pid", ["process_id", "process_pid", "source_pid"])
+    |> put_alias_if_present("process_id", ["pid", "process_pid", "source_pid"])
+    |> put_alias_if_present("ppid", ["parent_pid", "parent_process_id"])
+    |> put_alias_if_present("parent_process_id", ["ppid", "parent_pid"])
   end
 
   defp maybe_canonicalize_process_payload(payload, category)
@@ -1782,7 +1893,9 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp maybe_canonicalize_file_payload(payload, _category), do: payload
 
   defp put_alias_if_present(payload, canonical_key, aliases) do
-    if canonical_present?(Map.get(payload, canonical_key) || Map.get(payload, String.to_atom(canonical_key))) do
+    if canonical_present?(
+         Map.get(payload, canonical_key) || Map.get(payload, String.to_atom(canonical_key))
+       ) do
       payload
     else
       value =
@@ -1842,6 +1955,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       debug_id -> to_string(agent_id) == debug_id
     end
   end
+
+  defp insert_event_maps([], _attempts_left), do: {:ok, 0}
 
   defp insert_event_maps(event_maps, attempts_left) do
     case TamanduaServer.Repo.insert_all("events", event_maps,
@@ -2017,7 +2132,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp dump_uuid(value), do: value
 
   defp ensure_event_identity(event) when is_map(event) do
-    event_id = event["event_id"] || event[:event_id] || event["id"] || event[:id] || Ecto.UUID.generate()
+    event_id =
+      event["event_id"] || event[:event_id] || event["id"] || event[:id] || Ecto.UUID.generate()
 
     event
     |> Map.put("event_id", event_id)
@@ -2037,22 +2153,35 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       severity in ["critical", "high"] and benign_edge_update_ntdll_event?(event, detections) ->
         event
         |> put_event_value(:severity, "medium")
-        |> put_timeline_adjustment(severity, "medium", "edge_update_ntdll_fresh_mapping_without_actionable_context")
+        |> put_timeline_adjustment(
+          severity,
+          "medium",
+          "edge_update_ntdll_fresh_mapping_without_actionable_context"
+        )
 
       severity in ["critical", "high"] and benign_edge_update_etw_event?(event, detections) ->
         event
         |> put_event_value(:severity, "medium")
-        |> put_timeline_adjustment(severity, "medium", "edge_update_etw_patch_without_actionable_context")
+        |> put_timeline_adjustment(
+          severity,
+          "medium",
+          "edge_update_etw_patch_without_actionable_context"
+        )
 
       severity in ["critical", "high"] and contextless_etw_tamper_event?(event, detections) ->
         event
         |> put_event_value(:severity, "medium")
         |> put_timeline_adjustment(severity, "medium", "etw_tamper_missing_actionable_context")
 
-      severity in ["critical", "high"] and ntdll_self_write_no_permission_transition_event?(event, detections) ->
+      severity in ["critical", "high"] and
+          ntdll_self_write_no_permission_transition_event?(event, detections) ->
         event
         |> put_event_value(:severity, "medium")
-        |> put_timeline_adjustment(severity, "medium", "ntdll_self_write_no_permission_transition")
+        |> put_timeline_adjustment(
+          severity,
+          "medium",
+          "ntdll_self_write_no_permission_transition"
+        )
 
       severity in ["critical", "high"] and contextless_ntdll_write_event?(event, detections) ->
         event
@@ -2062,7 +2191,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       severity in ["critical", "high"] and contextless_service_registry_event?(event, detections) ->
         event
         |> put_event_value(:severity, "medium")
-        |> put_timeline_adjustment(severity, "medium", "service_registry_change_missing_process_context")
+        |> put_timeline_adjustment(
+          severity,
+          "medium",
+          "service_registry_change_missing_process_context"
+        )
 
       true ->
         maybe_normalize_contextless_timeline_event(event, severity, detections)
@@ -2151,16 +2284,28 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
   defp benign_edge_update_etw_event?(event, detections) do
     payload = event_value(event, :payload) |> ensure_ingestor_map()
-    process = payload |> first_text_value([:name, :process_name, :image, :exe_path]) |> basename_text()
+
+    process =
+      payload |> first_text_value([:name, :process_name, :image, :exe_path]) |> basename_text()
+
     parent = payload |> first_text_value([:parent_name, :parent_process_name]) |> basename_text()
-    path = payload |> first_text_value([:path, :exe_path, :executable_path, :image_path]) |> normalize_ingestor_path()
+
+    path =
+      payload
+      |> first_text_value([:path, :exe_path, :executable_path, :image_path])
+      |> normalize_ingestor_path()
+
     cmdline = payload |> first_text_value([:cmdline, :command_line]) |> normalize_ingestor_text()
 
     etw_t1562? =
       Enum.any?(detections, fn detection ->
         rule =
           detection
-          |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+          |> Map.get(
+            "rule_name",
+            Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+              Map.get(detection, :name)
+          )
           |> normalize_ingestor_text()
 
         techniques =
@@ -2180,7 +2325,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     etw_t1562? and
       process == "microsoftedgeupdate.exe" and
       parent in ["svchost.exe", "microsoftedgeupdate.exe"] and
-      String.contains?(path, "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe") and
+      String.contains?(
+        path,
+        "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe"
+      ) and
       benign_edge_update_commandline?(cmdline)
   end
 
@@ -2188,8 +2336,15 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     payload = event_value(event, :payload) |> ensure_ingestor_map()
     enrichment = event_value(event, :enrichment) |> ensure_ingestor_map()
     metadata = map_value(enrichment, :metadata) |> ensure_ingestor_map()
-    process = payload |> first_text_value([:name, :process_name, :image, :exe_path]) |> basename_text()
-    path = payload |> first_text_value([:path, :process_path, :exe_path, :executable_path, :image_path]) |> normalize_ingestor_path()
+
+    process =
+      payload |> first_text_value([:name, :process_name, :image, :exe_path]) |> basename_text()
+
+    path =
+      payload
+      |> first_text_value([:path, :process_path, :exe_path, :executable_path, :image_path])
+      |> normalize_ingestor_path()
+
     operation = metadata |> first_text_value([:operation]) |> normalize_ingestor_text()
     mem_type = payload |> first_text_value([:mem_type_str]) |> normalize_ingestor_text()
     protection = payload |> first_text_value([:new_protection_str]) |> normalize_ingestor_text()
@@ -2200,7 +2355,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       Enum.any?(detections, fn detection ->
         rule =
           detection
-          |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+          |> Map.get(
+            "rule_name",
+            Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+              Map.get(detection, :name)
+          )
           |> normalize_ingestor_text()
 
         rule == "ntdll_write_ntmapviewofsection"
@@ -2208,7 +2367,10 @@ defmodule TamanduaServer.Telemetry.Ingestor do
 
     ntdll_mapping? and
       process == "microsoftedgeupdate.exe" and
-      String.contains?(path, "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe") and
+      String.contains?(
+        path,
+        "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe"
+      ) and
       operation == "ntmapviewofsection" and
       mem_type == "mem_image" and
       protection == "page_execute_read" and
@@ -2232,7 +2394,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       Enum.any?(detections, fn detection ->
         rule =
           detection
-          |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+          |> Map.get(
+            "rule_name",
+            Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+              Map.get(detection, :name)
+          )
           |> normalize_ingestor_text()
 
         techniques =
@@ -2290,7 +2456,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
       Enum.any?(detections, fn detection ->
         rule =
           detection
-          |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+          |> Map.get(
+            "rule_name",
+            Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+              Map.get(detection, :name)
+          )
           |> normalize_ingestor_text()
 
         rule in [
@@ -2347,7 +2517,11 @@ defmodule TamanduaServer.Telemetry.Ingestor do
     Enum.any?(detections, fn detection ->
       rule =
         detection
-        |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+        |> Map.get(
+          "rule_name",
+          Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+            Map.get(detection, :name)
+        )
         |> normalize_ingestor_text()
 
       rule in [
@@ -2498,16 +2672,28 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp contextless_service_registry_event?(event, detections) do
     payload = event_value(event, :payload) |> ensure_ingestor_map()
     event_type = event_value(event, :event_type) |> normalize_ingestor_text()
-    key_path = payload |> first_text_value([:key_path, :registry_key, :target_object, :target_name]) |> normalize_ingestor_path()
+
+    key_path =
+      payload
+      |> first_text_value([:key_path, :registry_key, :target_object, :target_name])
+      |> normalize_ingestor_path()
+
     operation = payload |> first_text_value([:operation]) |> normalize_ingestor_text()
-    process = payload |> first_text_value([:process_name, :name, :image, :exe_path]) |> basename_text()
+
+    process =
+      payload |> first_text_value([:process_name, :name, :image, :exe_path]) |> basename_text()
+
     pid = payload |> map_value(:pid) |> normalize_ingestor_text()
 
     service_rule? =
       Enum.any?(detections, fn detection ->
         rule =
           detection
-          |> Map.get("rule_name", Map.get(detection, :rule_name) || Map.get(detection, "name") || Map.get(detection, :name))
+          |> Map.get(
+            "rule_name",
+            Map.get(detection, :rule_name) || Map.get(detection, "name") ||
+              Map.get(detection, :name)
+          )
           |> normalize_ingestor_text()
 
         rule == "registry_t1543_003"
@@ -2718,7 +2904,8 @@ defmodule TamanduaServer.Telemetry.Ingestor do
   defp normalize_ingestor_text(value) when is_binary(value),
     do: value |> String.downcase() |> String.trim()
 
-  defp normalize_ingestor_text(value), do: value |> to_string() |> String.downcase() |> String.trim()
+  defp normalize_ingestor_text(value),
+    do: value |> to_string() |> String.downcase() |> String.trim()
 
   defp normalize_ingestor_path(value) do
     value

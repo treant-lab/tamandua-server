@@ -38,7 +38,6 @@ defmodule TamanduaServer.Audit.Signature do
   require Logger
 
   alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.Repo
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id

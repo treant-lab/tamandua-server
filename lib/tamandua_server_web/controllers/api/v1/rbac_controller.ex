@@ -855,7 +855,7 @@ defmodule TamanduaServerWeb.API.V1.RBACController do
       ]
 
       case Accounts.assign_role_to_user(user, role, opts) do
-        {:ok, user_role} ->
+        {:ok, _user_role} ->
           # Log with reason
           RBACAuditLog.log_role_assigned(org_id, actor, user, role, [
             ip_address: get_client_ip(conn),

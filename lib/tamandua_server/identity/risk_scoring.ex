@@ -62,7 +62,6 @@ defmodule TamanduaServer.Identity.RiskScoring do
   @travel_speed_threshold_kph 800 # Faster than commercial flights
   @off_hours_start 22 # 10 PM
   @off_hours_end 6   # 6 AM
-  @baseline_learning_days 30
 
   # ============================================================================
   # Client API
@@ -463,7 +462,7 @@ defmodule TamanduaServer.Identity.RiskScoring do
     end
   end
 
-  defp calculate_impossible_travel_factor(factors, _user_id, events, baseline) do
+  defp calculate_impossible_travel_factor(factors, _user_id, events, _baseline) do
     # Get recent login locations
     recent_logins = events
     |> Enum.filter(&is_login_event?/1)

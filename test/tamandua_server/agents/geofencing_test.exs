@@ -3,9 +3,11 @@ defmodule TamanduaServer.Agents.GeofencingTest do
 
   alias TamanduaServer.Agents.{
     Agent,
+    AgentCommand,
     GeoRegion,
     GeofencingRule,
     GeoPolicy,
+    GeoPolicyEnforcement,
     AgentLocation,
     VpnWhitelist,
     GeoTravelRequest,
@@ -412,6 +414,40 @@ defmodule TamanduaServer.Agents.GeofencingTest do
 
       updated_agent = Repo.get!(Agent, agent.id)
       assert updated_agent.geo_restrictions["require_mfa"] == true
+    end
+
+    test "queues geo isolation through AgentCommand instead of direct executor", %{
+      policy: policy,
+      agent: agent,
+      location: location
+    } do
+      policy = %{policy | auto_isolate: true, require_mfa: false, restrict_file_downloads: false}
+
+      Geofencing.enforce_policy(policy, agent, location)
+
+      assert %AgentCommand{} = command = Repo.get_by(AgentCommand, agent_id: agent.id)
+      assert command.command_type == "isolate_network"
+      assert command.status == "pending"
+      assert command.priority == 9
+      assert command.idempotency_key == "geofencing-isolate:#{policy.id}:#{agent.id}:#{location.id}"
+
+      assert command.command_params == %{
+               "reason" => "geo_policy_enforcement",
+               "policy_id" => policy.id,
+               "location_id" => location.id,
+               "source" => "geofencing"
+             }
+
+      assert %GeoPolicyEnforcement{} =
+               enforcement =
+               Repo.get_by(GeoPolicyEnforcement,
+                 agent_id: agent.id,
+                 policy_id: policy.id,
+                 enforcement_type: "isolated"
+               )
+
+      assert enforcement.enforcement_details["queued"] == true
+      assert enforcement.enforcement_details["command_id"] == command.id
     end
   end
 

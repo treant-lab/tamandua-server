@@ -354,7 +354,7 @@ defmodule TamanduaServer.Reports.Templates.AgentHealth do
     # For now, generate simulated trend data
     base = if total > 0, do: current_online / total * 100, else: 0
 
-    Enum.map(0..(days - 1), fn i ->
+    Enum.map(0..(days - 1), fn _i ->
       # Simulate some variance
       variance = :rand.uniform() * 10 - 5
       max(0, min(100, round(base + variance)))

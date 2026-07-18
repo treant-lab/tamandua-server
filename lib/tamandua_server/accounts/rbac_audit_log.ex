@@ -258,7 +258,7 @@ defmodule TamanduaServer.Accounts.RBACAuditLog do
   @doc """
   Count entries matching criteria.
   """
-  def count_for_organization(org_id, opts \\ []) do
+  def count_for_organization(org_id, _opts \\ []) do
     from(al in __MODULE__,
       where: al.organization_id == ^org_id,
       select: count()

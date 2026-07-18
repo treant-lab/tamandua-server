@@ -40,6 +40,8 @@ defmodule TamanduaServer.Detection.LateralMovement do
   use GenServer
   require Logger
 
+  import Ecto.Query, only: [from: 2]
+
   alias TamanduaServer.Alerts
   alias TamanduaServer.Agents.OrgLookup
 
@@ -50,6 +52,7 @@ defmodule TamanduaServer.Detection.LateralMovement do
   @graph_table :lateral_movement_graph
   @baseline_table :lateral_movement_baselines
   @anomaly_table :lateral_movement_anomalies
+  @criticality_cache_table :lateral_movement_criticality_cache
 
   # ---------------------------------------------------------------------------
   # Limits and defaults
@@ -61,6 +64,9 @@ defmodule TamanduaServer.Detection.LateralMovement do
   @cleanup_interval_ms :timer.minutes(15)
   @default_alert_threshold 15
   @max_bfs_depth 12
+  @criticality_cache_ttl_ms :timer.minutes(5)
+  # Neutral criticality (0-10 scale) for hosts we cannot resolve to an agent.
+  @default_criticality 5
 
   # ---------------------------------------------------------------------------
   # Protocol risk weights (MITRE T1021.*)
@@ -188,6 +194,7 @@ defmodule TamanduaServer.Detection.LateralMovement do
     :ets.new(@graph_table, [:bag, :named_table, :public, read_concurrency: true])
     :ets.new(@baseline_table, [:set, :named_table, :public, read_concurrency: true])
     :ets.new(@anomaly_table, [:ordered_set, :named_table, :public, read_concurrency: true])
+    :ets.new(@criticality_cache_table, [:set, :named_table, :public, read_concurrency: true])
 
     # Schedule periodic cleanup
     Process.send_after(self(), :cleanup, @cleanup_interval_ms)
@@ -398,35 +405,44 @@ defmodule TamanduaServer.Detection.LateralMovement do
     payload = event[:payload] || event["payload"] || %{}
     agent_id = event[:agent_id] || event["agent_id"]
     timestamp = event[:timestamp] || event["timestamp"] || DateTime.utc_now()
+    event_id = event_id_from(event) || event_id_from(payload)
+    dedup_key =
+      value_from(event, [:dedup_key, "dedup_key"]) ||
+        value_from(payload, [:dedup_key, "dedup_key"])
 
-    cond do
-      # Authentication events (logon type 10 = RDP, type 3 = network, etc.)
-      event_type in ["authentication", "logon", "auth_event", "logon_event"] ->
-        extract_auth_event(payload, agent_id, timestamp)
+    attrs =
+      cond do
+        # Authentication events (logon type 10 = RDP, type 3 = network, etc.)
+        event_type in ["authentication", "logon", "auth_event", "logon_event"] ->
+          extract_auth_event(payload, agent_id, timestamp)
 
-      # Network connections on lateral movement ports
-      event_type in ["network_connect", "network_connection"] ->
-        extract_network_event(payload, agent_id, timestamp)
+        # Network connections on lateral movement ports
+        event_type in ["network_connect", "network_connection"] ->
+          extract_network_event(payload, agent_id, timestamp)
 
-      # Remote service creation (PsExec pattern)
-      event_type in ["service_create", "service_created", "service_install"] ->
-        extract_service_event(payload, agent_id, timestamp)
+        # Remote service creation (PsExec pattern)
+        event_type in ["service_create", "service_created", "service_install"] ->
+          extract_service_event(payload, agent_id, timestamp)
 
-      # Scheduled task creation
-      event_type in ["scheduled_task", "task_create", "scheduled_task_create"] ->
-        extract_task_event(payload, agent_id, timestamp)
+        # Scheduled task creation
+        event_type in ["scheduled_task", "task_create", "scheduled_task_create"] ->
+          extract_task_event(payload, agent_id, timestamp)
 
-      # WMI event (process creation via WMI)
-      event_type in ["wmi_event", "wmi_exec", "wmi_process"] ->
-        extract_wmi_event(payload, agent_id, timestamp)
+        # WMI event (process creation via WMI)
+        event_type in ["wmi_event", "wmi_exec", "wmi_process"] ->
+          extract_wmi_event(payload, agent_id, timestamp)
 
-      # Named pipe connections (often used by PsExec, SMB)
-      event_type in ["named_pipe", "pipe_connect"] ->
-        extract_pipe_event(payload, agent_id, timestamp)
+        # Named pipe connections (often used by PsExec, SMB)
+        event_type in ["named_pipe", "pipe_connect"] ->
+          extract_pipe_event(payload, agent_id, timestamp)
 
-      true ->
-        nil
-    end
+        true ->
+          nil
+      end
+
+    attrs
+    |> maybe_put(:event_id, event_id)
+    |> maybe_put(:dedup_key, dedup_key)
   end
 
   defp extract_auth_event(payload, agent_id, timestamp) do
@@ -597,6 +613,8 @@ defmodule TamanduaServer.Detection.LateralMovement do
     username = attrs[:username] || attrs["username"]
     credential_type = attrs[:credential_type] || attrs["credential_type"]
     event_type = attrs[:event_type] || attrs["event_type"]
+    event_id = event_id_from(attrs)
+    dedup_key = attrs[:dedup_key] || attrs["dedup_key"]
 
     unless source_ip && dest_ip do
       state
@@ -611,7 +629,9 @@ defmodule TamanduaServer.Detection.LateralMovement do
         timestamp: timestamp,
         username: username,
         credential_type: credential_type,
-        event_type: event_type
+        event_type: event_type,
+        event_id: event_id,
+        dedup_key: dedup_key
       }
 
       if state.edge_count < @max_edges do
@@ -922,13 +942,64 @@ defmodule TamanduaServer.Detection.LateralMovement do
   defp criticality_multiplier(criticality) when criticality >= 5, do: 1.2
   defp criticality_multiplier(_), do: 1.0
 
+  # `Assets.Criticality` keys criticality by agent_id and scores on a 0-100
+  # scale, while this engine works with bare IPs on a 0-10 scale (see
+  # `criticality_multiplier/1`). Resolve IP -> agent via the Agent registry,
+  # scale the score down, and cache the result briefly since this is called
+  # per-edge in scoring loops. Hosts we cannot resolve (or any lookup failure)
+  # get the neutral default.
   defp get_asset_criticality(ip) do
     try do
-      TamanduaServer.Assets.Criticality.get_score(ip)
+      case lookup_cached_criticality(ip) do
+        {:ok, score} ->
+          score
+
+        :miss ->
+          score = resolve_asset_criticality(ip)
+          expires_at = System.monotonic_time(:millisecond) + @criticality_cache_ttl_ms
+          :ets.insert(@criticality_cache_table, {ip, score, expires_at})
+          score
+      end
     rescue
-      _ -> 5
+      _ -> @default_criticality
     catch
-      :exit, _ -> 5
+      :exit, _ -> @default_criticality
+    end
+  end
+
+  defp lookup_cached_criticality(ip) do
+    case :ets.lookup(@criticality_cache_table, ip) do
+      [{^ip, score, expires_at}] ->
+        if System.monotonic_time(:millisecond) < expires_at do
+          {:ok, score}
+        else
+          :ets.delete(@criticality_cache_table, ip)
+          :miss
+        end
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp resolve_asset_criticality(ip) do
+    agent_id =
+      TamanduaServer.Repo.one(
+        from(a in TamanduaServer.Agents.Agent,
+          where: a.ip_address == ^ip,
+          limit: 1,
+          select: a.id
+        )
+      )
+
+    case agent_id do
+      nil ->
+        @default_criticality
+
+      agent_id ->
+        %{score: score} = TamanduaServer.Assets.Criticality.get_criticality(agent_id)
+        # 0-100 -> 0-10
+        (score / 10) |> round() |> min(10) |> max(0)
     end
   end
 
@@ -1168,16 +1239,28 @@ defmodule TamanduaServer.Detection.LateralMovement do
 
   defp create_lateral_movement_alert(edge, anomalies, score) do
     agent_id = edge.agent_id
-    mitre_info = Map.get(@mitre_map, edge.protocol, %{technique: "T1021", tactic: "lateral-movement", name: "Lateral Movement"})
+    organization_id = OrgLookup.get_org_id(agent_id)
+    mitre_info =
+      Map.get(@mitre_map, edge.protocol, %{
+        technique: "T1021",
+        tactic: "lateral-movement",
+        name: "Lateral Movement"
+      })
 
-    anomaly_descriptions = anomalies
-    |> Enum.map(& &1.description)
-    |> Enum.join("; ")
+    event_ids = event_ids_from_edges([edge])
+    source_event_id = List.first(event_ids)
+    contributing_events = contributing_event_ids_from_edges([edge])
+    raw_event = edge_raw_event(edge, organization_id, :lateral_movement)
+
+    anomaly_descriptions =
+      anomalies
+      |> Enum.map(& &1.description)
+      |> Enum.join("; ")
 
     try do
       Alerts.create_alert(%{
         agent_id: agent_id,
-        organization_id: OrgLookup.get_org_id(agent_id),
+        organization_id: organization_id,
         severity: severity_from_score(score),
         title: "Lateral Movement: #{edge.protocol |> String.upcase()} #{edge.source_ip} -> #{edge.dest_ip}",
         description: """
@@ -1188,8 +1271,9 @@ defmodule TamanduaServer.Detection.LateralMovement do
         Risk Score: #{score}
         Anomalies: #{anomaly_descriptions}
         """,
-        source_event_id: nil,
-        event_ids: [],
+        source_event_id: source_event_id,
+        event_ids: event_ids,
+        contributing_events: contributing_events,
         evidence: %{
           lateral_movement: %{
             source_ip: edge.source_ip,
@@ -1202,7 +1286,8 @@ defmodule TamanduaServer.Detection.LateralMovement do
           network: [%{source_ip: edge.source_ip, dest_ip: edge.dest_ip, port: edge.port}]
         },
         process_chain: [],
-        raw_event: edge,
+        raw_event: raw_event,
+        dedup_key: raw_event.dedup_key,
         mitre_tactics: [mitre_info.tactic],
         mitre_techniques: [mitre_info.technique],
         threat_score: min(score / 20.0, 1.0)
@@ -1217,11 +1302,16 @@ defmodule TamanduaServer.Detection.LateralMovement do
     destinations = recent_hops |> Enum.map(& &1.dest_ip) |> Enum.uniq()
     protocols = recent_hops |> Enum.map(& &1.protocol) |> Enum.uniq()
     agent_id = List.first(recent_hops)[:agent_id]
+    organization_id = OrgLookup.get_org_id(agent_id)
+    event_ids = event_ids_from_edges(recent_hops)
+    source_event_id = List.first(event_ids)
+    contributing_events = contributing_event_ids_from_edges(recent_hops)
+    raw_event = pivot_raw_event(source_ip, destinations, recent_hops, organization_id)
 
     try do
       Alerts.create_alert(%{
         agent_id: agent_id,
-        organization_id: OrgLookup.get_org_id(agent_id),
+        organization_id: organization_id,
         severity: severity_from_score(path_score),
         title: "Lateral Movement Pivot Chain: #{source_ip} -> #{length(destinations)} hosts",
         description: """
@@ -1233,8 +1323,9 @@ defmodule TamanduaServer.Detection.LateralMovement do
         Path Risk Score: #{path_score}
         Pattern: Island hopping / credential harvesting
         """,
-        source_event_id: nil,
-        event_ids: [],
+        source_event_id: source_event_id,
+        event_ids: event_ids,
+        contributing_events: contributing_events,
         evidence: %{
           lateral_movement: %{
             source_ip: source_ip,
@@ -1246,7 +1337,8 @@ defmodule TamanduaServer.Detection.LateralMovement do
           network: Enum.map(recent_hops, fn h -> %{source_ip: h.source_ip, dest_ip: h.dest_ip, port: h.port} end)
         },
         process_chain: [],
-        raw_event: %{source_ip: source_ip, hops: length(recent_hops)},
+        raw_event: raw_event,
+        dedup_key: raw_event.dedup_key,
         mitre_tactics: ["lateral-movement"],
         mitre_techniques: ["T1021"],
         threat_score: min(path_score / 20.0, 1.0)
@@ -1295,14 +1387,15 @@ defmodule TamanduaServer.Detection.LateralMovement do
   # ETS helpers
   # ===========================================================================
 
+  # Note: `rescue _` already normalizes and handles :error-class exits
+  # (including :badarg from a missing ETS table), so an additional
+  # `catch :error, :badarg` clause is unreachable and was removed.
   defp ets_all_edges do
     try do
       :ets.tab2list(@graph_table)
       |> Enum.map(fn {_key, edge} -> edge end)
     rescue
       _ -> []
-    catch
-      :error, :badarg -> []
     end
   end
 
@@ -1312,8 +1405,6 @@ defmodule TamanduaServer.Detection.LateralMovement do
       |> Enum.map(fn {_id, anomaly} -> anomaly end)
     rescue
       _ -> []
-    catch
-      :error, :badarg -> []
     end
   end
 
@@ -1372,6 +1463,7 @@ defmodule TamanduaServer.Detection.LateralMovement do
           port: edge.port,
           username: edge.username,
           timestamp: edge.timestamp,
+          event_id: Map.get(edge, :event_id),
           risk_score: score_hop(edge),
           mitre: Map.get(@mitre_map, edge.protocol, %{})
         }
@@ -1481,6 +1573,90 @@ defmodule TamanduaServer.Detection.LateralMovement do
 
   defp normalize_ip(ip) when is_binary(ip), do: String.trim(ip)
   defp normalize_ip(ip), do: to_string(ip)
+
+  defp event_id_from(map) when is_map(map) do
+    value_from(map, [:event_id, "event_id", :source_event_id, "source_event_id", :id, "id"])
+  end
+
+  defp event_id_from(_), do: nil
+
+  defp event_ids_from_edges(edges) do
+    edges
+    |> contributing_event_ids_from_edges()
+    |> Enum.filter(&valid_uuid?/1)
+  end
+
+  defp contributing_event_ids_from_edges(edges) do
+    edges
+    |> Enum.map(&event_id_from/1)
+    |> Enum.reject(&blank?/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.uniq()
+  end
+
+  defp edge_raw_event(edge, organization_id, alert_type) do
+    edge
+    |> Map.put(:remote_ip, Map.get(edge, :dest_ip))
+    |> maybe_put(:source_dedup_key, Map.get(edge, :dedup_key))
+    |> Map.put(
+      :dedup_key,
+      lateral_dedup_key(alert_type, organization_id, Map.get(edge, :agent_id), [
+        Map.get(edge, :source_ip),
+        Map.get(edge, :dest_ip),
+        Map.get(edge, :protocol),
+        Map.get(edge, :port)
+      ])
+    )
+  end
+
+  defp pivot_raw_event(source_ip, destinations, recent_hops, organization_id) do
+    agent_id = List.first(recent_hops)[:agent_id]
+    first_destination = List.first(destinations)
+
+    %{
+      source_ip: source_ip,
+      remote_ip: first_destination,
+      remote_ips: destinations,
+      hops: length(recent_hops),
+      dedup_key: lateral_dedup_key(:lateral_pivoting, organization_id, agent_id, [
+        source_ip,
+        destinations |> Enum.sort() |> Enum.join(",")
+      ])
+    }
+  end
+
+  defp lateral_dedup_key(alert_type, organization_id, agent_id, parts) do
+    material =
+      [alert_type, organization_id || "no_org", agent_id || "no_agent" | parts]
+      |> Enum.map(&to_string/1)
+      |> Enum.join(":")
+
+    hash = :crypto.hash(:sha256, material) |> Base.encode16(case: :lower) |> binary_part(0, 40)
+    "#{alert_type}:#{hash}"
+  end
+
+  defp valid_uuid?(value) when is_binary(value) do
+    match?({:ok, _}, Ecto.UUID.cast(value))
+  end
+
+  defp valid_uuid?(_), do: false
+
+  defp value_from(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      value = Map.get(map, key)
+      if blank?(value), do: nil, else: value
+    end)
+  end
+
+  defp value_from(_, _), do: nil
+
+  defp maybe_put(nil, _key, _value), do: nil
+  defp maybe_put(map, _key, value) when value in [nil, ""], do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_), do: false
 
   defp parse_timestamp(%DateTime{} = dt), do: dt
   defp parse_timestamp(ts) when is_binary(ts) do

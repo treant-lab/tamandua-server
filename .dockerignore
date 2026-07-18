@@ -13,8 +13,12 @@ priv/static/cache_manifest.json
 .git/
 .elixir_ls/
 .vscode/
+.pytest_cache/
+.tmp/
 
 *.log
+*.dump
+erl_crash.dump
 tmp/
 coverage/
 cover/

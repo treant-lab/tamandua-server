@@ -35,8 +35,11 @@ defmodule TamanduaServer.Detection.CredentialDetector do
 
   require Logger
 
-  @credential_patterns [
-    %{
+  @doc "Returns all credential patterns for external use"
+  @spec credential_patterns() :: [map()]
+  def credential_patterns do
+    [
+      %{
       name: "HuggingFace Token",
       env_var: "HF_TOKEN",
       pattern: ~r/hf_[a-zA-Z0-9]{34}/,
@@ -100,8 +103,9 @@ defmodule TamanduaServer.Detection.CredentialDetector do
       service: "replicate",
       severity: "high",
       mitre_technique: "T1552.001"
-    }
-  ]
+      }
+    ]
+  end
 
   @sensitive_file_patterns [
     ".env",
@@ -124,10 +128,6 @@ defmodule TamanduaServer.Detection.CredentialDetector do
   # ============================================================================
   # Public API
   # ============================================================================
-
-  @doc "Returns all credential patterns for external use"
-  @spec credential_patterns() :: [map()]
-  def credential_patterns, do: @credential_patterns
 
   @doc """
   Detect credentials in a telemetry event.
@@ -203,7 +203,7 @@ defmodule TamanduaServer.Detection.CredentialDetector do
   """
   @spec scan_for_secrets(String.t()) :: [{String.t(), String.t(), String.t(), String.t()}]
   def scan_for_secrets(content) when is_binary(content) do
-    @credential_patterns
+    credential_patterns()
     |> Enum.filter(fn pattern ->
       # Skip context-required patterns (AWS secret) unless we have context
       not Map.get(pattern, :context_required, false)
@@ -289,13 +289,13 @@ defmodule TamanduaServer.Detection.CredentialDetector do
     value_str = to_string(value)
 
     # Check if env var name matches known credential env vars
-    matched_patterns = @credential_patterns
+    matched_patterns = credential_patterns()
     |> Enum.filter(fn pattern ->
       pattern.env_var == key_str
     end)
 
     # Also check value patterns
-    value_matches = @credential_patterns
+    value_matches = credential_patterns()
     |> Enum.filter(fn pattern ->
       # Skip context-required unless key provides context
       if Map.get(pattern, :context_required, false) do
@@ -342,7 +342,7 @@ defmodule TamanduaServer.Detection.CredentialDetector do
     cmdline = payload[:cmdline] || payload["cmdline"] || payload[:command_line] || payload["command_line"]
 
     if is_binary(cmdline) do
-      @credential_patterns
+      credential_patterns()
       |> Enum.filter(fn pattern ->
         # Skip context-required patterns in cmdline
         not Map.get(pattern, :context_required, false)

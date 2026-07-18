@@ -192,6 +192,89 @@ defmodule TamanduaServer.Alerts.SuppressionEngineTest do
       # Should not suppress because max_matches reached
       assert :allow == SuppressionEngine.evaluate_rules(alert_data)
     end
+
+    test "matches granular rule, path, and user criteria with AND logic", %{
+      organization: organization,
+      user: user
+    } do
+      {:ok, rule} =
+        %SuppressionRule{}
+        |> SuppressionRule.changeset(%{
+          name: "Suppress backup agent for service account",
+          action: "suppress",
+          rule_name_pattern: "sigma_noisy_rule",
+          file_path_pattern: "C:\\Backup\\*",
+          criteria: %{"event_user" => "DOMAIN\\backup_svc"},
+          organization_id: organization.id,
+          created_by_id: user.id
+        })
+        |> Repo.insert()
+
+      SuppressionEngine.refresh_priority_cache()
+
+      matching_alert = %{
+        title: "Noisy backup alert",
+        severity: "medium",
+        organization_id: organization.id,
+        detection_metadata: %{"rule_name" => "sigma_noisy_rule"},
+        evidence: %{
+          "process" => %{
+            "path" => "C:\\Backup\\backup_agent.exe",
+            "user" => "DOMAIN\\backup_svc"
+          }
+        }
+      }
+
+      assert {:suppress, rule_id, _reason} = SuppressionEngine.evaluate_rules(matching_alert)
+      assert rule_id == rule.id
+
+      wrong_user = put_in(matching_alert, [:evidence, "process", "user"], "DOMAIN\\alice")
+      assert :allow == SuppressionEngine.evaluate_rules(wrong_user)
+
+      wrong_path = put_in(matching_alert, [:evidence, "process", "path"], "C:\\Temp\\backup_agent.exe")
+      assert :allow == SuppressionEngine.evaluate_rules(wrong_path)
+    end
+
+    test "matches criteria JSON for MITRE and tags without requiring duplicate schema fields", %{
+      organization: organization,
+      user: user
+    } do
+      {:ok, rule} =
+        %SuppressionRule{}
+        |> SuppressionRule.changeset(%{
+          name: "Suppress known scanner tag",
+          action: "suppress",
+          criteria: %{
+            "mitre_techniques" => ["T1059.001"],
+            "tags" => ["known_scanner"]
+          },
+          organization_id: organization.id,
+          created_by_id: user.id
+        })
+        |> Repo.insert()
+
+      SuppressionEngine.refresh_priority_cache()
+
+      assert {:suppress, rule_id, _reason} =
+               SuppressionEngine.evaluate_rules(%{
+                 title: "Scanner script",
+                 severity: "low",
+                 organization_id: organization.id,
+                 mitre_techniques: ["T1059.001"],
+                 tags: ["known_scanner"]
+               })
+
+      assert rule_id == rule.id
+
+      assert :allow ==
+               SuppressionEngine.evaluate_rules(%{
+                 title: "Scanner script",
+                 severity: "low",
+                 organization_id: organization.id,
+                 mitre_techniques: ["T1059.001"],
+                 tags: ["unknown"]
+               })
+    end
   end
 
   describe "store_suppressed_alert/2" do

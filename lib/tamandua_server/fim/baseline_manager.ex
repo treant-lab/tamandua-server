@@ -680,7 +680,7 @@ defmodule TamanduaServer.Fim.BaselineManager do
     end
   end
 
-  defp severity_meets_threshold?(actual, nil), do: true
+  defp severity_meets_threshold?(_actual, nil), do: true
   defp severity_meets_threshold?(actual, threshold) do
     order = %{"info" => 0, "low" => 1, "medium" => 2, "high" => 3, "critical" => 4}
     Map.get(order, actual, 0) >= Map.get(order, threshold, 0)
@@ -714,13 +714,16 @@ defmodule TamanduaServer.Fim.BaselineManager do
 
   # Sync policies to all connected agents
   defp sync_all_agents do
-    case TamanduaServer.Agents.Registry.list_agents() do
+    # Registry.list_all/0 returns normalized entry maps (with :agent_id and
+    # :status); only currently-online agents can receive a live policy sync.
+    case TamanduaServer.Agents.Registry.list_all() do
+      [] ->
+        Logger.debug("No agents connected for policy sync")
+
       agents when is_list(agents) ->
-        for {agent_id, _pid} <- agents do
+        for %{agent_id: agent_id, status: :online} <- agents do
           sync_policies_to_agent(agent_id)
         end
-      _ ->
-        Logger.debug("No agents connected for policy sync")
     end
   end
 end

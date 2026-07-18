@@ -188,7 +188,7 @@ defmodule TamanduaServer.Mobile.MDMProvider.Jamf do
   @impl true
   def get_compliance_status(device_id) do
     case jamf_get("/api/v1/mobile-devices/#{device_id}") do
-      {:ok, %{"managed" => managed, "supervised" => supervised} = body} ->
+      {:ok, %{"managed" => managed, "supervised" => supervised} = _body} ->
         {:ok, %{
           provider: "jamf",
           device_id: device_id,

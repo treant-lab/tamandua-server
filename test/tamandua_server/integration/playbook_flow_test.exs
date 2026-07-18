@@ -41,7 +41,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       # Wait for execution to complete
@@ -86,7 +87,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(4000)
@@ -124,7 +126,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, high_execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         high_severity_context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(3000)
@@ -149,7 +152,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, low_execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         low_severity_context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(3000)
@@ -182,7 +186,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(4000)
@@ -219,7 +224,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(6000)
@@ -258,7 +264,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         context,
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(4000)
@@ -286,7 +293,8 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
         playbook.id,
         context,
         skip_approval: true,
-        dry_run: true
+        dry_run: true,
+        scope: :system
       )
 
       assert execution.dry_run == true
@@ -341,7 +349,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           }
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_investigation_playbook do
@@ -377,7 +385,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           }
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_conditional_playbook do
@@ -410,7 +418,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           }
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_parallel_forensics_playbook do
@@ -432,7 +440,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           "timeout_seconds" => 10
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_error_recovery_playbook do
@@ -454,7 +462,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           "params" => %{"message" => "Playbook completed despite errors"}
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_multi_agent_playbook do
@@ -478,7 +486,7 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
           }
         }
       ]
-    })
+    }, :system)
   end
 
   defp create_test_playbook(steps) do
@@ -487,6 +495,6 @@ defmodule TamanduaServer.Integration.PlaybookFlowTest do
       description: "Test playbook",
       trigger_type: "manual",
       steps: steps
-    })
+    }, :system)
   end
 end

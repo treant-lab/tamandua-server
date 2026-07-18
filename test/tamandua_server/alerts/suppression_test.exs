@@ -13,6 +13,8 @@ defmodule TamanduaServer.Alerts.SuppressionTest do
   use TamanduaServer.DataCase, async: false
 
   alias TamanduaServer.Alerts
+  alias TamanduaServer.Alerts.SuppressionRule
+  alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.Suppression
 
   import TamanduaServer.AccountsFixtures
@@ -72,6 +74,47 @@ defmodule TamanduaServer.Alerts.SuppressionTest do
 
       assert Suppression.check_suppression(alert_data, nil) == :allow
     end
+
+    test "applies granular rule, path, and user criteria before alert creation" do
+      agent_id = Ecto.UUID.generate()
+
+      {:ok, _rule} =
+        %SuppressionRule{}
+        |> SuppressionRule.changeset(%{
+          name: "Suppress service account backup noise",
+          action: "suppress",
+          agent_id: agent_id,
+          rule_name_pattern: "sigma_noisy_rule",
+          file_path_pattern: "C:\\Backup\\*",
+          criteria: %{"event_user" => "DOMAIN\\backup_svc"}
+        })
+        |> Repo.insert()
+
+      Suppression.refresh_cache()
+      Process.sleep(50)
+
+      matching_alert = %{
+        title: "Backup scanner noise",
+        severity: "medium",
+        agent_id: agent_id,
+        detection_metadata: %{"rule_name" => "sigma_noisy_rule"},
+        evidence: %{
+          "process" => %{
+            "path" => "C:\\Backup\\backup_agent.exe",
+            "user" => "DOMAIN\\backup_svc"
+          }
+        }
+      }
+
+      assert {:suppress, reason} = Suppression.check_suppression(matching_alert, agent_id)
+      assert reason =~ "Matched suppression rule"
+
+      wrong_user = put_in(matching_alert, [:evidence, "process", "user"], "DOMAIN\\alice")
+      assert :allow == Suppression.check_suppression(wrong_user, agent_id)
+
+      wrong_path = put_in(matching_alert, [:evidence, "process", "path"], "C:\\Temp\\backup_agent.exe")
+      assert :allow == Suppression.check_suppression(wrong_path, agent_id)
+    end
   end
 
   describe "Alerts.create_alert/1 integration" do
@@ -125,6 +168,88 @@ defmodule TamanduaServer.Alerts.SuppressionTest do
 
       assert alert.severity == "high"
       refute alert.severity_adjusted
+    end
+
+    test "matches explicit suppression rules on structured process, parent, MITRE, tags, and user criteria" do
+      organization = organization_fixture()
+      agent_id = Ecto.UUID.generate()
+
+      Repo.insert!(%SuppressionRule{
+        name: "Office spawned PowerShell lab suppression",
+        enabled: true,
+        action: "suppress",
+        severity: "high",
+        process_name_pattern: "powershell.exe",
+        parent_process_pattern: "winword.exe",
+        file_path_pattern: "WindowsPowerShell",
+        mitre_techniques: ["T1059.001"],
+        tags: ["office-child"],
+        criteria: %{"user" => "alice"},
+        time_window_type: "indefinite",
+        organization_id: organization.id
+      })
+
+      Suppression.refresh_cache()
+      Process.sleep(50)
+
+      assert {:error, {:suppressed, reason}} =
+               Alerts.create_alert(%{
+                 organization_id: organization.id,
+                 agent_id: agent_id,
+                 title: "Office spawned PowerShell",
+                 description: "Structured false-positive lab case",
+                 severity: "high",
+                 status: "new",
+                 mitre_techniques: ["T1059.001"],
+                 tags: ["office-child"],
+                 evidence: %{
+                   process: %{
+                     name: "powershell.exe",
+                     parent_image: "C:\\Program Files\\Microsoft Office\\WINWORD.EXE",
+                     path: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                     user: "alice"
+                   }
+                 }
+               })
+
+      assert reason =~ "Suppressed by rule"
+    end
+
+    test "does not match explicit suppression rules for exempted users" do
+      organization = organization_fixture()
+      agent_id = Ecto.UUID.generate()
+
+      Repo.insert!(%SuppressionRule{
+        name: "Exempted user suppression",
+        enabled: true,
+        action: "suppress",
+        process_name_pattern: "powershell.exe",
+        criteria: %{"user" => "alice"},
+        exempted_users: ["alice"],
+        time_window_type: "indefinite",
+        organization_id: organization.id
+      })
+
+      Suppression.refresh_cache()
+      Process.sleep(50)
+
+      assert {:ok, alert} =
+               Alerts.create_alert(%{
+                 organization_id: organization.id,
+                 agent_id: agent_id,
+                 title: "Office spawned PowerShell",
+                 description: "Exempted user must not be suppressed",
+                 severity: "high",
+                 status: "new",
+                 evidence: %{
+                   process: %{
+                     name: "powershell.exe",
+                     user: "alice"
+                   }
+                 }
+               })
+
+      assert alert.severity == "high"
     end
 
     test "downgrades self-write noise only when structured fields prove the context" do

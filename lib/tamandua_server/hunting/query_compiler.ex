@@ -20,7 +20,6 @@ defmodule TamanduaServer.Hunting.QueryCompiler do
   alias TamanduaServer.Telemetry.Event
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Repo
 
   @type compiled_query :: %{
     query: Ecto.Query.t(),

@@ -25,7 +25,7 @@ defmodule TamanduaServer.Notifications.Throttler do
 
   Returns true if the integration has exceeded its max notifications per hour.
   """
-  def throttled?(%{id: integration_id, throttle_enabled: false}), do: false
+  def throttled?(%{id: _integration_id, throttle_enabled: false}), do: false
 
   def throttled?(%{id: integration_id, throttle_enabled: true, throttle_max_per_hour: max}) do
     count = get_count(integration_id)
@@ -79,7 +79,7 @@ defmodule TamanduaServer.Notifications.Throttler do
     }
   end
 
-  defp get_max(integration_id) do
+  defp get_max(_integration_id) do
     # This would ideally query the integration record
     # For now, return a default
     60

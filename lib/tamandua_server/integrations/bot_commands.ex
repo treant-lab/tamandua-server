@@ -18,8 +18,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
   """
 
   require Logger
-  alias TamanduaServer.{Alerts, Agents, Hunting, ThreatIntel, Response, Accounts}
-  alias TamanduaServer.Integrations.{SlackBot, TeamsBot}
+  alias TamanduaServer.{Alerts, Accounts}
 
   # ==========================================================================
   # Command Dispatcher
@@ -314,7 +313,10 @@ defmodule TamanduaServer.Integrations.BotCommands do
             })
 
           "escalate" ->
-            Alerts.escalate_alert(alert.id, user.id, "Escalated via #{platform} bot")
+            TamanduaServer.Alerts.EscalationEngine.escalate_alert(alert,
+              escalated_by_id: user.id,
+              reason: "Escalated via #{platform} bot"
+            )
         end
 
       case result do
@@ -337,7 +339,9 @@ defmodule TamanduaServer.Integrations.BotCommands do
   # ==========================================================================
 
   defp list_agents(org_id, filters, platform) do
-    agents = TamanduaServer.Agents.Registry.list_agents(org_id)
+    # DB-backed inventory (includes offline agents); Agent.status is a string,
+    # matching the "status=<value>" filter parsed from the chat command.
+    agents = TamanduaServer.Agents.list_agents_for_org(org_id)
 
     filtered_agents =
       if status = Map.get(filters, :status) do
@@ -354,12 +358,16 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp show_agent_status(org_id, agent_id, platform) do
-    case TamanduaServer.Agents.Registry.get_agent(org_id, agent_id) do
-      nil ->
+    case TamanduaServer.Agents.get_agent_for_org(org_id, agent_id) do
+      {:error, :not_found} ->
         {:error, "Agent not found"}
 
-      agent ->
-        health = TamanduaServer.Agents.HealthMonitor.get_health(agent_id)
+      {:ok, agent} ->
+        health =
+          case TamanduaServer.Agents.HealthMonitor.get_agent_health(agent_id) do
+            {:ok, health} -> health
+            _ -> nil
+          end
 
         if platform == :slack do
           format_agent_status_slack(agent, health)
@@ -370,7 +378,9 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp isolate_agent(org_id, agent_id, user, _platform) do
-    case TamanduaServer.Response.isolate_host(agent_id, user.id, "Isolated via bot") do
+    case TamanduaServer.Response.Executor.isolate_network(agent_id,
+           actor: %{organization_id: org_id, user_id: user.id}
+         ) do
       {:ok, _command} ->
         {:ok, %{text: "Agent #{agent_id} isolated successfully"}}
 
@@ -380,7 +390,9 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp unisolate_agent(org_id, agent_id, user, _platform) do
-    case TamanduaServer.Response.unisolate_host(agent_id, user.id, "Unisolated via bot") do
+    case TamanduaServer.Response.Executor.unisolate_network(agent_id,
+           actor: %{organization_id: org_id, user_id: user.id}
+         ) do
       {:ok, _command} ->
         {:ok, %{text: "Agent #{agent_id} unisolated successfully"}}
 
@@ -393,7 +405,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
   # Hunt Operations
   # ==========================================================================
 
-  defp execute_hunt(org_id, hunt_name, user, _platform) do
+  defp execute_hunt(_org_id, hunt_name, _user, _platform) do
     # TODO: Implement saved hunt execution
     {:ok,
      %{
@@ -403,7 +415,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
      }}
   end
 
-  defp list_hunts(org_id, platform) do
+  defp list_hunts(_org_id, _platform) do
     # TODO: Implement saved hunts listing
     {:ok, %{text: "No saved hunts available", hunts: []}}
   end
@@ -412,9 +424,11 @@ defmodule TamanduaServer.Integrations.BotCommands do
   # Threat Intel Operations
   # ==========================================================================
 
-  defp lookup_threat_intel(org_id, ioc_type, ioc_value, platform) do
-    case TamanduaServer.Detection.ThreatIntelCache.lookup(ioc_value) do
-      nil ->
+  defp lookup_threat_intel(_org_id, ioc_type, ioc_value, platform) do
+    # Detection.ThreatIntelCache is an Ecto schema (no lookup API); the live
+    # IOC cache is TamanduaServer.ThreatIntel.lookup/2 (type-first).
+    case TamanduaServer.ThreatIntel.lookup(threat_intel_type(ioc_type), ioc_value) do
+      :not_found ->
         {:ok,
          %{
            text: "No threat intelligence found for #{ioc_value}",
@@ -423,7 +437,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
            found: false
          }}
 
-      intel ->
+      {:ok, intel} ->
         if platform == :slack do
           format_threat_intel_slack(ioc_value, ioc_type, intel)
         else
@@ -432,12 +446,20 @@ defmodule TamanduaServer.Integrations.BotCommands do
     end
   end
 
+  # Map bot-detected IOC types onto ThreatIntel's indicator type atoms.
+  defp threat_intel_type(:md5), do: :hash_md5
+  defp threat_intel_type(:sha1), do: :hash_sha1
+  defp threat_intel_type(:sha256), do: :hash_sha256
+  defp threat_intel_type(type), do: type
+
   # ==========================================================================
   # Remediation Operations
   # ==========================================================================
 
   defp kill_process(org_id, agent_id, pid, user, _platform) do
-    case TamanduaServer.Response.kill_process(agent_id, pid, user.id, "Killed via bot") do
+    case TamanduaServer.Response.Executor.kill_process(agent_id, pid,
+           actor: %{organization_id: org_id, user_id: user.id}
+         ) do
       {:ok, _command} ->
         {:ok, %{text: "Process #{pid} on agent #{agent_id} terminated"}}
 
@@ -447,7 +469,9 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp quarantine_file(org_id, agent_id, file_path, user, _platform) do
-    case TamanduaServer.Response.quarantine_file(agent_id, file_path, user.id, "Quarantined via bot") do
+    case TamanduaServer.Response.Executor.quarantine_file(agent_id, file_path,
+           actor: %{organization_id: org_id, user_id: user.id}
+         ) do
       {:ok, _command} ->
         {:ok, %{text: "File quarantined: #{file_path}"}}
 
@@ -456,7 +480,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
     end
   end
 
-  defp block_ip(org_id, ip_address, user, _platform) do
+  defp block_ip(_org_id, ip_address, _user, _platform) do
     # TODO: Implement IP blocking via firewall rules
     {:ok, %{text: "IP #{ip_address} blocked (feature in development)"}}
   end
@@ -473,8 +497,8 @@ defmodule TamanduaServer.Integrations.BotCommands do
       high: Alerts.count_by_severity_for_org(org_id, "high"),
       medium: Alerts.count_by_severity_for_org(org_id, "medium"),
       low: Alerts.count_by_severity_for_org(org_id, "low"),
-      agents_online: TamanduaServer.Agents.Registry.count_online(org_id),
-      agents_total: TamanduaServer.Agents.Registry.count_total(org_id)
+      agents_online: TamanduaServer.Agents.count_online_for_org(org_id),
+      agents_total: TamanduaServer.Agents.count_agents_for_org(org_id)
     }
 
     if platform == :slack do
@@ -488,7 +512,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
   # Help
   # ==========================================================================
 
-  defp get_help(platform) do
+  defp get_help(_platform) do
     help_text = """
     *Tamandua EDR Bot Commands*
 
@@ -796,7 +820,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp format_agent_status_slack(agent, health) do
-    health_score = (health && health.score) || 0
+    health_score = (health && Map.get(health, :health_score)) || 0
     health_status = if health_score > 80, do: "Healthy", else: "Degraded"
 
     blocks = [
@@ -1001,7 +1025,7 @@ defmodule TamanduaServer.Integrations.BotCommands do
   end
 
   defp format_agent_status_teams(agent, health) do
-    health_score = (health && health.score) || 0
+    health_score = (health && Map.get(health, :health_score)) || 0
 
     card = %{
       type: "AdaptiveCard",

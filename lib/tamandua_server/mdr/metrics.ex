@@ -25,7 +25,6 @@ defmodule TamanduaServer.MDR.Metrics do
 
   alias TamanduaServer.Repo
 
-  import Ecto.Query
 
   # ETS tables
   @ets_customer_metrics :mdr_customer_metrics

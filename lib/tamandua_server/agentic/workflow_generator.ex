@@ -31,6 +31,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   use GenServer
   require Logger
 
+  alias TamanduaServer.AISecurity.AgenticAnalyst
   alias TamanduaServer.Playbooks.DAGEngine
 
   # ETS tables
@@ -56,6 +57,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
       :id,
       :name,
       :description,
+      :organization_id,
       :source_investigation_id,
       :source_alert_type,
       :dag_definition,
@@ -71,6 +73,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
       id: String.t(),
       name: String.t(),
       description: String.t(),
+      organization_id: String.t(),
       source_investigation_id: String.t(),
       source_alert_type: String.t() | nil,
       dag_definition: map(),
@@ -119,58 +122,114 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   @doc """
   Manually trigger workflow generation from a completed investigation.
   """
-  @spec generate_from_investigation(String.t()) :: {:ok, WorkflowProposal.t()} | {:error, term()}
-  def generate_from_investigation(investigation_id) do
-    GenServer.call(__MODULE__, {:generate_from_investigation, investigation_id}, 30_000)
+  @spec generate_from_investigation(String.t()) :: {:error, :organization_required}
+  def generate_from_investigation(_investigation_id), do: {:error, :organization_required}
+
+  @spec generate_from_investigation(String.t(), String.t()) ::
+          {:ok, WorkflowProposal.t()} | {:error, term()}
+  def generate_from_investigation(investigation_id, organization_id)
+      when is_binary(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:generate_from_investigation, investigation_id, organization_id},
+      30_000
+    )
   end
+
+  def generate_from_investigation(_investigation_id, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   List pending workflow proposals awaiting analyst review.
   """
   @spec list_proposals(keyword()) :: [WorkflowProposal.t()]
   def list_proposals(opts \\ []) do
-    status = Keyword.get(opts, :status, :proposed)
+    with organization_id when is_binary(organization_id) <- opts[:organization_id] do
+      status = Keyword.get(opts, :status, :proposed)
 
-    :ets.tab2list(@proposals_table)
-    |> Enum.map(fn {_id, proposal} -> proposal end)
-    |> Enum.filter(fn p -> p.status == status end)
-    |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
+      :ets.tab2list(@proposals_table)
+      |> Enum.map(fn {_id, proposal} -> proposal end)
+      |> Enum.filter(fn proposal ->
+        proposal.organization_id == organization_id and proposal.status == status
+      end)
+      |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
+    else
+      _ -> []
+    end
   end
 
   @doc """
   Get a specific proposal by ID.
   """
-  @spec get_proposal(String.t()) :: {:ok, WorkflowProposal.t()} | {:error, :not_found}
-  def get_proposal(proposal_id) do
+  @spec get_proposal(String.t()) :: {:error, :organization_required}
+  def get_proposal(_proposal_id), do: {:error, :organization_required}
+
+  @spec get_proposal(String.t(), String.t()) ::
+          {:ok, WorkflowProposal.t()} | {:error, :not_found}
+  def get_proposal(proposal_id, organization_id) when is_binary(organization_id) do
     case :ets.lookup(@proposals_table, proposal_id) do
-      [{^proposal_id, proposal}] -> {:ok, proposal}
-      [] -> {:error, :not_found}
+      [{^proposal_id, %{organization_id: ^organization_id} = proposal}] -> {:ok, proposal}
+      _ -> {:error, :not_found}
     end
   end
+
+  def get_proposal(_proposal_id, _organization_id), do: {:error, :organization_required}
 
   @doc """
   Analyst approves a proposed workflow. Creates it in the DAG engine.
   """
-  @spec approve_proposal(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def approve_proposal(proposal_id, analyst_id) do
-    GenServer.call(__MODULE__, {:approve_proposal, proposal_id, analyst_id})
+  @spec approve_proposal(String.t(), String.t()) :: {:error, :organization_required}
+  def approve_proposal(_proposal_id, _analyst_id), do: {:error, :organization_required}
+
+  @spec approve_proposal(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def approve_proposal(proposal_id, analyst_id, organization_id)
+      when is_binary(organization_id) do
+    GenServer.call(__MODULE__, {:approve_proposal, proposal_id, analyst_id, organization_id})
   end
+
+  def approve_proposal(_proposal_id, _analyst_id, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   Analyst modifies and approves a proposed workflow.
   """
-  @spec modify_and_approve(String.t(), map(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def modify_and_approve(proposal_id, modifications, analyst_id) do
-    GenServer.call(__MODULE__, {:modify_and_approve, proposal_id, modifications, analyst_id})
+  @spec modify_and_approve(String.t(), map(), String.t()) :: {:error, :organization_required}
+  def modify_and_approve(_proposal_id, _modifications, _analyst_id),
+    do: {:error, :organization_required}
+
+  @spec modify_and_approve(String.t(), map(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def modify_and_approve(proposal_id, modifications, analyst_id, organization_id)
+      when is_binary(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:modify_and_approve, proposal_id, modifications, analyst_id, organization_id}
+    )
   end
+
+  def modify_and_approve(_proposal_id, _modifications, _analyst_id, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   Analyst rejects a proposed workflow.
   """
-  @spec reject_proposal(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def reject_proposal(proposal_id, analyst_id, reason) do
-    GenServer.call(__MODULE__, {:reject_proposal, proposal_id, analyst_id, reason})
+  @spec reject_proposal(String.t(), String.t(), String.t()) :: {:error, :organization_required}
+  def reject_proposal(_proposal_id, _analyst_id, _reason),
+    do: {:error, :organization_required}
+
+  @spec reject_proposal(String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def reject_proposal(proposal_id, analyst_id, reason, organization_id)
+      when is_binary(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:reject_proposal, proposal_id, analyst_id, reason, organization_id}
+    )
   end
+
+  def reject_proposal(_proposal_id, _analyst_id, _reason, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   Record execution outcome for effectiveness tracking.
@@ -232,7 +291,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   @impl true
   def handle_info({:execution_completed, execution_id, _agent_id, :completed, context}, state) do
     # Auto-generate workflow from completed execution context
-    if Map.get(context, :investigation_id) do
+    if Map.get(context, :investigation_id) && Map.get(context, :organization_id) do
       case do_generate_from_context(context) do
         {:ok, proposal} ->
           Logger.info("[WorkflowGenerator] Generated workflow proposal '#{proposal.name}' from execution #{execution_id}")
@@ -256,14 +315,15 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   def handle_info({:investigation_update, :state_changed, %{to: terminal_state} = payload}, state)
       when terminal_state in @terminal_states do
     investigation_id = payload[:investigation_id]
+    organization_id = payload[:organization_id]
 
-    if investigation_id do
+    if investigation_id && organization_id do
       new_stats = Map.update!(state.stats, :investigations_observed, &(&1 + 1))
 
       # Only generate for resolved (successful) investigations
       if terminal_state == :resolved do
         Task.start(fn ->
-          case do_generate_from_investigation(investigation_id) do
+          case do_generate_from_investigation(investigation_id, organization_id) do
             {:ok, _proposal} -> :ok
             {:error, _} -> :ok
           end
@@ -282,8 +342,12 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   end
 
   @impl true
-  def handle_call({:generate_from_investigation, investigation_id}, _from, state) do
-    case do_generate_from_investigation(investigation_id) do
+  def handle_call(
+        {:generate_from_investigation, investigation_id, organization_id},
+        _from,
+        state
+      ) do
+    case do_generate_from_investigation(investigation_id, organization_id) do
       {:ok, proposal} ->
         new_stats = Map.update!(state.stats, :workflows_generated, &(&1 + 1))
         {:reply, {:ok, proposal}, %{state | stats: new_stats}}
@@ -294,9 +358,13 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   end
 
   @impl true
-  def handle_call({:approve_proposal, proposal_id, analyst_id}, _from, state) do
+  def handle_call(
+        {:approve_proposal, proposal_id, analyst_id, organization_id},
+        _from,
+        state
+      ) do
     case :ets.lookup(@proposals_table, proposal_id) do
-      [{^proposal_id, proposal}] ->
+      [{^proposal_id, %{organization_id: ^organization_id} = proposal}] ->
         # Create DAG playbook from the proposal
         dag = proposal.dag_definition
 
@@ -316,7 +384,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
             new_stats = Map.update!(state.stats, :workflows_approved, &(&1 + 1))
             {:reply, {:ok, execution_id}, %{state | stats: new_stats}}
 
-          {:error, reason} ->
+          {:error, _reason} ->
             # Still mark as approved even if initial execution has issues
             updated = %{proposal |
               status: :approved,
@@ -328,15 +396,19 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
             {:reply, {:ok, proposal_id}, %{state | stats: new_stats}}
         end
 
-      [] ->
+      _ ->
         {:reply, {:error, :not_found}, state}
     end
   end
 
   @impl true
-  def handle_call({:modify_and_approve, proposal_id, modifications, analyst_id}, _from, state) do
+  def handle_call(
+        {:modify_and_approve, proposal_id, modifications, analyst_id, organization_id},
+        _from,
+        state
+      ) do
     case :ets.lookup(@proposals_table, proposal_id) do
-      [{^proposal_id, proposal}] ->
+      [{^proposal_id, %{organization_id: ^organization_id} = proposal}] ->
         # Apply modifications
         modified_dag = apply_modifications(proposal.dag_definition, modifications)
 
@@ -359,15 +431,19 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
         new_stats = Map.update!(state.stats, :workflows_modified, &(&1 + 1))
         {:reply, {:ok, proposal_id}, %{state | stats: new_stats}}
 
-      [] ->
+      _ ->
         {:reply, {:error, :not_found}, state}
     end
   end
 
   @impl true
-  def handle_call({:reject_proposal, proposal_id, analyst_id, reason}, _from, state) do
+  def handle_call(
+        {:reject_proposal, proposal_id, analyst_id, reason, organization_id},
+        _from,
+        state
+      ) do
     case :ets.lookup(@proposals_table, proposal_id) do
-      [{^proposal_id, proposal}] ->
+      [{^proposal_id, %{organization_id: ^organization_id} = proposal}] ->
         updated = %{proposal |
           status: :rejected,
           analyst_feedback: %{
@@ -381,7 +457,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
         new_stats = Map.update!(state.stats, :workflows_rejected, &(&1 + 1))
         {:reply, :ok, %{state | stats: new_stats}}
 
-      [] ->
+      _ ->
         {:reply, {:error, :not_found}, state}
     end
   end
@@ -419,14 +495,18 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   # Workflow Generation Logic
   # ============================================================================
 
-  defp do_generate_from_investigation(investigation_id) do
-    # Fetch investigation from AgenticAnalyst ETS
-    case :ets.lookup(:agentic_investigations, investigation_id) do
-      [{^investigation_id, investigation}] ->
+  defp do_generate_from_investigation(investigation_id, organization_id) do
+    case AgenticAnalyst.get_investigation(investigation_id,
+           organization_id: organization_id
+         ) do
+      {:ok, investigation} ->
         do_generate_from_investigation_data(investigation)
 
-      [] ->
+      {:error, :not_found} ->
         {:error, :investigation_not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   rescue
     e -> {:error, {:lookup_failed, Exception.message(e)}}
@@ -440,6 +520,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
     if length(steps) >= 2 do
       investigation_data = %{
         id: context[:investigation_id] || Ecto.UUID.generate(),
+        organization_id: context[:organization_id],
         alert: %{
           severity: trigger[:severity] || "medium",
           detection_type: trigger[:detection_type]
@@ -465,10 +546,16 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
   defp do_generate_from_investigation_data(investigation) do
     # 1. Extract investigation steps
     steps = extract_investigation_steps(investigation)
+    organization_id = get_in_safe(investigation, [:organization_id])
 
-    if length(steps) < 2 do
-      {:error, :insufficient_steps}
-    else
+    cond do
+      is_nil(organization_id) ->
+        {:error, :organization_required}
+
+      length(steps) < 2 ->
+        {:error, :insufficient_steps}
+
+      true ->
       # 2. Generalize steps into workflow template
       generalized = generalize_steps(steps)
 
@@ -482,7 +569,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
       sim_hash = compute_similarity_hash(parameterized_steps)
 
       # 6. Check for duplicates
-      if is_duplicate?(sim_hash) do
+      if is_duplicate?(sim_hash, organization_id) do
         {:error, :duplicate}
       else
         # 7. Create proposal
@@ -490,6 +577,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
           id: Ecto.UUID.generate(),
           name: generate_workflow_name(investigation),
           description: generate_workflow_description(investigation, parameterized_steps),
+          organization_id: organization_id,
           source_investigation_id: investigation[:id] || investigation.id,
           source_alert_type: get_in_safe(investigation, [:alert, :detection_type]),
           dag_definition: dag,
@@ -505,7 +593,7 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
         # Broadcast proposal for UI
         Phoenix.PubSub.broadcast(
           TamanduaServer.PubSub,
-          "agentic:workflows",
+          "agentic:workflows:#{organization_id}",
           {:workflow_proposed, proposal.id, proposal.name}
         )
 
@@ -716,10 +804,11 @@ defmodule TamanduaServer.Agentic.WorkflowGenerator do
     :crypto.hash(:sha256, signature) |> Base.encode16(case: :lower) |> String.slice(0, 16)
   end
 
-  defp is_duplicate?(sim_hash) do
+  defp is_duplicate?(sim_hash, organization_id) do
     :ets.tab2list(@proposals_table)
     |> Enum.any?(fn {_id, proposal} ->
-      proposal.similarity_hash == sim_hash and proposal.status in [:proposed, :approved, :modified]
+      proposal.organization_id == organization_id and proposal.similarity_hash == sim_hash and
+        proposal.status in [:proposed, :approved, :modified]
     end)
   end
 

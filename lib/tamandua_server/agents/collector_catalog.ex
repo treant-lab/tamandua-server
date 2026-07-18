@@ -45,11 +45,65 @@ defmodule TamanduaServer.Agents.CollectorCatalog do
     clipboard_dlp
     network_discovery
     ntdll_write_monitor
+    runtime_integrity
   )
 
   @windows_collectors ~w(identity registry etw amsi lsass wmi clr)
-  @linux_collectors ~w(ebpf auditd)
+  @linux_collectors ~w(ebpf auditd proxmox)
   @macos_collectors ~w(tcc_monitor xpc_monitor endpoint_security sysext_bridge)
+  @lab_design_dormant_collectors [
+    %{
+      id: "plugin_runtime",
+      label: "Plugin runtime",
+      maturity: "design_dormant",
+      policy_enabled: false,
+      reason: "No signed manifest, sandbox, rollout, or runtime telemetry contract is wired."
+    },
+    %{
+      id: "bof_loader",
+      label: "BOF loader",
+      maturity: "lab",
+      policy_enabled: false,
+      reason: "BOF loading is not wired into the production agent/runtime policy path."
+    },
+    %{
+      id: "dynamic_collector",
+      label: "Dynamic collector",
+      maturity: "design_dormant",
+      policy_enabled: false,
+      reason: "Dynamic collector registration lacks schema, attestation, and health gates."
+    }
+  ]
+  @capability_gaps [
+    %{
+      id: "plugin_manifest_contract",
+      status: "missing",
+      required_for: ["plugin_runtime", "dynamic_collector"],
+      detail:
+        "Define manifest schema, signature verification, requested permissions, and versioning."
+    },
+    %{
+      id: "sandbox_enforcement",
+      status: "missing",
+      required_for: ["plugin_runtime", "bof_loader"],
+      detail:
+        "Define process/WASM/native isolation, resource limits, filesystem/network access, and failure containment."
+    },
+    %{
+      id: "runtime_telemetry_contract",
+      status: "missing",
+      required_for: ["plugin_runtime", "bof_loader", "dynamic_collector"],
+      detail:
+        "Emit health, load/unload, crash, version, policy, and event-source telemetry before UI/API support."
+    },
+    %{
+      id: "policy_rollout_gate",
+      status: "missing",
+      required_for: ["plugin_runtime", "bof_loader", "dynamic_collector"],
+      detail:
+        "Add staged rollout, kill switch, rollback, and degraded-state behavior before allowing policy enablement."
+    }
+  ]
   @legacy_aliases %{
     "kernel_events" => "etw",
     "sysmon" => "etw",
@@ -65,6 +119,8 @@ defmodule TamanduaServer.Agents.CollectorCatalog do
   def linux_collectors, do: @linux_collectors
   def macos_collectors, do: @macos_collectors
   def profiles, do: @profiles
+  def lab_design_dormant_collectors, do: @lab_design_dormant_collectors
+  def capability_gaps, do: @capability_gaps
 
   def all_collectors do
     (@common_collectors ++ @windows_collectors ++ @linux_collectors ++ @macos_collectors)
@@ -99,6 +155,8 @@ defmodule TamanduaServer.Agents.CollectorCatalog do
       windows: @windows_collectors,
       linux: @linux_collectors,
       macos: @macos_collectors,
+      lab_design_dormant: @lab_design_dormant_collectors,
+      capability_gaps: @capability_gaps,
       aliases: @legacy_aliases,
       profiles: @profiles
     }
@@ -225,7 +283,8 @@ defmodule TamanduaServer.Agents.CollectorCatalog do
       "detection" => %{
         "yara_enabled" => profile not in ["lightweight", "vdi_safe"],
         "sigma_enabled" => true,
-        "ml_enabled" => profile in ["balanced", "aggressive", "high_value_asset", "forensic_burst"]
+        "ml_enabled" =>
+          profile in ["balanced", "aggressive", "high_value_asset", "forensic_burst"]
       },
       "response" => %{
         "allowed_actions" => ["isolate", "kill_process", "quarantine", "restore_file"],
@@ -242,7 +301,8 @@ defmodule TamanduaServer.Agents.CollectorCatalog do
   defp default_health_gates(profile) do
     %{
       "max_failure_rate_percent" => if(profile == "forensic_burst", do: 20, else: 10),
-      "max_agent_cpu_percent" => if(profile in ["aggressive", "forensic_burst"], do: 30, else: 20),
+      "max_agent_cpu_percent" =>
+        if(profile in ["aggressive", "forensic_burst"], do: 30, else: 20),
       "max_offline_rate_percent" => 5,
       "min_success_rate_percent" => if(profile == "forensic_burst", do: 80, else: 90)
     }

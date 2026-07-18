@@ -46,7 +46,10 @@ defmodule TamanduaServerWeb.UserAuth do
   defp mount_current_user(socket, session) do
     Phoenix.Component.assign_new(socket, :current_user, fn ->
       if user_token = session["user_token"] do
-        Accounts.get_user_by_session_token(user_token)
+        case fetch_session_user(user_token, session["persistent_session_binding"]) do
+          {:ok, user, _session_ref} -> user
+          _ -> nil
+        end
       end
     end)
   end
@@ -56,12 +59,33 @@ defmodule TamanduaServerWeb.UserAuth do
   """
   def log_in_user(conn, user, _params \\ %{}) do
     touch_last_login(user)
-    token = Accounts.generate_user_session_token(user)
 
-    conn
-    |> renew_session()
-    |> put_token_in_session(token)
-    |> Phoenix.Controller.redirect(to: signed_in_path(conn))
+    if TamanduaServer.Accounts.PersistentUserSessionStore.enabled?() do
+      # This helper is reached by the first-party password login controller.
+      # Do not accept a client-projected auth method.
+      case Accounts.create_persistent_user_session(user) do
+        {:ok, persistent} ->
+          conn
+          |> renew_session()
+          |> put_persistent_token_in_session(persistent)
+          |> Phoenix.Controller.redirect(to: signed_in_path(conn))
+
+        {:error, _reason} ->
+          Logger.warning("Persistent session creation failed closed")
+
+          conn
+          |> renew_session()
+          |> put_flash(:error, "Unable to establish a persistent session.")
+          |> Phoenix.Controller.redirect(to: ~p"/login")
+      end
+    else
+      token = Accounts.generate_user_session_token(user)
+
+      conn
+      |> renew_session()
+      |> put_token_in_session(token)
+      |> Phoenix.Controller.redirect(to: signed_in_path(conn))
+    end
   end
 
   defp renew_session(conn) do
@@ -77,7 +101,13 @@ defmodule TamanduaServerWeb.UserAuth do
   """
   def log_out_user(conn) do
     user_token = get_session(conn, :user_token)
-    user_token && Accounts.delete_user_session_token(user_token)
+    persistent_binding = get_session(conn, :persistent_session_binding)
+
+    if user_token && persistent_binding do
+      Accounts.revoke_persistent_user_session(user_token, persistent_binding)
+    else
+      user_token && Accounts.delete_user_session_token(user_token)
+    end
 
     if live_socket_id = get_session(conn, :live_socket_id) do
       TamanduaServerWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
@@ -93,8 +123,19 @@ defmodule TamanduaServerWeb.UserAuth do
   """
   def fetch_current_user(conn, _opts) do
     {user_token, conn} = ensure_user_token(conn)
-    user = user_token && Accounts.get_user_by_session_token(user_token)
-    assign(conn, :current_user, user)
+    persistent_binding = get_session(conn, :persistent_session_binding)
+
+    case fetch_session_user(user_token, persistent_binding) do
+      {:ok, user, session_ref} ->
+        conn
+        |> assign(:current_user, user)
+        |> assign(:persistent_session_ref, session_ref)
+
+      _ ->
+        conn
+        |> assign(:current_user, nil)
+        |> assign(:persistent_session_ref, nil)
+    end
   end
 
   defp ensure_user_token(conn) do
@@ -136,6 +177,30 @@ defmodule TamanduaServerWeb.UserAuth do
     conn
     |> put_session(:user_token, token)
     |> put_session(:live_socket_id, "users_sessions:#{Base.url_encode64(token)}")
+  end
+
+  defp put_persistent_token_in_session(conn, persistent) do
+    conn
+    |> put_session(:user_token, persistent.token)
+    |> put_session(:live_socket_id, "users_sessions:#{persistent.session_id}")
+    |> put_session(:persistent_session_binding, persistent.binding)
+  end
+
+  defp fetch_session_user(nil, _binding), do: {:error, :missing_session}
+
+  defp fetch_session_user(token, binding) when is_binary(binding) do
+    Accounts.get_user_by_persistent_session(token, binding)
+  end
+
+  defp fetch_session_user(token, _binding) do
+    if TamanduaServer.Accounts.PersistentUserSessionStore.enabled?() do
+      {:error, :persistent_binding_required}
+    else
+      case Accounts.get_user_by_session_token(token) do
+        nil -> {:error, :invalid_session}
+        user -> {:ok, user, nil}
+      end
+    end
   end
 
   defp touch_last_login(user) do

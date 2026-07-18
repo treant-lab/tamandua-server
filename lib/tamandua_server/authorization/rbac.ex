@@ -42,7 +42,7 @@ defmodule TamanduaServer.Authorization.RBAC do
   require Logger
 
   alias TamanduaServer.Accounts.{User, Role, Permission, UserRole}
-  alias TamanduaServer.Authorization.{AccessPolicy, PolicyEvaluator}
+  alias TamanduaServer.Authorization.{AccessPolicy}
   alias TamanduaServer.Repo
 
   import Ecto.Query
@@ -495,8 +495,8 @@ defmodule TamanduaServer.Authorization.RBAC do
 
   @impl true
   def handle_cast({:invalidate_user, user_id}, state) do
-    safe_ets_delete(@cache_table, user_id)
-    safe_ets_delete(@role_cache_table, user_id)
+    invalidate_user_entries(@cache_table, user_id)
+    invalidate_user_entries(@role_cache_table, user_id)
     {:noreply, state}
   end
 
@@ -607,9 +607,11 @@ defmodule TamanduaServer.Authorization.RBAC do
       acc
   end
 
-  defp get_cached_permissions(%User{id: user_id} = user) do
-    case safe_ets_lookup(@cache_table, user_id) do
-      [{^user_id, permissions, cached_at}] ->
+  defp get_cached_permissions(%User{id: user_id, organization_id: organization_id} = user) do
+    cache_key = {user_id, organization_id}
+
+    case safe_ets_lookup(@cache_table, cache_key) do
+      [{^cache_key, permissions, cached_at}] ->
         if System.system_time(:second) - cached_at < @cache_ttl_seconds do
           permissions
         else
@@ -621,9 +623,11 @@ defmodule TamanduaServer.Authorization.RBAC do
     end
   end
 
-  defp get_cached_roles(%User{id: user_id} = user) do
-    case safe_ets_lookup(@role_cache_table, user_id) do
-      [{^user_id, roles, cached_at}] ->
+  defp get_cached_roles(%User{id: user_id, organization_id: organization_id} = user) do
+    cache_key = {user_id, organization_id}
+
+    case safe_ets_lookup(@role_cache_table, cache_key) do
+      [{^cache_key, roles, cached_at}] ->
         if System.system_time(:second) - cached_at < @cache_ttl_seconds do
           roles
         else
@@ -635,15 +639,17 @@ defmodule TamanduaServer.Authorization.RBAC do
     end
   end
 
-  defp load_and_cache_permissions(%User{id: user_id} = user) do
+  defp load_and_cache_permissions(%User{id: user_id, organization_id: organization_id} = user) do
     permissions = compute_effective_permissions(user)
-    safe_ets_insert(@cache_table, {user_id, permissions, System.system_time(:second)})
+    cache_key = {user_id, organization_id}
+    safe_ets_insert(@cache_table, {cache_key, permissions, System.system_time(:second)})
     permissions
   end
 
-  defp load_and_cache_roles(%User{id: user_id} = user) do
+  defp load_and_cache_roles(%User{id: user_id, organization_id: organization_id} = user) do
     roles = load_user_roles(user)
-    safe_ets_insert(@role_cache_table, {user_id, roles, System.system_time(:second)})
+    cache_key = {user_id, organization_id}
+    safe_ets_insert(@role_cache_table, {cache_key, roles, System.system_time(:second)})
     roles
   end
 
@@ -664,14 +670,30 @@ defmodule TamanduaServer.Authorization.RBAC do
     now = DateTime.utc_now()
 
     from(ur in UserRole,
-      join: r in Role, on: r.id == ur.role_id,
+      join: r in Role,
+      on: r.id == ur.role_id,
       where: ur.user_id == ^user_id,
       where: is_nil(ur.expires_at) or ur.expires_at > ^now,
-      where: is_nil(r.organization_id) or r.organization_id == ^org_id,
+      where: (r.builtin == true and is_nil(r.organization_id)) or r.organization_id == ^org_id,
       select: r,
       order_by: [desc: r.priority]
     )
     |> Repo.all()
+  end
+
+  defp invalidate_user_entries(table, user_id) do
+    safe_ets_foldl(
+      fn
+        {{^user_id, _organization_id} = cache_key, _data, _cached_at}, keys ->
+          [cache_key | keys]
+
+        _, keys ->
+          keys
+      end,
+      [],
+      table
+    )
+    |> Enum.each(&safe_ets_delete(table, &1))
   end
 
   defp load_role_permissions(%Role{id: _role_id, slug: slug, builtin: true}) do

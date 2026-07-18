@@ -2,8 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { router, usePage } from '@inertiajs/react'
 import {
   Search,
-  X,
-  LayoutDashboard,
   AlertTriangle,
   Monitor,
   FileCode,
@@ -11,31 +9,15 @@ import {
   ArrowRight,
   Clock,
   Command,
-  Box,
-  Brain,
-  Cpu,
-  ClipboardList,
-  Database,
-  Globe,
-  Network,
-  Radar,
-  ShieldCheck,
-  Terminal,
-  Users,
-  Shield,
-  Eye,
-  MessageSquare,
-  BookOpen,
-  Workflow,
-  FileSearch,
-  GitBranch,
-  Key,
-  Lock,
-  Zap,
-  Smartphone,
+  type LucideIcon,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import type { SharedProps } from '@/types'
+import {
+  getVisibleNavigationGroups,
+  searchNavigation,
+  type NavigationGroup,
+  type NavigationItem,
+} from '@/navigation/catalog'
 
 export interface GlobalSearchProps {
   isOpen: boolean
@@ -44,21 +26,15 @@ export interface GlobalSearchProps {
 
 interface SearchResult {
   id: string
-  type: 'agent' | 'alert' | 'event' | 'rule' | 'page'
+  type: 'agent' | 'alert' | 'event' | 'rule' | 'feature'
   title: string
   subtitle?: string
   href: string
   external?: boolean
+  icon?: LucideIcon
 }
 
-interface QuickAction {
-  id: string
-  name: string
-  href: string
-  icon: React.ComponentType<{ className?: string }>
-  external?: boolean
-  requireRole?: 'admin' | 'super_admin'
-}
+type QuickAction = NavigationItem
 
 type SearchSource = 'Agents' | 'Alerts' | 'Events'
 
@@ -67,104 +43,14 @@ interface SearchLiveDataResult {
   failures: SearchSource[]
 }
 
-const quickActions: QuickAction[] = [
-  { id: 'dashboard', name: 'Go to Dashboard', href: '/app/dashboard', icon: LayoutDashboard },
-  { id: 'alerts', name: 'View Alerts', href: '/app/alerts', icon: AlertTriangle },
-  { id: 'deploy', name: 'Deploy Agent', href: '/app/deploy-agent', icon: Monitor },
-  { id: 'hunt', name: 'Hunt Telemetry', href: '/app/hunt', icon: Radar },
-  { id: 'response', name: 'Response Center', href: '/app/response', icon: ShieldCheck },
-  { id: 'validation', name: 'Validation Center', href: '/app/validation', icon: ClipboardList },
-  { id: 'proofs', name: 'Public Proofs', href: '/app/public-proofs', icon: Database },
-  { id: 'rules', name: 'Detection Rules', href: '/app/detection-rules', icon: FileCode },
-]
-
-const searchablePages: QuickAction[] = [
-  { id: 'dashboard', name: 'Dashboard', href: '/app/dashboard', icon: LayoutDashboard },
-  { id: 'executive', name: 'Executive Dashboard', href: '/app/executive', icon: Activity },
-  { id: 'agents', name: 'Agents', href: '/app/agents', icon: Monitor },
-  { id: 'deploy-agent', name: 'Deploy Agent', href: '/app/deploy-agent', icon: Monitor },
-  { id: 'assets', name: 'Assets', href: '/app/assets', icon: Box },
-  { id: 'alerts', name: 'Alerts', href: '/app/alerts', icon: AlertTriangle },
-  { id: 'events', name: 'Events', href: '/app/events', icon: Activity },
-  { id: 'timeline', name: 'Timeline', href: '/app/timeline', icon: Clock },
-  { id: 'hunt', name: 'Hunt', href: '/app/hunt', icon: Radar },
-  { id: 'process-tree', name: 'Process Tree', href: '/app/process-tree', icon: Network },
-  { id: 'detection-rules', name: 'Detection Rules', href: '/app/detection-rules', icon: FileCode },
-  { id: 'detection-builder', name: 'Detection Builder', href: '/app/detection-builder', icon: FileCode },
-  { id: 'dynamic-detection', name: 'Dynamic Detection', href: '/app/dynamic-detection', icon: Zap },
-  { id: 'detection-analytics', name: 'Detection Analytics', href: '/app/detection-analytics', icon: Activity },
-  { id: 'detection-packs', name: 'Detection Packs', href: '/app/detection-packs', icon: Box },
-  { id: 'mitre', name: 'MITRE ATT&CK', href: '/app/mitre', icon: ShieldCheck },
-  { id: 'threat-intel', name: 'Threat Intel', href: '/app/threat-intel', icon: Globe },
-  { id: 'predictive', name: 'Predictive Shielding', href: '/app/predictive', icon: ShieldCheck },
-  { id: 'validation-center', name: 'Validation Center', href: '/app/validation', icon: ClipboardList },
-  { id: 'benchmarks', name: 'Detection Benchmarks', href: '/app/validation/benchmark', icon: Activity },
-  { id: 'nl-hunt', name: 'Natural Language Hunting', href: '/app/nl-hunt', icon: Brain },
-  { id: 'ai-assistant', name: 'AI Assistant', href: '/app/ai-assistant', icon: Brain },
-  { id: 'ai-siem', name: 'AI SIEM', href: '/app/ai-siem', icon: Brain },
-  { id: 'ml', name: 'ML Dashboard', href: '/app/ml', icon: Brain },
-  { id: 'agent-ml-detections', name: 'Agent ML Detections', href: '/app/ml/detections', icon: AlertTriangle },
-  { id: 'behavioral', name: 'Behavioral Analytics', href: '/app/behavioral', icon: Radar },
-  { id: 'agentic-analyst', name: 'Agentic Analyst', href: '/app/analyst', icon: FileSearch },
-  { id: 'investigations', name: 'Investigations', href: '/app/investigations', icon: ClipboardList },
-  { id: 'provenance', name: 'Provenance Graph', href: '/app/provenance', icon: GitBranch },
-  { id: 'forensics', name: 'Forensics', href: '/app/forensics', icon: ClipboardList },
-  { id: 'response', name: 'Response Center', href: '/app/response', icon: ShieldCheck },
-  { id: 'live-response', name: 'Live Response', href: '/app/live-response', icon: Terminal },
-  { id: 'playbooks', name: 'Playbooks', href: '/app/playbooks', icon: BookOpen },
-  { id: 'automation', name: 'Automation', href: '/app/automation', icon: Workflow },
-  { id: 'prevention-policies', name: 'Prevention Policies', href: '/app/prevention-policies', icon: Shield },
-  { id: 'device-control', name: 'Device Control', href: '/app/device-control', icon: Box },
-  { id: 'device-policies', name: 'Device Policies', href: '/app/device-control/policies', icon: ClipboardList },
-  { id: 'ai-attack-surface', name: 'AI Attack Surface', href: '/app/ai-security/attack-surface', icon: Shield },
-  { id: 'shadow-ai', name: 'Shadow AI', href: '/app/ai-security/shadow-ai', icon: Eye },
-  { id: 'ai-posture', name: 'AI Posture', href: '/app/ai-security/posture', icon: ShieldCheck },
-  { id: 'ai-agents', name: 'AI Agent Registry', href: '/app/ai-security/agents', icon: Users },
-  { id: 'ai-models', name: 'AI Models', href: '/live/ai-security/models', icon: Brain, external: true },
-  { id: 'ml-processes', name: 'ML Processes', href: '/live/ml-processes', icon: Cpu, external: true },
-  { id: 'ai-runtime', name: 'AI Runtime', href: '/live/ai/runtime', icon: Activity, external: true },
-  { id: 'model-registries', name: 'Model Registries', href: '/live/registries', icon: Database, external: true },
-  { id: 'ai-artifacts', name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
-  { id: 'ai-dependency-graph', name: 'AI Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
-  { id: 'mcp-servers', name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
-  { id: 'network', name: 'Network', href: '/app/network', icon: Network },
-  { id: 'dns', name: 'DNS Monitoring', href: '/app/dns', icon: Globe },
-  { id: 'dns-doh-dot', name: 'DoH / DoT DNS', href: '/app/dns?query_type=DOH', icon: Globe },
-  { id: 'ndr', name: 'NDR', href: '/app/ndr', icon: Radar },
-  { id: 'mobile-security', name: 'Mobile Security', href: '/app/mobile', icon: Smartphone },
-  { id: 'ndr-tls-sessions', name: 'TLS Sessions', href: '/app/ndr?tab=encrypted&section=tls', icon: Lock },
-  { id: 'ndr-ja3', name: 'JA3 Fingerprints', href: '/app/ndr?tab=encrypted&section=ja3', icon: Key },
-  { id: 'ndr-certificates', name: 'Certificate Analysis', href: '/app/ndr?tab=encrypted&section=certificates', icon: ShieldCheck },
-  { id: 'ndr-anomalies', name: 'NDR Anomalies', href: '/app/ndr?tab=anomalies', icon: AlertTriangle },
-  { id: 'attack-surface', name: 'Attack Surface', href: '/app/attack-surface', icon: Shield },
-  { id: 'exposure', name: 'Exposure Management', href: '/app/exposure', icon: Eye },
-  { id: 'attack-paths', name: 'Attack Paths', href: '/app/exposure/attack-paths', icon: GitBranch },
-  { id: 'vulnerabilities', name: 'Vulnerabilities', href: '/app/vulnerabilities', icon: AlertTriangle },
-  { id: 'identity', name: 'Identity Protection', href: '/app/identity', icon: Users },
-  { id: 'deception', name: 'Deception', href: '/app/deception', icon: Shield },
-  { id: 'integrations', name: 'Integrations', href: '/app/integrations', icon: Network },
-  { id: 'collaboration', name: 'Collaboration Security', href: '/app/collaboration', icon: Users },
-  { id: 'email-security', name: 'Email Security', href: '/app/email-security', icon: MessageSquare },
-  { id: 'phishing-triage', name: 'Phishing Triage', href: '/app/phishing-triage', icon: FileSearch },
-  { id: 'on-chain-proof', name: 'On-Chain Proof', href: '/app/public-proofs', icon: Database },
-  { id: 'security-status', name: 'Security Status', href: '/app/security-status', icon: ShieldCheck },
-  { id: 'contributions', name: 'Contributions', href: '/app/contributions', icon: FileCode },
-  { id: 'leaderboard', name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: ClipboardList },
-  { id: 'settings', name: 'Settings', href: '/app/settings', icon: ShieldCheck, requireRole: 'admin' },
-  { id: 'tenant-settings', name: 'Tenant Settings', href: '/app/tenant-settings', icon: Users, requireRole: 'admin' },
-  { id: 'users', name: 'User Management', href: '/app/users', icon: Users, requireRole: 'admin' },
-  { id: 'roles', name: 'RBAC Roles', href: '/app/settings/roles', icon: Shield, requireRole: 'admin' },
-  { id: 'reports', name: 'Reports', href: '/app/reports', icon: ClipboardList, requireRole: 'admin' },
-  { id: 'audit-log', name: 'Audit Log', href: '/app/audit-log', icon: ClipboardList, requireRole: 'admin' },
-  { id: 'tenants', name: 'Tenants', href: '/app/admin/tenants', icon: Users, requireRole: 'super_admin' },
-]
+const QUICK_ACTION_IDS = ['dashboard', 'alerts', 'deploy-agent', 'response', 'detection-rules']
 
 const typeIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   agent: Monitor,
   alert: AlertTriangle,
   event: Activity,
   rule: FileCode,
-  page: Search,
+  feature: Search,
 }
 
 const typeLabels: Record<string, string> = {
@@ -172,7 +58,7 @@ const typeLabels: Record<string, string> = {
   alert: 'Alerts',
   event: 'Events',
   rule: 'Detection Rules',
-  page: 'Pages',
+  feature: 'Features',
 }
 
 const typeColors: Record<string, string> = {
@@ -180,7 +66,7 @@ const typeColors: Record<string, string> = {
   alert: 'var(--crit)',
   event: 'var(--info)',
   rule: 'var(--warn)',
-  page: 'var(--emerald-400)',
+  feature: 'var(--emerald-400)',
 }
 
 function getCsrfToken(): string {
@@ -195,40 +81,32 @@ async function readJsonData(response: Response): Promise<any[]> {
   return Array.isArray(body?.data) ? body.data : []
 }
 
-function filterSearchablePages(userRole?: string, isSuperAdminProp?: boolean): QuickAction[] {
-  const isSuperAdmin = Boolean(isSuperAdminProp || userRole === 'super_admin')
-  const isAdmin = Boolean(userRole === 'admin' || isSuperAdmin)
-
-  return searchablePages.filter(page => {
-    if (page.requireRole === 'super_admin') return isSuperAdmin
-    if (page.requireRole === 'admin') return isAdmin
-    return true
-  })
+function searchFeatureResults(query: string, navigationGroups: NavigationGroup[]): SearchResult[] {
+  return searchNavigation(query, navigationGroups, 8)
+    .map(feature => ({
+      id: `feature-${feature.id}`,
+      type: 'feature' as const,
+      title: feature.name,
+      subtitle: `${feature.groupName} · ${feature.description}`,
+      href: feature.href,
+      external: feature.external,
+      icon: feature.icon,
+    }))
 }
 
-async function searchLiveData(query: string, pages: QuickAction[]): Promise<SearchLiveDataResult> {
+async function searchLiveData(query: string, navigationGroups: NavigationGroup[]): Promise<SearchLiveDataResult> {
   const trimmed = query.trim()
   if (!trimmed) return { results: [], failures: [] }
 
-  const staticResults: SearchResult[] = pages
-    .filter(page => {
-      const haystack = `${page.name} ${page.id} ${page.href}`.toLowerCase()
-      return haystack.includes(trimmed.toLowerCase())
-    })
-    .slice(0, 8)
-    .map(page => ({
-      id: `page-${page.id}`,
-      type: 'page',
-      title: page.name,
-      subtitle: page.href,
-      href: page.href,
-      external: page.external,
-    }))
+  const staticResults = searchFeatureResults(trimmed, navigationGroups)
 
   const headers = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
     'X-CSRF-Token': getCsrfToken(),
+    ...(localStorage.getItem('tamandua_current_tenant_id')
+      ? { 'X-Tenant-ID': localStorage.getItem('tamandua_current_tenant_id') as string }
+      : {}),
   }
 
   const [agentsResult, alertsResult, eventsResult] = await Promise.allSettled([
@@ -330,10 +208,17 @@ function addRecentSearch(query: string): void {
 export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
   const pageProps = usePage<SharedProps & { is_super_admin?: boolean }>().props
   const userRole = pageProps.auth?.user?.role
-  const visibleSearchablePages = useMemo(
-    () => filterSearchablePages(userRole, pageProps.is_super_admin),
+  const visibleNavigationGroups = useMemo(
+    () => getVisibleNavigationGroups(userRole, pageProps.is_super_admin, true),
     [userRole, pageProps.is_super_admin]
   )
+  const quickActions = useMemo(() => {
+    const byId = new Map(visibleNavigationGroups.flatMap(group => group.items).map(item => [item.id, item]))
+    return QUICK_ACTION_IDS.flatMap(id => {
+      const item = byId.get(id)
+      return item ? [item] : []
+    })
+  }, [visibleNavigationGroups])
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -368,12 +253,15 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
       return
     }
 
+    // Feature navigation is local and must remain instant even when a live API is slow.
+    setResults(searchFeatureResults(trimmed, visibleNavigationGroups))
+    setIsSearching(true)
+    setSearchError(null)
+    setSourceFailures([])
+
     const controller = new AbortController()
     const timeout = window.setTimeout(() => {
-      setIsSearching(true)
-      setSearchError(null)
-      setSourceFailures([])
-      searchLiveData(trimmed, visibleSearchablePages)
+      searchLiveData(trimmed, visibleNavigationGroups)
         .then(({ results: liveResults, failures }) => {
           if (!controller.signal.aborted) {
             setResults(liveResults)
@@ -398,7 +286,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
       controller.abort()
       window.clearTimeout(timeout)
     }
-  }, [query, visibleSearchablePages])
+  }, [query, visibleNavigationGroups])
 
   // Search results
 
@@ -424,7 +312,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
     recentSearches.forEach(s => items.push({ type: 'recent', data: s }))
     quickActions.forEach(a => items.push({ type: 'action', data: a }))
     return items
-  }, [query, results, recentSearches])
+  }, [query, results, recentSearches, quickActions])
 
   const visitResult = useCallback((href: string, external?: boolean) => {
     if (external) {
@@ -510,6 +398,9 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
   return (
     <div
       className="fixed inset-0 z-[200] flex items-start justify-center pt-[15vh]"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Search features and security data"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -518,6 +409,8 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
       <div
         className="absolute inset-0"
         style={{ backgroundColor: 'rgba(0, 0, 0, 0.7)' }}
+        onClick={onClose}
+        aria-hidden="true"
       />
 
       {/* Modal */}
@@ -537,7 +430,8 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search agents, alerts, events, rules..."
+            placeholder="Search features, agents, alerts, events..."
+            aria-label="Search features and security data"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -563,7 +457,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
         >
           {query.trim() ? (
             // Search results
-            isSearching ? (
+            isSearching && results.length === 0 ? (
               <div className="py-12 text-center">
                 <Search className="h-12 w-12 mx-auto mb-4 animate-pulse" style={{ color: 'var(--subtle)' }} />
                 <p className="text-sm" style={{ color: 'var(--muted)' }}>
@@ -599,6 +493,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
                       {items.map((result) => {
                         const itemIndex = currentFlatIndex++
                         const isSelected = itemIndex === selectedIndex
+                        const ResultIcon = result.icon ?? Icon
                         return (
                           <button
                             key={result.id}
@@ -616,7 +511,7 @@ export function GlobalSearch({ isOpen, onClose }: GlobalSearchProps) {
                                 backgroundColor: `color-mix(in srgb, ${typeColors[type]} 15%, transparent)`,
                               }}
                             >
-                              <Icon className="h-4 w-4" style={{ color: typeColors[type] }} />
+                              <ResultIcon className="h-4 w-4" style={{ color: typeColors[type] }} />
                             </div>
                             <div className="flex-1 min-w-0">
                               <div

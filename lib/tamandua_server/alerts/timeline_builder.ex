@@ -15,7 +15,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
   require Logger
 
-  alias TamanduaServer.Alerts.{Alert, AlertActivity, Comment, CommentManager}
+  alias TamanduaServer.Alerts.{Alert, CommentManager}
   alias TamanduaServer.Alerts.Timestamp
   alias TamanduaServer.Response
   alias TamanduaServer.Repo
@@ -199,7 +199,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Status changes
     if alert.status != "new" do
-      events = [
+      _events = [
         %{
           id: "alert_status_#{alert.id}",
           type: "analyst",
@@ -224,7 +224,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Assignment
     if alert.assigned_to_id do
-      events = [
+      _events = [
         %{
           id: "alert_assigned_#{alert.id}",
           type: "analyst",
@@ -250,7 +250,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Acknowledgment
     if alert.acknowledged_at do
-      events = [
+      _events = [
         %{
           id: "alert_acknowledged_#{alert.id}",
           type: "analyst",
@@ -274,7 +274,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Escalation
     if alert.escalated_at do
-      events = [
+      _events = [
         %{
           id: "alert_escalated_#{alert.id}",
           type: "analyst",
@@ -300,7 +300,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Verdict
     if alert.verdict && alert.verdict != "unconfirmed" do
-      events = [
+      _events = [
         %{
           id: "alert_verdict_#{alert.id}",
           type: "analyst",
@@ -325,7 +325,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Severity adjustment
     if alert.severity_adjusted && alert.severity_adjusted_at do
-      events = [
+      _events = [
         %{
           id: "alert_severity_adjusted_#{alert.id}",
           type: "analyst",
@@ -350,7 +350,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Resolution
     if alert.resolved_at do
-      events = [
+      _events = [
         %{
           id: "alert_resolved_#{alert.id}",
           type: "analyst",
@@ -472,7 +472,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # ML analysis event (if ML metadata exists)
     if alert.detection_metadata && Map.has_key?(alert.detection_metadata, "ml_score") do
-      events = [
+      _events = [
         %{
           id: "ml_analysis_#{alert.id}",
           type: "system",
@@ -497,7 +497,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Enrichment event (if enrichment data exists)
     if alert.enrichment && map_size(alert.enrichment) > 0 do
-      events = [
+      _events = [
         %{
           id: "enrichment_#{alert.id}",
           type: "system",
@@ -522,7 +522,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Correlation event (if part of a storyline)
     if alert.storyline_id do
-      events = [
+      _events = [
         %{
           id: "correlation_#{alert.id}",
           type: "system",
@@ -550,7 +550,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
 
     # Deduplication event (if alert is a duplicate)
     if alert.occurrence_count > 1 do
-      events = [
+      _events = [
         %{
           id: "deduplication_#{alert.id}",
           type: "system",
@@ -577,7 +577,7 @@ defmodule TamanduaServer.Alerts.TimelineBuilder do
     events
   end
 
-  defp build_external_events(alert) do
+  defp build_external_events(_alert) do
     # For now, return empty list. This can be extended to include:
     # - SIEM export events
     # - Ticket creation events (Jira, ServiceNow, etc.)

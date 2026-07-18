@@ -36,7 +36,6 @@ defmodule TamanduaServer.Detection.PreventionPolicy do
   @type t :: %__MODULE__{}
 
   @aggressiveness_levels [:disabled, :cautious, :moderate, :aggressive, :extra_aggressive]
-  @response_modes [:detect_only, :detect_and_prevent]
   @threat_categories [
     :malware_ml, :behavioral_ioa, :exploit_prevention, :ransomware,
     :script_execution, :credential_theft, :lateral_movement, :fileless_attack

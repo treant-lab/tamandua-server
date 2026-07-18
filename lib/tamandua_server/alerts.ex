@@ -13,6 +13,7 @@ defmodule TamanduaServer.Alerts do
   alias TamanduaServer.Repo
   alias TamanduaServer.TenantScope
 
+  alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Alerts.SuppressionRule
   alias TamanduaServer.Alerts.VerdictFeedbackLog
@@ -20,14 +21,16 @@ defmodule TamanduaServer.Alerts do
   alias TamanduaServer.Alerts.SavedSearch
   alias TamanduaServer.Alerts.FilterBuilder
   alias TamanduaServer.Alerts.SupplyChainEnricher
+  alias TamanduaServer.Alerts.TriageAgent
   alias TamanduaServer.Alerts.Enrichers.KubernetesEnricher
   alias TamanduaServer.Detection.Evidence
   alias TamanduaServer.Detection.PrecisionMetrics
-  alias TamanduaServer.Solana.{Attestation, Bounty, Client}
+  alias TamanduaServer.Mobile.{DeviceV2, MDMCommand}
 
   # Default deduplication window in seconds (5 minutes)
   @default_dedup_window_seconds 300
   @active_alert_statuses ~w(new open acknowledged triaged investigating)
+  @dismissed_alert_statuses ~w(resolved false_positive closed)
 
   # ===========================================================================
   # Tenant-Scoped Functions
@@ -50,7 +53,7 @@ defmodule TamanduaServer.Alerts do
     query =
       Alert
       |> TenantScope.scope_to_tenant(organization_id)
-      |> order_by([a], [desc: a.inserted_at])
+      |> apply_alert_sort(opts)
 
     query = apply_alert_filters(query, opts)
 
@@ -68,7 +71,55 @@ defmodule TamanduaServer.Alerts do
         query
       end
 
+    query = maybe_select_alert_summary(query, opts)
+
     Repo.all(query)
+  end
+
+  defp maybe_select_alert_summary(query, opts) do
+    if Keyword.get(opts, :summary, false) do
+      select(query, [a], %{
+        __alert_summary__: true,
+        id: a.id,
+        agent_id: a.agent_id,
+        severity: a.severity,
+        title: a.title,
+        description: a.description,
+        status: a.status,
+        threat_score: a.threat_score,
+        mitre_tactics: a.mitre_tactics,
+        mitre_techniques: a.mitre_techniques,
+        assigned_to_id: a.assigned_to_id,
+        source_event_id: a.source_event_id,
+        detection_metadata: a.detection_metadata,
+        occurrence_count: a.occurrence_count,
+        last_seen_at: a.last_seen_at,
+        rule_version: a.rule_version,
+        recommended_response: a.recommended_response,
+        verdict: a.verdict,
+        verdict_by_id: a.verdict_by_id,
+        verdict_at: a.verdict_at,
+        verdict_notes: a.verdict_notes,
+        suppression_rule_id: a.suppression_rule_id,
+        blockchain_tx_id: a.blockchain_tx_id,
+        blockchain_attested_at: a.blockchain_attested_at,
+        bounty_tx_id: a.bounty_tx_id,
+        bounty_amount_lamports: a.bounty_amount_lamports,
+        bounty_paid_at: a.bounty_paid_at,
+        rule_author_pubkey: a.rule_author_pubkey,
+        incident_hash: a.incident_hash,
+        manifest_hash: a.manifest_hash,
+        attestation_tlp: a.attestation_tlp,
+        attestation_ioc_count: a.attestation_ioc_count,
+        attestation_ioc_types: a.attestation_ioc_types,
+        attestation_redacted_ioc_count: a.attestation_redacted_ioc_count,
+        attestation_confidence: a.attestation_confidence,
+        inserted_at: a.inserted_at,
+        updated_at: a.updated_at
+      })
+    else
+      query
+    end
   end
 
   defp apply_alert_filters(query, opts) do
@@ -79,14 +130,278 @@ defmodule TamanduaServer.Alerts do
     |> maybe_filter(:category, Keyword.get(opts, :category))
     |> maybe_filter(:agent_id, Keyword.get(opts, :agent_id))
     |> maybe_filter(:assigned_to_id, Keyword.get(opts, :assigned_to_id))
+    |> maybe_filter(:mitre_technique, Keyword.get(opts, :mitre_technique))
+    |> maybe_filter(:inserted_from, Keyword.get(opts, :inserted_from))
+    |> maybe_filter(:inserted_to, Keyword.get(opts, :inserted_to))
+    |> filter_by_validation_visibility(
+      Keyword.get(opts, :validation) || Keyword.get(opts, :include_validation)
+    )
   end
+
+  defp apply_alert_sort(query, opts) do
+    sort_by = normalize_alert_sort_field(Keyword.get(opts, :sort_by))
+    sort_order = normalize_alert_sort_order(Keyword.get(opts, :sort_order))
+    order_by(query, [a], [{^sort_order, field(a, ^sort_by)}])
+  end
+
+  defp normalize_alert_sort_field(:inserted_at), do: :inserted_at
+  defp normalize_alert_sort_field(:updated_at), do: :updated_at
+  defp normalize_alert_sort_field(:severity), do: :severity
+  defp normalize_alert_sort_field(:status), do: :status
+  defp normalize_alert_sort_field(:title), do: :title
+  defp normalize_alert_sort_field(:threat_score), do: :threat_score
+  defp normalize_alert_sort_field("inserted_at"), do: :inserted_at
+  defp normalize_alert_sort_field("created_at"), do: :inserted_at
+  defp normalize_alert_sort_field("updated_at"), do: :updated_at
+  defp normalize_alert_sort_field("severity"), do: :severity
+  defp normalize_alert_sort_field("status"), do: :status
+  defp normalize_alert_sort_field("title"), do: :title
+  defp normalize_alert_sort_field("threat_score"), do: :threat_score
+  defp normalize_alert_sort_field(_), do: :inserted_at
+
+  defp normalize_alert_sort_order(:asc), do: :asc
+  defp normalize_alert_sort_order(:desc), do: :desc
+  defp normalize_alert_sort_order("asc"), do: :asc
+  defp normalize_alert_sort_order("desc"), do: :desc
+  defp normalize_alert_sort_order(_), do: :desc
 
   defp maybe_filter(query, _field, nil), do: query
   defp maybe_filter(query, _field, ""), do: query
   defp maybe_filter(query, :severity, value), do: where(query, [a], a.severity == ^value)
-  defp maybe_filter(query, :status, values) when is_list(values), do: where(query, [a], a.status in ^values)
+
+  defp maybe_filter(query, :status, values) when is_list(values),
+    do: where(query, [a], a.status in ^values)
+
   defp maybe_filter(query, :status, value), do: where(query, [a], a.status == ^value)
+
+  defp maybe_filter(query, :source, value) when is_binary(value) do
+    case normalize_source_filter(value) do
+      "ml" ->
+        filter_by_source_text(query, ~w(ml onnx model), ml?: true)
+
+      "behavioral" ->
+        filter_by_source_text(query, ~w(behavior baseline anomaly rule_match detection_engine),
+          default?: true
+        )
+
+      "mobile" ->
+        filter_by_source_text(query, ~w(mobile android ios app_guard mdm tamandua_mobile))
+
+      "ndr" ->
+        filter_by_source_text(query, ~w(ndr network dns flow packet zeek suricata firewall doh))
+
+      "sigma" ->
+        filter_by_source_text(query, ["sigma"])
+
+      "yara" ->
+        filter_by_source_text(query, ["yara"])
+
+      "ai_security" ->
+        filter_by_source_text(query, ~w(ai_security ai_runtime llm prompt rag))
+
+      "ioc" ->
+        filter_by_source_text(query, ~w(ioc threat_intel indicator))
+
+      source ->
+        filter_by_source_text(query, [source])
+    end
+  end
+
+  defp filter_by_source_text(query, aliases, opts \\ []) do
+    pattern = "%(#{Enum.map_join(aliases, "|", &Regex.escape/1)})%"
+    include_default? = Keyword.get(opts, :default?, false)
+    include_ml? = Keyword.get(opts, :ml?, false)
+
+    where(
+      query,
+      [a],
+      fragment(
+        """
+        lower(array_to_string(array_remove(ARRAY[
+          ?->>'source', ?->>'detection_source', ?->>'detection_type', ?->>'rule_type', ?->>'rule_name',
+          ?->>'source', ?->>'alert_source',
+          ?#>>'{payload,detection_source}', ?#>>'{payload,source}',
+          ?#>>'{payload,detection_type}', ?#>>'{payload,rule_type}', ?#>>'{payload,rule_name}',
+          ?#>>'{metadata,detection_source}', ?#>>'{metadata,source}',
+          ?->>'source', ?->>'detection_source', ?->>'alert_source', ?->>'detection_type', ?->>'rule_type', ?->>'rule_name'
+        ], NULL), ' ')) similar to ?
+        or (? and coalesce(array_to_string(array_remove(ARRAY[
+          ?->>'source', ?->>'detection_source',
+          ?->>'source', ?->>'alert_source',
+          ?#>>'{payload,detection_source}', ?#>>'{payload,source}',
+          ?#>>'{metadata,detection_source}', ?#>>'{metadata,source}',
+          ?->>'source', ?->>'detection_source', ?->>'alert_source'
+        ], NULL), ' '), '') = '')
+        or (? and (
+          lower(coalesce(?->>'detection_type', ?->>'rule_type', ?#>>'{payload,detection_type}', ?#>>'{payload,rule_type}', ?->>'detection_type', ?->>'rule_type', '')) = 'ml'
+          or upper(coalesce(?->>'rule_name', ?#>>'{payload,rule_name}', ?->>'rule_name', '')) like 'ML\\_%'
+          or upper(coalesce(?->>'rule_name', ?#>>'{payload,rule_name}', ?->>'rule_name', '')) like 'OFFLINE\\_ML%'
+        ))
+        """,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        ^pattern,
+        ^include_default?,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        ^include_ml?,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.detection_metadata,
+        a.raw_event,
+        a.evidence,
+        a.detection_metadata,
+        a.raw_event,
+        a.evidence
+      )
+    )
+  end
+
   defp maybe_filter(query, :source, value) do
+    source = normalize_source_filter(value)
+
+    where(
+      query,
+      [a],
+      fragment(
+        """
+        exists (
+          select 1
+          from (
+            select
+              lower(concat_ws(' ',
+                ?->>'source', ?->>'detection_source', ?->>'alert_source',
+                ?->>'source', ?->>'detection_source', ?->>'alert_source',
+                ?#>>'{payload,source}', ?#>>'{payload,detection_source}',
+                ?#>>'{metadata,source}', ?#>>'{metadata,detection_source}',
+                ?->>'source', ?->>'detection_source', ?->>'alert_source',
+                ?#>>'{payload,source}', ?#>>'{payload,detection_source}'
+              )) as source_blob,
+              lower(concat_ws(' ',
+                ?->>'detection_type', ?->>'rule_type', ?->>'rule_name',
+                ?#>>'{payload,detection_type}', ?#>>'{payload,rule_type}', ?#>>'{payload,rule_name}',
+                ?->>'detection_type', ?->>'rule_type', ?->>'rule_name'
+              )) as rule_blob
+          ) s
+          where case
+            when source_blob like '%sigma%' then 'sigma'
+            when source_blob like '%yara%' then 'yara'
+            when source_blob ~ '(mobile|android|ios|app_guard|mdm|tamandua_mobile)' then 'mobile'
+            when source_blob ~ '(ndr|network|dns|flow|packet|zeek|suricata|firewall|doh)' then 'ndr'
+            when source_blob ~ '(ml|onnx|model)' or rule_blob ~ '(^|[[:space:]_])(ml|offline_ml)' then 'ml'
+            when source_blob ~ '(ai_security|ai_runtime|llm|prompt|rag)' then 'ai_security'
+            when source_blob ~ '(ioc|threat_intel|indicator)' then 'ioc'
+            when source_blob ~ '(behavior|baseline|anomaly|rule_match|detection_engine)' then 'behavioral'
+            when source_blob = '' then 'behavioral'
+            else source_blob
+          end = ?
+        )
+        """,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.detection_metadata,
+        a.raw_event,
+        a.raw_event,
+        a.raw_event,
+        a.evidence,
+        a.evidence,
+        a.evidence,
+        ^source
+      )
+    )
+  end
+
+  defp normalize_source_filter(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace("-", "_")
+    |> case do
+      "" ->
+        ""
+
+      value when value in ["ml", "machine_learning", "ml_analysis", "onnx"] ->
+        "ml"
+
+      value when value in ["behavior", "behavioral", "baseline", "anomaly", "detection_engine"] ->
+        "behavioral"
+
+      value when value in ["mobile", "android", "ios", "mdm", "app_guard", "tamandua_mobile"] ->
+        "mobile"
+
+      value
+      when value in [
+             "ndr",
+             "network",
+             "dns",
+             "flow",
+             "packet",
+             "zeek",
+             "suricata",
+             "firewall",
+             "doh"
+           ] ->
+        "ndr"
+
+      value when value in ["ai_security", "ai_runtime", "llm", "prompt", "rag"] ->
+        "ai_security"
+
+      value when value in ["ioc", "threat_intel", "indicator"] ->
+        "ioc"
+
+      value ->
+        value
+    end
+  end
+
+  defp maybe_filter(query, :category, value) do
     where(
       query,
       [a],
@@ -94,29 +409,12 @@ defmodule TamanduaServer.Alerts do
         """
         lower(
           coalesce(
-            ?->>'source',
-            ?->>'detection_source',
-            ?->>'source',
-            ?->>'alert_source',
-            ?#>>'{payload,detection_source}',
-            ?#>>'{payload,source}',
-            ?#>>'{metadata,detection_source}',
-            ?#>>'{metadata,source}',
-            ?->>'source',
-            ?->>'detection_source',
-            ?->>'alert_source',
-            case
-              when lower(coalesce(?->>'detection_type', '')) = 'ml' then 'ml'
-              when lower(coalesce(?->>'rule_type', '')) = 'ml' then 'ml'
-              when upper(coalesce(?->>'rule_name', '')) like 'ML\\_%' then 'ml'
-              when lower(coalesce(?#>>'{payload,detection_type}', '')) = 'ml' then 'ml'
-              when lower(coalesce(?#>>'{payload,rule_type}', '')) = 'ml' then 'ml'
-              when upper(coalesce(?#>>'{payload,rule_name}', '')) like 'ML\\_%' then 'ml'
-              when lower(coalesce(?->>'detection_type', '')) = 'ml' then 'ml'
-              when lower(coalesce(?->>'rule_type', '')) = 'ml' then 'ml'
-              when upper(coalesce(?->>'rule_name', '')) like 'ML\\_%' then 'ml'
-              else ''
-            end
+            ?->>'category',
+            ?->>'threat_category',
+            ?->>'category',
+            ?->>'event_type',
+            ?->>'category',
+            ''
           )
         ) = lower(?)
         """,
@@ -124,29 +422,33 @@ defmodule TamanduaServer.Alerts do
         a.detection_metadata,
         a.raw_event,
         a.raw_event,
-        a.raw_event,
-        a.raw_event,
-        a.raw_event,
-        a.raw_event,
-        a.evidence,
-        a.evidence,
-        a.evidence,
-        a.detection_metadata,
-        a.detection_metadata,
-        a.detection_metadata,
-        a.raw_event,
-        a.raw_event,
-        a.raw_event,
-        a.evidence,
-        a.evidence,
         a.evidence,
         ^value
       )
     )
   end
-  defp maybe_filter(query, :category, value), do: where(query, [a], fragment("?->>'category' = ?", a.detection_metadata, ^value))
+
   defp maybe_filter(query, :agent_id, value), do: where(query, [a], a.agent_id == ^value)
-  defp maybe_filter(query, :assigned_to_id, value), do: where(query, [a], a.assigned_to_id == ^value)
+
+  defp maybe_filter(query, :assigned_to_id, value),
+    do: where(query, [a], a.assigned_to_id == ^value)
+
+  defp maybe_filter(query, :mitre_technique, value) when is_binary(value),
+    do: where(query, [a], ^value in a.mitre_techniques)
+
+  defp maybe_filter(query, :inserted_from, value) do
+    case parse_datetime_boundary(value, :from) do
+      nil -> query
+      datetime -> where(query, [a], a.inserted_at >= ^datetime)
+    end
+  end
+
+  defp maybe_filter(query, :inserted_to, value) do
+    case parse_datetime_boundary(value, :to) do
+      nil -> query
+      datetime -> where(query, [a], a.inserted_at <= ^datetime)
+    end
+  end
 
   @doc """
   Gets a single alert scoped to an organization.
@@ -181,7 +483,7 @@ defmodule TamanduaServer.Alerts do
       Alert
       |> TenantScope.scope_to_tenant(organization_id)
       |> where([a], not is_nil(a.blockchain_tx_id))
-      |> order_by([a], [desc: a.blockchain_attested_at])
+      |> order_by([a], desc: a.blockchain_attested_at)
 
     query =
       if severity = Keyword.get(opts, :severity) do
@@ -242,7 +544,7 @@ defmodule TamanduaServer.Alerts do
     query =
       Alert
       |> where([a], not is_nil(a.blockchain_tx_id))
-      |> order_by([a], [desc: a.blockchain_attested_at])
+      |> order_by([a], desc: a.blockchain_attested_at)
       # Select only privacy-safe fields
       |> select([a], %{
         id: a.id,
@@ -544,7 +846,8 @@ defmodule TamanduaServer.Alerts do
   aggregate counts only: no hostnames, usernames, paths, commands, or alert titles.
   """
   def posture_counts_for_agent(organization_id, agent_id, opts \\ []) do
-    window_started_at = Keyword.get(opts, :since, DateTime.add(DateTime.utc_now(), -24 * 60 * 60, :second))
+    window_started_at =
+      Keyword.get(opts, :since, DateTime.add(DateTime.utc_now(), -24 * 60 * 60, :second))
 
     base_query =
       Alert
@@ -579,12 +882,13 @@ defmodule TamanduaServer.Alerts do
   Gets alert trend over time for an organization.
   """
   def get_trend_for_org(organization_id, time_range) do
-    days = case time_range do
-      "7d" -> 7
-      "30d" -> 30
-      "90d" -> 90
-      _ -> 7
-    end
+    days =
+      case time_range do
+        "7d" -> 7
+        "30d" -> 30
+        "90d" -> 90
+        _ -> 7
+      end
 
     start_date = Date.utc_today() |> Date.add(-days)
 
@@ -593,7 +897,7 @@ defmodule TamanduaServer.Alerts do
     |> where([a], fragment("?::date", a.inserted_at) >= ^start_date)
     |> group_by([a], fragment("?::date", a.inserted_at))
     |> select([a], {fragment("?::date", a.inserted_at), count(a.id)})
-    |> order_by([a], [asc: fragment("?::date", a.inserted_at)])
+    |> order_by([a], asc: fragment("?::date", a.inserted_at))
     |> Repo.all()
     |> Enum.map(fn {date, count} -> %{date: Date.to_iso8601(date), count: count} end)
   end
@@ -606,7 +910,7 @@ defmodule TamanduaServer.Alerts do
 
     Alert
     |> TenantScope.scope_to_tenant(organization_id)
-    |> order_by([a], [desc: a.inserted_at])
+    |> order_by([a], desc: a.inserted_at)
     |> limit(^limit)
     |> Repo.all()
   end
@@ -634,7 +938,7 @@ defmodule TamanduaServer.Alerts do
     Alert
     |> TenantScope.scope_to_tenant(organization_id)
     |> where([a], fragment("? = ANY(?)", ^technique_id, a.mitre_techniques))
-    |> order_by([a], [desc: a.inserted_at])
+    |> order_by([a], desc: a.inserted_at)
     |> limit(^limit)
     |> Repo.all()
   end
@@ -652,7 +956,7 @@ defmodule TamanduaServer.Alerts do
     |> where([a], fragment("?::date", a.inserted_at) >= ^start_date)
     |> group_by([a], fragment("?::date", a.inserted_at))
     |> select([a], {fragment("?::date", a.inserted_at), count(a.id)})
-    |> order_by([a], [asc: fragment("?::date", a.inserted_at)])
+    |> order_by([a], asc: fragment("?::date", a.inserted_at))
     |> Repo.all()
     |> Enum.map(fn {date, count} -> %{date: Date.to_iso8601(date), count: count} end)
   end
@@ -700,7 +1004,7 @@ defmodule TamanduaServer.Alerts do
 
     filters
     |> build_alert_query()
-    |> order_by([a], [desc: a.inserted_at])
+    |> order_by([a], desc: a.inserted_at)
     |> limit(^limit)
     |> offset(^offset)
     |> Repo.all()
@@ -716,17 +1020,29 @@ defmodule TamanduaServer.Alerts do
   end
 
   defp build_alert_query(filters) do
-    query = from a in Alert
+    query = from(a in Alert)
+
     query =
-      if organization_id = filters[:organization_id], do: where(query, [a], a.organization_id == ^organization_id), else: query
+      if organization_id = filters[:organization_id],
+        do: where(query, [a], a.organization_id == ^organization_id),
+        else: query
+
     query =
-      if agent_id = filters[:agent_id], do: where(query, [a], a.agent_id == ^agent_id), else: query
+      if agent_id = filters[:agent_id],
+        do: where(query, [a], a.agent_id == ^agent_id),
+        else: query
+
     query =
-      if severity = filters[:severity], do: where(query, [a], a.severity == ^severity), else: query
+      if severity = filters[:severity],
+        do: where(query, [a], a.severity == ^severity),
+        else: query
+
     query =
       if status = filters[:status], do: where(query, [a], a.status == ^status), else: query
 
-    if assigned_to_id = filters[:assigned_to_id], do: where(query, [a], a.assigned_to_id == ^assigned_to_id), else: query
+    if assigned_to_id = filters[:assigned_to_id],
+      do: where(query, [a], a.assigned_to_id == ^assigned_to_id),
+      else: query
   end
 
   @doc """
@@ -757,13 +1073,17 @@ defmodule TamanduaServer.Alerts do
   def create_alert(attrs \\ %{}) do
     alias TamanduaServer.Alerts.Deduplication
 
-    attrs = attrs
-    |> normalize_alert_attrs()
-    |> maybe_extract_source_event_id()
-    |> maybe_extract_evidence()
-    |> maybe_set_raw_event()
-    |> maybe_attach_alert_quality()
-    |> maybe_set_recommended_response()
+    attrs =
+      attrs
+      |> normalize_alert_attrs()
+      |> maybe_extract_source_event_id()
+      |> maybe_set_raw_event()
+      |> maybe_extract_evidence()
+      |> maybe_normalize_endpoint_evidence()
+      |> maybe_attach_investigation_enrichment_plan()
+      |> maybe_attach_alert_quality()
+      |> maybe_set_recommended_response()
+      |> TriageAgent.attach_contract()
 
     agent_id = attrs[:agent_id] || attrs["agent_id"]
 
@@ -781,14 +1101,26 @@ defmodule TamanduaServer.Alerts do
           {:duplicate, existing_alert_id, new_count} ->
             # Duplicate found via ETS window -- alert already updated in DB.
             # Return the existing alert.
-            Logger.debug("[Alerts] Deduplicated alert (id=#{existing_alert_id}, count=#{new_count})")
-            case Repo.get(Alert, existing_alert_id) do
+            Logger.debug(
+              "[Alerts] Deduplicated alert (id=#{existing_alert_id}, count=#{new_count})"
+            )
+
+            organization_id = attrs[:organization_id] || attrs["organization_id"]
+
+            case Repo.get_by(Alert,
+                   id: existing_alert_id,
+                   organization_id: organization_id
+                 ) do
               nil -> do_create_new_alert(attrs)
               alert -> {:ok, alert}
             end
 
           {:new, attrs} ->
             do_create_new_alert(attrs)
+
+          {:error, :organization_id_required} ->
+            Logger.warning("[Alerts] Refusing unscoped alert deduplication")
+            {:error, :organization_id_required}
         end
     end
   end
@@ -855,19 +1187,24 @@ defmodule TamanduaServer.Alerts do
       ntdll_cross_process_legitimacy_fp?(context) ->
         {:reduce_severity, "medium", ntdll_cross_process_legitimacy_reason(context)}
 
-      title == "agent detection: behavioral_high_risk_score" and unusual_time_only_risk_fp?(context) ->
+      title == "agent detection: behavioral_high_risk_score" and
+          unusual_time_only_risk_fp?(context) ->
         {:reduce_severity, "low", "behavioral_score_only_unusual_time_structured"}
 
-      title == "agent detection: behavioral_high_risk_score" and benign_operational_high_risk_score?(context) ->
+      title == "agent detection: behavioral_high_risk_score" and
+          benign_operational_high_risk_score?(context) ->
         {:reduce_severity, "medium", "behavioral_score_only_operational_tool_context"}
 
-      title == "agent detection: behavioral_high_risk_score" and macos_benign_operational_high_risk_score?(context) ->
+      title == "agent detection: behavioral_high_risk_score" and
+          macos_benign_operational_high_risk_score?(context) ->
         {:reduce_severity, "medium", "macos_behavioral_score_only_operational_tool_context"}
 
-      title == "agent detection: behavioral_unusual_execution_time" and benign_unusual_time_process_fp?(context) ->
+      title == "agent detection: behavioral_unusual_execution_time" and
+          benign_unusual_time_process_fp?(context) ->
         {:reduce_severity, "info", "benign_unusual_execution_time_structured"}
 
-      title == "agent detection: behavioral_unusual_execution_time" and macos_benign_unusual_time_process_fp?(context) ->
+      title == "agent detection: behavioral_unusual_execution_time" and
+          macos_benign_unusual_time_process_fp?(context) ->
         {:reduce_severity, "info", "macos_benign_unusual_execution_time_structured"}
 
       title == "agent detection: behavioral_lsass_access" and lsass_self_event_fp?(context) ->
@@ -876,7 +1213,8 @@ defmodule TamanduaServer.Alerts do
       windows_core_service_process_fp?(context) ->
         {:reduce_severity, "info", "windows_core_service_process_chain_structured"}
 
-      title == "agent detection: behavioral_rundll32_network" and nvidia_rundll32_rxdiag_fp?(context) ->
+      title == "agent detection: behavioral_rundll32_network" and
+          nvidia_rundll32_rxdiag_fp?(context) ->
         {:reduce_severity, "low", "benign_nvidia_rundll32_rxdiag_structured"}
 
       title == "agent detection: registry_t1547_001" and edge_webview_runonce_cleanup_fp?(context) ->
@@ -914,13 +1252,17 @@ defmodule TamanduaServer.Alerts do
     |> Map.put(:severity_adjusted, true)
     |> Map.put(:severity_adjusted_at, DateTime.utc_now())
     |> Map.put(:false_positive_notes, reason)
-    |> Map.update(:detection_metadata, %{"fp_action" => "reduce_severity", "fp_reason" => reason}, fn metadata ->
-      metadata
-      |> ensure_map()
-      |> Map.put("fp_action", "reduce_severity")
-      |> Map.put("fp_reason", reason)
-      |> Map.put("fp_basis", "structured_fields")
-    end)
+    |> Map.update(
+      :detection_metadata,
+      %{"fp_action" => "reduce_severity", "fp_reason" => reason},
+      fn metadata ->
+        metadata
+        |> ensure_map()
+        |> Map.put("fp_action", "reduce_severity")
+        |> Map.put("fp_reason", reason)
+        |> Map.put("fp_basis", "structured_fields")
+      end
+    )
   end
 
   defp alert_attr(attrs, key) do
@@ -929,7 +1271,9 @@ defmodule TamanduaServer.Alerts do
 
   defp normalize_fp_text(nil), do: ""
   defp normalize_fp_text(value) when is_binary(value), do: String.downcase(value)
-  defp normalize_fp_text(value) when is_atom(value), do: value |> Atom.to_string() |> String.downcase()
+
+  defp normalize_fp_text(value) when is_atom(value),
+    do: value |> Atom.to_string() |> String.downcase()
 
   defp normalize_fp_text(value) when is_list(value) or is_map(value) do
     value
@@ -960,7 +1304,10 @@ defmodule TamanduaServer.Alerts do
 
   defp benign_rapid_connection_fp?(ctx) do
     process = process_basename(ctx)
-    remote_ip = field(ctx, [:network, :remote_ip]) || field(ctx, [:raw_event, :remote_ip]) || field(ctx, [:network, :value])
+
+    remote_ip =
+      field(ctx, [:network, :remote_ip]) || field(ctx, [:raw_event, :remote_ip]) ||
+        field(ctx, [:network, :value])
 
     process in ["synergy-core", "google chrome helper"] and
       private_ipv4?(remote_ip) and
@@ -1313,21 +1660,23 @@ defmodule TamanduaServer.Alerts do
     process = process_basename(ctx)
     parent = parent_basename(ctx)
     path = normalize_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
-    parent_path = normalize_path(field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path]))
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    parent_path =
+      normalize_path(
+        field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path])
+      )
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
 
     cond do
       process in ["pwsh.exe", "dotnet.exe"] ->
         operational_shell_command?(cmdline) and
-          (
-            String.contains?(path, "\\users\\") or
-              String.contains?(path, "\\program files\\dotnet\\dotnet.exe")
-          ) and
-          (
-            parent in ["codex.exe", "antigravity.exe", "pwsh.exe"] or
-              String.contains?(parent_path, "\\antigravity\\") or
-              String.contains?(parent_path, "\\@openai\\codex\\")
-          )
+          (String.contains?(path, "\\users\\") or
+             String.contains?(path, "\\program files\\dotnet\\dotnet.exe")) and
+          (parent in ["codex.exe", "antigravity.exe", "pwsh.exe"] or
+             String.contains?(parent_path, "\\antigravity\\") or
+             String.contains?(parent_path, "\\@openai\\codex\\"))
 
       process == "antigravity.exe" ->
         String.contains?(path, "\\users\\") and String.contains?(path, "\\antigravity\\") and
@@ -1337,11 +1686,13 @@ defmodule TamanduaServer.Alerts do
 
       process == "brave.exe" ->
         String.contains?(path, "\\bravesoftware\\brave-browser\\application\\brave.exe") and
-          (String.contains?(cmdline, "--type=renderer") or String.contains?(cmdline, "--extension-process"))
+          (String.contains?(cmdline, "--type=renderer") or
+             String.contains?(cmdline, "--extension-process"))
 
       process == "postgres.exe" ->
         String.contains?(path, "\\program files\\postgresql\\") and
-          (String.contains?(cmdline, "--forkbgworker") or String.contains?(cmdline, "\\postgresql\\"))
+          (String.contains?(cmdline, "--forkbgworker") or
+             String.contains?(cmdline, "\\postgresql\\"))
 
       true ->
         false
@@ -1350,10 +1701,19 @@ defmodule TamanduaServer.Alerts do
 
   defp macos_benign_operational_high_risk_score?(ctx) do
     process = process_basename(ctx)
-    path = normalize_posix_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    path =
+      normalize_posix_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
     parent = parent_basename(ctx)
-    parent_path = normalize_posix_path(field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path]))
+
+    parent_path =
+      normalize_posix_path(
+        field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path])
+      )
 
     cond do
       process == "osascript" ->
@@ -1380,8 +1740,12 @@ defmodule TamanduaServer.Alerts do
 
   defp macos_benign_unusual_time_process_fp?(ctx) do
     process = process_basename(ctx)
-    path = normalize_posix_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    path =
+      normalize_posix_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
 
     process in ["launchctl", "lsof", "netstat", "plutil", "sw_vers", "scutil"] and
       String.starts_with?(path, "/") and
@@ -1404,9 +1768,15 @@ defmodule TamanduaServer.Alerts do
          String.contains?(cmdline, " enable "))
   end
 
-  defp macos_diagnostic_command?("lsof", cmdline), do: String.contains?(cmdline, "-i") or String.contains?(cmdline, "-n")
-  defp macos_diagnostic_command?("netstat", cmdline), do: String.contains?(cmdline, "-an") or String.contains?(cmdline, "-anv")
-  defp macos_diagnostic_command?("scutil", cmdline), do: String.contains?(cmdline, "--dns") or String.contains?(cmdline, "--proxy")
+  defp macos_diagnostic_command?("lsof", cmdline),
+    do: String.contains?(cmdline, "-i") or String.contains?(cmdline, "-n")
+
+  defp macos_diagnostic_command?("netstat", cmdline),
+    do: String.contains?(cmdline, "-an") or String.contains?(cmdline, "-anv")
+
+  defp macos_diagnostic_command?("scutil", cmdline),
+    do: String.contains?(cmdline, "--dns") or String.contains?(cmdline, "--proxy")
+
   defp macos_diagnostic_command?("plutil", cmdline), do: String.contains?(cmdline, "-lint")
   defp macos_diagnostic_command?("sw_vers", _cmdline), do: true
   defp macos_diagnostic_command?(_, _), do: false
@@ -1457,11 +1827,14 @@ defmodule TamanduaServer.Alerts do
     rule = detection_name(ctx)
     path = field(ctx, [:process, :path]) || field(ctx, [:process, :image_path])
     parent_path = field(ctx, [:process, :parent_path])
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
 
     core_services_chain? =
       process == "services.exe" and parent == "wininit.exe" and
-        (cmdline == "" or String.ends_with?(cmdline, "\\system32\\services.exe") or cmdline == "services.exe")
+        (cmdline == "" or String.ends_with?(cmdline, "\\system32\\services.exe") or
+           cmdline == "services.exe")
 
     core_svchost_chain? =
       process == "svchost.exe" and parent == "services.exe" and
@@ -1489,13 +1862,25 @@ defmodule TamanduaServer.Alerts do
   defp nvidia_rundll32_rxdiag_fp?(ctx) do
     process_basename(ctx) == "rundll32.exe" and
       parent_basename(ctx) == "nvcontainer.exe" and
-      String.contains?(normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:raw_event, :cmdline])), "rxdiag.dll") and
+      String.contains?(
+        normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:raw_event, :cmdline])),
+        "rxdiag.dll"
+      ) and
       trusted_parent_context?(ctx, ["nvidia", "nvidia corporation"])
   end
 
   defp edge_webview_runonce_cleanup_fp?(ctx) do
-    key = normalize_fp_text(field(ctx, [:registry, :key]) || field(ctx, [:raw_event, :registry_key]) || field(ctx, [:raw_event, :key_path]))
-    data = normalize_fp_text(field(ctx, [:registry, :data]) || field(ctx, [:raw_event, :registry_data]) || field(ctx, [:raw_event, :value_data]))
+    key =
+      normalize_fp_text(
+        field(ctx, [:registry, :key]) || field(ctx, [:raw_event, :registry_key]) ||
+          field(ctx, [:raw_event, :key_path])
+      )
+
+    data =
+      normalize_fp_text(
+        field(ctx, [:registry, :data]) || field(ctx, [:raw_event, :registry_data]) ||
+          field(ctx, [:raw_event, :value_data])
+      )
 
     String.contains?(key, "\\currentversion\\runonce") and
       String.contains?(data, "msedgewebview") and
@@ -1548,11 +1933,18 @@ defmodule TamanduaServer.Alerts do
 
   defp edge_update_etw_patch_fp?(ctx) do
     rule = detection_name(ctx)
-    technique = normalize_fp_text(field(ctx, [:detection, :mitre_technique]) || field(ctx, [:detection, :mitre_techniques]))
+
+    technique =
+      normalize_fp_text(
+        field(ctx, [:detection, :mitre_technique]) || field(ctx, [:detection, :mitre_techniques])
+      )
+
     process = process_basename(ctx)
     parent = parent_basename(ctx)
     path = normalize_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
 
     etw_tamper_rule? =
       String.starts_with?(rule, "etw_") or String.contains?(technique, "t1562.006")
@@ -1560,7 +1952,10 @@ defmodule TamanduaServer.Alerts do
     etw_tamper_rule? and
       process == "microsoftedgeupdate.exe" and
       parent in ["", "svchost.exe", "microsoftedgeupdate.exe"] and
-      String.contains?(path, "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe") and
+      String.contains?(
+        path,
+        "\\program files (x86)\\microsoft\\edgeupdate\\microsoftedgeupdate.exe"
+      ) and
       benign_edge_update_command?(cmdline)
   end
 
@@ -1650,6 +2045,7 @@ defmodule TamanduaServer.Alerts do
 
   defp contextless_service_registry_detection?(ctx) do
     rule = detection_name(ctx)
+
     key =
       normalize_path(
         field(ctx, [:registry, :key]) ||
@@ -1684,7 +2080,9 @@ defmodule TamanduaServer.Alerts do
     process = process_basename(ctx)
     parent = parent_basename(ctx)
     path = normalize_path(field(ctx, [:process, :path]) || field(ctx, [:process, :image_path]))
-    cmdline = normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
+
+    cmdline =
+      normalize_fp_text(field(ctx, [:process, :cmdline]) || field(ctx, [:process, :command_line]))
 
     (rule == "ntdll_write_ntmapviewofsection" or String.starts_with?(rule, "etw_")) and
       process == "ngentask.exe" and
@@ -1701,7 +2099,10 @@ defmodule TamanduaServer.Alerts do
         [ctx.raw_event]
 
     Enum.any?(indicators, fn item ->
-      value = map_get(item, :value) || map_get(item, :remote_ip) || map_get(item, :local_ip) || map_get(item, :ip)
+      value =
+        map_get(item, :value) || map_get(item, :remote_ip) || map_get(item, :local_ip) ||
+          map_get(item, :ip)
+
       normalize_fp_text(value) == "0.0.0.0"
     end)
   end
@@ -1751,8 +2152,15 @@ defmodule TamanduaServer.Alerts do
   end
 
   defp trusted_parent_context?(ctx, expected_signers) do
-    signer = normalize_fp_text(field(ctx, [:process, :parent_signer]) || field(ctx, [:raw_event, :parent_signer]))
-    path = normalize_path(field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path]))
+    signer =
+      normalize_fp_text(
+        field(ctx, [:process, :parent_signer]) || field(ctx, [:raw_event, :parent_signer])
+      )
+
+    path =
+      normalize_path(
+        field(ctx, [:process, :parent_path]) || field(ctx, [:raw_event, :parent_path])
+      )
 
     Enum.any?(expected_signers, fn expected ->
       String.contains?(signer, expected) or String.contains?(path, expected)
@@ -1782,10 +2190,13 @@ defmodule TamanduaServer.Alerts do
             String.contains?(normalized, "/installsource core")))
   end
 
-  defp same_non_nil?(left, right), do: not is_nil(left) and not is_nil(right) and to_string(left) == to_string(right)
+  defp same_non_nil?(left, right),
+    do: not is_nil(left) and not is_nil(right) and to_string(left) == to_string(right)
+
   defp blank?(value), do: value in [nil, "", []]
 
   defp basename(nil), do: ""
+
   defp basename(value) do
     value
     |> to_string()
@@ -1853,17 +2264,20 @@ defmodule TamanduaServer.Alerts do
   # Insert a new alert row when no duplicate was found.
   defp do_create_new_alert(attrs) do
     alias TamanduaServer.Alerts.Deduplication
+    alias TamanduaServer.Alerts.IncidentGrouper
 
     # Ensure dedup_key is set (Deduplication.check_and_deduplicate sets it)
     dedup_key = attrs[:dedup_key] || compute_dedup_key(attrs)
     attrs = Map.put(attrs, :dedup_key, dedup_key)
+    attrs = IncidentGrouper.assign_incident_metadata(attrs)
 
     now = DateTime.utc_now()
     attrs = Map.put(attrs, :last_seen_at, now)
 
-    result = %Alert{}
-    |> Alert.changeset(attrs)
-    |> Repo.insert()
+    result =
+      %Alert{}
+      |> Alert.changeset(attrs)
+      |> Repo.insert()
 
     # Trigger playbooks and broadcasts on successful alert creation
     case result do
@@ -1910,22 +2324,53 @@ defmodule TamanduaServer.Alerts do
         end)
 
         # Schedule async threat attribution for high/critical alerts.
-        # This calls Attribution.attribute_alert/1 in a background task
+        # This calls the organization-scoped Attribution.attribute_alert/2 in a background task
         # and updates the alert if a match is found. Never blocks alert
         # creation.
         maybe_schedule_attribution(enriched_alert)
 
         # Schedule async cross-agent correlation
+        maybe_request_investigation_enrichment(enriched_alert)
         # This correlates the alert with other alerts to detect attack campaigns
         maybe_schedule_correlation(enriched_alert)
 
         maybe_submit_on_chain(enriched_alert)
+        maybe_enqueue_shadow_investigation(enriched_alert)
 
         {:ok, enriched_alert}
 
       error ->
         error
     end
+  end
+
+  # Governed, observation-only AI investigation admission. The alert is already
+  # durable at this boundary; admission failure is explicit but never changes
+  # the successful alert creation result.
+  defp maybe_enqueue_shadow_investigation(%Alert{} = alert) do
+    alias TamanduaServer.Investigations.ShadowOrchestrator
+
+    case ShadowOrchestrator.enqueue_from_alert_creation(alert) do
+      {:ok, _run} -> :ok
+      {:disabled, _reason} -> :ok
+      {:error, _reason} -> :ok
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[Alerts] Shadow investigation trigger degraded for alert #{alert.id}: " <>
+          Exception.message(error)
+      )
+
+      :ok
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "[Alerts] Shadow investigation trigger unavailable for alert #{alert.id}: " <>
+          inspect(reason)
+      )
+
+      :ok
   end
 
   # Apply alert enrichers based on alert type and context.
@@ -1947,11 +2392,17 @@ defmodule TamanduaServer.Alerts do
     end
   rescue
     e ->
-      Logger.warning("[Alerts] Attestation scheduling failed for #{alert.id}: #{Exception.message(e)}")
+      Logger.warning(
+        "[Alerts] Attestation scheduling failed for #{alert.id}: #{Exception.message(e)}"
+      )
+
       :ok
   catch
     :exit, reason ->
-      Logger.warning("[Alerts] Attestation scheduling unavailable for #{alert.id}: #{inspect(reason)}")
+      Logger.warning(
+        "[Alerts] Attestation scheduling unavailable for #{alert.id}: #{inspect(reason)}"
+      )
+
       :ok
   end
 
@@ -1970,13 +2421,17 @@ defmodule TamanduaServer.Alerts do
         Logger.debug("[Alerts] Alert #{alert.id} already attested, skipping")
 
       {:error, :severity_not_eligible} ->
-        Logger.debug("[Alerts] Alert #{alert.id} not eligible for attestation (severity: #{alert.severity})")
+        Logger.debug(
+          "[Alerts] Alert #{alert.id} not eligible for attestation (severity: #{alert.severity})"
+        )
 
       {:error, :solana_disabled} ->
         Logger.debug("[Alerts] Solana disabled, skipping attestation for alert #{alert.id}")
 
       {:error, reason} ->
-        Logger.warning("[Alerts] Failed to enqueue attestation for #{alert.id}: #{inspect(reason)}")
+        Logger.warning(
+          "[Alerts] Failed to enqueue attestation for #{alert.id}: #{inspect(reason)}"
+        )
     end
 
     :ok
@@ -2007,11 +2462,12 @@ defmodule TamanduaServer.Alerts do
     evidence = alert.evidence || %{}
     raw_event = alert.raw_event || %{}
 
-    container_id = enrichment["container_id"] ||
-                   get_in(evidence, [:process, :container_id]) ||
-                   get_in(evidence, ["process", "container_id"]) ||
-                   raw_event["container_id"] ||
-                   raw_event[:container_id]
+    container_id =
+      enrichment["container_id"] ||
+        get_in(evidence, [:process, :container_id]) ||
+        get_in(evidence, ["process", "container_id"]) ||
+        raw_event["container_id"] ||
+        raw_event[:container_id]
 
     if container_id && container_id != "" do
       try do
@@ -2051,18 +2507,19 @@ defmodule TamanduaServer.Alerts do
     payload = event[:payload] || event["payload"] || %{}
     event_id = event[:event_id] || event["event_id"]
 
-    attrs = attrs
-    |> Map.put(:evidence, evidence)
-    |> Map.put(:detection_metadata, detection_metadata)
-    |> Map.put(:raw_event, payload)
-    |> Map.put(:source_event_id, event_id)
-    |> Map.update(:event_ids, List.wrap(event_id), fn existing ->
-      if is_list(existing) and existing != [] do
-        Enum.uniq(List.wrap(event_id) ++ existing)
-      else
-        List.wrap(event_id)
-      end
-    end)
+    attrs =
+      attrs
+      |> Map.put(:evidence, evidence)
+      |> Map.put(:detection_metadata, detection_metadata)
+      |> Map.put(:raw_event, payload)
+      |> Map.put(:source_event_id, event_id)
+      |> Map.update(:event_ids, List.wrap(event_id), fn existing ->
+        if is_list(existing) and existing != [] do
+          Enum.uniq(List.wrap(event_id) ++ existing)
+        else
+          List.wrap(event_id)
+        end
+      end)
 
     create_alert(attrs)
   end
@@ -2090,19 +2547,20 @@ defmodule TamanduaServer.Alerts do
       event = attrs[:event] || attrs["event"]
       event_id = event[:event_id] || event["event_id"]
 
-      attrs = if event_id do
-        attrs
-        |> Map.put(:source_event_id, event_id)
-        |> Map.update(:event_ids, [event_id], fn existing ->
-          if is_list(existing) and existing != [] do
-            Enum.uniq([event_id | existing])
-          else
-            [event_id]
-          end
-        end)
-      else
-        attrs
-      end
+      attrs =
+        if event_id do
+          attrs
+          |> Map.put(:source_event_id, event_id)
+          |> Map.update(:event_ids, [event_id], fn existing ->
+            if is_list(existing) and existing != [] do
+              Enum.uniq([event_id | existing])
+            else
+              [event_id]
+            end
+          end)
+        else
+          attrs
+        end
 
       attrs
     else
@@ -2122,9 +2580,14 @@ defmodule TamanduaServer.Alerts do
       evidence = Evidence.extract(event, detections)
       detection_metadata = Evidence.extract_detection_info(detections)
 
+      existing_metadata = attrs[:detection_metadata] || attrs["detection_metadata"] || %{}
+
       attrs
       |> Map.put(:evidence, evidence)
-      |> Map.put(:detection_metadata, detection_metadata)
+      |> Map.put(
+        :detection_metadata,
+        Map.merge(ensure_map(existing_metadata), detection_metadata)
+      )
       |> Map.delete(:event)
       |> Map.delete("event")
       |> Map.delete(:detections)
@@ -2132,6 +2595,326 @@ defmodule TamanduaServer.Alerts do
     else
       attrs
     end
+  end
+
+  defp maybe_normalize_endpoint_evidence(attrs) do
+    evidence = attrs |> alert_attr(:evidence) |> ensure_map()
+    raw_event = attrs |> alert_attr(:raw_event) |> ensure_map()
+
+    if evidence == %{} and raw_event == %{} do
+      attrs
+    else
+      process = endpoint_process_context(evidence, raw_event)
+      binary = endpoint_binary_context(evidence, raw_event, process)
+      network = endpoint_network_context(evidence, raw_event)
+
+      evidence =
+        evidence
+        |> put_nonempty_evidence(:process, process)
+        |> put_nonempty_evidence(:binary, binary)
+        |> put_nonempty_evidence(
+          :file,
+          Map.merge(binary, map_get(evidence, :file) |> ensure_map())
+        )
+        |> put_network_evidence(endpoint_network_contexts(evidence, raw_event, network))
+        |> put_endpoint_capability_context(raw_event)
+        |> put_response_delivery_audit(raw_event)
+
+      attrs
+      |> Map.put(:evidence, evidence)
+      |> maybe_put_process_chain(process, evidence, raw_event)
+    end
+  end
+
+  defp endpoint_process_context(evidence, raw_event) do
+    existing = map_get(evidence, :process) |> ensure_map()
+
+    audit_process =
+      raw_event |> endpoint_audit_target_context() |> map_get(:process) |> ensure_map()
+
+    %{
+      pid:
+        raw_value(raw_event, [:pid, :process_id, :process_pid, :source_pid, :target_pid]) ||
+          map_get(audit_process, :pid) || map_get(audit_process, :process_id),
+      ppid:
+        raw_value(raw_event, [:ppid, :parent_pid]) || map_get(audit_process, :ppid) ||
+          map_get(audit_process, :parent_pid),
+      name:
+        raw_value(raw_event, [:process_name, :name, :source_process, :target_process_name]) ||
+          map_get(audit_process, :process_name) || map_get(audit_process, :name),
+      cmdline:
+        raw_value(raw_event, [:cmdline, :command_line, :process_command_line]) ||
+          map_get(audit_process, :cmdline) || map_get(audit_process, :command_line),
+      image_path: raw_value(raw_event, [:image_path, :process_path, :path, :file_path]),
+      path: raw_value(raw_event, [:process_path, :image_path, :path]),
+      sha256: raw_value(raw_event, [:sha256, :process_sha256, :file_sha256]),
+      user: raw_value(raw_event, [:user, :username, :account_name]),
+      parent_name:
+        raw_value(raw_event, [:parent_name, :parent_process, :parent_process_name]) ||
+          map_get(audit_process, :parent_process_name),
+      parent_path: raw_value(raw_event, [:parent_path, :parent_image_path]),
+      parent_cmdline: raw_value(raw_event, [:parent_cmdline, :parent_command_line]),
+      signer: raw_value(raw_event, [:signer, :signature_subject]),
+      is_signed: raw_value(raw_event, [:is_signed, :signed])
+    }
+    |> reject_blank_values()
+    |> Map.merge(existing)
+  end
+
+  defp endpoint_binary_context(evidence, raw_event, process) do
+    existing_binary = map_get(evidence, :binary) |> ensure_map()
+    existing_file = map_get(evidence, :file) |> ensure_map()
+
+    audit_binary =
+      raw_event |> endpoint_audit_target_context() |> map_get(:binary) |> ensure_map()
+
+    %{
+      path:
+        raw_value(raw_event, [:file_path, :path, :image_path, :process_path]) ||
+          map_get(audit_binary, :file_path) || map_get(audit_binary, :path) ||
+          map_get(process, :image_path),
+      sha256:
+        raw_value(raw_event, [:sha256, :file_sha256, :process_sha256]) ||
+          map_get(audit_binary, :sha256) || map_get(audit_binary, :file_sha256) ||
+          map_get(process, :sha256),
+      sha1: raw_value(raw_event, [:sha1, :file_sha1]) || map_get(audit_binary, :sha1),
+      md5: raw_value(raw_event, [:md5, :file_md5]) || map_get(audit_binary, :md5),
+      size: raw_value(raw_event, [:file_size, :size]),
+      entropy: raw_value(raw_event, [:entropy]),
+      signer:
+        raw_value(raw_event, [:signer, :signature_subject]) || map_get(audit_binary, :signer),
+      is_signed: raw_value(raw_event, [:is_signed, :signed]) || map_get(audit_binary, :is_signed)
+    }
+    |> reject_blank_values()
+    |> Map.merge(existing_file)
+    |> Map.merge(existing_binary)
+  end
+
+  defp endpoint_network_context(evidence, raw_event) do
+    existing = first_map(List.wrap(map_get(evidence, :network)))
+
+    audit_network =
+      raw_event |> endpoint_audit_target_context() |> map_get(:network) |> ensure_map()
+
+    %{
+      remote_ip:
+        raw_value(raw_event, [:remote_ip, :dst_ip, :destination_ip, :resolved_ip]) ||
+          map_get(audit_network, :remote_ip) || map_get(audit_network, :dst_ip),
+      remote_port:
+        raw_value(raw_event, [:remote_port, :dst_port, :destination_port]) ||
+          map_get(audit_network, :remote_port) || map_get(audit_network, :dst_port),
+      local_ip: raw_value(raw_event, [:local_ip, :src_ip, :source_ip]),
+      local_port: raw_value(raw_event, [:local_port, :src_port, :source_port]),
+      protocol:
+        raw_value(raw_event, [:protocol, :network_protocol]) || map_get(audit_network, :protocol),
+      domain:
+        raw_value(raw_event, [:domain, :query, :query_name, :hostname]) ||
+          map_get(audit_network, :domain),
+      direction: raw_value(raw_event, [:direction]) || map_get(audit_network, :direction),
+      sni:
+        raw_value(raw_event, [:sni, :tls_sni]) || map_get(audit_network, :sni) ||
+          map_get(audit_network, :tls_sni),
+      ja3: raw_value(raw_event, [:ja3]) || map_get(audit_network, :ja3),
+      ja3s: raw_value(raw_event, [:ja3s]) || map_get(audit_network, :ja3s),
+      process_pid: raw_value(raw_event, [:pid, :process_id, :process_pid])
+    }
+    |> reject_blank_values()
+    |> Map.merge(existing)
+  end
+
+  defp endpoint_network_contexts(evidence, raw_event, primary) do
+    existing = List.wrap(map_get(evidence, :network)) |> Enum.filter(&is_map/1)
+
+    extra =
+      [
+        raw_value(raw_event, [:network_pivots, :connections, :network_connections]),
+        raw_event |> endpoint_audit_target_context() |> map_get(:network_pivots)
+      ]
+      |> Enum.flat_map(&List.wrap/1)
+      |> Enum.filter(&is_map/1)
+
+    [primary | existing ++ extra]
+    |> Enum.map(&reject_blank_values/1)
+    |> Enum.reject(&(&1 == %{}))
+    |> Enum.uniq_by(fn item ->
+      {map_get(item, :remote_ip), map_get(item, :remote_port), map_get(item, :domain),
+       map_get(item, :protocol)}
+    end)
+  end
+
+  defp put_nonempty_evidence(evidence, key, value) do
+    if value in [%{}, nil] do
+      evidence
+    else
+      Map.put(evidence, key, value)
+    end
+  end
+
+  defp put_network_evidence(evidence, networks) when is_list(networks) do
+    if networks == [] do
+      evidence
+    else
+      Map.put(evidence, :network, networks)
+    end
+  end
+
+  defp put_endpoint_capability_context(evidence, raw_event) do
+    audit_capability =
+      raw_event
+      |> map_get(:response_audit)
+      |> ensure_map()
+      |> map_get(:capability)
+      |> ensure_map()
+
+    capability =
+      %{
+        degraded: raw_value(raw_event, [:degraded]) || map_get(audit_capability, :degraded),
+        degraded_reason:
+          raw_value(raw_event, [:degraded_reason, :capability_degraded_reason]) ||
+            map_get(audit_capability, :degraded_reason),
+        unsupported:
+          raw_value(raw_event, [:unsupported]) || map_get(audit_capability, :unsupported),
+        source: raw_value(raw_event, [:source, :collector]),
+        platform:
+          raw_value(raw_event, [:platform, :os_type]) || map_get(audit_capability, :platform),
+        arch: map_get(audit_capability, :arch),
+        status: map_get(audit_capability, :status)
+      }
+      |> reject_blank_values()
+
+    if capability == %{} do
+      evidence
+    else
+      Map.put(evidence, :endpoint_capability, capability)
+    end
+  end
+
+  defp put_response_delivery_audit(evidence, raw_event) do
+    audit = raw_event |> map_get(:response_audit) |> ensure_map()
+    delivery = map_get(audit, :delivery_audit) |> ensure_map()
+
+    if audit == %{} and delivery == %{} do
+      evidence
+    else
+      normalized =
+        %{
+          command_id: map_get(audit, :command_id) || map_get(delivery, :command_id),
+          command_type: map_get(audit, :command_type) || map_get(delivery, :command_type),
+          result_status: map_get(audit, :result_status) || map_get(delivery, :result_status),
+          received_at_ms: map_get(delivery, :received_at_ms),
+          completed_at_ms: map_get(delivery, :completed_at_ms),
+          schema_version:
+            map_get(delivery, :schema_version) || "tamandua.command_delivery_audit/v1"
+        }
+        |> reject_blank_values()
+
+      Map.put(evidence, :response_delivery_audit, normalized)
+    end
+  end
+
+  defp maybe_put_process_chain(attrs, process, evidence, raw_event) do
+    existing = alert_attr(attrs, :process_chain)
+
+    if is_list(existing) and existing != [] do
+      attrs
+    else
+      chain = endpoint_process_chain(process, evidence, raw_event)
+
+      if chain == [] do
+        attrs
+      else
+        Map.put(attrs, :process_chain, chain)
+      end
+    end
+  end
+
+  defp endpoint_process_chain(process, evidence, raw_event) do
+    supplied =
+      [
+        map_get(evidence, :process_tree),
+        map_get(evidence, :process_chain),
+        raw_value(raw_event, [:process_tree, :process_chain]),
+        raw_event |> endpoint_audit_target_context() |> map_get(:process_tree)
+      ]
+      |> Enum.find_value(fn value ->
+        chain =
+          value
+          |> List.wrap()
+          |> Enum.filter(&is_map/1)
+          |> Enum.map(&normalize_process_chain_entry/1)
+          |> Enum.reject(&(&1 == %{}))
+
+        if chain == [], do: nil, else: chain
+      end)
+
+    if supplied do
+      supplied
+    else
+      synthetic_endpoint_process_chain(process)
+    end
+  end
+
+  defp synthetic_endpoint_process_chain(process) do
+    parent =
+      %{
+        pid: map_get(process, :ppid),
+        name: map_get(process, :parent_name),
+        path: map_get(process, :parent_path),
+        cmdline: map_get(process, :parent_cmdline)
+      }
+      |> reject_blank_values()
+
+    current =
+      %{
+        pid: map_get(process, :pid),
+        name: map_get(process, :name),
+        path: map_get(process, :image_path) || map_get(process, :path),
+        cmdline: map_get(process, :cmdline),
+        sha256: map_get(process, :sha256)
+      }
+      |> reject_blank_values()
+
+    [parent, current]
+    |> Enum.reject(&(&1 == %{}))
+  end
+
+  defp normalize_process_chain_entry(entry) do
+    %{
+      pid: map_get(entry, :pid) || map_get(entry, :process_id),
+      ppid: map_get(entry, :ppid) || map_get(entry, :parent_pid),
+      name: map_get(entry, :name) || map_get(entry, :process_name),
+      path: map_get(entry, :path) || map_get(entry, :image_path) || map_get(entry, :process_path),
+      cmdline: map_get(entry, :cmdline) || map_get(entry, :command_line),
+      sha256:
+        map_get(entry, :sha256) || map_get(entry, :process_sha256) || map_get(entry, :file_sha256),
+      signer: map_get(entry, :signer) || map_get(entry, :signature_subject),
+      is_signed: map_get(entry, :is_signed) || map_get(entry, :signed)
+    }
+    |> reject_blank_values()
+  end
+
+  defp endpoint_audit_target_context(raw_event) do
+    raw_event
+    |> map_get(:response_audit)
+    |> ensure_map()
+    |> map_get(:target_context)
+    |> ensure_map()
+  end
+
+  defp raw_value(raw_event, keys) do
+    Enum.find_value(keys, fn key ->
+      map_get(raw_event, key) ||
+        get_in(raw_event, ["payload", Atom.to_string(key)]) ||
+        get_in(raw_event, [:payload, key]) ||
+        get_in(raw_event, ["metadata", Atom.to_string(key)]) ||
+        get_in(raw_event, [:metadata, key])
+    end)
+  end
+
+  defp reject_blank_values(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> blank?(value) or value == %{} end)
+    |> Map.new()
   end
 
   # Set raw_event from event payload if not already set.
@@ -2180,16 +2963,793 @@ defmodule TamanduaServer.Alerts do
 
   defp put_event_section(raw_event, _key, _value), do: raw_event
 
+  defp maybe_attach_investigation_enrichment_plan(attrs) do
+    if strong_alert?(attrs) do
+      evidence = attrs |> alert_attr(:evidence) |> ensure_map()
+      raw_event = attrs |> alert_attr(:raw_event) |> ensure_map()
+      process = map_get(evidence, :process) |> ensure_map()
+      pid = alert_context_pid(process, raw_event)
+      artifact_paths = investigation_artifact_paths(process, raw_event)
+      missing = missing_investigation_context(attrs, evidence, raw_event, process)
+
+      if missing == [] do
+        attrs
+      else
+        plan = %{
+          "needed" => true,
+          "status" => "planned",
+          "reason" => "strong_alert_missing_actionable_context",
+          "missing_context" => missing,
+          "pid" => pid,
+          "memory_dump" => deep_investigation_collection?(attrs),
+          "artifact_paths" => artifact_paths,
+          "requested_actions" =>
+            investigation_enrichment_actions(
+              pid,
+              artifact_paths,
+              deep_investigation_collection?(attrs)
+            ),
+          "generated_at" =>
+            DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+
+        Map.update(
+          attrs,
+          :detection_metadata,
+          %{"investigation_enrichment" => plan},
+          fn metadata ->
+            metadata
+            |> ensure_map()
+            |> Map.put("investigation_enrichment", plan)
+          end
+        )
+      end
+    else
+      attrs
+    end
+  end
+
+  defp maybe_request_investigation_enrichment(%Alert{} = alert) do
+    plan = get_in(alert.detection_metadata || %{}, ["investigation_enrichment"])
+
+    if is_map(plan) and plan["needed"] == true and plan["status"] == "planned" and alert.agent_id do
+      spawn(fn ->
+        request_investigation_enrichment(alert, plan)
+      end)
+    end
+
+    :ok
+  end
+
+  defp maybe_request_investigation_enrichment(_alert), do: :ok
+
+  defp request_investigation_enrichment(%Alert{} = alert, plan) do
+    if mobile_investigation_target?(alert) do
+      request_mobile_investigation_enrichment(alert, plan)
+    else
+      request_desktop_investigation_enrichment(alert, plan)
+    end
+  end
+
+  defp request_mobile_investigation_enrichment(%Alert{} = alert, plan) do
+    platform = investigation_target_platform(alert)
+    recommended_commands = mobile_investigation_commands(alert)
+
+    case mobile_device_v2_for_alert(alert) do
+      %DeviceV2{} = device ->
+        command_results =
+          recommended_commands
+          |> Enum.map(fn command_type ->
+            queue_mobile_investigation_command(
+              alert,
+              device,
+              command_type,
+              mobile_investigation_payload(alert, plan, device)
+            )
+          end)
+
+        collection_result = %{
+          "runtime" => "mobile_mdm",
+          "command_type" => "mobile_auto_investigation",
+          "status" => "mobile_requested",
+          "platform" => platform || device.platform || "mobile",
+          "device_id" => device.id,
+          "mobile_device_id" => device.device_id,
+          "message" => "Mobile investigation commands were queued through mdm_commands.",
+          "recommended_mobile_commands" => recommended_commands
+        }
+
+        update_investigation_enrichment_status(
+          alert,
+          plan,
+          collection_result,
+          command_results,
+          []
+        )
+
+      nil ->
+        degraded_result = %{
+          "runtime" => "mobile_mdm",
+          "command_type" => "mobile_auto_investigation",
+          "status" => "capability_degraded",
+          "reason" => "mobile_device_not_resolved",
+          "message" =>
+            "Desktop agent_commands were not queued because this alert targets a mobile endpoint, but no DeviceV2 row could be resolved for MDM command dispatch.",
+          "platform" => platform || "mobile",
+          "recommended_mobile_commands" => recommended_commands
+        }
+
+        update_investigation_enrichment_status(alert, plan, degraded_result, [], [])
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "[Alerts] Mobile auto investigation enrichment failed for alert #{alert.id}: #{Exception.message(e)}"
+      )
+
+      update_investigation_enrichment_status(alert, plan, {:error, Exception.message(e)}, [], [])
+  catch
+    kind, reason ->
+      Logger.warning(
+        "[Alerts] Mobile auto investigation enrichment failed for alert #{alert.id}: #{inspect({kind, reason})}"
+      )
+
+      update_investigation_enrichment_status(
+        alert,
+        plan,
+        {:error, inspect({kind, reason})},
+        [],
+        []
+      )
+  end
+
+  defp request_desktop_investigation_enrichment(%Alert{} = alert, plan) do
+    pid = plan["pid"]
+    platform = investigation_target_platform(alert)
+    memory_dump = plan["memory_dump"] == true and platform_supports_deep_memory?(platform)
+
+    skipped_capabilities =
+      skipped_desktop_investigation_capabilities(platform, pid, plan["memory_dump"] == true)
+
+    collection_params = %{
+      type: "alert_triage",
+      alert_id: alert.id,
+      pid: pid,
+      memory_dump: memory_dump,
+      process_list: true,
+      network_connections: true,
+      registry_hives: false,
+      event_logs: true,
+      prefetch: false,
+      browser_history: false,
+      requested_by: "auto_investigation"
+    }
+
+    collection_result =
+      queue_investigation_command(alert, "collect_forensics", collection_params, priority: 9)
+
+    command_results =
+      [
+        {"process_list", %{"alert_id" => alert.id}},
+        {"process_tree_list",
+         %{"alert_id" => alert.id, "pid" => pid, "include_security_checks" => true}},
+        {"network_connections", %{"alert_id" => alert.id, "pid" => pid}},
+        {"dns_cache", %{"alert_id" => alert.id}}
+      ]
+      |> maybe_add_handles_command(alert.id, pid, platform)
+      |> maybe_add_deep_memory_commands(alert.id, pid, memory_dump, platform)
+      |> Enum.map(fn {command_type, payload} ->
+        queue_investigation_command(alert, command_type, payload, priority: 8)
+      end)
+
+    artifact_results =
+      plan
+      |> Map.get("artifact_paths", [])
+      |> List.wrap()
+      |> Enum.take(3)
+      |> Enum.map(fn path ->
+        payload = %{"alert_id" => alert.id, "path" => path, "artifact_type" => "process_image"}
+        queue_investigation_command(alert, "collect_artifact", payload, priority: 7)
+      end)
+
+    collection_result =
+      collection_result
+      |> Map.put("platform", platform || "unknown")
+      |> Map.put("skipped_capabilities", skipped_capabilities)
+
+    update_investigation_enrichment_status(
+      alert,
+      plan,
+      collection_result,
+      command_results,
+      artifact_results
+    )
+  rescue
+    e ->
+      Logger.warning(
+        "[Alerts] Auto investigation enrichment failed for alert #{alert.id}: #{Exception.message(e)}"
+      )
+
+      update_investigation_enrichment_status(alert, plan, {:error, Exception.message(e)}, [], [])
+  catch
+    kind, reason ->
+      Logger.warning(
+        "[Alerts] Auto investigation enrichment failed for alert #{alert.id}: #{inspect({kind, reason})}"
+      )
+
+      update_investigation_enrichment_status(
+        alert,
+        plan,
+        {:error, inspect({kind, reason})},
+        [],
+        []
+      )
+  end
+
+  defp mobile_investigation_target?(%Alert{} = alert) do
+    platform = investigation_target_platform(alert)
+
+    source =
+      get_in(alert.detection_metadata || %{}, ["source"]) |> to_string() |> String.downcase()
+
+    category =
+      get_in(alert.detection_metadata || %{}, ["category"]) |> to_string() |> String.downcase()
+
+    platform in ["android", "ios"] or source in ["mobile", "app_guard", "tamandua_mobile"] or
+      String.starts_with?(category, "mobile") or mobile_agent_record?(alert.agent_id)
+  end
+
+  defp investigation_target_platform(%Alert{} = alert) do
+    metadata = alert.detection_metadata || %{}
+    evidence = alert.evidence || %{}
+    raw_event = alert.raw_event || %{}
+
+    [
+      metadata["platform"],
+      metadata[:platform],
+      get_in(evidence, ["mobile", "platform"]),
+      get_in(evidence, [:mobile, :platform]),
+      get_in(raw_event, ["payload", "platform"]),
+      get_in(raw_event, [:payload, :platform]),
+      agent_os_type(alert.agent_id)
+    ]
+    |> Enum.find_value(fn
+      value when is_binary(value) and value != "" -> value |> String.trim() |> String.downcase()
+      _ -> nil
+    end)
+  end
+
+  defp mobile_agent_record?(nil), do: false
+
+  defp mobile_agent_record?(agent_id) do
+    case Repo.get(Agent, agent_id) do
+      %Agent{os_type: os_type, config: config, tags: tags} ->
+        os = os_type |> to_string() |> String.downcase()
+        source = (config || %{}) |> map_get(:source) |> to_string() |> String.downcase()
+
+        os in ["android", "ios"] or source == "tamandua_mobile" or
+          "mobile_endpoint" in (tags || [])
+
+      _ ->
+        false
+    end
+  end
+
+  defp agent_os_type(nil), do: nil
+
+  defp agent_os_type(agent_id) do
+    case Repo.get(Agent, agent_id) do
+      %Agent{os_type: os_type} -> os_type
+      _ -> nil
+    end
+  end
+
+  defp mobile_investigation_commands(%Alert{} = alert) do
+    base = ["collect_diagnostics", "dns_status", "network_status", "sync_app_inventory"]
+    metadata = alert.detection_metadata || %{}
+    evidence = alert.evidence || %{}
+    raw_event = alert.raw_event || %{}
+
+    base
+    |> maybe_append_mobile_command(
+      "list_network_flows",
+      mobile_dns_context?(metadata, evidence, raw_event)
+    )
+    |> maybe_append_mobile_command(
+      "inspect_package",
+      mobile_app_context?(metadata, evidence, raw_event)
+    )
+    |> Enum.uniq()
+  end
+
+  defp maybe_append_mobile_command(commands, command, true), do: commands ++ [command]
+  defp maybe_append_mobile_command(commands, _command, _condition), do: commands
+
+  defp mobile_dns_context?(metadata, evidence, raw_event) do
+    map_get(evidence, :dns) ||
+      map_get(evidence, :network) ||
+      metadata["event_type"] in [
+        "dns_query",
+        "network_exfiltration_suspected",
+        "malicious_dns_query"
+      ] ||
+      present_string?(
+        first_present_string([
+          metadata["domain"],
+          metadata["query"],
+          metadata["query_name"],
+          get_in(raw_event, ["payload", "domain"]),
+          get_in(raw_event, ["payload", "dns", "query"]),
+          get_in(raw_event, ["payload", "network", "domain"])
+        ])
+      )
+  end
+
+  defp mobile_app_context?(metadata, evidence, raw_event) do
+    present_string?(
+      first_present_string([
+        metadata["app_bundle_id"],
+        metadata["package_name"],
+        metadata["app_name"],
+        get_in(evidence, ["app", "package_or_bundle_id"]),
+        get_in(evidence, ["app", "bundle_id"]),
+        get_in(raw_event, ["payload", "app", "package_or_bundle_id"]),
+        get_in(raw_event, ["payload", "app", "bundle_id"]),
+        get_in(raw_event, ["payload", "app_name"])
+      ])
+    )
+  end
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
+
+  defp mobile_device_v2_for_alert(%Alert{} = alert) do
+    organization_id = alert.organization_id
+    agent = if alert.agent_id, do: Repo.get(Agent, alert.agent_id), else: nil
+
+    candidates =
+      [
+        get_in(alert.detection_metadata || %{}, ["mobile_device_v2_id"]),
+        get_in(alert.detection_metadata || %{}, ["mobile_device_id"]),
+        get_in(alert.detection_metadata || %{}, ["device_id"]),
+        get_in(alert.evidence || %{}, ["mobile", "device_id"]),
+        get_in(alert.evidence || %{}, [:mobile, :device_id]),
+        get_in(alert.evidence || %{}, ["device", "device_id"]),
+        get_in(alert.raw_event || %{}, ["payload", "device_id"]),
+        get_in(alert.raw_event || %{}, ["payload", "device", "device_id"]),
+        agent && get_in(agent.config || %{}, ["mobile_device_v2_id"]),
+        agent && get_in(agent.config || %{}, ["mobile_device_external_id"]),
+        agent && agent.machine_id
+      ]
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+      |> Enum.map(&String.trim/1)
+      |> Enum.uniq()
+
+    Enum.find_value(candidates, fn candidate ->
+      find_device_v2_by_candidate(organization_id, candidate)
+    end)
+  end
+
+  defp find_device_v2_by_candidate(nil, _candidate), do: nil
+
+  defp find_device_v2_by_candidate(organization_id, candidate) do
+    by_external =
+      DeviceV2
+      |> where([d], d.organization_id == ^organization_id and d.device_id == ^candidate)
+      |> Repo.one()
+
+    by_external || find_device_v2_by_id(organization_id, candidate)
+  end
+
+  defp find_device_v2_by_id(organization_id, candidate) do
+    case Ecto.UUID.cast(candidate) do
+      {:ok, uuid} ->
+        DeviceV2
+        |> where([d], d.organization_id == ^organization_id and d.id == ^uuid)
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
+  end
+
+  defp mobile_investigation_payload(%Alert{} = alert, plan, %DeviceV2{} = device) do
+    metadata = alert.detection_metadata || %{}
+    evidence = alert.evidence || %{}
+
+    %{
+      "alert_id" => alert.id,
+      "reason" => "auto_investigation",
+      "severity" => alert.severity,
+      "threat_score" => alert.threat_score,
+      "platform" => device.platform || investigation_target_platform(alert),
+      "agent_id" => alert.agent_id,
+      "device_id" => device.id,
+      "mobile_device_id" => device.device_id,
+      "pid" => plan["pid"],
+      "missing_context" => plan["missing_context"] || [],
+      "domain" =>
+        first_present_string([
+          get_in(evidence, ["dns", "query"]),
+          get_in(evidence, [:dns, :query]),
+          get_in(evidence, ["network", "domain"]),
+          metadata["domain"],
+          metadata["query"],
+          metadata["query_name"]
+        ]),
+      "package_or_bundle_id" =>
+        first_present_string([
+          metadata["app_bundle_id"],
+          metadata["package_name"],
+          get_in(evidence, ["app", "package_or_bundle_id"]),
+          get_in(evidence, ["app", "bundle_id"]),
+          get_in(alert.raw_event || %{}, ["payload", "app", "package_or_bundle_id"])
+        ]),
+      "requested_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    }
+    |> Enum.reject(fn {_key, value} -> value in [nil, "", []] end)
+    |> Map.new()
+  end
+
+  defp first_present_string(values) do
+    values
+    |> List.wrap()
+    |> Enum.find_value(fn
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> nil
+    end)
+  end
+
+  defp queue_mobile_investigation_command(
+         %Alert{} = alert,
+         %DeviceV2{} = device,
+         command_type,
+         payload
+       ) do
+    case existing_mobile_investigation_command(alert, device, command_type) do
+      %MDMCommand{} = command ->
+        mobile_command_request_result(command_type, command, "existing")
+
+      nil ->
+        attrs = %{
+          "organization_id" => alert.organization_id,
+          "device_id" => device.id,
+          "command_type" => command_type,
+          "status" => "pending",
+          "payload" => payload,
+          "requested_by" => "auto_investigation"
+        }
+
+        case %MDMCommand{} |> MDMCommand.changeset(attrs) |> Repo.insert() do
+          {:ok, command} ->
+            mobile_command_request_result(command_type, command, "queued")
+
+          {:error, reason} ->
+            %{
+              "runtime" => "mobile_mdm",
+              "command_type" => command_type,
+              "status" => "queue_failed",
+              "error" => inspect(reason)
+            }
+        end
+    end
+  end
+
+  defp existing_mobile_investigation_command(%Alert{} = alert, %DeviceV2{} = device, command_type) do
+    MDMCommand
+    |> where([c], c.organization_id == ^alert.organization_id)
+    |> where([c], c.device_id == ^device.id)
+    |> where([c], c.command_type == ^command_type)
+    |> order_by([c], desc: c.inserted_at)
+    |> limit(100)
+    |> Repo.all()
+    |> Enum.find(fn command ->
+      get_in(command.payload || %{}, ["alert_id"]) == alert.id and
+        command.requested_by == "auto_investigation"
+    end)
+  end
+
+  defp mobile_command_request_result(command_type, %MDMCommand{} = command, status) do
+    %{
+      "runtime" => "mobile_mdm",
+      "command_type" => command_type,
+      "command_id" => command.id,
+      "device_id" => command.device_id,
+      "status" => status,
+      "queued_status" => command.status
+    }
+  end
+
+  defp maybe_add_handles_command(commands, _alert_id, nil, _platform), do: commands
+
+  defp maybe_add_handles_command(commands, _alert_id, _pid, platform)
+       when platform not in ["linux"],
+       do: commands
+
+  defp maybe_add_handles_command(commands, alert_id, pid, _platform) do
+    commands ++ [{"process_list_handles", %{"alert_id" => alert_id, "pid" => pid}}]
+  end
+
+  defp maybe_add_deep_memory_commands(commands, _alert_id, _pid, false, _platform), do: commands
+  defp maybe_add_deep_memory_commands(commands, _alert_id, nil, true, _platform), do: commands
+
+  defp maybe_add_deep_memory_commands(commands, alert_id, pid, true, platform) do
+    commands
+    |> maybe_add_linux_module_command(alert_id, pid, platform)
+    |> Kernel.++([
+      {"memory_scan", %{"alert_id" => alert_id, "pid" => pid, "timeout" => 120}},
+      {"memory_strings",
+       %{
+         "alert_id" => alert_id,
+         "pid" => pid,
+         "min_length" => 6,
+         "include_unicode" => true,
+         "save_to_disk" => true
+       }},
+      {"process_create_dump", %{"alert_id" => alert_id, "pid" => pid, "dump_type" => "triage"}}
+    ])
+  end
+
+  defp maybe_add_linux_module_command(commands, alert_id, pid, "linux") do
+    commands ++ [{"list_loaded_modules", %{"alert_id" => alert_id, "pid" => pid}}]
+  end
+
+  defp maybe_add_linux_module_command(commands, _alert_id, _pid, _platform), do: commands
+
+  defp platform_supports_deep_memory?(platform), do: platform in ["windows", "linux"]
+
+  defp skipped_desktop_investigation_capabilities(platform, pid, requested_deep_memory) do
+    []
+    |> maybe_skip(pid == nil, "process_pid_bound_collection", "alert_missing_pid")
+    |> maybe_skip(
+      pid != nil and platform not in ["linux"],
+      "process_list_handles",
+      "unsupported_on_platform"
+    )
+    |> maybe_skip(
+      requested_deep_memory and not platform_supports_deep_memory?(platform),
+      "deep_memory_collection",
+      "unsupported_on_platform"
+    )
+    |> maybe_skip(
+      requested_deep_memory and platform != "linux",
+      "list_loaded_modules",
+      "unsupported_on_platform"
+    )
+  end
+
+  defp maybe_skip(skipped, true, capability, reason) do
+    skipped ++ [%{"capability" => capability, "reason" => reason}]
+  end
+
+  defp maybe_skip(skipped, _condition, _capability, _reason), do: skipped
+
+  defp queue_investigation_command(%Alert{} = alert, command_type, payload, opts) do
+    alias TamanduaServer.Agents.{AgentCommand, Registry}
+
+    idempotency_key =
+      "alert:#{alert.id}:investigation:#{command_type}:#{payload_fingerprint(payload)}"
+
+    priority = Keyword.get(opts, :priority, 5)
+
+    attrs = %{
+      agent_id: alert.agent_id,
+      command_type: command_type,
+      command_params: stringify_command_payload(payload),
+      priority: priority,
+      status: "pending",
+      idempotency_key: idempotency_key,
+      expires_at: AgentCommand.utc_now_second() |> DateTime.add(3600, :second)
+    }
+
+    case AgentCommand.insert_new(attrs) do
+      {:ok, command} ->
+        notify_agent_worker(alert.agent_id, Registry)
+        command_request_result(command_type, command, "queued")
+
+      {:existing, command} ->
+        command_request_result(command_type, command, "existing")
+
+      {:error, reason} ->
+        %{
+          "command_type" => command_type,
+          "status" => "queue_failed",
+          "error" => inspect(reason)
+        }
+    end
+  end
+
+  defp command_request_result(command_type, command, status) do
+    %{
+      "command_type" => command_type,
+      "command_id" => command.id,
+      "status" => status,
+      "queued_status" => command.status
+    }
+  end
+
+  defp notify_agent_worker(agent_id, registry_module) do
+    case registry_module.get(agent_id) do
+      {:ok, %{worker_pid: pid}} when is_pid(pid) -> send(pid, :send_pending_commands)
+      _ -> :ok
+    end
+  end
+
+  defp stringify_command_payload(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), stringify_command_payload(nested_value)}
+    end)
+  end
+
+  defp stringify_command_payload(value) when is_list(value),
+    do: Enum.map(value, &stringify_command_payload/1)
+
+  defp stringify_command_payload(value), do: value
+
+  defp payload_fingerprint(payload) do
+    hash =
+      payload
+      |> stringify_command_payload()
+      |> :erlang.term_to_binary()
+      |> :crypto.hash(:sha256)
+      |> Base.encode16(case: :lower)
+
+    binary_part(hash, 0, 16)
+  end
+
+  defp update_investigation_enrichment_status(
+         %Alert{} = alert,
+         plan,
+         collection_result,
+         command_results,
+         artifact_results
+       ) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    status =
+      case collection_result do
+        %{"status" => status} when status in ["queued", "existing"] -> "requested"
+        %{"status" => "mobile_requested"} -> "mobile_requested"
+        %{"status" => "capability_degraded"} -> "capability_degraded"
+        %{"status" => "queue_failed"} -> "request_failed"
+        {:error, _reason} -> "request_failed"
+        _ -> "request_unknown"
+      end
+
+    collection_command_id =
+      case collection_result do
+        %{"command_id" => id} -> id
+        _ -> nil
+      end
+
+    error =
+      case collection_result do
+        %{"status" => "queue_failed", "error" => error} -> error
+        %{"status" => "capability_degraded", "reason" => reason} -> reason
+        {:error, reason} -> inspect(reason)
+        _ -> nil
+      end
+
+    skipped_capabilities =
+      case collection_result do
+        %{"skipped_capabilities" => skipped} when is_list(skipped) -> skipped
+        _ -> []
+      end
+
+    recommended_mobile_commands =
+      case collection_result do
+        %{"recommended_mobile_commands" => commands} when is_list(commands) -> commands
+        _ -> []
+      end
+
+    queued_commands =
+      [collection_result | command_results]
+      |> Enum.map(&investigation_result_to_json/1)
+
+    artifact_requests =
+      artifact_results
+      |> Enum.map(&investigation_result_to_json/1)
+
+    updated_plan =
+      plan
+      |> Map.put("status", status)
+      |> Map.put("requested_at", now)
+      |> Map.put("collection_command_id", collection_command_id)
+      |> Map.put("error", error)
+      |> Map.put("skipped_capabilities", skipped_capabilities)
+      |> Map.put("recommended_mobile_commands", recommended_mobile_commands)
+      |> Map.put("queued_commands", queued_commands)
+      |> Map.put("artifact_requests", artifact_requests)
+      |> json_safe_value()
+
+    metadata =
+      (alert.detection_metadata || %{})
+      |> Map.put("investigation_enrichment", updated_plan)
+      |> json_safe_value()
+
+    enrichment =
+      (alert.enrichment || %{})
+      |> Map.put("auto_investigation", %{
+        "status" => status,
+        "collection_command_id" => collection_command_id,
+        "requested_at" => now,
+        "skipped_capabilities" => skipped_capabilities,
+        "recommended_mobile_commands" => recommended_mobile_commands
+      })
+      |> json_safe_value()
+
+    alert
+    |> Alert.changeset(%{detection_metadata: metadata, enrichment: enrichment})
+    |> Repo.update()
+
+    :ok
+  end
+
+  defp investigation_result_to_json({:error, reason}) do
+    %{"status" => "request_failed", "error" => inspect(reason)}
+  end
+
+  defp investigation_result_to_json(value) when is_tuple(value) do
+    %{"status" => "request_failed", "error" => inspect(value)}
+  end
+
+  defp investigation_result_to_json(value), do: json_safe_value(value)
+
+  defp json_safe_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp json_safe_value(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp json_safe_value(%Date{} = value), do: Date.to_iso8601(value)
+  defp json_safe_value(%Time{} = value), do: Time.to_iso8601(value)
+
+  defp json_safe_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), json_safe_value(nested_value)}
+    end)
+  end
+
+  defp json_safe_value(value) when is_list(value), do: Enum.map(value, &json_safe_value/1)
+
+  defp json_safe_value(value)
+       when is_binary(value) or is_boolean(value) or is_number(value) or is_nil(value),
+       do: value
+
+  defp json_safe_value(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp json_safe_value(value), do: inspect(value)
+
   defp maybe_attach_alert_quality(attrs) do
     quality = build_alert_quality(attrs)
 
+    quality_metadata = %{
+      "telemetry_quality" => quality,
+      "alert_claim_strength" => alert_claim_strength(quality),
+      "fp_review_required" => fp_review_required?(quality),
+      "correlation_ready" => quality["correlation_ready"]
+    }
+
     attrs
-    |> Map.update(:detection_metadata, %{"telemetry_quality" => quality}, fn metadata ->
+    |> Map.update(:detection_metadata, quality_metadata, fn metadata ->
       metadata
       |> ensure_map()
-      |> Map.put("telemetry_quality", quality)
+      |> Map.merge(quality_metadata)
     end)
   end
+
+  defp alert_claim_strength(%{"category" => "app_guard", "missing" => missing})
+       when missing != [],
+       do: "triage_only"
+
+  defp alert_claim_strength(%{"score" => score}) when is_number(score) and score >= 80,
+    do: "evidence_supported"
+
+  defp alert_claim_strength(%{"score" => score}) when is_number(score) and score >= 40,
+    do: "partial"
+
+  defp alert_claim_strength(_quality), do: "weak"
+
+  defp fp_review_required?(%{"category" => "app_guard", "missing" => missing}) when missing != [],
+    do: true
+
+  defp fp_review_required?(_quality), do: false
 
   # Provide conservative, severity-based analyst guidance when a detection
   # source does not supply its own recommended_response. Keeps all alert
@@ -2208,10 +3768,17 @@ defmodule TamanduaServer.Alerts do
 
   defp default_recommended_response(severity) do
     case severity |> to_string() |> String.downcase() do
-      "critical" -> "Triage immediately: isolate the affected host and preserve volatile evidence."
-      "high" -> "Triage promptly: review the process chain and contain the host if confirmed."
-      "medium" -> "Investigate the surrounding telemetry and validate against expected baseline activity."
-      _ -> "Review the alert evidence and confirm whether the activity is expected."
+      "critical" ->
+        "Triage immediately: isolate the affected host and preserve volatile evidence."
+
+      "high" ->
+        "Triage promptly: review the process chain and contain the host if confirmed."
+
+      "medium" ->
+        "Investigate the surrounding telemetry and validate against expected baseline activity."
+
+      _ ->
+        "Review the alert evidence and confirm whether the activity is expected."
     end
   end
 
@@ -2258,8 +3825,13 @@ defmodule TamanduaServer.Alerts do
     normalized = event_type |> to_string() |> String.downcase()
 
     cond do
+      map_get(detection, :source) == "app_guard" or
+        map_get(detection, :detection_type) == "mobile_app_guard" or
+          map_get(evidence, :app_guard) != nil ->
+        "app_guard"
+
       "network" in evidence_keys or String.contains?(normalized, "network") or
-          String.contains?(normalized, "connect") or String.contains?(normalized, "dns") ->
+        String.contains?(normalized, "connect") or String.contains?(normalized, "dns") ->
         "network"
 
       "registry" in evidence_keys or String.contains?(normalized, "registry") or
@@ -2267,7 +3839,7 @@ defmodule TamanduaServer.Alerts do
         "registry"
 
       "file" in evidence_keys or String.contains?(normalized, "file") or
-          String.contains?(normalized, "write") or String.contains?(normalized, "delete") ->
+        String.contains?(normalized, "write") or String.contains?(normalized, "delete") ->
         "file"
 
       true ->
@@ -2276,7 +3848,22 @@ defmodule TamanduaServer.Alerts do
   end
 
   defp required_alert_fields("network", _detection),
-    do: ["process.name", "process.pid", "network.remote_ip", "network.remote_port", "network.protocol"]
+    do: [
+      "process.name",
+      "process.pid",
+      "network.remote_ip",
+      "network.remote_port",
+      "network.protocol"
+    ]
+
+  defp required_alert_fields("app_guard", _detection),
+    do: [
+      "app_guard.policy_decision",
+      "app_guard.signals",
+      "app_guard.device_identity",
+      "app_guard.app_identity",
+      "app_guard.integrity"
+    ]
 
   defp required_alert_fields("registry", _detection),
     do: ["process.name", "process.pid", "registry.key"]
@@ -2300,22 +3887,48 @@ defmodule TamanduaServer.Alerts do
 
   defp alert_quality_values("process.pid", evidence, raw_event) do
     process = map_get(evidence, :process) |> ensure_map()
-    [map_get(process, :pid), map_get(raw_event, :pid), map_get(raw_event, :process_pid)]
+
+    [
+      map_get(process, :pid),
+      map_get(process, :process_id),
+      map_get(raw_event, :pid),
+      map_get(raw_event, :process_pid),
+      map_get(raw_event, :process_id),
+      map_get(raw_event, :source_pid),
+      map_get(raw_event, :target_pid)
+    ]
   end
 
   defp alert_quality_values("process.command_line", evidence, raw_event) do
     process = map_get(evidence, :process) |> ensure_map()
-    [map_get(process, :cmdline), map_get(process, :command_line), map_get(raw_event, :cmdline), map_get(raw_event, :command_line)]
+
+    [
+      map_get(process, :cmdline),
+      map_get(process, :command_line),
+      map_get(raw_event, :cmdline),
+      map_get(raw_event, :command_line)
+    ]
   end
 
   defp alert_quality_values("process.parent_name", evidence, raw_event) do
     process = map_get(evidence, :process) |> ensure_map()
-    [map_get(process, :parent_name), map_get(raw_event, :parent_name), map_get(raw_event, :parent_process_name)]
+
+    [
+      map_get(process, :parent_name),
+      map_get(raw_event, :parent_name),
+      map_get(raw_event, :parent_process_name)
+    ]
   end
 
   defp alert_quality_values("file.path", evidence, raw_event) do
     file = map_get(evidence, :file) |> ensure_map()
-    [map_get(file, :path), map_get(raw_event, :path), map_get(raw_event, :file_path), map_get(raw_event, :target_path)]
+
+    [
+      map_get(file, :path),
+      map_get(raw_event, :path),
+      map_get(raw_event, :file_path),
+      map_get(raw_event, :target_path)
+    ]
   end
 
   defp alert_quality_values("network.remote_ip", evidence, raw_event) do
@@ -2338,10 +3951,65 @@ defmodule TamanduaServer.Alerts do
     [map_get(registry, :key), map_get(registry, :key_path), map_get(registry, :registry_key)]
   end
 
+  defp alert_quality_values("app_guard.policy_decision", evidence, raw_event) do
+    snapshot = map_get(evidence, :evidence_snapshot) |> ensure_map()
+    app_guard = map_get(evidence, :app_guard) |> ensure_map()
+
+    [
+      map_get(snapshot, :policy_decision),
+      map_get(app_guard, :decision),
+      map_get(evidence, :decision_trace),
+      get_in(raw_event, ["payload", "risk", "decision"])
+    ]
+  end
+
+  defp alert_quality_values("app_guard.signals", evidence, raw_event) do
+    snapshot = map_get(evidence, :evidence_snapshot) |> ensure_map()
+
+    [
+      map_get(snapshot, :signals),
+      map_get(evidence, :active_signals),
+      get_in(raw_event, ["payload", "active_signals"]),
+      get_in(raw_event, ["payload", "risk", "reasons"])
+    ]
+  end
+
+  defp alert_quality_values("app_guard.device_identity", evidence, raw_event) do
+    snapshot = map_get(evidence, :evidence_snapshot) |> ensure_map()
+
+    [
+      map_get(snapshot, :device_identity),
+      map_get(evidence, :device),
+      get_in(raw_event, ["payload", "device"])
+    ]
+  end
+
+  defp alert_quality_values("app_guard.app_identity", evidence, raw_event) do
+    snapshot = map_get(evidence, :evidence_snapshot) |> ensure_map()
+
+    [
+      map_get(snapshot, :app_identity),
+      map_get(evidence, :app),
+      get_in(raw_event, ["payload", "app"])
+    ]
+  end
+
+  defp alert_quality_values("app_guard.integrity", evidence, raw_event) do
+    snapshot = map_get(evidence, :evidence_snapshot) |> ensure_map()
+
+    [
+      map_get(snapshot, :integrity),
+      get_in(raw_event, ["payload", "integrity"]),
+      get_in(raw_event, ["payload", "evidence", "integrity"]),
+      get_in(raw_event, ["payload", "evidence", "integrity_snapshot"])
+    ]
+  end
+
   defp alert_quality_values(_field, _evidence, _raw_event), do: []
 
   defp present_value?(value) when value in [nil, "", []], do: false
   defp present_value?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_value?(value) when is_map(value), do: map_size(value) > 0
   defp present_value?(_), do: true
 
   defp alert_quality_score([], _present), do: 100
@@ -2355,6 +4023,130 @@ defmodule TamanduaServer.Alerts do
   defp alert_quality_level(score) when score >= 70, do: "good"
   defp alert_quality_level(score) when score >= 40, do: "partial"
   defp alert_quality_level(_score), do: "poor"
+
+  defp strong_alert?(attrs) do
+    severity = attrs |> alert_attr(:severity) |> to_string() |> String.downcase()
+    score = attrs |> alert_attr(:threat_score) |> numeric_score()
+
+    severity in ["critical", "high"] or score >= 70 or (score > 0 and score <= 1 and score >= 0.7)
+  end
+
+  defp numeric_score(value) when is_integer(value), do: value / 1
+  defp numeric_score(value) when is_float(value), do: value
+
+  defp numeric_score(value) when is_binary(value) do
+    case Float.parse(value) do
+      {number, _} -> number
+      :error -> 0
+    end
+  end
+
+  defp numeric_score(_value), do: 0
+
+  defp missing_investigation_context(attrs, evidence, raw_event, process) do
+    [
+      {"process.pid", alert_context_pid(process, raw_event)},
+      {"process.name",
+       first_present([
+         map_get(process, :name),
+         map_get(raw_event, :process_name),
+         map_get(raw_event, :name)
+       ])},
+      {"process.path",
+       first_present([
+         map_get(process, :path),
+         map_get(process, :image_path),
+         map_get(raw_event, :process_path),
+         map_get(raw_event, :image_path),
+         map_get(raw_event, :path)
+       ])},
+      {"process.command_line",
+       first_present([
+         map_get(process, :cmdline),
+         map_get(process, :command_line),
+         map_get(raw_event, :cmdline),
+         map_get(raw_event, :command_line)
+       ])},
+      {"process.parent",
+       first_present([
+         map_get(process, :ppid),
+         map_get(process, :parent_name),
+         map_get(raw_event, :ppid),
+         map_get(raw_event, :parent_pid),
+         map_get(raw_event, :parent_process_name)
+       ])},
+      {"process_chain", alert_attr(attrs, :process_chain)},
+      {"event.raw_event", raw_event},
+      {"event.evidence", evidence}
+    ]
+    |> Enum.reject(fn {_field, value} -> present_value?(value) end)
+    |> Enum.map(fn {field, _value} -> field end)
+  end
+
+  defp alert_context_pid(process, raw_event) do
+    first_present([
+      map_get(process, :pid),
+      map_get(process, :process_id),
+      map_get(raw_event, :pid),
+      map_get(raw_event, :process_pid),
+      map_get(raw_event, :process_id),
+      map_get(raw_event, :source_pid),
+      map_get(raw_event, :target_pid)
+    ])
+  end
+
+  defp investigation_enrichment_actions(pid, artifact_paths, memory_dump) do
+    base = [
+      "collect_forensics",
+      "process_tree_list",
+      "process_list",
+      "network_connections",
+      "dns_cache"
+    ]
+
+    base = if pid, do: base ++ ["process_list_handles"], else: base
+
+    base =
+      if memory_dump and pid,
+        do:
+          base ++
+            [
+              "memory_dump",
+              "list_loaded_modules",
+              "memory_scan",
+              "memory_strings",
+              "process_create_dump"
+            ],
+        else: base
+
+    if artifact_paths == [], do: base, else: base ++ ["collect_artifact"]
+  end
+
+  defp deep_investigation_collection?(attrs) do
+    severity = attrs |> alert_attr(:severity) |> to_string() |> String.downcase()
+    score = attrs |> alert_attr(:threat_score) |> numeric_score()
+
+    severity == "critical" or score >= 90 or (score > 0 and score <= 1 and score >= 0.9)
+  end
+
+  defp investigation_artifact_paths(process, raw_event) do
+    [
+      map_get(process, :path),
+      map_get(process, :image_path),
+      map_get(raw_event, :process_path),
+      map_get(raw_event, :image_path),
+      map_get(raw_event, :path),
+      map_get(raw_event, :file_path)
+    ]
+    |> Enum.filter(&present_value?/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp first_present(values) do
+    Enum.find(values, &present_value?/1)
+  end
 
   # ===========================================================================
   # Alert Deduplication
@@ -2425,13 +4217,14 @@ defmodule TamanduaServer.Alerts do
     window_seconds = dedup_window_seconds()
     cutoff = NaiveDateTime.utc_now() |> NaiveDateTime.add(-window_seconds, :second)
 
-    query = from(a in Alert,
-      where: a.dedup_key == ^dedup_key,
-      where: a.inserted_at >= ^cutoff,
-      where: a.status not in ["resolved", "false_positive"],
-      order_by: [desc: a.inserted_at],
-      limit: 1
-    )
+    query =
+      from(a in Alert,
+        where: a.dedup_key == ^dedup_key,
+        where: a.inserted_at >= ^cutoff,
+        where: a.status not in ["resolved", "false_positive"],
+        order_by: [desc: a.inserted_at],
+        limit: 1
+      )
 
     case Repo.one(query) do
       nil -> :not_found
@@ -2456,7 +4249,11 @@ defmodule TamanduaServer.Alerts do
 
   # Get the configurable dedup window in seconds. Defaults to 5 minutes.
   defp dedup_window_seconds do
-    Application.get_env(:tamandua_server, :alert_dedup_window_seconds, @default_dedup_window_seconds)
+    Application.get_env(
+      :tamandua_server,
+      :alert_dedup_window_seconds,
+      @default_dedup_window_seconds
+    )
   end
 
   @doc """
@@ -2477,7 +4274,16 @@ defmodule TamanduaServer.Alerts do
       Map.get(attrs, :verdict) || Map.get(attrs, "verdict") ||
         Map.get(attrs, :status) || Map.get(attrs, "status")
 
-    if outcome in ["true_positive", "false_positive", "benign", "suspicious", :true_positive, :false_positive, :benign, :suspicious] do
+    if outcome in [
+         "true_positive",
+         "false_positive",
+         "benign",
+         "suspicious",
+         :true_positive,
+         :false_positive,
+         :benign,
+         :suspicious
+       ] do
       safe_precision_record(fn -> PrecisionMetrics.record_alert_outcome(alert, outcome) end)
     end
   end
@@ -2556,10 +4362,11 @@ defmodule TamanduaServer.Alerts do
     from_date = parse_date(date_from)
     to_date = parse_date(date_to)
 
-    query = from(a in Alert,
-      order_by: [desc: a.inserted_at],
-      preload: [:assigned_to]
-    )
+    query =
+      from(a in Alert,
+        order_by: [desc: a.inserted_at],
+        preload: [:assigned_to]
+      )
 
     query =
       if from_date do
@@ -2590,6 +4397,30 @@ defmodule TamanduaServer.Alerts do
 
   defp parse_date(_), do: nil
 
+  defp parse_datetime_boundary(nil, _boundary), do: nil
+  defp parse_datetime_boundary("", _boundary), do: nil
+
+  defp parse_datetime_boundary(value, boundary) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} ->
+        DateTime.to_naive(datetime)
+
+      _ ->
+        case Date.from_iso8601(value) do
+          {:ok, date} ->
+            time = if boundary == :to, do: ~T[23:59:59.999999], else: ~T[00:00:00]
+            NaiveDateTime.new!(date, time)
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  defp parse_datetime_boundary(%DateTime{} = value, _boundary), do: DateTime.to_naive(value)
+  defp parse_datetime_boundary(%NaiveDateTime{} = value, _boundary), do: value
+  defp parse_datetime_boundary(_, _boundary), do: nil
+
   @doc """
   Lists recent alerts.
   """
@@ -2616,12 +4447,13 @@ defmodule TamanduaServer.Alerts do
   Returns daily counts.
   """
   def get_trend(time_range) do
-    days = case time_range do
-      "7d" -> 7
-      "30d" -> 30
-      "90d" -> 90
-      _ -> 7
-    end
+    days =
+      case time_range do
+        "7d" -> 7
+        "30d" -> 30
+        "90d" -> 90
+        _ -> 7
+      end
 
     start_date = Date.utc_today() |> Date.add(-days)
 
@@ -2649,25 +4481,36 @@ defmodule TamanduaServer.Alerts do
   Gets related alerts for a given alert.
   Finds alerts from the same agent within a time window, or with overlapping MITRE techniques.
   """
-  def get_related_alerts(alert_id) do
-    case get_alert(alert_id) do
-      {:ok, alert} ->
-        time_window_minutes = 60
+  def get_related_alerts(alert_id, opts \\ []) do
+    organization_id = Keyword.get(opts, :organization_id)
 
-        query = from(a in Alert,
-          where: a.id != ^alert_id,
-          order_by: [desc: a.inserted_at],
-          limit: 10
-        )
+    case get_related_seed_alert(alert_id, organization_id) do
+      {:ok, alert} ->
+        _time_window_minutes = 60
+
+        query =
+          from(a in Alert,
+            where: a.id != ^alert_id,
+            order_by: [desc: a.inserted_at],
+            limit: 10
+          )
 
         # Filter by same agent or overlapping MITRE techniques
-        query = if alert.agent_id do
-          from(a in query,
-            where: a.agent_id == ^alert.agent_id
-          )
-        else
-          query
-        end
+        query =
+          if alert.agent_id do
+            from(a in query,
+              where: a.agent_id == ^alert.agent_id
+            )
+          else
+            query
+          end
+
+        query =
+          if organization_id do
+            from(a in query, where: a.organization_id == ^organization_id)
+          else
+            query
+          end
 
         Repo.all(query)
 
@@ -2675,6 +4518,11 @@ defmodule TamanduaServer.Alerts do
         []
     end
   end
+
+  defp get_related_seed_alert(alert_id, nil), do: get_alert(alert_id)
+
+  defp get_related_seed_alert(alert_id, organization_id),
+    do: get_alert_for_org(organization_id, alert_id)
 
   @doc """
   Gets an alert with full evidence details.
@@ -2697,10 +4545,11 @@ defmodule TamanduaServer.Alerts do
       {:ok, %Alert{evidence: %{file_hashes: [...], ...}, process_chain: [...], ...}}
   """
   def get_alert_with_evidence(id) do
-    query = from(a in Alert,
-      where: a.id == ^id,
-      preload: [:agent, :organization, :assigned_to]
-    )
+    query =
+      from(a in Alert,
+        where: a.id == ^id,
+        preload: [:agent, :organization, :assigned_to]
+      )
 
     case Repo.one(query) do
       nil -> {:error, :not_found}
@@ -2722,10 +4571,11 @@ defmodule TamanduaServer.Alerts do
       {:error, :not_found}
   """
   def get_alert_with_evidence_for_org(organization_id, id) do
-    query = from(a in Alert,
-      where: a.id == ^id and a.organization_id == ^organization_id,
-      preload: [:agent, :organization, :assigned_to]
-    )
+    query =
+      from(a in Alert,
+        where: a.id == ^id and a.organization_id == ^organization_id,
+        preload: [:agent, :organization, :assigned_to]
+      )
 
     case Repo.one(query) do
       nil -> {:error, :not_found}
@@ -2753,7 +4603,8 @@ defmodule TamanduaServer.Alerts do
     update_alert(alert, %{process_chain: process_chain})
   end
 
-  def update_process_chain(alert_id, process_chain) when is_binary(alert_id) and is_list(process_chain) do
+  def update_process_chain(alert_id, process_chain)
+      when is_binary(alert_id) and is_list(process_chain) do
     case get_alert(alert_id) do
       {:ok, alert} -> update_process_chain(alert, process_chain)
       error -> error
@@ -2774,7 +4625,8 @@ defmodule TamanduaServer.Alerts do
     update_alert(alert, %{contributing_events: new_events})
   end
 
-  def add_contributing_events(alert_id, event_ids) when is_binary(alert_id) and is_list(event_ids) do
+  def add_contributing_events(alert_id, event_ids)
+      when is_binary(alert_id) and is_list(event_ids) do
     case get_alert(alert_id) do
       {:ok, alert} -> add_contributing_events(alert, event_ids)
       error -> error
@@ -2808,37 +4660,41 @@ defmodule TamanduaServer.Alerts do
     # Parse the field path for nested JSON queries
     path_parts = String.split(field_path, ".")
 
-    query = from(a in Alert,
-      order_by: [desc: a.inserted_at],
-      limit: ^limit
-    )
+    query =
+      from(a in Alert,
+        order_by: [desc: a.inserted_at],
+        limit: ^limit
+      )
 
     # Add organization filter if provided
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     # Build the JSON path query
-    query = case path_parts do
-      [top_level] ->
-        from(a in query,
-          where: fragment("?->? @> ?", a.evidence, ^top_level, ^Jason.encode!(value))
-        )
+    query =
+      case path_parts do
+        [top_level] ->
+          from(a in query,
+            where: fragment("?->? @> ?", a.evidence, ^top_level, ^Jason.encode!(value))
+          )
 
-      [top_level, nested] ->
-        from(a in query,
-          where: fragment("?->?->>? = ?", a.evidence, ^top_level, ^nested, ^to_string(value))
-        )
+        [top_level, nested] ->
+          from(a in query,
+            where: fragment("?->?->>? = ?", a.evidence, ^top_level, ^nested, ^to_string(value))
+          )
 
-      _ ->
-        # For deeper paths, use a more general approach
-        json_path = Enum.join(path_parts, ",")
-        from(a in query,
-          where: fragment("?#>>? = ?", a.evidence, ^"{#{json_path}}", ^to_string(value))
-        )
-    end
+        _ ->
+          # For deeper paths, use a more general approach
+          json_path = Enum.join(path_parts, ",")
+
+          from(a in query,
+            where: fragment("?#>>? = ?", a.evidence, ^"{#{json_path}}", ^to_string(value))
+          )
+      end
 
     Repo.all(query)
   end
@@ -2866,14 +4722,16 @@ defmodule TamanduaServer.Alerts do
 
     query = from(a in Alert, where: a.id in ^alert_ids)
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     # Normalize attributes
     attrs = normalize_alert_attrs(attrs)
+
     precision_alerts =
       if Map.get(attrs, :status) == "false_positive" do
         Repo.all(query)
@@ -2882,12 +4740,18 @@ defmodule TamanduaServer.Alerts do
       end
 
     # Build update list dynamically
-    updates = Enum.filter([
-      if(Map.has_key?(attrs, :status), do: {:status, attrs.status}),
-      if(Map.has_key?(attrs, :assigned_to_id), do: {:assigned_to_id, attrs.assigned_to_id}),
-      if(Map.has_key?(attrs, :resolution_notes), do: {:resolution_notes, attrs.resolution_notes}),
-      if(Map.has_key?(attrs, :severity), do: {:severity, attrs.severity})
-    ], & &1)
+    updates =
+      Enum.filter(
+        [
+          if(Map.has_key?(attrs, :status), do: {:status, attrs.status}),
+          if(Map.has_key?(attrs, :assigned_to_id), do: {:assigned_to_id, attrs.assigned_to_id}),
+          if(Map.has_key?(attrs, :resolution_notes),
+            do: {:resolution_notes, attrs.resolution_notes}
+          ),
+          if(Map.has_key?(attrs, :severity), do: {:severity, attrs.severity})
+        ],
+        & &1
+      )
 
     if updates == [] do
       {:ok, 0}
@@ -2897,7 +4761,9 @@ defmodule TamanduaServer.Alerts do
       {count, _} = Repo.update_all(query, set: updates)
 
       Enum.each(precision_alerts, fn alert ->
-        safe_precision_record(fn -> PrecisionMetrics.record_alert_outcome(alert, "false_positive") end)
+        safe_precision_record(fn ->
+          PrecisionMetrics.record_alert_outcome(alert, "false_positive")
+        end)
       end)
 
       {:ok, count}
@@ -2934,7 +4800,9 @@ defmodule TamanduaServer.Alerts do
   """
   def bulk_resolve(alert_ids, resolution_notes \\ nil, opts \\ []) do
     attrs = %{status: "resolved"}
-    attrs = if resolution_notes, do: Map.put(attrs, :resolution_notes, resolution_notes), else: attrs
+
+    attrs =
+      if resolution_notes, do: Map.put(attrs, :resolution_notes, resolution_notes), else: attrs
 
     bulk_update(alert_ids, attrs, opts)
   end
@@ -2957,11 +4825,12 @@ defmodule TamanduaServer.Alerts do
 
     query = from(a in Alert, where: a.id in ^alert_ids)
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     Repo.all(query)
   end
@@ -2977,11 +4846,12 @@ defmodule TamanduaServer.Alerts do
 
     query = from(a in Alert, where: a.id in ^alert_ids)
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     {count, _} = Repo.delete_all(query)
 
@@ -2997,7 +4867,8 @@ defmodule TamanduaServer.Alerts do
         details: %{
           alert_count: count,
           alert_ids: alert_ids,
-          alert_summaries: Enum.map(alerts, fn a -> %{id: a.id, title: a.title, severity: a.severity} end)
+          alert_summaries:
+            Enum.map(alerts, fn a -> %{id: a.id, title: a.title, severity: a.severity} end)
         },
         ip_address: opts[:ip_address],
         user_agent: opts[:user_agent],
@@ -3014,7 +4885,8 @@ defmodule TamanduaServer.Alerts do
   @doc """
   Bulk adds tags to alerts.
   """
-  def bulk_add_tags(alert_ids, tags, user, opts \\ []) when is_list(alert_ids) and is_list(tags) do
+  def bulk_add_tags(alert_ids, tags, user, opts \\ [])
+      when is_list(alert_ids) and is_list(tags) do
     organization_id = Keyword.get(opts, :organization_id)
 
     # Use Ecto.Multi for transactional operations
@@ -3028,6 +4900,7 @@ defmodule TamanduaServer.Alerts do
           case repo.get(Alert, alert_id) do
             nil ->
               {:ok, nil}
+
             alert ->
               if organization_id && alert.organization_id != organization_id do
                 {:ok, nil}
@@ -3046,7 +4919,8 @@ defmodule TamanduaServer.Alerts do
 
     case Repo.transaction(multi) do
       {:ok, results} ->
-        updated_count = results
+        updated_count =
+          results
           |> Map.values()
           |> Enum.count(fn
             {:ok, %Alert{}} -> true
@@ -3085,7 +4959,8 @@ defmodule TamanduaServer.Alerts do
   @doc """
   Bulk removes tags from alerts.
   """
-  def bulk_remove_tags(alert_ids, tags, user, opts \\ []) when is_list(alert_ids) and is_list(tags) do
+  def bulk_remove_tags(alert_ids, tags, user, opts \\ [])
+      when is_list(alert_ids) and is_list(tags) do
     organization_id = Keyword.get(opts, :organization_id)
 
     alias Ecto.Multi
@@ -3098,6 +4973,7 @@ defmodule TamanduaServer.Alerts do
           case repo.get(Alert, alert_id) do
             nil ->
               {:ok, nil}
+
             alert ->
               if organization_id && alert.organization_id != organization_id do
                 {:ok, nil}
@@ -3116,7 +4992,8 @@ defmodule TamanduaServer.Alerts do
 
     case Repo.transaction(multi) do
       {:ok, results} ->
-        updated_count = results
+        updated_count =
+          results
           |> Map.values()
           |> Enum.count(fn
             {:ok, %Alert{}} -> true
@@ -3173,6 +5050,7 @@ defmodule TamanduaServer.Alerts do
           case repo.get(Alert, alert_id) do
             nil ->
               {:ok, {:skipped, alert_id}}
+
             alert ->
               if organization_id && alert.organization_id != organization_id do
                 {:ok, {:skipped, alert_id}}
@@ -3188,7 +5066,8 @@ defmodule TamanduaServer.Alerts do
 
     case Repo.transaction(multi) do
       {:ok, results} ->
-        updated = results
+        updated =
+          results
           |> Map.values()
           |> Enum.filter(fn
             {:ok, {:updated, _}} -> true
@@ -3196,7 +5075,8 @@ defmodule TamanduaServer.Alerts do
           end)
           |> length()
 
-        failed = results
+        failed =
+          results
           |> Map.values()
           |> Enum.filter(fn
             {:ok, {:failed, _, _}} -> true
@@ -3236,11 +5116,12 @@ defmodule TamanduaServer.Alerts do
 
   # Broadcast bulk operation updates via PubSub
   defp broadcast_bulk_operation(action, alert_ids, organization_id) do
-    topic = if organization_id do
-      "alerts:org:#{organization_id}"
-    else
-      "alerts:global"
-    end
+    topic =
+      if organization_id do
+        "alerts:org:#{organization_id}"
+      else
+        "alerts:global"
+      end
 
     Phoenix.PubSub.broadcast(
       TamanduaServer.PubSub,
@@ -3283,22 +5164,30 @@ defmodule TamanduaServer.Alerts do
     organization_id = Keyword.get(opts, :organization_id)
     limit = Keyword.get(opts, :limit, 100)
     offset = Keyword.get(opts, :offset, 0)
-    sort_by = Keyword.get(opts, :sort_by, :inserted_at)
-    sort_order = Keyword.get(opts, :sort_order, :desc)
+    sort_by = normalize_alert_sort_field(Keyword.get(opts, :sort_by))
+    sort_order = normalize_alert_sort_order(Keyword.get(opts, :sort_order))
 
-    query = from(a in Alert, order_by: [{^sort_order, ^sort_by}])
+    query = from(a in Alert, order_by: [{^sort_order, field(a, ^sort_by)}])
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     # Apply filters
     query = apply_search_filters(query, filters)
 
-    # Apply pagination
-    query = from(a in query, limit: ^limit, offset: ^offset)
+    # Apply pagination unless the caller explicitly requests the full result set
+    query =
+      case limit do
+        :all -> from(a in query, offset: ^offset)
+        nil -> from(a in query, offset: ^offset)
+        value -> from(a in query, limit: ^value, offset: ^offset)
+      end
+
+    query = maybe_select_alert_summary(query, opts)
 
     Repo.all(query)
   end
@@ -3311,11 +5200,12 @@ defmodule TamanduaServer.Alerts do
 
     query = from(a in Alert)
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     query = apply_search_filters(query, filters)
 
@@ -3324,9 +5214,13 @@ defmodule TamanduaServer.Alerts do
 
   defp apply_search_filters(query, filters) when is_map(filters) do
     query
-    |> filter_by_search(filters[:search] || filters["search"])
+    |> filter_by_search(
+      filters[:search] || filters["search"] || filters[:query] || filters["query"]
+    )
     |> filter_by_severity(filters[:severity] || filters["severity"])
     |> filter_by_status(filters[:status] || filters["status"])
+    |> maybe_filter(:source, filters[:source] || filters["source"])
+    |> maybe_filter(:category, filters[:category] || filters["category"])
     |> filter_by_agent_id(filters[:agent_id] || filters["agent_id"])
     |> filter_by_assigned_to(filters[:assigned_to_id] || filters["assigned_to_id"])
     |> filter_by_mitre_techniques(filters[:mitre_techniques] || filters["mitre_techniques"])
@@ -3340,6 +5234,10 @@ defmodule TamanduaServer.Alerts do
       filters[:threat_score_max] || filters["threat_score_max"]
     )
     |> filter_by_has_evidence(filters[:has_evidence] || filters["has_evidence"])
+    |> filter_by_validation_visibility(
+      filters[:validation] || filters["validation"] || filters[:include_validation] ||
+        filters["include_validation"]
+    )
     # ETW tampering specific filters
     |> filter_by_mitre_technique(filters[:mitre_technique] || filters["mitre_technique"])
     |> filter_by_patch_pattern(filters[:patch_pattern] || filters["patch_pattern"])
@@ -3349,82 +5247,115 @@ defmodule TamanduaServer.Alerts do
 
   defp filter_by_search(query, nil), do: query
   defp filter_by_search(query, ""), do: query
+
   defp filter_by_search(query, search) when is_binary(search) do
     search_term = "%#{search}%"
+
     from(a in query,
-      where: ilike(a.title, ^search_term) or ilike(a.description, ^search_term)
+      where:
+        ilike(a.title, ^search_term) or
+          ilike(a.description, ^search_term) or
+          fragment("?::text ILIKE ?", a.mitre_techniques, ^search_term) or
+          fragment("?::text ILIKE ?", a.mitre_tactics, ^search_term) or
+          fragment("?::text ILIKE ?", a.detection_metadata, ^search_term)
     )
   end
 
   defp filter_by_severity(query, nil), do: query
+
   defp filter_by_severity(query, severity) when is_list(severity) do
     from(a in query, where: a.severity in ^severity)
   end
+
   defp filter_by_severity(query, severity) when is_binary(severity) do
     from(a in query, where: a.severity == ^severity)
   end
 
   defp filter_by_status(query, nil), do: query
+
   defp filter_by_status(query, status) when is_list(status) do
     from(a in query, where: a.status in ^status)
   end
+
   defp filter_by_status(query, status) when is_binary(status) do
-    from(a in query, where: a.status == ^status)
+    case normalize_search_status_filter(status) do
+      statuses when is_list(statuses) -> from(a in query, where: a.status in ^statuses)
+      status -> from(a in query, where: a.status == ^status)
+    end
   end
+
+  defp normalize_search_status_filter("active"), do: @active_alert_statuses
+  defp normalize_search_status_filter("dismissed"), do: @dismissed_alert_statuses
+  defp normalize_search_status_filter("closed"), do: ["resolved", "closed"]
+  defp normalize_search_status_filter(status), do: status
 
   defp filter_by_verdict(query, nil), do: query
   defp filter_by_verdict(query, ""), do: query
+
   defp filter_by_verdict(query, verdict) when is_list(verdict) do
     from(a in query, where: a.verdict in ^verdict)
   end
+
   defp filter_by_verdict(query, verdict) when is_binary(verdict) do
     from(a in query, where: a.verdict == ^verdict)
   end
 
   defp filter_by_agent_id(query, nil), do: query
+
   defp filter_by_agent_id(query, agent_ids) when is_list(agent_ids) do
     from(a in query, where: a.agent_id in ^agent_ids)
   end
+
   defp filter_by_agent_id(query, agent_id) when is_binary(agent_id) do
     from(a in query, where: a.agent_id == ^agent_id)
   end
 
   defp filter_by_assigned_to(query, nil), do: query
+
   defp filter_by_assigned_to(query, "unassigned") do
     from(a in query, where: is_nil(a.assigned_to_id))
   end
+
   defp filter_by_assigned_to(query, user_id) when is_binary(user_id) do
     from(a in query, where: a.assigned_to_id == ^user_id)
   end
 
   defp filter_by_mitre_techniques(query, nil), do: query
   defp filter_by_mitre_techniques(query, []), do: query
+
   defp filter_by_mitre_techniques(query, techniques) when is_list(techniques) do
     from(a in query, where: fragment("? && ?", a.mitre_techniques, ^techniques))
   end
 
   defp filter_by_mitre_tactics(query, nil), do: query
   defp filter_by_mitre_tactics(query, []), do: query
+
   defp filter_by_mitre_tactics(query, tactics) when is_list(tactics) do
     from(a in query, where: fragment("? && ?", a.mitre_tactics, ^tactics))
   end
 
   defp filter_by_date_range(query, nil, nil), do: query
+
   defp filter_by_date_range(query, from_date, to_date) do
-    query = if from_date do
-      case parse_date(from_date) do
-        nil -> query
-        date ->
-          from_naive = NaiveDateTime.new!(date, ~T[00:00:00])
-          from(a in query, where: a.inserted_at >= ^from_naive)
+    query =
+      if from_date do
+        case parse_date(from_date) do
+          nil ->
+            query
+
+          date ->
+            from_naive = NaiveDateTime.new!(date, ~T[00:00:00])
+            from(a in query, where: a.inserted_at >= ^from_naive)
+        end
+      else
+        query
       end
-    else
-      query
-    end
 
     if to_date do
       case parse_date(to_date) do
-        nil -> query
+        nil ->
+          query
+
         date ->
           to_naive = NaiveDateTime.new!(Date.add(date, 1), ~T[00:00:00])
           from(a in query, where: a.inserted_at < ^to_naive)
@@ -3435,47 +5366,139 @@ defmodule TamanduaServer.Alerts do
   end
 
   defp filter_by_threat_score(query, nil, nil), do: query
+
   defp filter_by_threat_score(query, min, max) do
-    query = if min do
-      min_val = if is_binary(min), do: String.to_float(min), else: min
-      from(a in query, where: a.threat_score >= ^min_val)
-    else
-      query
-    end
+    query =
+      if min do
+        case parse_numeric_filter(min) do
+          nil -> query
+          min_val -> from(a in query, where: a.threat_score >= ^min_val)
+        end
+      else
+        query
+      end
 
     if max do
-      max_val = if is_binary(max), do: String.to_float(max), else: max
-      from(a in query, where: a.threat_score <= ^max_val)
+      case parse_numeric_filter(max) do
+        nil -> query
+        max_val -> from(a in query, where: a.threat_score <= ^max_val)
+      end
     else
       query
     end
   end
 
+  defp parse_numeric_filter(value) when is_integer(value), do: value / 1
+  defp parse_numeric_filter(value) when is_float(value), do: value
+
+  defp parse_numeric_filter(value) when is_binary(value) do
+    case Float.parse(value) do
+      {number, _} -> number
+      :error -> nil
+    end
+  end
+
+  defp parse_numeric_filter(_value), do: nil
+
   defp filter_by_has_evidence(query, nil), do: query
+
   defp filter_by_has_evidence(query, true) do
     from(a in query, where: a.evidence != ^%{})
   end
+
   defp filter_by_has_evidence(query, false) do
     from(a in query, where: a.evidence == ^%{} or is_nil(a.evidence))
   end
+
   defp filter_by_has_evidence(query, "true"), do: filter_by_has_evidence(query, true)
   defp filter_by_has_evidence(query, "false"), do: filter_by_has_evidence(query, false)
+
+  defp filter_by_validation_visibility(query, value) do
+    case normalize_validation_visibility(value) do
+      :include -> query
+      :only -> where(query, ^validation_alert_dynamic())
+      :exclude -> where(query, ^structured_validation_alert_dynamic(negate?: true))
+    end
+  end
+
+  defp normalize_validation_visibility(nil), do: :include
+  defp normalize_validation_visibility(""), do: :include
+  defp normalize_validation_visibility(false), do: :exclude
+  defp normalize_validation_visibility("false"), do: :exclude
+  defp normalize_validation_visibility("exclude"), do: :exclude
+  defp normalize_validation_visibility("only"), do: :only
+  defp normalize_validation_visibility(:only), do: :only
+  defp normalize_validation_visibility(true), do: :include
+  defp normalize_validation_visibility("true"), do: :include
+  defp normalize_validation_visibility("include"), do: :include
+  defp normalize_validation_visibility(:include), do: :include
+  defp normalize_validation_visibility(_), do: :exclude
+
+  defp validation_alert_dynamic(opts \\ []) do
+    pattern =
+      "(" <>
+        Enum.join(
+          [
+            "mobile-endpoint-parity",
+            "agent-mobile-endpoint-parity",
+            "parity_run_id",
+            "validation_run_id",
+            "validation_event",
+            "test_event",
+            "synthetic",
+            "\"validation_alert\"[[:space:]]*:[[:space:]]*(true|\"true\")",
+            "\"validationAlert\"[[:space:]]*:[[:space:]]*(true|\"true\")"
+          ],
+          "|"
+        ) <> ")"
+
+    if Keyword.get(opts, :negate?, false) do
+      dynamic(
+        [a],
+        not fragment(
+          "lower(concat_ws(' ', coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''))) ~ ?",
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.source_event_id,
+          a.title,
+          ^pattern
+        )
+      )
+    else
+      dynamic(
+        [a],
+        fragment(
+          "lower(concat_ws(' ', coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''), coalesce(?::text, ''))) ~ ?",
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.source_event_id,
+          a.title,
+          ^pattern
+        )
+      )
+    end
+  end
 
   # ETW tampering specific filters
   defp filter_by_mitre_technique(query, nil), do: query
   defp filter_by_mitre_technique(query, ""), do: query
+
   defp filter_by_mitre_technique(query, technique) when is_binary(technique) do
     from(a in query, where: ^technique in a.mitre_techniques)
   end
 
   defp filter_by_patch_pattern(query, nil), do: query
   defp filter_by_patch_pattern(query, ""), do: query
+
   defp filter_by_patch_pattern(query, pattern) when is_binary(pattern) do
     from(a in query, where: a.patch_pattern == ^pattern)
   end
 
   defp filter_by_target_function(query, nil), do: query
   defp filter_by_target_function(query, ""), do: query
+
   defp filter_by_target_function(query, function) when is_binary(function) do
     search_term = "%#{function}%"
     from(a in query, where: ilike(a.target_function, ^search_term))
@@ -3492,23 +5515,25 @@ defmodule TamanduaServer.Alerts do
     organization_id = Keyword.get(opts, :organization_id)
     time_range = Keyword.get(opts, :time_range, "7d")
 
-    days = case time_range do
-      "24h" -> 1
-      "7d" -> 7
-      "30d" -> 30
-      "90d" -> 90
-      _ -> 7
-    end
+    days =
+      case time_range do
+        "24h" -> 1
+        "7d" -> 7
+        "30d" -> 30
+        "90d" -> 90
+        _ -> 7
+      end
 
     start_date = NaiveDateTime.utc_now() |> NaiveDateTime.add(-days * 24 * 60 * 60, :second)
 
     base_query = from(a in Alert, where: a.inserted_at >= ^start_date)
 
-    base_query = if organization_id do
-      from(a in base_query, where: a.organization_id == ^organization_id)
-    else
-      base_query
-    end
+    base_query =
+      if organization_id do
+        from(a in base_query, where: a.organization_id == ^organization_id)
+      else
+        base_query
+      end
 
     total = Repo.aggregate(base_query, :count, :id)
 
@@ -3558,42 +5583,49 @@ defmodule TamanduaServer.Alerts do
     start_date = NaiveDateTime.utc_now() |> NaiveDateTime.add(-days_back * 24 * 60 * 60, :second)
 
     # Match by detection rule name if available
-    rule_name = get_in(alert.detection_metadata || %{}, [:rule_name]) ||
-                get_in(alert.detection_metadata || %{}, ["rule_name"])
+    rule_name =
+      get_in(alert.detection_metadata || %{}, [:rule_name]) ||
+        get_in(alert.detection_metadata || %{}, ["rule_name"])
 
-    query = from(a in Alert,
-      where: a.inserted_at >= ^start_date,
-      where: a.id != ^alert.id
-    )
+    query =
+      from(a in Alert,
+        where: a.inserted_at >= ^start_date,
+        where: a.id != ^alert.id
+      )
 
-    query = if organization_id do
-      from(a in query, where: a.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(a in query, where: a.organization_id == ^organization_id)
+      else
+        query
+      end
 
     # Match by rule name or title
-    query = if rule_name do
-      from(a in query,
-        where: fragment("?->'rule_name' = ?", a.detection_metadata, ^rule_name) or
-               a.title == ^alert.title
-      )
-    else
-      from(a in query, where: a.title == ^alert.title)
-    end
+    query =
+      if rule_name do
+        from(a in query,
+          where:
+            fragment("?->'rule_name' = ?", a.detection_metadata, ^rule_name) or
+              a.title == ^alert.title
+        )
+      else
+        from(a in query, where: a.title == ^alert.title)
+      end
 
     count = Repo.aggregate(query, :count, :id)
 
     # Get recent occurrences
-    recent = from(a in query, limit: 5, order_by: [desc: a.inserted_at])
-             |> Repo.all()
+    recent =
+      from(a in query, limit: 5, order_by: [desc: a.inserted_at])
+      |> Repo.all()
 
     %{
       count: count,
       days_back: days_back,
-      recent_occurrences: Enum.map(recent, fn a ->
-        %{id: a.id, created_at: a.inserted_at, agent_id: a.agent_id, status: a.status}
-      end)
+      recent_occurrences:
+        Enum.map(recent, fn a ->
+          %{id: a.id, created_at: a.inserted_at, agent_id: a.agent_id, status: a.status}
+        end)
     }
   end
 
@@ -3619,11 +5651,12 @@ defmodule TamanduaServer.Alerts do
     now = NaiveDateTime.utc_now()
     start_date = NaiveDateTime.add(now, -days * 86_400, :second)
 
-    base_query = from(a in Alert, where: a.inserted_at >= ^start_date)
-    base_query = scope_org(base_query, organization_id)
+    all_query = Alert |> scope_org(organization_id)
+    base_query = from(a in all_query, where: a.inserted_at >= ^start_date)
 
     # Severity distribution (open/active only)
     active_query = from(a in base_query, where: a.status not in ["resolved", "false_positive"])
+    active_all_query = from(a in all_query, where: a.status not in ["resolved", "false_positive"])
 
     severity_counts =
       from(a in active_query,
@@ -3633,36 +5666,52 @@ defmodule TamanduaServer.Alerts do
       |> Repo.all()
       |> Map.new()
 
-    total_active = Enum.sum(Map.values(severity_counts))
+    total_active = Repo.aggregate(active_all_query, :count, :id)
+    total_active_in_period = Enum.sum(Map.values(severity_counts))
     critical = Map.get(severity_counts, "critical", 0)
     high = Map.get(severity_counts, "high", 0)
     medium = Map.get(severity_counts, "medium", 0)
     low = Map.get(severity_counts, "low", 0)
 
     # Active threat score: weighted severity score normalized to 0-100
-    active_threat_score = compute_threat_score(critical, high, medium, low, total_active)
+    active_threat_score =
+      compute_threat_score(critical, high, medium, low, total_active_in_period)
 
     # Threat level based on score
-    threat_level = cond do
-      active_threat_score >= 75 -> "critical"
-      active_threat_score >= 50 -> "elevated"
-      active_threat_score >= 25 -> "moderate"
-      true -> "low"
-    end
+    threat_level =
+      cond do
+        active_threat_score >= 75 -> "critical"
+        active_threat_score >= 50 -> "elevated"
+        active_threat_score >= 25 -> "moderate"
+        true -> "low"
+      end
 
     # Total alerts in period (including resolved)
     total_in_period = Repo.aggregate(base_query, :count, :id)
+    total_all = Repo.aggregate(all_query, :count, :id)
+
+    status_counts =
+      from(a in base_query,
+        group_by: a.status,
+        select: {a.status, count(a.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
     # Count resolved/blocked alerts in period
-    blocked_count = from(a in base_query,
-      where: a.status in ["resolved", "false_positive"]
-    ) |> Repo.aggregate(:count, :id)
+    blocked_count =
+      from(a in base_query,
+        where: a.status in ["resolved", "false_positive"]
+      )
+      |> Repo.aggregate(:count, :id)
 
     # Average threat score
-    avg_score = from(a in base_query,
-      where: not is_nil(a.threat_score),
-      select: avg(a.threat_score)
-    ) |> Repo.one()
+    _avg_score =
+      from(a in base_query,
+        where: not is_nil(a.threat_score),
+        select: avg(a.threat_score)
+      )
+      |> Repo.one()
 
     # Top active threats: most recent critical/high alerts
     top_threats =
@@ -3687,18 +5736,42 @@ defmodule TamanduaServer.Alerts do
     # Build recommendations
     recommendations = build_recommendations(critical, high, total_active, blocked_count)
 
+    total_agents = TamanduaServer.Agents.count_agents_for_org(organization_id)
+    online_agents = TamanduaServer.Agents.count_online_for_org(organization_id)
+    offline_agents = max(total_agents - online_agents, 0)
+
     # Metric trends (compare current vs previous period)
     prev_start = NaiveDateTime.add(start_date, -days * 86_400, :second)
-    prev_query = from(a in Alert, where: a.inserted_at >= ^prev_start and a.inserted_at < ^start_date)
+
+    prev_query =
+      from(a in Alert, where: a.inserted_at >= ^prev_start and a.inserted_at < ^start_date)
+
     prev_query = scope_org(prev_query, organization_id)
 
-    prev_active = from(a in prev_query, where: a.status not in ["resolved", "false_positive"])
-                  |> Repo.aggregate(:count, :id)
-    prev_total = Repo.aggregate(prev_query, :count, :id)
-    prev_blocked = from(a in prev_query, where: a.status in ["resolved", "false_positive"])
-                   |> Repo.aggregate(:count, :id)
+    prev_active =
+      from(a in prev_query, where: a.status not in ["resolved", "false_positive"])
+      |> Repo.aggregate(:count, :id)
+
+    _prev_total = Repo.aggregate(prev_query, :count, :id)
+
+    prev_blocked =
+      from(a in prev_query, where: a.status in ["resolved", "false_positive"])
+      |> Repo.aggregate(:count, :id)
 
     %{
+      totalAlerts: total_all,
+      totalInPeriod: total_in_period,
+      openAlerts: total_active,
+      closedAlerts: blocked_count,
+      criticalAlerts: critical,
+      highAlerts: high,
+      mediumAlerts: medium,
+      lowAlerts: low,
+      agentsOnline: online_agents,
+      agentsOffline: offline_agents,
+      totalAgents: total_agents,
+      severityDistribution: severity_counts,
+      statusDistribution: status_counts,
       threatLevel: threat_level,
       threatScore: active_threat_score,
       metrics: %{
@@ -3752,17 +5825,20 @@ defmodule TamanduaServer.Alerts do
     base_query = scope_org(base_query, organization_id)
 
     # Generate data points: hourly for 24h, daily for 7d/30d
-    data_points = if period == "24h" do
-      build_hourly_data_points(base_query, start_date, now)
-    else
-      build_daily_data_points(base_query, start_date, now)
-    end
+    data_points =
+      if period == "24h" do
+        build_hourly_data_points(base_query, start_date, now)
+      else
+        build_daily_data_points(base_query, start_date, now)
+      end
 
     # Total detections in current period
     total = Repo.aggregate(base_query, :count, :id)
 
     # Total in previous period for trend
-    prev_query = from(a in Alert, where: a.inserted_at >= ^prev_start and a.inserted_at < ^start_date)
+    prev_query =
+      from(a in Alert, where: a.inserted_at >= ^prev_start and a.inserted_at < ^start_date)
+
     prev_query = scope_org(prev_query, organization_id)
     prev_total = Repo.aggregate(prev_query, :count, :id)
 
@@ -3775,17 +5851,18 @@ defmodule TamanduaServer.Alerts do
     # Average per day and peak hour
     avg_per_day = if days > 0, do: Float.round(total / days, 1), else: 0.0
 
-    peak_hour = from(a in base_query,
-      group_by: fragment("extract(hour from ?)", a.inserted_at),
-      select: {fragment("extract(hour from ?)", a.inserted_at), count(a.id)},
-      order_by: [desc: count(a.id)],
-      limit: 1
-    )
-    |> Repo.one()
-    |> case do
-      {hour, _count} -> numeric_to_integer(hour)
-      nil -> 0
-    end
+    peak_hour =
+      from(a in base_query,
+        group_by: fragment("extract(hour from ?)", a.inserted_at),
+        select: {fragment("extract(hour from ?)", a.inserted_at), count(a.id)},
+        order_by: [desc: count(a.id)],
+        limit: 1
+      )
+      |> Repo.one()
+      |> case do
+        {hour, _count} -> numeric_to_integer(hour)
+        nil -> 0
+      end
 
     %{
       dataPoints: data_points,
@@ -3826,10 +5903,12 @@ defmodule TamanduaServer.Alerts do
     base_query = scope_org(base_query, organization_id)
 
     # Count unique source agents (as proxy for unique sources)
-    unique_sources = from(a in base_query,
-      where: not is_nil(a.agent_id),
-      select: count(a.agent_id, :distinct)
-    ) |> Repo.one() || 0
+    unique_sources =
+      from(a in base_query,
+        where: not is_nil(a.agent_id),
+        select: count(a.agent_id, :distinct)
+      )
+      |> Repo.one() || 0
 
     # Total attacks
     total_attacks = Repo.aggregate(base_query, :count, :id)
@@ -3854,17 +5933,19 @@ defmodule TamanduaServer.Alerts do
     attackers = build_attacker_profiles(tactic_groups, start_date, now)
 
     # Top country and tactic
-    top_country = attackers
-    |> Enum.filter(& &1.country)
-    |> Enum.group_by(& &1.country)
-    |> Enum.max_by(fn {_k, v} -> length(v) end, fn -> {"Unknown", []} end)
-    |> elem(0)
+    top_country =
+      attackers
+      |> Enum.filter(& &1.country)
+      |> Enum.group_by(& &1.country)
+      |> Enum.max_by(fn {_k, v} -> length(v) end, fn -> {"Unknown", []} end)
+      |> elem(0)
 
-    top_tactic = attackers
-    |> Enum.flat_map(& &1.tactics)
-    |> Enum.frequencies()
-    |> Enum.max_by(fn {_k, v} -> v end, fn -> {"none", 0} end)
-    |> elem(0)
+    top_tactic =
+      attackers
+      |> Enum.flat_map(& &1.tactics)
+      |> Enum.frequencies()
+      |> Enum.max_by(fn {_k, v} -> v end, fn -> {"none", 0} end)
+      |> elem(0)
 
     %{
       attackers: attackers,
@@ -3887,6 +5968,7 @@ defmodule TamanduaServer.Alerts do
   defp range_to_days(_), do: 7
 
   defp scope_org(query, nil), do: from(a in query, where: false)
+
   defp scope_org(query, organization_id) do
     from(a in query, where: a.organization_id == ^organization_id)
   end
@@ -3930,6 +6012,7 @@ defmodule TamanduaServer.Alerts do
     |> DateTime.from_naive!("Etc/UTC")
     |> DateTime.to_unix(:millisecond)
   end
+
   defp naive_to_unix_ms(_), do: 0
 
   defp compute_threat_score(critical, high, medium, low, total) do
@@ -3958,13 +6041,17 @@ defmodule TamanduaServer.Alerts do
 
   defp compute_trend(current, previous) when previous == 0 and current == 0, do: {"stable", 0.0}
   defp compute_trend(current, 0), do: {if(current > 0, do: "up", else: "stable"), 100.0}
+
   defp compute_trend(current, previous) do
     pct = Float.round((current - previous) / previous * 100, 1)
-    dir = cond do
-      pct > 5 -> "up"
-      pct < -5 -> "down"
-      true -> "stable"
-    end
+
+    dir =
+      cond do
+        pct > 5 -> "up"
+        pct < -5 -> "down"
+        true -> "stable"
+      end
+
     {dir, pct}
   end
 
@@ -3980,34 +6067,38 @@ defmodule TamanduaServer.Alerts do
   defp build_recommendations(critical, high, total_active, _blocked) do
     recommendations = []
 
-    recommendations = if critical > 0 do
-      ["Investigate #{critical} critical alert(s) immediately" | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if critical > 0 do
+        ["Investigate #{critical} critical alert(s) immediately" | recommendations]
+      else
+        recommendations
+      end
 
-    recommendations = if high > 5 do
-      ["Review high-severity alert volume -- consider tuning detection rules" | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if high > 5 do
+        ["Review high-severity alert volume -- consider tuning detection rules" | recommendations]
+      else
+        recommendations
+      end
 
-    recommendations = if total_active > 50 do
-      ["Alert backlog is high (#{total_active}) -- prioritize triage" | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if total_active > 50 do
+        ["Alert backlog is high (#{total_active}) -- prioritize triage" | recommendations]
+      else
+        recommendations
+      end
 
-    recommendations = if total_active == 0 do
-      ["No active threats detected -- all clear" | recommendations]
-    else
-      recommendations
-    end
+    recommendations =
+      if total_active == 0 do
+        ["No active threats detected -- all clear" | recommendations]
+      else
+        recommendations
+      end
 
     Enum.reverse(recommendations)
   end
 
-  defp build_hourly_data_points(base_query, start_date, _now) do
+  defp build_hourly_data_points(base_query, _start_date, _now) do
     from(a in base_query,
       group_by: fragment("date_trunc('hour', ?)", a.inserted_at),
       select: %{
@@ -4061,22 +6152,24 @@ defmodule TamanduaServer.Alerts do
 
   defp build_category_breakdown(current_query, prev_query) do
     # Current period tactic counts
-    current_tactics = from(a in current_query,
-      where: fragment("array_length(?, 1) > 0", a.mitre_tactics),
-      select: a.mitre_tactics
-    )
-    |> Repo.all()
-    |> List.flatten()
-    |> Enum.frequencies()
+    current_tactics =
+      from(a in current_query,
+        where: fragment("array_length(?, 1) > 0", a.mitre_tactics),
+        select: a.mitre_tactics
+      )
+      |> Repo.all()
+      |> List.flatten()
+      |> Enum.frequencies()
 
     # Previous period tactic counts
-    prev_tactics = from(a in prev_query,
-      where: fragment("array_length(?, 1) > 0", a.mitre_tactics),
-      select: a.mitre_tactics
-    )
-    |> Repo.all()
-    |> List.flatten()
-    |> Enum.frequencies()
+    prev_tactics =
+      from(a in prev_query,
+        where: fragment("array_length(?, 1) > 0", a.mitre_tactics),
+        select: a.mitre_tactics
+      )
+      |> Repo.all()
+      |> List.flatten()
+      |> Enum.frequencies()
 
     category_colors = %{
       "initial-access" => "#ef4444",
@@ -4130,60 +6223,66 @@ defmodule TamanduaServer.Alerts do
     "T1078" => %{name: "Valid Accounts Abuser", type: "insider", country: "Internal"}
   }
 
-  defp build_attacker_profiles(tactic_groups, start_date, now) do
+  defp build_attacker_profiles(tactic_groups, _start_date, _now) do
     # Group alerts by their primary MITRE technique to create "attacker" clusters
-    technique_clusters = tactic_groups
-    |> Enum.flat_map(fn alert_data ->
-      primary_technique = List.first(alert_data.techniques || [])
-      if primary_technique do
-        [{primary_technique, alert_data}]
-      else
-        []
-      end
-    end)
-    |> Enum.group_by(fn {technique, _} -> technique end, fn {_, data} -> data end)
+    technique_clusters =
+      tactic_groups
+      |> Enum.flat_map(fn alert_data ->
+        primary_technique = List.first(alert_data.techniques || [])
+
+        if primary_technique do
+          [{primary_technique, alert_data}]
+        else
+          []
+        end
+      end)
+      |> Enum.group_by(fn {technique, _} -> technique end, fn {_, data} -> data end)
 
     technique_clusters
     |> Enum.sort_by(fn {_technique, alerts} -> -length(alerts) end)
     |> Enum.take(10)
     |> Enum.with_index()
     |> Enum.map(fn {{technique, alerts}, idx} ->
-      actor_info = Map.get(@known_actor_groups, technique, %{
-        name: "Threat Group #{technique}",
-        type: "unknown",
-        country: nil
-      })
+      actor_info =
+        Map.get(@known_actor_groups, technique, %{
+          name: "Threat Group #{technique}",
+          type: "unknown",
+          country: nil
+        })
 
       # Extract enrichment data for country info
-      country = alerts
-      |> Enum.find_value(fn a ->
-        enrichment = a.enrichment || %{}
-        enrichment["source_country"] || enrichment["country"] || enrichment[:country]
-      end) || actor_info[:country]
+      country =
+        alerts
+        |> Enum.find_value(fn a ->
+          enrichment = a.enrichment || %{}
+          enrichment["source_country"] || enrichment["country"] || enrichment[:country]
+        end) || actor_info[:country]
 
       all_tactics = alerts |> Enum.flat_map(& &1.tactics) |> Enum.uniq()
       all_techniques = alerts |> Enum.flat_map(& &1.techniques) |> Enum.uniq()
       severities = alerts |> Enum.map(& &1.severity)
 
       # Determine worst severity
-      worst_severity = cond do
-        "critical" in severities -> "critical"
-        "high" in severities -> "high"
-        "medium" in severities -> "medium"
-        true -> "low"
-      end
+      worst_severity =
+        cond do
+          "critical" in severities -> "critical"
+          "high" in severities -> "high"
+          "medium" in severities -> "medium"
+          true -> "low"
+        end
 
       timestamps = alerts |> Enum.map(& &1.inserted_at) |> Enum.sort(NaiveDateTime)
       first_seen = List.first(timestamps)
       last_seen = List.last(timestamps)
 
-      avg_score = alerts
-      |> Enum.map(& &1.threat_score)
-      |> Enum.reject(&is_nil/1)
-      |> case do
-        [] -> 50
-        scores -> trunc(Enum.sum(scores) / length(scores))
-      end
+      avg_score =
+        alerts
+        |> Enum.map(& &1.threat_score)
+        |> Enum.reject(&is_nil/1)
+        |> case do
+          [] -> 50
+          scores -> trunc(Enum.sum(scores) / length(scores))
+        end
 
       %{
         id: "attacker-#{idx + 1}-#{technique}",
@@ -4234,7 +6333,7 @@ defmodule TamanduaServer.Alerts do
   - `{:error, reason}`
   """
   @spec set_verdict(String.t(), String.t(), String.t() | nil, keyword()) ::
-    {:ok, map()} | {:error, term()}
+          {:ok, map()} | {:error, term()}
   def set_verdict(alert_id, verdict, user_id, opts \\ []) do
     if verdict not in @valid_verdicts do
       {:error, :invalid_verdict}
@@ -4242,6 +6341,7 @@ defmodule TamanduaServer.Alerts do
       case get_alert(alert_id) do
         {:ok, alert} ->
           do_set_verdict(alert, verdict, user_id, opts)
+
         {:error, _} = error ->
           error
       end
@@ -4264,82 +6364,90 @@ defmodule TamanduaServer.Alerts do
     }
 
     # Also update status if appropriate
-    verdict_attrs = case verdict do
-      "false_positive" -> Map.put(verdict_attrs, :status, "false_positive")
-      "true_positive" -> Map.put(verdict_attrs, :status, "investigating")
-      "benign" -> Map.put(verdict_attrs, :status, "resolved")
-      _ -> verdict_attrs
-    end
+    verdict_attrs =
+      case verdict do
+        "false_positive" -> Map.put(verdict_attrs, :status, "false_positive")
+        "true_positive" -> Map.put(verdict_attrs, :status, "investigating")
+        "benign" -> Map.put(verdict_attrs, :status, "resolved")
+        _ -> verdict_attrs
+      end
 
-    result = Repo.transaction(fn ->
-      # 1. Update the alert
-      {:ok, updated_alert} = update_alert(alert, verdict_attrs)
+    result =
+      Repo.transaction(fn ->
+        # 1. Update the alert
+        {:ok, updated_alert} = update_alert(alert, verdict_attrs)
 
-      # 2. Create feedback audit log
-      {:ok, feedback_log} = create_feedback_log(%{
-        alert_id: alert.id,
-        user_id: user_id,
-        previous_verdict: previous_verdict,
-        new_verdict: verdict,
-        notes: notes,
-        metadata: %{
-          "agent_id" => alert.agent_id,
-          "title" => alert.title,
-          "severity" => alert.severity,
-          "threat_score" => alert.threat_score
-        }
-      })
-
-      # 3. Handle FP/benign: create suppression rule and update baseline
-      suppression_rule = if verdict in ["false_positive", "benign"] do
-        # Update baseline to record false positive pattern
-        update_baseline_for_fp(alert)
-
-        # Optionally create a suppression rule
-        if create_suppression do
-          ttl_days = Keyword.get(opts, :suppression_ttl_days, 30)
-          action = Keyword.get(opts, :suppression_action, "suppress")
-
-          case Suppression.create_rule_from_alert(alert, [
+        # 2. Create feedback audit log
+        {:ok, feedback_log} =
+          create_feedback_log(%{
+            alert_id: alert.id,
             user_id: user_id,
-            ttl_days: ttl_days,
-            action: action
-          ]) do
-            {:ok, rule} ->
-              # Link the rule to the alert
-              update_alert(updated_alert, %{suppression_rule_id: rule.id})
+            previous_verdict: previous_verdict,
+            new_verdict: verdict,
+            notes: notes,
+            metadata: %{
+              "agent_id" => alert.agent_id,
+              "title" => alert.title,
+              "severity" => alert.severity,
+              "threat_score" => alert.threat_score
+            }
+          })
 
-              # Update feedback log
-              Repo.update_all(
-                from(l in VerdictFeedbackLog, where: l.id == ^feedback_log.id),
-                set: [suppression_rule_created: true]
-              )
+        # 3. Handle FP/benign: create suppression rule and update baseline
+        suppression_rule =
+          if verdict in ["false_positive", "benign"] do
+            # Update baseline to record false positive pattern
+            update_baseline_for_fp(alert)
 
-              rule
+            # Optionally create a suppression rule
+            if create_suppression do
+              ttl_days = Keyword.get(opts, :suppression_ttl_days, 30)
+              action = Keyword.get(opts, :suppression_action, "suppress")
 
-            {:error, reason} ->
-              require Logger
-              Logger.warning("Failed to create suppression rule for alert #{alert.id}: #{inspect(reason)}")
+              case Suppression.create_rule_from_alert(alert,
+                     user_id: user_id,
+                     ttl_days: ttl_days,
+                     action: action
+                   ) do
+                {:ok, rule} ->
+                  # Link the rule to the alert
+                  update_alert(updated_alert, %{suppression_rule_id: rule.id})
+
+                  # Update feedback log
+                  Repo.update_all(
+                    from(l in VerdictFeedbackLog, where: l.id == ^feedback_log.id),
+                    set: [suppression_rule_created: true]
+                  )
+
+                  rule
+
+                {:error, reason} ->
+                  require Logger
+
+                  Logger.warning(
+                    "Failed to create suppression rule for alert #{alert.id}: #{inspect(reason)}"
+                  )
+
+                  nil
+              end
+            else
               nil
+            end
+          else
+            nil
           end
-        else
-          nil
+
+        # 4. Handle TP: boost detection confidence in baseline
+        if verdict == "true_positive" do
+          update_baseline_for_tp(alert)
         end
-      else
-        nil
-      end
 
-      # 4. Handle TP: boost detection confidence in baseline
-      if verdict == "true_positive" do
-        update_baseline_for_tp(alert)
-      end
-
-      %{
-        alert: Repo.get!(Alert, alert.id),
-        suppression_rule: suppression_rule,
-        feedback_log: feedback_log
-      }
-    end)
+        %{
+          alert: Repo.get!(Alert, alert.id),
+          suppression_rule: suppression_rule,
+          feedback_log: feedback_log
+        }
+      end)
 
     # Broadcast post-commit so the analyst dashboard FP Review card
     # and any subscribed alert-detail views refresh immediately.
@@ -4384,29 +6492,33 @@ defmodule TamanduaServer.Alerts do
   - `{:ok, %{updated: count, errors: count, suppression_rules_created: count}}`
   """
   @spec bulk_set_verdict([String.t()], String.t(), String.t() | nil, keyword()) ::
-    {:ok, map()}
+          {:ok, map()}
   def bulk_set_verdict(alert_ids, verdict, user_id, opts \\ []) do
     if verdict not in @valid_verdicts do
       {:error, :invalid_verdict}
     else
-      results = Enum.map(alert_ids, fn alert_id ->
-        case set_verdict(alert_id, verdict, user_id, opts) do
-          {:ok, result} -> {:ok, result}
-          {:error, reason} -> {:error, alert_id, reason}
-        end
-      end)
+      results =
+        Enum.map(alert_ids, fn alert_id ->
+          case set_verdict(alert_id, verdict, user_id, opts) do
+            {:ok, result} -> {:ok, result}
+            {:error, reason} -> {:error, alert_id, reason}
+          end
+        end)
 
       updated = Enum.count(results, &match?({:ok, _}, &1))
       errors = Enum.count(results, &match?({:error, _, _}, &1))
-      rules_created = results
-      |> Enum.filter(&match?({:ok, _}, &1))
-      |> Enum.count(fn {:ok, r} -> r.suppression_rule != nil end)
 
-      {:ok, %{
-        updated: updated,
-        errors: errors,
-        suppression_rules_created: rules_created
-      }}
+      rules_created =
+        results
+        |> Enum.filter(&match?({:ok, _}, &1))
+        |> Enum.count(fn {:ok, r} -> r.suppression_rule != nil end)
+
+      {:ok,
+       %{
+         updated: updated,
+         errors: errors,
+         suppression_rules_created: rules_created
+       }}
     end
   end
 
@@ -4419,19 +6531,21 @@ defmodule TamanduaServer.Alerts do
     now = DateTime.utc_now()
     dumped_agent_id = dump_uuid(agent_id)
 
-    query = from(r in SuppressionRule,
-      where: r.enabled == true,
-      where: is_nil(r.expires_at) or r.expires_at > ^now,
-      order_by: [desc: r.inserted_at]
-    )
-
-    query = if dumped_agent_id do
-      from(r in query,
-        where: is_nil(r.agent_id) or r.agent_id == ^dumped_agent_id
+    query =
+      from(r in SuppressionRule,
+        where: r.enabled == true,
+        where: is_nil(r.expires_at) or r.expires_at > ^now,
+        order_by: [desc: r.inserted_at]
       )
-    else
-      query
-    end
+
+    query =
+      if dumped_agent_id do
+        from(r in query,
+          where: is_nil(r.agent_id) or r.agent_id == ^dumped_agent_id
+        )
+      else
+        query
+      end
 
     Repo.all(query)
   end
@@ -4448,12 +6562,18 @@ defmodule TamanduaServer.Alerts do
   - `{:auto_suppress, count, reason}` - Auto-suppressed by occurrence count
   """
   @spec should_suppress?(map(), String.t() | nil) ::
-    :allow | {:suppress, String.t()} | {:reduce_severity, String.t(), String.t()} | {:auto_suppress, integer(), String.t()}
+          :allow
+          | {:suppress, String.t()}
+          | {:reduce_severity, String.t(), String.t()}
+          | {:auto_suppress, integer(), String.t()}
   def should_suppress?(alert_data, agent_id) do
     Suppression.check_suppression(alert_data, agent_id)
   rescue
     e ->
-      Logger.warning("[Alerts] Suppression precheck failed, allowing alert: #{Exception.message(e)}")
+      Logger.warning(
+        "[Alerts] Suppression precheck failed, allowing alert: #{Exception.message(e)}"
+      )
+
       :allow
   catch
     :exit, reason ->
@@ -4485,19 +6605,21 @@ defmodule TamanduaServer.Alerts do
 
     base_query = from(a in Alert, where: a.inserted_at >= ^start_date)
 
-    base_query = if organization_id do
-      from(a in base_query, where: a.organization_id == ^organization_id)
-    else
-      base_query
-    end
+    base_query =
+      if organization_id do
+        from(a in base_query, where: a.organization_id == ^organization_id)
+      else
+        base_query
+      end
 
     # Count by verdict
-    by_verdict = from(a in base_query,
-      group_by: a.verdict,
-      select: {a.verdict, count(a.id)}
-    )
-    |> Repo.all()
-    |> Map.new()
+    by_verdict =
+      from(a in base_query,
+        group_by: a.verdict,
+        select: {a.verdict, count(a.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
     total = Repo.aggregate(base_query, :count, :id)
     fp_count = Map.get(by_verdict, "false_positive", 0)
@@ -4508,31 +6630,34 @@ defmodule TamanduaServer.Alerts do
     fp_rate = if reviewed > 0, do: Float.round(fp_count / reviewed * 100, 1), else: 0.0
 
     # Get top FP rules (rules that generate the most FPs)
-    top_fp_rules = from(a in base_query,
-      where: a.verdict == "false_positive",
-      where: not is_nil(a.detection_metadata),
-      group_by: fragment("?->>'rule_name'", a.detection_metadata),
-      select: {fragment("?->>'rule_name'", a.detection_metadata), count(a.id)},
-      order_by: [desc: count(a.id)],
-      limit: 10
-    )
-    |> Repo.all()
-    |> Enum.map(fn {rule, count} -> %{rule_name: rule, fp_count: count} end)
+    top_fp_rules =
+      from(a in base_query,
+        where: a.verdict == "false_positive",
+        where: not is_nil(a.detection_metadata),
+        group_by: fragment("?->>'rule_name'", a.detection_metadata),
+        select: {fragment("?->>'rule_name'", a.detection_metadata), count(a.id)},
+        order_by: [desc: count(a.id)],
+        limit: 10
+      )
+      |> Repo.all()
+      |> Enum.map(fn {rule, count} -> %{rule_name: rule, fp_count: count} end)
 
     # Active suppression rules count
     now = DateTime.utc_now()
-    active_suppression_rules = Repo.aggregate(
-      from(r in SuppressionRule,
-        where: r.enabled == true,
-        where: is_nil(r.expires_at) or r.expires_at > ^now
-      ),
-      :count, :id
-    )
+
+    active_suppression_rules =
+      Repo.aggregate(
+        from(r in SuppressionRule,
+          where: r.enabled == true,
+          where: is_nil(r.expires_at) or r.expires_at > ^now
+        ),
+        :count,
+        :id
+      )
 
     # Total alerts suppressed (from match_count)
-    total_suppressed = Repo.one(
-      from(r in SuppressionRule, select: coalesce(sum(r.match_count), 0))
-    ) || 0
+    total_suppressed =
+      Repo.one(from(r in SuppressionRule, select: coalesce(sum(r.match_count), 0))) || 0
 
     %{
       total_alerts: total,
@@ -4573,21 +6698,24 @@ defmodule TamanduaServer.Alerts do
 
     query = from(r in SuppressionRule, order_by: [desc: r.inserted_at])
 
-    query = if organization_id do
-      from(r in query, where: r.organization_id == ^organization_id)
-    else
-      query
-    end
+    query =
+      if organization_id do
+        from(r in query, where: r.organization_id == ^organization_id)
+      else
+        query
+      end
 
-    query = if enabled_only do
-      now = DateTime.utc_now()
-      from(r in query,
-        where: r.enabled == true,
-        where: is_nil(r.expires_at) or r.expires_at > ^now
-      )
-    else
-      query
-    end
+    query =
+      if enabled_only do
+        now = DateTime.utc_now()
+
+        from(r in query,
+          where: r.enabled == true,
+          where: is_nil(r.expires_at) or r.expires_at > ^now
+        )
+      else
+        query
+      end
 
     Repo.all(query)
   end
@@ -4616,9 +6744,10 @@ defmodule TamanduaServer.Alerts do
   Create a suppression rule manually.
   """
   def create_suppression_rule(attrs) do
-    result = struct(SuppressionRule)
-    |> SuppressionRule.changeset(attrs)
-    |> Repo.insert()
+    result =
+      struct(SuppressionRule)
+      |> SuppressionRule.changeset(attrs)
+      |> Repo.insert()
 
     case result do
       {:ok, _rule} -> Suppression.refresh_cache()
@@ -4632,9 +6761,10 @@ defmodule TamanduaServer.Alerts do
   Update a suppression rule.
   """
   def update_suppression_rule(rule, attrs) when is_map(rule) do
-    result = rule
-    |> SuppressionRule.changeset(attrs)
-    |> Repo.update()
+    result =
+      rule
+      |> SuppressionRule.changeset(attrs)
+      |> Repo.update()
 
     case result do
       {:ok, _rule} -> Suppression.refresh_cache()
@@ -4738,17 +6868,19 @@ defmodule TamanduaServer.Alerts do
     process = evidence["process"] || evidence[:process] || %{}
 
     # Reconstruct a minimal event map the baseline can use
-    payload = %{}
-    |> maybe_put(:name, process["name"] || process[:name])
-    |> maybe_put(:parent_name, process["parent_name"] || process[:parent_name])
-    |> maybe_put(:path, process["path"] || process[:path])
-    |> maybe_put(:pid, process["pid"] || process[:pid])
-    |> maybe_put(:remote_ip, raw_event["remote_ip"] || raw_event[:remote_ip])
-    |> maybe_put(:remote_port, raw_event["remote_port"] || raw_event[:remote_port])
-    |> maybe_put(:query, raw_event["query"] || raw_event[:query])
+    payload =
+      %{}
+      |> maybe_put(:name, process["name"] || process[:name])
+      |> maybe_put(:parent_name, process["parent_name"] || process[:parent_name])
+      |> maybe_put(:path, process["path"] || process[:path])
+      |> maybe_put(:pid, process["pid"] || process[:pid])
+      |> maybe_put(:remote_ip, raw_event["remote_ip"] || raw_event[:remote_ip])
+      |> maybe_put(:remote_port, raw_event["remote_port"] || raw_event[:remote_port])
+      |> maybe_put(:query, raw_event["query"] || raw_event[:query])
 
     # Determine event type from detection metadata or alert title
-    event_type = detection_meta["event_type"] || detection_meta[:event_type] || guess_event_type(alert)
+    event_type =
+      detection_meta["event_type"] || detection_meta[:event_type] || guess_event_type(alert)
 
     %{
       event_type: event_type,
@@ -4759,6 +6891,7 @@ defmodule TamanduaServer.Alerts do
 
   defp guess_event_type(alert) do
     title = String.downcase(alert.title || "")
+
     cond do
       String.contains?(title, "process") -> "process_create"
       String.contains?(title, "network") -> "network_connect"
@@ -4857,11 +6990,17 @@ defmodule TamanduaServer.Alerts do
     status = Keyword.get(opts, :status)
     severity = Keyword.get(opts, :severity)
 
-    query = from c in AttackCampaign,
-      order_by: [desc: :last_activity],
-      preload: [:alerts, :assigned_to]
+    query =
+      from(c in AttackCampaign,
+        order_by: [desc: :last_activity],
+        preload: [:alerts, :assigned_to]
+      )
 
-    query = if organization_id, do: from(c in query, where: c.organization_id == ^organization_id), else: query
+    query =
+      if organization_id,
+        do: from(c in query, where: c.organization_id == ^organization_id),
+        else: query
+
     query = if status, do: from(c in query, where: c.status == ^status), else: query
     query = if severity, do: from(c in query, where: c.severity == ^severity), else: query
 
@@ -4875,9 +7014,13 @@ defmodule TamanduaServer.Alerts do
     alias TamanduaServer.Alerts.AttackCampaign
 
     case Repo.get(AttackCampaign, campaign_id) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       campaign ->
-        campaign = Repo.preload(campaign, [:alerts, :assigned_to, :created_by, campaign_alerts: [:alert]])
+        campaign =
+          Repo.preload(campaign, [:alerts, :assigned_to, :created_by, campaign_alerts: [:alert]])
+
         {:ok, campaign}
     end
   end
@@ -4919,9 +7062,10 @@ defmodule TamanduaServer.Alerts do
 
     Repo.transaction(fn ->
       # Insert campaign_alert
-      {:ok, campaign_alert} = struct(CampaignAlert)
-      |> CampaignAlert.changeset(attrs)
-      |> Repo.insert()
+      {:ok, campaign_alert} =
+        struct(CampaignAlert)
+        |> CampaignAlert.changeset(attrs)
+        |> Repo.insert()
 
       # Update campaign stats
       Repo.update_all(
@@ -4978,49 +7122,55 @@ defmodule TamanduaServer.Alerts do
 
     start_date = NaiveDateTime.utc_now() |> NaiveDateTime.add(-days * 24 * 60 * 60, :second)
 
-    base_query = from c in AttackCampaign, where: c.inserted_at >= ^start_date
+    base_query = from(c in AttackCampaign, where: c.inserted_at >= ^start_date)
 
-    base_query = if organization_id do
-      from c in base_query, where: c.organization_id == ^organization_id
-    else
-      base_query
-    end
+    base_query =
+      if organization_id do
+        from(c in base_query, where: c.organization_id == ^organization_id)
+      else
+        base_query
+      end
 
     total = Repo.aggregate(base_query, :count, :id)
 
-    by_status = from(c in base_query,
-      group_by: c.status,
-      select: {c.status, count(c.id)}
-    )
-    |> Repo.all()
-    |> Map.new()
+    by_status =
+      from(c in base_query,
+        group_by: c.status,
+        select: {c.status, count(c.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
-    by_pattern = from(c in base_query,
-      where: not is_nil(c.attack_pattern),
-      group_by: c.attack_pattern,
-      select: {c.attack_pattern, count(c.id)}
-    )
-    |> Repo.all()
-    |> Map.new()
+    by_pattern =
+      from(c in base_query,
+        where: not is_nil(c.attack_pattern),
+        group_by: c.attack_pattern,
+        select: {c.attack_pattern, count(c.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
-    by_severity = from(c in base_query,
-      group_by: c.severity,
-      select: {c.severity, count(c.id)}
-    )
-    |> Repo.all()
-    |> Map.new()
+    by_severity =
+      from(c in base_query,
+        group_by: c.severity,
+        select: {c.severity, count(c.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
 
     # Average alerts per campaign
-    avg_alerts = from(c in base_query,
-      select: avg(c.alert_count)
-    )
-    |> Repo.one()
+    avg_alerts =
+      from(c in base_query,
+        select: avg(c.alert_count)
+      )
+      |> Repo.one()
 
     # Average agents affected
-    avg_agents = from(c in base_query,
-      select: avg(c.agent_count)
-    )
-    |> Repo.one()
+    avg_agents =
+      from(c in base_query,
+        select: avg(c.agent_count)
+      )
+      |> Repo.one()
 
     %{
       total_campaigns: total,
@@ -5068,26 +7218,36 @@ defmodule TamanduaServer.Alerts do
           agent_id: alert.agent_id
         }
 
-        case TamanduaServer.ThreatIntel.Attribution.attribute_alert(alert_data) do
+        organization_id = alert.organization_id
+
+        if is_binary(organization_id) and
+             match?({:ok, _}, Ecto.UUID.cast(organization_id)) do
+        case TamanduaServer.ThreatIntel.Attribution.attribute_alert(
+               organization_id,
+               alert_data
+             ) do
           {:ok, attributions} when is_list(attributions) and length(attributions) > 0 ->
             top = List.first(attributions)
 
-            actor_names = attributions
-            |> Enum.take(3)
-            |> Enum.map(fn a -> a[:actor_name] || a[:actor_id] || "unknown" end)
+            actor_names =
+              attributions
+              |> Enum.take(3)
+              |> Enum.map(fn a -> a[:actor_name] || a[:actor_id] || "unknown" end)
 
             details = %{
-              "attributions" => Enum.take(attributions, 5) |> Enum.map(fn a ->
-                %{
-                  "actor_name" => a[:actor_name],
-                  "actor_id" => a[:actor_id],
-                  "confidence" => a[:confidence],
-                  "matching_iocs" => a[:matching_iocs] || [],
-                  "matching_ttps" => a[:matching_ttps] || [],
-                  "matching_malware" => a[:matching_malware] || [],
-                  "evidence" => a[:evidence] || []
-                }
-              end),
+              "attributions" =>
+                Enum.take(attributions, 5)
+                |> Enum.map(fn a ->
+                  %{
+                    "actor_name" => a[:actor_name],
+                    "actor_id" => a[:actor_id],
+                    "confidence" => a[:confidence],
+                    "matching_iocs" => a[:matching_iocs] || [],
+                    "matching_ttps" => a[:matching_ttps] || [],
+                    "matching_malware" => a[:matching_malware] || [],
+                    "evidence" => a[:evidence] || []
+                  }
+                end),
               "attributed_at" => DateTime.to_iso8601(DateTime.utc_now())
             }
 
@@ -5100,12 +7260,23 @@ defmodule TamanduaServer.Alerts do
 
             # Notify CampaignTracker
             try do
-              TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(%{
-                alert_id: alert.id,
-                actor_names: actor_names,
-                confidence: top[:confidence],
-                timestamp: DateTime.utc_now()
-              })
+              if is_binary(alert.organization_id) and alert.organization_id != "" do
+                TamanduaServer.ThreatIntel.CampaignTracker.record_attribution(
+                  alert.organization_id,
+                  %{
+                    alert_id: alert.id,
+                    actor_names: actor_names,
+                    confidence: top[:confidence],
+                    timestamp: DateTime.utc_now()
+                  }
+                )
+              else
+                :telemetry.execute(
+                  [:tamandua, :campaign_tracker, :attribution_dropped],
+                  %{count: 1},
+                  %{source: :alerts, reason: :organization_missing}
+                )
+              end
             rescue
               _ -> :ok
             catch
@@ -5115,12 +7286,21 @@ defmodule TamanduaServer.Alerts do
           _ ->
             :ok
         end
+        else
+          :telemetry.execute(
+            [:tamandua, :threat_intel, :attribution_scope_rejected],
+            %{count: 1},
+            %{operation: :attribute_alert, reason: :organization_unknown, source: :alerts}
+          )
+        end
       rescue
         e ->
           Logger.warning("[Alerts] Async attribution failed for alert #{alert.id}: #{inspect(e)}")
       catch
         :exit, _ ->
-          Logger.debug("[Alerts] Attribution service not available, skipping for alert #{alert.id}")
+          Logger.debug(
+            "[Alerts] Attribution service not available, skipping for alert #{alert.id}"
+          )
       end
     end)
   end
@@ -5171,7 +7351,7 @@ defmodule TamanduaServer.Alerts do
       SavedSearch
       |> where([s], s.organization_id == ^organization_id)
       |> where([s], s.user_id == ^user_id or (s.is_shared == true and ^include_shared))
-      |> order_by([s], [desc: s.usage_count, desc: s.updated_at])
+      |> order_by([s], desc: s.usage_count, desc: s.updated_at)
 
     query =
       if starred_only do
@@ -5321,7 +7501,11 @@ defmodule TamanduaServer.Alerts do
           "conditions" => [
             %{"field" => "mitre_technique", "operator" => "array_contains", "value" => "T1486"},
             %{"field" => "mitre_technique", "operator" => "array_contains", "value" => "T1490"},
-            %{"field" => "file_path", "operator" => "regex", "value" => "\\.(encrypted|locked|crypt)$"}
+            %{
+              "field" => "file_path",
+              "operator" => "regex",
+              "value" => "\\.(encrypted|locked|crypt)$"
+            }
           ]
         },
         organization_id: organization_id,
@@ -5451,7 +7635,7 @@ defmodule TamanduaServer.Alerts do
     query =
       Alert
       |> TenantScope.scope_to_tenant(organization_id)
-      |> order_by([a], [desc: a.inserted_at])
+      |> order_by([a], desc: a.inserted_at)
 
     # Handle quick filter "my_alerts"
     query =
@@ -5517,5 +7701,41 @@ defmodule TamanduaServer.Alerts do
   """
   def filter_metadata do
     FilterBuilder.supported_fields()
+  end
+
+  # Avoid serializing three JSONB documents into a regex for every catalog row
+  # and pagination count. Keys and flags are checked structurally.
+  defp structured_validation_alert_dynamic(opts) do
+    marker =
+      dynamic(
+        [a],
+        fragment(
+          ~s<jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.parity_run_id') OR jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.validation_run_id') OR jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.validation_event') OR jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.test_event') OR jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.validation_alert \\? (@ == true)') OR jsonb_path_exists(jsonb_build_array(coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb), coalesce(?, '{}'::jsonb)), '$.**.validationAlert \\? (@ == true)') OR lower(concat_ws(' ', coalesce(?::text, ''), coalesce(?::text, ''))) LIKE ANY (ARRAY['%mobile-endpoint-parity%', '%agent-mobile-endpoint-parity%', '%synthetic%'])>,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          a.detection_metadata,
+          a.raw_event,
+          a.evidence,
+          type(a.source_event_id, :string),
+          a.title
+        )
+      )
+
+    if Keyword.get(opts, :negate?, false),
+      do: dynamic([_a], not (^marker)),
+      else: marker
   end
 end

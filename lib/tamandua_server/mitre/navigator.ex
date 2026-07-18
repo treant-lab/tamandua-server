@@ -30,7 +30,7 @@ defmodule TamanduaServer.Mitre.Navigator do
   """
   def generate_coverage_layer(opts \\ []) do
     org_id = Keyword.get(opts, :organization_id)
-    include_disabled = Keyword.get(opts, :include_disabled, false)
+    _include_disabled = Keyword.get(opts, :include_disabled, false)
 
     # Get all technique mappings
     query = from m in TechniqueMapping

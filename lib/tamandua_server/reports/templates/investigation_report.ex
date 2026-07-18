@@ -14,7 +14,7 @@ defmodule TamanduaServer.Reports.Templates.InvestigationReport do
 
   @behaviour TamanduaServer.Reports.Templates.TemplateBehaviour
 
-  alias TamanduaServer.{Alerts, Investigations}
+  alias TamanduaServer.{Investigations}
 
   @impl true
   def name, do: "Investigation Report"

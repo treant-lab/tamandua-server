@@ -310,5 +310,48 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzerTest do
       alert = PackageBehaviorAnalyzer.build_supply_chain_alert("agent", :cargo, anomalies)
       assert alert.severity == "medium"
     end
+
+    test "includes existing event linkage metadata when provided" do
+      agent_id = Ecto.UUID.generate()
+      organization_id = Ecto.UUID.generate()
+      source_event_id = Ecto.UUID.generate()
+      second_event_id = Ecto.UUID.generate()
+
+      anomalies = %{
+        suspicious_scripts: {:suspicious, %{risk_score: 0.75}},
+        anomalous_network: [],
+        sensitive_file_access: []
+      }
+
+      alert =
+        PackageBehaviorAnalyzer.build_supply_chain_alert(agent_id, :npm, anomalies, %{
+          organization_id: organization_id,
+          source_event_id: source_event_id,
+          event_ids: [source_event_id, second_event_id],
+          contributing_events: [source_event_id, second_event_id]
+        })
+
+      assert alert.agent_id == agent_id
+      assert alert.organization_id == organization_id
+      assert alert.source_event_id == source_event_id
+      assert alert.event_ids == [source_event_id, second_event_id]
+      assert alert.contributing_events == [source_event_id, second_event_id]
+    end
+
+    test "omits optional linkage metadata when no event IDs are provided" do
+      anomalies = %{
+        suspicious_scripts: {:suspicious, %{risk_score: 0.75}},
+        anomalous_network: [],
+        sensitive_file_access: []
+      }
+
+      alert = PackageBehaviorAnalyzer.build_supply_chain_alert("agent", :npm, anomalies, %{})
+
+      refute Map.has_key?(alert, :agent_id)
+      refute Map.has_key?(alert, :organization_id)
+      refute Map.has_key?(alert, :source_event_id)
+      refute Map.has_key?(alert, :event_ids)
+      refute Map.has_key?(alert, :contributing_events)
+    end
   end
 end

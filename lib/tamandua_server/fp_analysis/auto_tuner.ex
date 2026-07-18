@@ -31,8 +31,7 @@ defmodule TamanduaServer.FPAnalysis.AutoTuner do
   alias TamanduaServer.FPAnalysis.{
     FPPattern,
     RuleQualityMetrics,
-    TuningRecommendation,
-    BaselineLearner
+    TuningRecommendation
   }
 
   # Auto-tuning configuration
@@ -43,8 +42,6 @@ defmodule TamanduaServer.FPAnalysis.AutoTuner do
 
   # Threshold adjustment parameters
   @high_fp_rate_threshold 0.3
-  @very_high_fp_rate_threshold 0.5
-  @min_alerts_for_threshold_adjustment 50
 
   # Evaluation interval
   @evaluation_interval :timer.hours(6)
@@ -582,7 +579,7 @@ defmodule TamanduaServer.FPAnalysis.AutoTuner do
     end
   end
 
-  defp estimate_fp_reduction(metrics, new_threshold) do
+  defp estimate_fp_reduction(_metrics, new_threshold) do
     # Rough estimate: higher threshold reduces more FPs
     # This is a simplification - real impact depends on score distribution
     current_threshold = 0.7

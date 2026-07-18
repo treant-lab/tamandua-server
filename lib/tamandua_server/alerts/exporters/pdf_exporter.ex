@@ -5,7 +5,6 @@ defmodule TamanduaServer.Alerts.Exporters.PDFExporter do
   Uses ChromicPDF for PDF generation with custom HTML templates.
   """
 
-  alias TamanduaServer.Alerts.Alert
 
   @doc """
   Generates PDF data from alerts.

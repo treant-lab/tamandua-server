@@ -56,7 +56,7 @@ defmodule Mix.Tasks.Mitre.Import do
       case AttackFramework.download_latest_stix() do
         {:ok, path} ->
           Mix.shell().info("✓ Downloaded to #{path}")
-          source = path
+          _source = path
 
         {:error, reason} ->
           Mix.shell().error("✗ Download failed: #{inspect(reason)}")

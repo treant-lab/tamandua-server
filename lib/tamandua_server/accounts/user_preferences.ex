@@ -146,8 +146,9 @@ defmodule TamanduaServer.Accounts.UserPreferences do
   Returns all available timezones.
   """
   def all_timezones do
-    Timex.timezones()
-    |> Enum.map(fn tz -> {tz, tz} end)
+    common_timezones()
+    |> Enum.map(fn {timezone, _label} -> {timezone, timezone} end)
+    |> Enum.uniq()
     |> Enum.sort()
   end
 
@@ -182,6 +183,8 @@ defmodule TamanduaServer.Accounts.UserPreferences do
   end
 
   defp valid_timezone?(timezone) do
-    timezone in Timex.timezones()
+    Enum.any?(common_timezones(), fn {supported_timezone, _label} ->
+      supported_timezone == timezone
+    end)
   end
 end

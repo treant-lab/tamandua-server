@@ -16,7 +16,7 @@ defmodule TamanduaServer.XDR.Ingestor do
   require Logger
 
   alias Broadway.Message
-  alias TamanduaServer.XDR.{NormalizedEvent, Source, Parser, Correlator}
+  alias TamanduaServer.XDR.{NormalizedEvent, Parser, Correlator}
   alias TamanduaServer.Repo
 
   @batch_size 100
@@ -145,7 +145,7 @@ defmodule TamanduaServer.XDR.Ingestor do
     events = Enum.map(messages, fn %Message{data: event} -> event end)
 
     # Attempt correlation with endpoint telemetry
-    correlated_events = Correlator.correlate_batch(events)
+    correlated_events = Enum.map(events, &correlate_event/1)
 
     case persist_events(correlated_events) do
       {:ok, count} ->
@@ -216,6 +216,38 @@ defmodule TamanduaServer.XDR.Ingestor do
 
   defp detect_format(raw) when is_map(raw), do: "json"
   defp detect_format(_), do: "generic"
+
+  # Correlate a single normalized event with endpoint telemetry via
+  # Correlator.correlate_with_endpoint/1 and annotate the event's
+  # :enrichment map with a compact match summary. Events pass through
+  # unchanged when there are no matches or the Correlator is unavailable.
+  defp correlate_event(event) do
+    case Correlator.correlate_with_endpoint(event) do
+      {:ok, %{matches: matches, match_count: count, correlated_at: correlated_at}} when count > 0 ->
+        summary = %{
+          match_count: count,
+          correlated_at: correlated_at,
+          matches:
+            Enum.map(matches, fn m ->
+              %{id: m[:id] || m[:event_id], score: m[:correlation_score]}
+            end)
+        }
+
+        Map.update(
+          event,
+          :enrichment,
+          %{endpoint_correlation: summary},
+          &Map.put(&1 || %{}, :endpoint_correlation, summary)
+        )
+
+      _ ->
+        event
+    end
+  catch
+    :exit, reason ->
+      Logger.warning("XDR Ingestor: Correlator unavailable: #{inspect(reason)}")
+      event
+  end
 
   defp should_correlate?(event) do
     # Correlate if event has IP addresses that might match endpoints

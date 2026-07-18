@@ -50,7 +50,6 @@ defmodule TamanduaServer.XDR.PartitionedStore do
   @bloom_hashes 7         # hash functions
 
   # Parallel query settings
-  @max_parallel_partitions 8
 
   # ------------------------------------------------------------------
   # Client API
@@ -149,7 +148,7 @@ defmodule TamanduaServer.XDR.PartitionedStore do
   # ------------------------------------------------------------------
 
   @impl true
-  def init(opts) do
+  def init(_opts) do
     # Create ETS tables
     :ets.new(@bloom_filter_table, [:set, :public, :named_table, read_concurrency: true])
     :ets.new(@aggregation_cache, [:set, :public, :named_table, read_concurrency: true])

@@ -20,7 +20,6 @@ defmodule TamanduaServerWeb.Components.RemediationActions do
   alias Phoenix.PubSub
 
   # Actions that require password confirmation via SecureConfirmation
-  @high_risk_actions ~w(kill_process isolate_host)
 
   @impl true
   def mount(socket) do

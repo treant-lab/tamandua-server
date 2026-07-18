@@ -51,8 +51,8 @@ defmodule TamanduaServerWeb.Plugs.TenantScope do
   import Plug.Conn
   require Logger
 
-  alias TamanduaServer.{Tenants, Accounts}
-  alias TamanduaServer.Accounts.{Organization, APIKey}
+  alias TamanduaServer.{Tenants}
+  alias TamanduaServer.Accounts.{APIKey}
 
   @behaviour Plug
 
@@ -133,7 +133,7 @@ defmodule TamanduaServerWeb.Plugs.TenantScope do
     {:error, conn, reason}
   end
 
-  defp handle_api_key_result(conn, nil) do
+  defp handle_api_key_result(_conn, nil) do
     nil  # No API key provided, continue to next method
   end
 

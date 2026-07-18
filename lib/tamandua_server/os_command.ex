@@ -86,11 +86,15 @@ defmodule TamanduaServer.OSCommand do
           member -> {:error, {:unsafe_archive_member, member}}
         end
 
-      {output, code} ->
-        {:error, {:tar_list_failed, code, output}}
-
+      # run/3 returns {:error, reason} for validation failures and timeouts;
+      # match it before the generic {output, code} 2-tuple, which would
+      # otherwise swallow it (previously this clause was unreachable and the
+      # error was misreported as {:tar_list_failed, reason, :error}).
       {:error, _} = error ->
         error
+
+      {output, code} ->
+        {:error, {:tar_list_failed, code, output}}
     end
   end
 

@@ -94,18 +94,20 @@ defmodule TamanduaServer.Kubernetes.RuntimeProtection do
     "/sys"
   ]
 
-  @sensitive_secret_patterns [
-    ~r/password/i,
-    ~r/credential/i,
-    ~r/token/i,
-    ~r/secret/i,
-    ~r/api[_-]?key/i,
-    ~r/private[_-]?key/i,
-    ~r/tls[_-]?cert/i,
-    ~r/ssh[_-]?key/i,
-    ~r/kubeconfig/i,
-    ~r/service[_-]?account/i
-  ]
+  defp sensitive_secret_patterns do
+    [
+      ~r/password/i,
+      ~r/credential/i,
+      ~r/token/i,
+      ~r/secret/i,
+      ~r/api[_-]?key/i,
+      ~r/private[_-]?key/i,
+      ~r/tls[_-]?cert/i,
+      ~r/ssh[_-]?key/i,
+      ~r/kubeconfig/i,
+      ~r/service[_-]?account/i
+    ]
+  end
 
   # -------------------------------------------------------------------
   # Public API
@@ -563,7 +565,7 @@ defmodule TamanduaServer.Kubernetes.RuntimeProtection do
   end
 
   defp matches_sensitive_pattern?(name) when is_binary(name) do
-    Enum.any?(@sensitive_secret_patterns, fn pattern ->
+    Enum.any?(sensitive_secret_patterns(), fn pattern ->
       Regex.match?(pattern, name)
     end)
   end

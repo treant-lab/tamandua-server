@@ -290,7 +290,7 @@ defmodule TamanduaServerWeb.API.V1.BillingController do
 
   defp parse_int(int, _) when is_integer(int), do: int
 
-  defp default_return_url(conn) do
+  defp default_return_url(_conn) do
     base_url = Application.get_env(:tamandua_server, :base_url) || "http://localhost:4000"
     "#{base_url}/settings/billing"
   end

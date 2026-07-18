@@ -40,12 +40,11 @@ defmodule TamanduaServerWeb.Plugs.TenantRateLimiter do
   require Logger
 
   alias TamanduaServer.Tenants
-  alias TamanduaServer.Accounts.{APIKey, TenantRateLimit}
+  alias TamanduaServer.Accounts.{APIKey}
 
   @behaviour Plug
 
   @ets_table :tenant_rate_limits_tracker
-  @default_window 60  # 1 minute in seconds
   @cleanup_interval 300_000  # 5 minutes in milliseconds
 
   # Default limits when no config exists
@@ -92,7 +91,7 @@ defmodule TamanduaServerWeb.Plugs.TenantRateLimiter do
       key = rate_limit_key(org_id, api_key, limit_type)
 
       case check_and_increment(key, limit, window) do
-        {:ok, count, remaining, reset_at} ->
+        {:ok, _count, remaining, reset_at} ->
           conn
           |> put_rate_limit_headers(limit, remaining, reset_at)
 

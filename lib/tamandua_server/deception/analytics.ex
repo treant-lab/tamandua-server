@@ -860,7 +860,7 @@ defmodule TamanduaServer.Deception.Analytics do
     ttd_samples =
       state.interactions
       |> Enum.take(100)
-      |> Enum.map(fn interaction ->
+      |> Enum.map(fn _interaction ->
         # Time from deployment to first access
         10
       end)

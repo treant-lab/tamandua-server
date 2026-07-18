@@ -85,7 +85,7 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
     # Validate agent belongs to user's organization before creating session
     case Agents.get_agent_for_org(org_id, agent_id) do
       {:ok, _agent} ->
-        GenServer.call(__MODULE__, {:create_session, agent_id, user_id, opts})
+        GenServer.call(__MODULE__, {:create_session, agent_id, user_id, org_id, opts})
 
       {:error, :not_found} ->
         {:error, :unauthorized}
@@ -107,7 +107,7 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
   @spec create_session_unsafe(String.t(), String.t() | integer(), keyword()) ::
           {:ok, map()} | {:error, atom()}
   def create_session_unsafe(agent_id, user_id, opts \\ []) do
-    GenServer.call(__MODULE__, {:create_session, agent_id, user_id, opts})
+    GenServer.call(__MODULE__, {:create_session, agent_id, user_id, nil, opts})
   end
 
   @doc """
@@ -164,6 +164,22 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
     end
   end
 
+  @doc "Get a session after enforcing tenant and operator ownership."
+  @spec get_session_for_access(String.t(), term(), term(), boolean()) ::
+          {:ok, map()} | {:error, :not_found | :unauthorized}
+  def get_session_for_access(session_id, organization_id, requester_id, supervise? \\ false) do
+    with {:ok, session} <- get_session(session_id),
+         :ok <-
+           authorize_session_access(
+             session,
+             organization_id,
+             requester_id,
+             supervise?
+           ) do
+      {:ok, session}
+    end
+  end
+
   @doc """
   List all active sessions. Optionally filter by agent_id or user_id.
 
@@ -177,8 +193,10 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
     agent_id = Keyword.get(opts, :agent_id)
     user_id = Keyword.get(opts, :user_id)
     status_filter = Keyword.get(opts, :status)
+    organization_id = Keyword.get(opts, :organization_id)
 
     all_sessions()
+    |> maybe_filter_by(:organization_id, organization_id)
     |> maybe_filter_by(:agent_id, agent_id)
     |> maybe_filter_by(:user_id, user_id)
     |> maybe_filter_by(:status, status_filter)
@@ -357,8 +375,8 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
   end
 
   @impl true
-  def handle_call({:create_session, agent_id, user_id, opts}, _from, state) do
-    result = do_create_session(agent_id, user_id, opts)
+  def handle_call({:create_session, agent_id, user_id, organization_id, opts}, _from, state) do
+    result = do_create_session(agent_id, user_id, organization_id, opts)
     {:reply, result, state}
   end
 
@@ -537,7 +555,7 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
   # Private Implementation
   # ============================================================================
 
-  defp do_create_session(agent_id, user_id, opts) do
+  defp do_create_session(agent_id, user_id, organization_id, opts) do
     user_id_str = to_string(user_id)
 
     with :ok <- do_authorize(agent_id, user_id_str),
@@ -553,6 +571,7 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
         session_id: session_id,
         agent_id: agent_id,
         user_id: user_id_str,
+        organization_id: organization_id,
         case_id: Keyword.get(opts, :case_id),
         alert_id: Keyword.get(opts, :alert_id),
         notes: Keyword.get(opts, :notes),
@@ -605,6 +624,23 @@ defmodule TamanduaServer.LiveResponse.SessionManager do
         end
     end
   end
+
+  defp authorize_session_access(session, organization_id, requester_id, supervise?) do
+    same_tenant? =
+      not is_nil(organization_id) and
+        same_identifier?(session[:organization_id], organization_id)
+
+    same_operator? =
+      not is_nil(requester_id) and same_identifier?(session.user_id, requester_id)
+
+    if same_tenant? and (same_operator? or supervise?) do
+      :ok
+    else
+      {:error, :unauthorized}
+    end
+  end
+
+  defp same_identifier?(left, right), do: to_string(left) == to_string(right)
 
   defp check_agent_session_limit(agent_id) do
     max = max_sessions_per_agent()

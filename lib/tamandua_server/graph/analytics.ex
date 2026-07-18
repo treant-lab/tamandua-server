@@ -304,9 +304,11 @@ defmodule TamanduaServer.Graph.Analytics do
       neighbors = :ets.lookup(@adj_table, node_key) ++
                   :ets.lookup(@reverse_adj_table, node_key)
 
+      # Both @adj_table ({from, {to, et, d}}) and @reverse_adj_table
+      # ({to, {from, et, d}}) key entries by the looked-up node and store the
+      # opposite endpoint first in the value tuple, so one clause covers both.
       neighbor_labels = Enum.map(neighbors, fn
-        {_from, {to, _et, _d}} -> Map.get(acc, to, to)
-        {_to, {from, _et, _d}} -> Map.get(acc, from, from)
+        {_node, {other, _et, _d}} -> Map.get(acc, other, other)
       end)
 
       if Enum.empty?(neighbor_labels) do
@@ -674,19 +676,16 @@ defmodule TamanduaServer.Graph.Analytics do
 
           next_risk = risk * @risk_decay
 
+          # Both adjacency tables store the opposite endpoint first in the
+          # value tuple (see propagate_labels/2), so one clause covers entries
+          # from either table.
           {new_queue, new_visited} =
             Enum.reduce(neighbors, {rest, visited}, fn
-              {_from, {to, _et, _d}}, {q, v} ->
-                if MapSet.member?(v, to) do
+              {_node, {other, _et, _d}}, {q, v} ->
+                if MapSet.member?(v, other) do
                   {q, v}
                 else
-                  {:queue.in({to, depth + 1, next_risk}, q), MapSet.put(v, to)}
-                end
-              {_to, {from, _et, _d}}, {q, v} ->
-                if MapSet.member?(v, from) do
-                  {q, v}
-                else
-                  {:queue.in({from, depth + 1, next_risk}, q), MapSet.put(v, from)}
+                  {:queue.in({other, depth + 1, next_risk}, q), MapSet.put(v, other)}
                 end
             end)
 

@@ -368,7 +368,7 @@ defmodule TamanduaServer.Reports do
       )
 
     # Get tactic distribution
-    tactic_distribution =
+    _tactic_distribution =
       safe_call(
         fn ->
           Mitre.get_tactic_coverage()

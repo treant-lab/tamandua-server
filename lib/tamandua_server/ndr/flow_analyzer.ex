@@ -45,7 +45,6 @@ defmodule TamanduaServer.NDR.FlowAnalyzer do
   @flow_window_ms 300_000
 
   # Baseline learning period (7 days)
-  @baseline_learning_days 7
 
   # Anomaly detection thresholds
   @bandwidth_anomaly_multiplier 3.0
@@ -434,7 +433,7 @@ defmodule TamanduaServer.NDR.FlowAnalyzer do
     payload = event[:payload] || event["payload"] || %{}
     agent_id = event[:agent_id] || event["agent_id"]
     src_ip = payload[:local_ip] || payload["local_ip"] || payload[:source_ip] || payload["source_ip"]
-    dst_ip = payload[:remote_ip] || payload["remote_ip"]
+    _dst_ip = payload[:remote_ip] || payload["remote_ip"]
 
     anomalies = []
 

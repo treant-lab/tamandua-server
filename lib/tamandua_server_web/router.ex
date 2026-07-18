@@ -10,6 +10,7 @@ defmodule TamanduaServerWeb.Router do
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.APICSRFProtection)
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.CSRFCookie)
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.InertiaSharedData)
+  Code.ensure_compiled!(TamanduaServerWeb.Plugs.ResolveInertiaTenant)
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.RequireTenantContext)
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.SetOrganizationContext)
   Code.ensure_compiled!(TamanduaServerWeb.Plugs.TenantRateLimiter)
@@ -40,6 +41,8 @@ defmodule TamanduaServerWeb.Router do
     plug(TamanduaServerWeb.Plugs.SecurityHeaders)
     plug(TamanduaServerWeb.Plugs.CSRFCookie)
     plug(:fetch_current_user)
+    plug(:require_authenticated_user)
+    plug(TamanduaServerWeb.Plugs.ResolveInertiaTenant)
     plug(TamanduaServerWeb.Plugs.InertiaSharedData)
     plug(Inertia.Plug)
   end
@@ -77,6 +80,14 @@ defmodule TamanduaServerWeb.Router do
     plug(TamanduaServerWeb.Plugs.AdaptiveRateLimiter)
   end
 
+  pipeline :mobile_mutation_no_store do
+    plug(:put_mobile_mutation_no_store)
+  end
+
+  defp put_mobile_mutation_no_store(conn, _opts) do
+    Plug.Conn.put_resp_header(conn, "cache-control", "no-store")
+  end
+
   # Pipeline for webhook endpoints that need raw body for signature verification
   pipeline :fetch_raw_body do
     plug(:capture_raw_body)
@@ -85,7 +96,18 @@ defmodule TamanduaServerWeb.Router do
   # Capture raw body for webhook signature verification
   # Returns 400 Bad Request for invalid JSON instead of crashing with 500
   defp capture_raw_body(conn, _opts) do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    {body, conn} =
+      case conn.assigns[:raw_body] do
+        chunks when is_list(chunks) and chunks != [] ->
+          {chunks |> Enum.reverse() |> IO.iodata_to_binary(), conn}
+
+        body when is_binary(body) and byte_size(body) > 0 ->
+          {body, conn}
+
+        _ ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          {body, conn}
+      end
 
     case Jason.decode(body) do
       {:ok, decoded} ->
@@ -152,19 +174,14 @@ defmodule TamanduaServerWeb.Router do
     delete("/logout", SessionController, :delete)
   end
 
-  # Public Attestation Audit Pages (no authentication required)
-  # These pages show only privacy-safe blockchain attestation data
-  # Uses :public_browser pipeline with minimal layout (no sidebar)
-  scope "/public", TamanduaServerWeb do
-    pipe_through(:public_browser)
-
-    # Security Oracle - Main public proofs demo page
-    live("/proofs", PublicProofsLive, :index)
-
-    # Attestation list and detail pages
-    live("/attestations", PublicAttestationsLive, :index)
-    live("/attestations/:tx_id", PublicAttestationDetailLive, :show)
-  end
+  # Public attestation audit pages stay disabled until the deployment has real,
+  # reviewed proof evidence and an explicit publication policy.
+  # scope "/public", TamanduaServerWeb do
+  #   pipe_through(:public_browser)
+  #   live "/proofs", PublicProofsLive, :index
+  #   live "/attestations", PublicAttestationsLive, :index
+  #   live "/attestations/:tx_id", PublicAttestationDetailLive, :show
+  # end
 
   # Public agent binaries. Enrollment is still protected by short-lived tokens;
   # this route only exposes allowlisted installer artifacts.
@@ -221,6 +238,22 @@ defmodule TamanduaServerWeb.Router do
     post("/cli-auth/token", CLIAuthController, :token)
   end
 
+  scope "/api/v1", TamanduaServerWeb.API.V1, as: :api_v1_mobile_mutation do
+    pipe_through([:mobile_mutation_no_store, :api, :api_auth])
+
+    post(
+      "/mobile/v2/device-mutations/challenge",
+      MobileDeviceMutationAuthorizationController,
+      :create
+    )
+
+    get(
+      "/mobile/v2/device-mutations/:authorization_id",
+      MobileDeviceMutationAuthorizationController,
+      :show
+    )
+  end
+
   scope "/", TamanduaServerWeb do
     pipe_through([:browser, :require_authenticated_user])
 
@@ -233,6 +266,16 @@ defmodule TamanduaServerWeb.Router do
 
     post("/auth/logout", MobileAuthController, :logout)
     post("/auth/refresh", MobileAuthController, :refresh)
+
+    # Unified health/SLO view for tenant control surfaces.
+    get("/health-hub", HealthHubController, :index)
+
+    # Emerging Threats read model and analyst actions.
+    get("/emerging-threats", EmergingThreatController, :index)
+    get("/emerging-threats/:id", EmergingThreatController, :show)
+    post("/emerging-threats/:id/collect-evidence", EmergingThreatController, :collect_evidence)
+    post("/emerging-threats/:id/create-case", EmergingThreatController, :create_case)
+    get("/emerging-threats/:id/detection-pack", EmergingThreatController, :detection_pack)
 
     # Batch Operations - keep specific /batch routes before dynamic resource ids.
     post("/alerts/batch/close", BatchController, :close_alerts)
@@ -249,6 +292,8 @@ defmodule TamanduaServerWeb.Router do
 
     # Agents
     get("/agents/data-sources/health", AgentController, :data_sources_health)
+    post("/agents/:agent_id/uninstall-intents", UninstallIntentController, :create)
+    post("/agents/:agent_id/uninstall-breakglass", UninstallIntentController, :create_breakglass)
     resources("/agents", AgentController, only: [:index, :show, :update, :delete])
     post("/agents/:id/isolate", AgentController, :isolate)
     post("/agents/:id/unisolate", AgentController, :unisolate)
@@ -259,6 +304,7 @@ defmodule TamanduaServerWeb.Router do
     get("/agents/:id/processes", AgentController, :processes)
     get("/agents/:id/processes/:pid/children", AgentController, :process_children)
     get("/agents/:id/processes/:pid/ancestors", AgentController, :process_ancestors)
+    get("/agents/:id/processes/:pid/context", AgentController, :process_context)
 
     # Baseline Learning
     get("/agents/:id/baseline/status", BaselineController, :status)
@@ -276,6 +322,8 @@ defmodule TamanduaServerWeb.Router do
     patch("/alerts/:id/status", AlertController, :update_status)
     get("/alerts/:id/history", AlertController, :history)
     get("/alerts/:id/related", AlertController, :related)
+    get("/alerts/:id/agent-commands", AlertController, :agent_commands)
+    post("/alerts/:id/triage/recompute", AlertController, :recompute_triage)
     post("/alerts/:id/create-exclusion", AlertController, :create_exclusion_from_alert)
 
     # Analyst Verdict / Feedback Loop
@@ -285,6 +333,24 @@ defmodule TamanduaServerWeb.Router do
     # Solana Attestation (Proof of Incident)
     post("/alerts/:id/attest", AlertController, :attest)
     get("/alerts/:id/attestation", AlertController, :get_attestation)
+    get("/alerts/:alert_id/investigations", InvestigationRunController, :index_for_alert)
+
+    post(
+      "/alerts/:alert_id/detector-observations",
+      InvestigationRunController,
+      :attach_detector_observation
+    )
+
+    get("/detector-producer-attestations", DetectorProducerRegistryController, :index)
+    post("/detector-producer-attestations", DetectorProducerRegistryController, :create)
+
+    post(
+      "/detector-producer-attestations/:id/revoke",
+      DetectorProducerRegistryController,
+      :revoke
+    )
+
+    get("/investigation-runs/:id/evidence", InvestigationRunController, :evidence)
     get("/incidents/:id", AlertController, :incident)
 
     # Alert Bulk Operations
@@ -378,6 +444,10 @@ defmodule TamanduaServerWeb.Router do
     patch("/case-investigations/:id/status", CaseInvestigationController, :update_status)
     post("/case-investigations/:id/assign", CaseInvestigationController, :assign)
 
+    # Canonical read model over legacy investigations. Mutation remains on the
+    # legacy endpoints until tasks and audit have durable transactional storage.
+    resources(~s(/cases), CaseController, only: [:index, :show, :create])
+
     # Geo / Threat Map
     get("/geo/threats", GeoController, :threat_origins)
     get("/geo/agents", GeoController, :agent_locations)
@@ -390,6 +460,7 @@ defmodule TamanduaServerWeb.Router do
     get("/dns/queries", DNSController, :queries)
     get("/dns/top-domains", DNSController, :top_domains)
     get("/dns/alerts", DNSController, :alerts)
+    get("/dns/detections", DNSController, :alerts)
     get("/dns/blocklist", DNSController, :blocklist_index)
     post("/dns/blocklist", DNSController, :blocklist_create)
     delete("/dns/blocklist/:domain", DNSController, :blocklist_delete)
@@ -436,22 +507,23 @@ defmodule TamanduaServerWeb.Router do
     resources("/iocs", IOCController)
     post("/iocs/bulk", IOCController, :bulk_create)
 
-    # Detection Packs
-    get("/detection-packs", DetectionPacksController, :index)
-    get("/detection-packs/installed", DetectionPacksController, :installed)
-    get("/detection-packs/stats", DetectionPacksController, :stats)
-    get("/detection-packs/:id", DetectionPacksController, :show)
-    post("/detection-packs/:id/install", DetectionPacksController, :install)
-    delete("/detection-packs/:id/install", DetectionPacksController, :uninstall)
-    patch("/detection-packs/:id/install", DetectionPacksController, :toggle)
+    # Detection-pack marketplace and contributor reputation APIs stay internal
+    # until tenant-scoped, evidence-backed, and stripped of wallet/reward framing.
+    # get "/detection-packs", DetectionPacksController, :index
+    # get "/detection-packs/installed", DetectionPacksController, :installed
+    # get "/detection-packs/stats", DetectionPacksController, :stats
+    # get "/detection-packs/:id", DetectionPacksController, :show
+    # post "/detection-packs/:id/install", DetectionPacksController, :install
+    # delete "/detection-packs/:id/install", DetectionPacksController, :uninstall
+    # patch "/detection-packs/:id/install", DetectionPacksController, :toggle
 
     # Contributor Reputation (Bounty Anti-Fraud)
-    get("/contributors/leaderboard", ContributorReputationController, :leaderboard)
-    get("/contributors/:wallet", ContributorReputationController, :show)
-    get("/contributors/:wallet/high-value", ContributorReputationController, :can_high_value)
-    post("/contributors/:wallet/recalculate", ContributorReputationController, :recalculate)
-    post("/contributors/:wallet/restrict", ContributorReputationController, :restrict)
-    post("/contributors/:wallet/unrestrict", ContributorReputationController, :unrestrict)
+    # get "/contributors/leaderboard", ContributorReputationController, :leaderboard
+    # get "/contributors/:wallet", ContributorReputationController, :show
+    # get "/contributors/:wallet/high-value", ContributorReputationController, :can_high_value
+    # post "/contributors/:wallet/recalculate", ContributorReputationController, :recalculate
+    # post "/contributors/:wallet/restrict", ContributorReputationController, :restrict
+    # post "/contributors/:wallet/unrestrict", ContributorReputationController, :unrestrict
 
     # Prevention Policies
     resources("/prevention-policies", PreventionPolicyController, except: [:new, :edit])
@@ -459,8 +531,32 @@ defmodule TamanduaServerWeb.Router do
     post("/prevention-policies/:id/unassign-agents", PreventionPolicyController, :unassign_agents)
     get("/prevention-policies/agent/:agent_id", PreventionPolicyController, :agent_policy)
 
+    # Backward-compatible aliases for clients that still use the grouped
+    # prevention namespace.
+    get("/policies", PreventionPolicyController, :index)
+    post("/policies", PreventionPolicyController, :create)
+    get("/policies/:id", PreventionPolicyController, :show)
+    patch("/policies/:id", PreventionPolicyController, :update)
+    put("/policies/:id", PreventionPolicyController, :update)
+    delete("/policies/:id", PreventionPolicyController, :delete)
+    get("/prevention/policies", PreventionPolicyController, :index)
+    post("/prevention/policies", PreventionPolicyController, :create)
+    get("/prevention/policies/:id", PreventionPolicyController, :show)
+    patch("/prevention/policies/:id", PreventionPolicyController, :update)
+    put("/prevention/policies/:id", PreventionPolicyController, :update)
+    delete("/prevention/policies/:id", PreventionPolicyController, :delete)
+    post("/prevention/policies/:id/assign-agents", PreventionPolicyController, :assign_agents)
+    post("/prevention/policies/:id/unassign-agents", PreventionPolicyController, :unassign_agents)
+    get("/prevention/policies/agent/:agent_id", PreventionPolicyController, :agent_policy)
+
     get(
       "/prevention-policies/agent/:agent_id/ml-settings",
+      PreventionPolicyController,
+      :ml_settings
+    )
+
+    get(
+      "/prevention/policies/agent/:agent_id/ml-settings",
       PreventionPolicyController,
       :ml_settings
     )
@@ -490,6 +586,12 @@ defmodule TamanduaServerWeb.Router do
 
     # Autonomous Recommendations
     get("/autonomous/recommendations", AutonomousResponseController, :list_recommendations)
+
+    get(
+      "/autonomous/recommendations/:id/status",
+      AutonomousResponseController,
+      :recommendation_status
+    )
 
     post(
       "/autonomous/recommendations/:id/approve",
@@ -610,6 +712,9 @@ defmodule TamanduaServerWeb.Router do
     get("/threat-intel/actors", ThreatIntelController, :list_actors)
     get("/threat-intel/actors/:id", ThreatIntelController, :show_actor)
     get("/threat-intel/campaigns", ThreatIntelController, :list_campaigns)
+    get("/threat-intel/campaigns/tracked", ThreatIntelController, :list_tracked_campaigns)
+    get("/threat-intel/campaigns/tracked/stats", ThreatIntelController, :tracked_campaign_stats)
+    get("/threat-intel/campaigns/tracked/:id", ThreatIntelController, :get_tracked_campaign)
     get("/threat-intel/campaigns/:id", ThreatIntelController, :show_campaign)
     get("/threat-intel/sources", ThreatIntelController, :list_sources)
     get("/threat-intel/summary", ThreatIntelController, :summary)
@@ -712,11 +817,6 @@ defmodule TamanduaServerWeb.Router do
     # Recent Attributions (alert-level attribution data)
     get("/threat-intel/attributions", ThreatIntelController, :list_attributions)
 
-    # Campaign Tracker (auto-detected campaigns from alert clustering)
-    get("/threat-intel/campaigns/tracked", ThreatIntelController, :list_tracked_campaigns)
-    get("/threat-intel/campaigns/tracked/stats", ThreatIntelController, :tracked_campaign_stats)
-    get("/threat-intel/campaigns/tracked/:id", ThreatIntelController, :get_tracked_campaign)
-
     # Full actor profile (enriched with campaign tracker and attribution data)
     get("/threat-intel/actors/:id/profile", ThreatIntelController, :full_actor_profile)
 
@@ -750,16 +850,17 @@ defmodule TamanduaServerWeb.Router do
     get("/hunting/query/clickhouse/schema", HuntingController, :tql_clickhouse_schema)
 
     # Saved Queries
-    resources("/queries", SavedQueriesController,
-      only: [:index, :show, :create, :update, :delete]
-    )
-
-    post("/queries/:id/use", SavedQueriesController, :record_use)
     get("/queries/search", SavedQueriesController, :search)
     get("/queries/templates", SavedQueriesController, :templates)
     get("/queries/popular", SavedQueriesController, :popular)
     get("/queries/history", SavedQueriesController, :history)
     post("/queries/history", SavedQueriesController, :record_history)
+
+    resources("/queries", SavedQueriesController,
+      only: [:index, :show, :create, :update, :delete]
+    )
+
+    post("/queries/:id/use", SavedQueriesController, :record_use)
 
     # Stats & Reports
     get("/stats/overview", StatsController, :overview)
@@ -1018,6 +1119,65 @@ defmodule TamanduaServerWeb.Router do
     # Live Response - Artifact Collection
     post("/live-response/:agent_id/collect", LiveResponseController, :collect_artifacts)
 
+    # Live Response - Audited, single-frame screen snapshot (no stream/control)
+    post(
+      "/live-response/:agent_id/screen-capture",
+      LiveResponseController,
+      :screen_capture
+    )
+
+    post("/live-response/:agent_id/evidence-sessions", EvidenceSessionController, :create)
+    get("/live-response/evidence-sessions/:session_id", EvidenceSessionController, :show)
+
+    post(
+      "/live-response/evidence-sessions/:session_id/approve",
+      EvidenceSessionController,
+      :approve
+    )
+
+    post(
+      "/live-response/evidence-sessions/:session_id/export",
+      EvidenceSessionController,
+      :create_export
+    )
+
+    post(
+      "/live-response/evidence-sessions/:session_id/diffs",
+      EvidenceSessionController,
+      :create_diff
+    )
+
+    get(
+      "/live-response/evidence-session-exports/:export_id",
+      EvidenceSessionController,
+      :download_export
+    )
+
+    post(
+      "/live-response/evidence-sessions/:session_id/cancel",
+      EvidenceSessionController,
+      :cancel
+    )
+
+    get(
+      "/live-response/:agent_id/screen-captures/:artifact_id",
+      ScreenCaptureArtifactController,
+      :show
+    )
+
+    get(
+      "/live-response/:agent_id/screen-captures/:artifact_id/content",
+      ScreenCaptureArtifactController,
+      :content
+    )
+
+    # Fleet Query - live osquery across eligible connected agents
+    get("/fleet-queries", FleetQueryController, :index)
+    post("/fleet-queries", FleetQueryController, :create)
+    get("/fleet-queries/:id", FleetQueryController, :show)
+    post("/fleet-queries/:id/cancel", FleetQueryController, :cancel)
+    get("/fleet-queries/:id/targets", FleetQueryController, :targets)
+
     # Session Recordings (compressed, encrypted, with retention)
     get("/recordings", RecordingController, :index)
     get("/recordings/retention", RecordingController, :retention_info)
@@ -1268,13 +1428,9 @@ defmodule TamanduaServerWeb.Router do
     post("/ai-security/prompt-scan", AISecurityController, :scan_prompt)
     get("/ai-security/shadow-ai", AISecurityController, :shadow_ai_inventory)
     post("/ai-security/risk-assess", AISecurityController, :risk_assessment)
-    post("/ai-security/gateway/events", AISecurityController, :gateway_event)
-    post("/ai-security/gateway/events/batch", AISecurityController, :gateway_events_batch)
-    post("/ai-security/gateway/evaluate", AISecurityController, :gateway_evaluate)
-    get("/ai-security/gateway/usage", AISecurityController, :gateway_usage)
-    get("/ai-security/gateway/health", AISecurityController, :gateway_health)
-    get("/ai-security/gateway/policy", AISecurityController, :gateway_policy)
-    put("/ai-security/gateway/policy", AISecurityController, :update_gateway_policy)
+    # AI Gateway HTTP ingestion, evaluation, read projections and policy mutation remain
+    # unreachable until their runtime contracts are tenant-bound. Trusted endpoint
+    # telemetry continues to use the internal AIGateway API directly.
 
     # AI Security - RAG Poisoning Detection
     post("/ai-security/rag-scan", AISecurityController, :scan_rag)
@@ -1310,6 +1466,31 @@ defmodule TamanduaServerWeb.Router do
     get("/analyst/investigations", AnalystController, :list_investigations)
     get("/analyst/investigations/:id", AnalystController, :investigation_detail)
     post("/analyst/investigations/:id/feedback", AnalystController, :analyst_feedback)
+
+    post(
+      "/analyst/investigations/:id/recommendations/:recommendation_id/approve",
+      AnalystController,
+      :approve_action
+    )
+
+    get(
+      "/analyst/approval-executions",
+      ApprovalExecutionController,
+      :index
+    )
+
+    get(
+      "/analyst/approval-executions/:id",
+      ApprovalExecutionController,
+      :show
+    )
+
+    post(
+      "/analyst/approval-executions/:id/reconcile",
+      ApprovalExecutionController,
+      :reconcile
+    )
+
     post("/analyst/triage", AnalystController, :auto_triage)
 
     # Detection Analytics & Tuning
@@ -1344,16 +1525,17 @@ defmodule TamanduaServerWeb.Router do
     get("/dynamic-detection/blind-spots", DynamicDetectionController, :blind_spots)
     get("/dynamic-detection/false-negatives", DynamicDetectionController, :false_negatives)
 
-    # EDR Validation & Testing (Atomic Red Team)
-    get("/validation/tests", ValidationController, :list_tests)
-    post("/validation/tests/:technique_id", ValidationController, :run_test)
-    post("/validation/suite", ValidationController, :run_suite)
-    post("/validation/tactic/:tactic", ValidationController, :run_tactic)
-    get("/validation/results/:agent_id", ValidationController, :get_results)
-    get("/validation/coverage/:agent_id", ValidationController, :coverage_report)
-    get("/validation/benchmark", ValidationController, :benchmark)
-    get("/validation/gaps/:agent_id", ValidationController, :gaps)
-    get("/validation/stats", ValidationController, :stats)
+    # EDR validation/benchmark APIs stay internal until protected by an
+    # explicit validation-lab gate and evidence publication policy.
+    # get "/validation/tests", ValidationController, :list_tests
+    # post "/validation/tests/:technique_id", ValidationController, :run_test
+    # post "/validation/suite", ValidationController, :run_suite
+    # post "/validation/tactic/:tactic", ValidationController, :run_tactic
+    # get "/validation/results/:agent_id", ValidationController, :get_results
+    # get "/validation/coverage/:agent_id", ValidationController, :coverage_report
+    # get "/validation/benchmark", ValidationController, :benchmark
+    # get "/validation/gaps/:agent_id", ValidationController, :gaps
+    # get "/validation/stats", ValidationController, :stats
 
     # Compliance Reporting
     get("/compliance/overview", ComplianceController, :overview)
@@ -1399,6 +1581,10 @@ defmodule TamanduaServerWeb.Router do
     # Hyperautomation
     resources("/automation/workflows", WorkflowController)
     post("/automation/workflows/:id/execute", WorkflowController, :execute)
+    resources("/workflows", WorkflowController)
+    post("/workflows/:id/execute", WorkflowController, :execute)
+    resources("/hyperautomation/workflows", WorkflowController)
+    post("/hyperautomation/workflows/:id/execute", WorkflowController, :execute)
     get("/automation/actions", WorkflowController, :available_actions)
     get("/automation/templates", WorkflowController, :templates)
 
@@ -1483,6 +1669,7 @@ defmodule TamanduaServerWeb.Router do
     post("/mcp/rpc", MCPController, :json_rpc)
     get("/mcp/rpc/tools/schema/status", MCPController, :schema_status)
     get("/mcp/status", MCPController, :schema_status)
+    get("/mcp/servers", MCPController, :schema_status)
     get("/mcp/tools", MCPController, :available_tools)
     get("/mcp/context", MCPController, :security_context)
 
@@ -1674,6 +1861,8 @@ defmodule TamanduaServerWeb.Router do
     post("/ml/model/reload", MLController, :reload_model)
     get("/ml/statistics", MLController, :statistics)
     get("/ml/predictions/history", MLController, :prediction_history)
+    get("/ml/detections", MLController, :detections)
+    get("/ml/processes", MLController, :processes)
 
     # ML Training
     get("/ml/training/datasets", MLController, :training_datasets)
@@ -1922,6 +2111,64 @@ defmodule TamanduaServerWeb.Router do
     post("/logs/ingest/syslog", LogIngestionController, :ingest_syslog)
     get("/logs/stats", LogIngestionController, :stats)
 
+    # Mobile device proof-of-possession. These routes do not alter the legacy
+    # mobile registration path or imply downgrade enforcement there.
+    post("/mobile/device-identity/challenge", MobileDeviceIdentityController, :challenge)
+
+    post(
+      "/mobile/device-identity/app-attest/challenge",
+      MobileDeviceIdentityController,
+      :app_attest_challenge
+    )
+
+    post(
+      "/mobile/device-identity/app-attest/attestation",
+      MobileDeviceIdentityController,
+      :app_attest_attestation
+    )
+
+    post(
+      "/mobile/device-identity/app-attest/assertion",
+      MobileDeviceIdentityController,
+      :app_attest_assertion
+    )
+
+    post("/mobile/device-identity/enroll", MobileDeviceIdentityController, :enroll)
+    post("/mobile/device-identity/rotate", MobileDeviceIdentityController, :rotate)
+    post("/mobile/signed-posture/challenge", MobileSignedPostureController, :challenge)
+    post("/mobile/signed-posture", MobileSignedPostureController, :verify)
+    get("/mobile/signed-posture/requests/:request_id", MobileSignedPostureController, :status)
+
+    post(
+      "/mobile/device-identity/:installation_id/revoke",
+      MobileDeviceIdentityController,
+      :revoke
+    )
+
+    get(
+      "/mobile/device-identity/:installation_id/status",
+      MobileDeviceIdentityController,
+      :status
+    )
+
+    post(
+      "/mobile/device-identity/recovery-intents",
+      MobileDeviceIdentityRecoveryController,
+      :create
+    )
+
+    get(
+      "/mobile/device-identity/recovery-intents/:intent_id",
+      MobileDeviceIdentityRecoveryController,
+      :status
+    )
+
+    post(
+      "/mobile/device-identity/recovery-intents/:intent_id/resolve",
+      MobileDeviceIdentityRecoveryController,
+      :resolve
+    )
+
     # Mobile Security (Foundation - API stubs)
     get("/mobile/agents/:agent_id/overview", MobileController, :agent_overview)
     get("/mobile/devices", MobileController, :index)
@@ -1951,6 +2198,7 @@ defmodule TamanduaServerWeb.Router do
     get("/mobile/app_guard/builds", MobileController, :app_guard_builds)
     post("/mobile/app_guard/builds", MobileController, :create_app_guard_build)
     post("/mobile/app_guard/builds/:build_id/verify", MobileController, :verify_app_guard_build)
+    # App Guard research/private bounty reviewer workflows.
     get("/mobile/app_guard/research/programs", MobileController, :app_guard_research_programs)
 
     post(
@@ -2027,6 +2275,7 @@ defmodule TamanduaServerWeb.Router do
     delete("/mobile/v2/devices/:id", MobileController, :delete_v2)
     get("/mobile/v2/stats", MobileController, :stats_v2)
     get("/mobile/v2/posture", MobileController, :posture_v2)
+    get("/mobile/v2/events", MobileController, :events_v2)
 
     # Mobile V2 - MDM Commands (mdm_commands table)
     get("/mobile/v2/commands", MobileController, :list_commands)
@@ -2125,12 +2374,8 @@ defmodule TamanduaServerWeb.Router do
     post("/submissions/:id/pay", BountyController, :pay)
 
     # =========================================================================
-    # Demo & Hackathon Endpoints
-    #
-    # Trigger detection scenarios for demos, creates real alerts with attestation
-    # Admin-only access required
-    # =========================================================================
-    post("/demo/trigger-detection", DemoController, :trigger_detection)
+    # Demo/hackathon trigger endpoint stays disabled outside internal demo builds.
+    # post "/demo/trigger-detection", DemoController, :trigger_detection
 
     # =========================================================================
     # Health Attestations
@@ -2283,6 +2528,25 @@ defmodule TamanduaServerWeb.Router do
     get("/status", AuthController, :status)
   end
 
+  # Agent uninstall authorization consumption. The agent's JWT is validated in
+  # the controller; this route intentionally does not accept user/session auth.
+  scope "/api/v1/agents/uninstall-intents", TamanduaServerWeb.API.V1 do
+    pipe_through(:api)
+
+    post("/consume", UninstallIntentController, :consume)
+  end
+
+  # One-time, artifact-scoped upload credential is the authentication secret.
+  scope "/api/v1/agent-artifacts", TamanduaServerWeb.API.V1 do
+    pipe_through(:api)
+
+    put(
+      "/screen-captures/:artifact_id",
+      ScreenCaptureArtifactController,
+      :upload
+    )
+  end
+
   # Agent Certificate Renewal (uses Bearer agent token from header)
   scope "/api/v1/enrollment", TamanduaServerWeb.API.V1 do
     pipe_through(:api)
@@ -2345,8 +2609,7 @@ defmodule TamanduaServerWeb.Router do
   # Self-hosted Tamandua instances send attestations here for batched
   # publication to Solana. Treant pays the transaction fees.
   #
-  # Authentication: API key via X-Tamandua-Relay-Key header (optional for demo)
-  # Rate limiting: By IP when no API key provided
+  # Authentication: required API key via X-Tamandua-Relay-Key header
   #
   scope "/api/v1/relay", TamanduaServerWeb.API.V1 do
     pipe_through(:api)
@@ -2371,6 +2634,48 @@ defmodule TamanduaServerWeb.Router do
     get("/redoc", DocsController, :redoc)
   end
 
+  # MITRE ATT&CK Navigator REST API (previously an orphaned controller).
+  # Distinct from the /api/v1/mitre/* routes served by API.V1.MitreController:
+  # this controller adds Navigator layer generation/persistence, technique and
+  # threat-actor lookups, mapping sync, and the admin-gated STIX import
+  # (import_attack_data enforces admin?/1 internally; the rest requires an
+  # authenticated API caller via :api_auth, mirroring the API.V1 scope).
+  scope "/api/mitre", TamanduaServerWeb do
+    pipe_through([:api, :api_auth])
+
+    get("/coverage", MitreAPIController, :coverage)
+    get("/techniques", MitreAPIController, :list_techniques)
+    get("/techniques/:technique_id", MitreAPIController, :get_technique)
+    get("/navigator/coverage", MitreAPIController, :navigator_coverage)
+    get("/navigator/frequency", MitreAPIController, :navigator_frequency)
+    get("/navigator/gaps", MitreAPIController, :navigator_gaps)
+    post("/navigator/custom", MitreAPIController, :navigator_custom)
+    post("/navigator/save", MitreAPIController, :save_layer)
+    get("/navigator/layers", MitreAPIController, :list_layers)
+    get("/navigator/layers/:layer_id", MitreAPIController, :get_layer)
+    delete("/navigator/layers/:layer_id", MitreAPIController, :delete_layer)
+    get("/actors", MitreAPIController, :list_threat_actors)
+    get("/actors/:actor_id", MitreAPIController, :get_threat_actor)
+    post("/sync", MitreAPIController, :sync_mappings)
+    post("/import", MitreAPIController, :import_attack_data)
+  end
+
+  # GraphQL Playground (development only). Must be defined BEFORE the
+  # `/api/graphql` forward below: `forward` matches all subpaths, so if the
+  # API forward came first it would swallow `/api/graphql/playground` and
+  # this route could never match.
+  if Application.compile_env(:tamandua_server, :dev_routes) do
+    scope "/api/graphql" do
+      pipe_through([:api])
+
+      forward("/playground", Absinthe.Plug.GraphiQL,
+        schema: TamanduaServerWeb.GraphQL.Schema,
+        interface: :playground,
+        json_codec: Jason
+      )
+    end
+  end
+
   # GraphQL API v2
   scope "/api" do
     pipe_through([:api, :api_auth, :graphql_context])
@@ -2385,25 +2690,13 @@ defmodule TamanduaServerWeb.Router do
     )
   end
 
-  # GraphQL Playground (development only)
-  if Application.compile_env(:tamandua_server, :dev_routes) do
-    scope "/api/graphql" do
-      pipe_through([:api])
-
-      forward("/playground", Absinthe.Plug.GraphiQL,
-        schema: TamanduaServerWeb.GraphQL.Schema,
-        interface: :playground,
-        json_codec: Jason
-      )
-    end
-  end
-
   # Inertia.js routes (React frontend)
   scope "/app", TamanduaServerWeb do
-    pipe_through([:inertia, :require_authenticated_user])
+    pipe_through(:inertia)
 
     get("/", InertiaController, :dashboard)
     get("/dashboard", InertiaController, :dashboard)
+    get("/health-hub", InertiaController, :health_hub)
     get("/executive", InertiaController, :executive_dashboard)
     get("/process-tree", InertiaController, :process_tree)
     get("/agents", InertiaController, :agents)
@@ -2416,10 +2709,12 @@ defmodule TamanduaServerWeb.Router do
     get("/hunt", InertiaController, :hunt)
     get("/network", InertiaController, :network)
     get("/dns", InertiaController, :dns)
+    get("/browser-guard", InertiaController, :browser_guard)
     get("/prevention-policies", InertiaController, :prevention_policies)
     get("/settings", InertiaController, :settings)
     get("/tenant-settings", InertiaController, :tenant_settings)
     get("/response", InertiaController, :response)
+    get("/fleet-queries", InertiaController, :fleet_queries)
 
     # New advanced features
     get("/timeline", InertiaController, :timeline)
@@ -2448,35 +2743,44 @@ defmodule TamanduaServerWeb.Router do
     # get "/cloud-security", InertiaController, :cloud_security
     # get "/serverless", InertiaController, :serverless
     get("/threat-intel", InertiaController, :threat_intel)
+    get("/shadow-ai", InertiaController, :shadow_ai)
 
-    # AI Security Features (2026)
-    get("/ai-security/attack-surface", InertiaController, :ai_attack_surface)
-    get("/ai-security/shadow-ai", InertiaController, :shadow_ai)
-    get("/ai-security/posture", InertiaController, :ai_posture)
-    get("/ai-security/agents", InertiaController, :ai_agent_registry)
-    get("/ai-security/artifacts", InertiaController, :ai_artifacts)
-    get("/ai-security/dependency-graph", InertiaController, :ai_dependency_graph)
-    get("/ai-security/hunting", InertiaController, :nl_hunting)
-    get("/ai-security/ml-dashboard", InertiaController, :ml_dashboard)
-    get("/ai-security/behavioral", InertiaController, :behavioral_analytics)
+    # AI-security lab pages stay unlinked until backed by verified tenant data
+    # and stable runtime evidence.
+    # get "/ai-security/attack-surface", InertiaController, :ai_attack_surface
+    # get "/ai-security/shadow-ai", InertiaController, :shadow_ai
+    # get "/ai-security/posture", InertiaController, :ai_posture
+    # get "/ai-security/agents", InertiaController, :ai_agent_registry
+    # get "/ai-security/artifacts", InertiaController, :ai_artifacts
+    # get "/ai-security/dependency-graph", InertiaController, :ai_dependency_graph
+    # get "/ai-security/hunting", InertiaController, :nl_hunting
+    # get "/ai-security/ml-dashboard", InertiaController, :ml_dashboard
+    # get "/ai-security/behavioral", InertiaController, :behavioral_analytics
 
-    # Agentic Analyst (Purple AI)
+    # Tenant-scoped Agentic Analyst read model. Response actions remain behind
+    # the authenticated API permission boundary (`:response_approve`).
     get("/analyst", InertiaController, :agentic_analyst)
     get("/analyst/investigations/:id", InertiaController, :investigation_detail)
 
     # Advanced Detection
+    get("/emerging-threats", InertiaController, :emerging_threats)
     get("/detection-rules", InertiaController, :detection_rules)
-    get("/detection-packs", InertiaController, :detection_packs)
-    get("/dynamic-detection", InertiaController, :dynamic_detection)
-    get("/predictive", InertiaController, :predictive_shielding)
+    # Detection lab/marketplace-like pages remain internal until they are
+    # tenant-scoped, evidence-backed, and stripped of reward/wallet framing.
+    # get "/detection-packs", InertiaController, :detection_packs
+    # get "/dynamic-detection", InertiaController, :dynamic_detection
+    # get "/predictive", InertiaController, :predictive_shielding
     get("/detection-builder", InertiaController, :detection_builder)
-    get("/detection-analytics", InertiaController, :detection_analytics)
+    # get "/detection-analytics", InertiaController, :detection_analytics
 
     # Automation
     get("/automation", InertiaController, :hyperautomation)
     get("/automation/new", InertiaController, :hyperautomation)
     get("/hyperautomation", InertiaController, :hyperautomation)
+    get("/workflows", InertiaController, :hyperautomation)
+    get("/workflows/new", InertiaController, :hyperautomation)
     get("/automation/workflows/:id", InertiaController, :workflow_detail)
+    get("/workflows/:id", InertiaController, :workflow_detail)
 
     # Exposure Management
     get("/exposure", InertiaController, :exposure_management)
@@ -2485,35 +2789,35 @@ defmodule TamanduaServerWeb.Router do
     # Attack Surface Management (ASM)
     get("/attack-surface", InertiaController, :attack_surface)
 
-    # Collaboration Security
-    get("/collaboration", InertiaController, :collaboration_security)
+    # Collaboration/email/deception verticals stay hidden unless configured.
+    # get "/collaboration", InertiaController, :collaboration_security
 
     # Natural Language Hunting
     get("/nl-hunt", InertiaController, :nl_hunting)
     get("/nl-hunt/sessions/:id", InertiaController, :nl_hunt_session)
 
-    # AI SIEM
-    get("/ai-siem", InertiaController, :ai_siem)
+    # AI SIEM requires stable forwarding/correlation metrics before exposure.
+    # get "/ai-siem", InertiaController, :ai_siem
 
     # Deception Technology
-    get("/deception", InertiaController, :deception)
+    # get "/deception", InertiaController, :deception
 
     # MCP Servers
     get("/mcp-servers", InertiaController, :mcp_servers)
+    get("/mcp", InertiaController, :mcp_servers)
 
     # Phishing Triage
-    get("/phishing-triage", InertiaController, :phishing_triage)
+    # get "/phishing-triage", InertiaController, :phishing_triage
 
     # Email Security
-    get("/email-security", InertiaController, :email_security)
+    # get "/email-security", InertiaController, :email_security
 
     get("/mobile", InertiaController, :mobile)
 
-    # EDR Validation & Benchmark
-    get("/validation", InertiaController, :validation_dashboard)
-    get("/validation/benchmark", InertiaController, :validation_benchmark)
-    get("/security-status", InertiaController, :security_status)
-    get("/public-proofs", InertiaController, :public_proofs)
+    # Optional attestation/proof pages stay unlinked until populated by real
+    # deployment evidence.
+    # get "/security-status", InertiaController, :security_status
+    # get "/public-proofs", InertiaController, :public_proofs
 
     # Solana / Web3 Integration
     # Policy Gate is hidden until the health attestation API is wired end-to-end.
@@ -2560,8 +2864,9 @@ defmodule TamanduaServerWeb.Router do
     # NDR live runtime view. Historical flow persistence remains labeled in the UI.
     get("/ndr", InertiaController, :ndr)
 
-    # Community Contributions - Bounty submissions and leaderboard
-    get("/contributions", InertiaController, :contributions)
+    # Community contributions/bounty UI stays outside the product console until
+    # the public program, antifraud, reviewer, and payout gates are live.
+    # get "/contributions", InertiaController, :contributions
 
     # Keep unknown authenticated app routes inside the Inertia protocol.
     # Without this fallback, Inertia receives Phoenix's HTML 404 response and
@@ -2607,10 +2912,6 @@ defmodule TamanduaServerWeb.Router do
       # SSO Configuration (admin only)
       live("/settings/sso", SSOConfigLive, :index)
 
-      # AI Models Dashboard - AI/ML security inventory
-      live("/ai-security/models", AIModelsLive, :index)
-      live("/ai-security/models/:id", AIModelsLive, :show)
-
       # ML Process Monitoring - Track ML/AI runtime processes
       live("/ml-processes", MLProcessLive, :index)
       live("/ml-processes/:agent_id", MLProcessLive, :show)
@@ -2640,13 +2941,12 @@ defmodule TamanduaServerWeb.Router do
       # FIM Dashboard - File Integrity Monitoring
       live("/fim", FimLive, :index)
 
-      # Contributor Dashboard - Submission management and bounty tracking
-      live("/contributions", SubmissionsLive, :index)
-      live("/contributions/new", SubmissionsLive, :new)
-
-      # Bounty Leaderboard - Top contributors and wallet history
-      live("/leaderboard", LeaderboardLive, :index)
-      live("/leaderboard/:wallet", LeaderboardLive, :wallet)
+      # Contributor/bounty LiveViews stay internal until the public program,
+      # antifraud, reviewer, and payout gates are live.
+      # live "/contributions", SubmissionsLive, :index
+      # live "/contributions/new", SubmissionsLive, :new
+      # live "/leaderboard", LeaderboardLive, :index
+      # live "/leaderboard/:wallet", LeaderboardLive, :wallet
     end
 
     # Legacy Kill Switch page used the old LiveView shell; keep the URL as a

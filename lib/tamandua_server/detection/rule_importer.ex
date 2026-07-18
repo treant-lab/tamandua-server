@@ -9,8 +9,6 @@ defmodule TamanduaServer.Detection.RuleImporter do
     RuleImportJob,
     RuleValidator,
     RuleVersion,
-    YaraRule,
-    SigmaRule,
     IOC
   }
   alias TamanduaServer.Repo
@@ -342,7 +340,7 @@ defmodule TamanduaServer.Detection.RuleImporter do
     Detection.create_yara_rule(attrs)
   end
 
-  defp handle_yara_conflict(existing, content, _metadata, %{conflict_resolution: "skip"}) do
+  defp handle_yara_conflict(existing, _content, _metadata, %{conflict_resolution: "skip"}) do
     {:skipped, "Rule already exists: #{existing.name}"}
   end
 
@@ -417,7 +415,7 @@ defmodule TamanduaServer.Detection.RuleImporter do
     |> Repo.update()
   end
 
-  defp handle_ioc_conflict(existing, normalized, %{conflict_resolution: "rename"}) do
+  defp handle_ioc_conflict(existing, _normalized, %{conflict_resolution: "rename"}) do
     # For IOCs, we can't really rename, so just skip
     {:skipped, "IOC already exists and cannot be renamed: #{existing.type} - #{existing.value}"}
   end

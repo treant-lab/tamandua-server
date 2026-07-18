@@ -397,7 +397,7 @@ defmodule TamanduaServer.Response.NetworkIsolation do
         Logger.info("Auto de-isolating agent #{agent.id} (expired at #{DateTime.to_iso8601(agent.expires_at)})")
 
         case deisolate_internal(agent.id, state, user: "system (auto-expiry)") do
-          {:ok, new_state} ->
+          {:ok, _new_state} ->
             # Create alert for auto de-isolation
             create_isolation_alert(
               agent.id,

@@ -710,7 +710,7 @@ defmodule TamanduaServerWeb.API.V1.XDRController do
     :ok
   end
 
-  defp verify_webhook_signature(_source_type, _org_id, body, signature, timestamp) do
+  defp verify_webhook_signature(_source_type, _org_id, _body, _signature, timestamp) do
     # Verify timestamp is recent (within 5 minutes)
     case parse_timestamp(timestamp) do
       nil -> :ok  # No timestamp, skip validation

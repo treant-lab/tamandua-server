@@ -77,6 +77,16 @@ defmodule TamanduaServer.Response.ExecutorAuthorizationTest do
                )
     end
 
+    test "scan_path with a cross-org actor returns {:error, :unauthorized}" do
+      agent_id = register_agent(@org_a, self())
+
+      assert {:error, :unauthorized} =
+               Executor.scan_path(agent_id, "/tmp",
+                 recursive: false,
+                 actor: %{organization_id: @org_b, user_id: "user-1"}
+               )
+    end
+
     test "collect_forensics with a cross-org actor is rejected synchronously" do
       agent_id = register_agent(@org_a, self())
 
@@ -85,6 +95,25 @@ defmodule TamanduaServer.Response.ExecutorAuthorizationTest do
                  type: "full",
                  actor: %{organization_id: @org_b, user_id: "user-1"}
                })
+    end
+
+    test "collect_forensics with a string-keyed actor option is rejected synchronously" do
+      agent_id = register_agent(@org_a, self())
+
+      assert {:error, :unauthorized} =
+               Executor.collect_forensics(agent_id, %{
+                 "actor" => %{"organization_id" => @org_b, "user_id" => "user-1"},
+                 type: "quick"
+               })
+    end
+
+    test "collect_artifact with a cross-org actor returns {:error, :unauthorized}" do
+      agent_id = register_agent(@org_a, self())
+
+      assert {:error, :unauthorized} =
+               Executor.collect_artifact(agent_id, "/tmp/evidence.bin", "file",
+                 actor: %{organization_id: @org_b, user_id: "user-1"}
+               )
     end
 
     test "string-keyed actor maps are also enforced" do
@@ -203,6 +232,19 @@ defmodule TamanduaServer.Response.ExecutorAuthorizationTest do
       assert {:ok, record} = Executor.get_collection_status(collection_id)
       assert record.agent_id == agent_id
       assert record.requested_by == "user-1"
+    end
+
+    test "same-org collect_artifact passes authorization and dispatches" do
+      agent_id = register_agent(@org_a, self())
+
+      assert {:ok, %{dispatched: true, transport: :websocket}} =
+               Executor.execute_response(nil, %{
+                 action_type: "collect_artifact",
+                 agent_id: agent_id,
+                 params: %{path: "/tmp/evidence.bin", artifact_type: "file"},
+                 target_agent_id: agent_id,
+                 actor: %{organization_id: @org_a, user_id: "user-1"}
+               })
     end
   end
 

@@ -45,11 +45,9 @@ defmodule TamanduaServer.Integrations.SIEMRouter do
   @batch_size 100
   @high_priority_severities ["critical", "high"]
 
-  # SIEM module mapping
-  @siem_modules %{
-    splunk: SplunkHEC,
-    sentinel: SentinelConnector
-  }
+  # NOTE: dispatch is done via explicit send_to_siem/3 clauses below; a
+  # @siem_modules mapping attribute existed here but was never read
+  # (compiler-confirmed dead), so it was removed rather than kept as a lie.
 
   defstruct [
     :batch_queue,
@@ -351,24 +349,27 @@ defmodule TamanduaServer.Integrations.SIEMRouter do
     SentinelConnector.send_alert(alert, siem_config)
   end
 
-  defp send_to_siem(:elastic, alert, siem_config) do
+  defp send_to_siem(:elastic, alert, _siem_config) do
     Logger.debug("[SIEMRouter] Sending alert to Elastic: #{alert[:id]}")
-    # Elastic integration placeholder
-    if function_exported?(TamanduaServer.Integrations.Elastic, :send_alert, 2) do
-      TamanduaServer.Integrations.Elastic.send_alert(alert, siem_config)
-    else
-      {:error, :not_implemented}
+    # Elastic.send_alert/2 never existed (the old function_exported? guard
+    # always fell through to :not_implemented). The real alert API is
+    # forward_alert/1 on the Elastic GenServer, which reads its own app
+    # config — the router-level siem_config is not consumed by it. Degrade
+    # honestly when the integration process is not running.
+    try do
+      TamanduaServer.Integrations.Elastic.forward_alert(alert)
+    catch
+      :exit, _ -> {:error, :elastic_unavailable}
     end
   end
 
   defp send_to_siem(:qradar, alert, siem_config) do
     Logger.debug("[SIEMRouter] Sending alert to QRadar: #{alert[:id]}")
-    # QRadar integration placeholder
-    if function_exported?(TamanduaServer.Integrations.SIEM.QRadar, :send_alert, 2) do
-      TamanduaServer.Integrations.SIEM.QRadar.send_alert(alert, siem_config)
-    else
-      {:error, :not_implemented}
-    end
+    # QRadar.send_alert/2 never existed (the old function_exported? guard
+    # always fell through to :not_implemented). The real, stateless API is
+    # send_syslog/3: a list of event maps plus the config map (:host/:port),
+    # which is exactly what the router carries in siem_config.
+    TamanduaServer.Integrations.SIEM.QRadar.send_syslog([alert], siem_config)
   end
 
   defp send_to_siem(siem_type, _alert, _config) do
@@ -401,7 +402,7 @@ defmodule TamanduaServer.Integrations.SIEMRouter do
   end
 
   defp update_stats(stats, results, alert_count) do
-    {successes, failures} = Enum.split_with(results, fn
+    {_successes, failures} = Enum.split_with(results, fn
       {_, :ok} -> true
       {_, {:ok, _}} -> true
       _ -> false

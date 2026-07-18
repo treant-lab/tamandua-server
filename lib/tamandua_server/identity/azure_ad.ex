@@ -37,16 +37,12 @@ defmodule TamanduaServer.Identity.AzureAD do
   @sign_ins_endpoint "/auditLogs/signIns"
   @directory_audits_endpoint "/auditLogs/directoryAudits"
   @risky_users_endpoint "/identityProtection/riskyUsers"
-  @risky_sign_ins_endpoint "/identityProtection/riskyServicePrincipals"
   @service_principals_endpoint "/servicePrincipals"
   @conditional_access_endpoint "/identity/conditionalAccess/policies"
-  @users_endpoint "/users"
 
   # Event types for internal tracking
   @sign_in_event_type "azure_ad_sign_in"
   @audit_event_type "azure_ad_audit"
-  @risky_user_event_type "azure_ad_risky_user"
-  @risky_sign_in_event_type "azure_ad_risky_sign_in"
 
   # MITRE ATT&CK mappings
   @mitre_mapping %{
@@ -917,7 +913,7 @@ defmodule TamanduaServer.Identity.AzureAD do
     Alerts.create_alert(alert_params)
   end
 
-  defp create_privilege_change_alert(audit, event) do
+  defp create_privilege_change_alert(audit, _event) do
     alert_params = %{
       title: "Privilege Change: #{audit["activityDisplayName"]}",
       description: """

@@ -32,8 +32,13 @@ defmodule TamanduaServerWeb.ShellChannel do
   # Maximum sessions per user
   @max_sessions_per_user 5
 
+  # Global presence topic indexing all shell sessions. Phoenix.PubSub has no
+  # topic enumeration (PubSub.list/1 does not exist in PubSub 2.x), so every
+  # session is additionally tracked here to make per-user counting possible.
+  @shell_sessions_topic "shell_sessions:index"
+
   @impl true
-  def join("shell:" <> agent_id, payload, socket) do
+  def join("shell:" <> agent_id, _payload, socket) do
     user = socket.assigns[:current_user]
     org_id = get_user_org_id(socket)
 
@@ -76,6 +81,15 @@ defmodule TamanduaServerWeb.ShellChannel do
                   agent_id: agent_id,
                   hostname: agent.hostname,
                   joined_at: DateTime.utc_now()
+                })
+
+              # Also track on the global session index so count_user_sessions/1
+              # can enforce @max_sessions_per_user across all agents. Presence
+              # entries are removed automatically when this channel process dies.
+              {:ok, _} =
+                Presence.track(self(), @shell_sessions_topic, session_id, %{
+                  user_id: user.id,
+                  agent_id: agent_id
                 })
 
               # Log session start
@@ -251,7 +265,7 @@ defmodule TamanduaServerWeb.ShellChannel do
   def handle_in("builtin", %{"command" => command, "args" => args}, socket) do
     agent_id = socket.assigns.agent_id
     session_id = socket.assigns.session_id
-    user = socket.assigns.current_user
+    _user = socket.assigns.current_user
 
     # Update last activity
     socket = assign(socket, :last_activity, DateTime.utc_now())
@@ -402,16 +416,19 @@ defmodule TamanduaServerWeb.ShellChannel do
   end
 
   defp count_user_sessions(user_id) do
-    # Count active shell sessions for this user across all channels
-    Phoenix.PubSub.list("shell:*")
-    |> Enum.count(fn topic ->
-      TamanduaServerWeb.Presence.list(topic)
-      |> Enum.any?(fn {_session_id, %{metas: metas}} ->
-        Enum.any?(metas, &(&1.user_id == user_id))
-      end)
+    # Count active shell sessions for this user across all agents via the
+    # global presence index (Phoenix.PubSub cannot enumerate "shell:*" topics;
+    # PubSub.list/1 does not exist, so the old wildcard approach always raised
+    # and silently returned 0 — i.e. the session limit was never enforced).
+    Presence.list(@shell_sessions_topic)
+    |> Enum.count(fn {_session_id, %{metas: metas}} ->
+      Enum.any?(metas, &(&1.user_id == user_id))
     end)
   rescue
     _ -> 0
+  catch
+    # Presence tracker is a GenServer; a dead tracker exits instead of raising.
+    :exit, _ -> 0
   end
 
   defp generate_session_id do

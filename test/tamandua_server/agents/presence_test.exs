@@ -4,6 +4,7 @@ defmodule TamanduaServer.Agents.PresenceTest do
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Agents.{Registry, Worker}
+  alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Repo
 
   import Ecto.Query
@@ -74,6 +75,46 @@ defmodule TamanduaServer.Agents.PresenceTest do
       updated = Repo.get!(Agent, agent.id)
       assert updated.status == "offline"
       assert updated.last_seen_at == last_seen_at
+    end
+
+    test "heartbeat timeout creates agent blinded alert", %{agent: agent, org: org} do
+      pid = start_worker!(agent, org)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | last_heartbeat: System.system_time(:millisecond) - :timer.seconds(181)}
+      end)
+
+      ref = Process.monitor(pid)
+      send(pid, :check_heartbeat)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      alert =
+        Repo.get_by!(Alert,
+          agent_id: agent.id,
+          dedup_key: "agent_blinded:#{agent.id}"
+        )
+
+      assert alert.organization_id == org.id
+      assert alert.severity == "high"
+      assert alert.detection_metadata["detection_type"] == "agent_blinded"
+      assert alert.detection_metadata["clean_shutdown_observed"] == false
+      assert alert.raw_event["event_type"] == "agent_blinded"
+      assert alert.raw_event["heartbeat_timeout_ms"] == :timer.seconds(180)
+    end
+
+    test "socket disconnect does not create agent blinded alert", %{agent: agent, org: org} do
+      pid = start_worker!(agent, org)
+      ref = Process.monitor(pid)
+
+      send(pid, {:DOWN, make_ref(), :process, self(), :normal})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      refute Repo.get_by(Alert,
+               agent_id: agent.id,
+               dedup_key: "agent_blinded:#{agent.id}"
+             )
     end
 
     test "marking offline does not make a stale agent look recently seen", %{agent: agent, org: org} do

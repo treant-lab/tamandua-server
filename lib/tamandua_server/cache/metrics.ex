@@ -32,7 +32,6 @@ defmodule TamanduaServer.Cache.Metrics do
 
   require Logger
 
-  @cache_types [:redis, :ets]
 
   @doc "Check if Prometheus metrics are available"
   def prometheus_available?, do: false

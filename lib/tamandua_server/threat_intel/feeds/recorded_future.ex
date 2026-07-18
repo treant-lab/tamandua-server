@@ -26,12 +26,10 @@ defmodule TamanduaServer.ThreatIntel.Feeds.RecordedFuture do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.IOCs
   alias TamanduaServer.ThreatIntel.Aggregator
 
   @base_url "https://api.recordedfuture.com/v2"
   @fusion_url "https://api.recordedfuture.com/gw/fusions"
-  @connect_url "https://api.recordedfuture.com/v3"
 
   @default_sync_interval :timer.hours(4)
   @http_timeout 60_000

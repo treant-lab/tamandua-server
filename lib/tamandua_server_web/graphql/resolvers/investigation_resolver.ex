@@ -8,7 +8,8 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
 
   require Logger
 
-  alias TamanduaServer.{Accounts, Investigations, Repo}
+  alias TamanduaServer.{Agents, Alerts, Investigations, Repo}
+  alias TamanduaServer.Accounts.User
   alias TamanduaServer.Investigations.CaseInvestigation
   alias TamanduaServer.Alerts.Alert
   import Ecto.Query
@@ -18,95 +19,122 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
   # ===========================================================================
 
   def list_investigations(_parent, args, %{context: context}) do
-    org_id = context[:organization_id]
-    filter = Map.get(args, :filter, %{})
-    pagination = Map.get(args, :pagination, %{})
+    with {:ok, org_id} <- organization_id_from_context(context) do
+      filter = Map.get(args, :filter, %{})
+      pagination = Map.get(args, :pagination, %{})
 
-    opts =
-      []
-      |> put_opt(:organization_id, org_id)
-      |> put_opt(:status, filter[:status])
-      |> put_opt(:search, filter[:search])
-      |> put_opt(:assigned_to, filter[:assigned_to_id])
-      |> put_opt(:severity, filter[:priority])
-      |> put_opt(:limit, pagination[:limit])
-      |> put_opt(:offset, pagination[:offset])
+      opts =
+        []
+        |> put_opt(:organization_id, org_id)
+        |> put_opt(:status, filter[:status])
+        |> put_opt(:search, filter[:search])
+        |> put_opt(:assigned_to, filter[:assigned_to_id])
+        |> put_opt(:severity, filter[:priority])
+        |> put_opt(:limit, pagination[:limit])
+        |> put_opt(:offset, pagination[:offset])
 
-    investigations = Investigations.list_investigations(opts)
+      investigations = Investigations.list_investigations(opts)
 
-    {:ok, Enum.map(investigations, &to_graphql/1)}
+      {:ok, Enum.map(investigations, &to_graphql/1)}
+    else
+      _ -> unauthorized()
+    end
   end
 
-  def get_investigation(_parent, %{id: id}, %{context: _context}) do
-    case Investigations.get_investigation(id) do
-      {:ok, investigation} ->
-        {:ok, to_graphql(investigation)}
+  def get_investigation(_parent, %{id: id}, %{context: context}) do
+    with {:ok, org_id} <- organization_id_from_context(context),
+         result <- Investigations.get_investigation_for_org(org_id, id) do
+      case result do
+        {:ok, investigation} ->
+          {:ok, to_graphql(investigation)}
 
-      {:error, :not_found} ->
-        {:error, message: "Investigation not found", code: "NOT_FOUND"}
+        {:error, :not_found} ->
+          {:error, message: "Investigation not found", code: "NOT_FOUND"}
+      end
+    else
+      _ -> unauthorized()
     end
   end
 
   def investigation_stats(_parent, _args, %{context: context}) do
-    org_id = context[:organization_id]
-    stats = Investigations.get_stats(organization_id: org_id)
+    with {:ok, org_id} <- organization_id_from_context(context) do
+      stats = Investigations.get_stats(organization_id: org_id)
 
-    {:ok, %{
-      total: stats.total,
-      open: stats.open,
-      closed: stats.closed,
-      by_status: stats.by_status,
-      by_priority: stats.by_severity,
-      average_resolution_hours: calculate_avg_resolution_hours(org_id),
-      mttr: calculate_avg_resolution_hours(org_id)
-    }}
+      {:ok,
+       %{
+         total: stats.total,
+         open: stats.open,
+         closed: stats.closed,
+         by_status: stats.by_status,
+         by_priority: stats.by_severity,
+         average_resolution_hours: calculate_avg_resolution_hours(org_id),
+         mttr: calculate_avg_resolution_hours(org_id)
+       }}
+    else
+      _ -> unauthorized()
+    end
   end
 
   # ===========================================================================
   # Field resolvers
   # ===========================================================================
 
-  def alerts(%CaseInvestigation{} = investigation, _args, _resolution) do
+  def alerts(%CaseInvestigation{} = investigation, _args, %{context: context}) do
     alert_ids = investigation.alert_ids || []
-    resolve_alert_ids(alert_ids)
+    resolve_alert_ids(investigation, alert_ids, context)
   end
 
-  def alerts(investigation, _args, _resolution) when is_map(investigation) do
+  def alerts(investigation, _args, %{context: context}) when is_map(investigation) do
     alert_ids = Map.get(investigation, :alert_ids) || Map.get(investigation, "alert_ids") || []
-    resolve_alert_ids(alert_ids)
+    resolve_alert_ids(investigation, alert_ids, context)
   end
 
-  defp resolve_alert_ids(alert_ids) do
-    if Enum.empty?(alert_ids) do
-      {:ok, []}
-    else
-      alerts =
-        from(a in Alert,
-          where: a.id in ^alert_ids,
-          order_by: [desc: a.inserted_at]
-        )
-        |> Repo.all()
+  defp resolve_alert_ids(investigation, alert_ids, context) do
+    parent_org_id =
+      Map.get(investigation, :organization_id) || Map.get(investigation, "organization_id")
 
-      {:ok, alerts}
+    with {:ok, org_id} <- organization_id_from_context(context),
+         true <- parent_org_id == org_id do
+      if Enum.empty?(alert_ids) do
+        {:ok, []}
+      else
+        alerts =
+          from(a in Alert,
+            where: a.id in ^alert_ids and a.organization_id == ^org_id,
+            order_by: [desc: a.inserted_at]
+          )
+          |> Repo.all()
+
+        {:ok, alerts}
+      end
+    else
+      _ -> {:ok, []}
     end
   end
 
-  def notes(%CaseInvestigation{notes: notes_text}, _args, _resolution) do
-    {:ok, parse_notes(notes_text)}
+  def notes(%CaseInvestigation{notes: notes_text} = investigation, _args, %{context: context}) do
+    if parent_scoped?(investigation, context), do: {:ok, parse_notes(notes_text)}, else: {:ok, []}
   end
 
-  def notes(investigation, _args, _resolution) when is_map(investigation) do
+  def notes(investigation, _args, %{context: context}) when is_map(investigation) do
     notes_text = Map.get(investigation, :notes) || Map.get(investigation, "notes")
-    {:ok, parse_notes(notes_text)}
+    if parent_scoped?(investigation, context), do: {:ok, parse_notes(notes_text)}, else: {:ok, []}
   end
 
-  def timeline(%CaseInvestigation{timeline: timeline_data}, _args, _resolution) do
-    {:ok, parse_timeline(timeline_data)}
+  def timeline(%CaseInvestigation{timeline: timeline_data} = investigation, _args, %{
+        context: context
+      }) do
+    if parent_scoped?(investigation, context),
+      do: {:ok, parse_timeline(timeline_data)},
+      else: {:ok, []}
   end
 
-  def timeline(investigation, _args, _resolution) when is_map(investigation) do
+  def timeline(investigation, _args, %{context: context}) when is_map(investigation) do
     timeline_data = Map.get(investigation, :timeline) || Map.get(investigation, "timeline")
-    {:ok, parse_timeline(timeline_data)}
+
+    if parent_scoped?(investigation, context),
+      do: {:ok, parse_timeline(timeline_data)},
+      else: {:ok, []}
   end
 
   def evidence(%CaseInvestigation{} = _investigation, _args, _resolution) do
@@ -119,12 +147,12 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     {:ok, []}
   end
 
-  def created_by(%CaseInvestigation{} = investigation, _args, _resolution) do
+  def created_by(%CaseInvestigation{} = investigation, _args, %{context: context}) do
     # The preloaded association is available directly
     case investigation.creator do
       %Ecto.Association.NotLoaded{} ->
         if investigation.created_by do
-          {:ok, Accounts.get_user(investigation.created_by)}
+          {:ok, scoped_user(context, investigation.created_by)}
         else
           {:ok, nil}
         end
@@ -133,24 +161,25 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
         {:ok, nil}
 
       user ->
-        {:ok, user}
+        {:ok, scoped_user(context, user.id)}
     end
   end
 
-  def created_by(investigation, _args, _resolution) when is_map(investigation) do
+  def created_by(investigation, _args, %{context: context}) when is_map(investigation) do
     created_by_id = Map.get(investigation, :created_by_id) || Map.get(investigation, :created_by)
+
     if created_by_id do
-      {:ok, Accounts.get_user(created_by_id)}
+      {:ok, scoped_user(context, created_by_id)}
     else
       {:ok, nil}
     end
   end
 
-  def assigned_to(%CaseInvestigation{} = investigation, _args, _resolution) do
+  def assigned_to(%CaseInvestigation{} = investigation, _args, %{context: context}) do
     case investigation.assigned_user do
       %Ecto.Association.NotLoaded{} ->
         if investigation.assigned_to do
-          {:ok, Accounts.get_user(investigation.assigned_to)}
+          {:ok, scoped_user(context, investigation.assigned_to)}
         else
           {:ok, nil}
         end
@@ -159,14 +188,16 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
         {:ok, nil}
 
       user ->
-        {:ok, user}
+        {:ok, scoped_user(context, user.id)}
     end
   end
 
-  def assigned_to(investigation, _args, _resolution) when is_map(investigation) do
-    assigned_to_id = Map.get(investigation, :assigned_to_id) || Map.get(investigation, :assigned_to)
+  def assigned_to(investigation, _args, %{context: context}) when is_map(investigation) do
+    assigned_to_id =
+      Map.get(investigation, :assigned_to_id) || Map.get(investigation, :assigned_to)
+
     if assigned_to_id do
-      {:ok, Accounts.get_user(assigned_to_id)}
+      {:ok, scoped_user(context, assigned_to_id)}
     else
       {:ok, nil}
     end
@@ -190,53 +221,67 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
       tags: input[:tags] || []
     }
 
-    case Investigations.create_investigation(attrs) do
-      {:ok, investigation} ->
-        {:ok, to_graphql(investigation)}
+    with {:ok, ^org_id} <- organization_id_from_context(context),
+         :ok <- ensure_alert_ids_for_org(input[:alert_ids] || [], org_id) do
+      case Investigations.create_investigation(attrs) do
+        {:ok, investigation} ->
+          {:ok, to_graphql(investigation)}
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
+        {:error, %Ecto.Changeset{} = changeset} ->
+          {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
+      end
+    else
+      {:error, :not_found} -> {:error, message: "Alert not found", code: "NOT_FOUND"}
+      _ -> unauthorized()
     end
   end
 
-  def update_investigation(_parent, %{id: id, input: input}, %{context: _context}) do
-    case Investigations.get_investigation(id) do
-      {:ok, investigation} ->
-        attrs =
-          %{}
-          |> maybe_put(:title, input[:title])
-          |> maybe_put(:description, input[:description])
-          |> maybe_put(:status, input[:status])
-          |> maybe_put(:severity, input[:priority])
-          |> maybe_put(:assigned_to, input[:assigned_to_id])
-          |> maybe_put(:findings, input[:findings])
-          |> maybe_put(:tags, input[:tags])
+  def update_investigation(_parent, %{id: id, input: input}, %{context: context}) do
+    with {:ok, org_id} <- organization_id_from_context(context),
+         :ok <- ensure_user_for_org(input[:assigned_to_id], org_id),
+         result <- Investigations.get_investigation_for_org(org_id, id) do
+      case result do
+        {:ok, investigation} ->
+          attrs =
+            %{}
+            |> maybe_put(:title, input[:title])
+            |> maybe_put(:description, input[:description])
+            |> maybe_put(:status, input[:status])
+            |> maybe_put(:severity, input[:priority])
+            |> maybe_put(:assigned_to, input[:assigned_to_id])
+            |> maybe_put(:findings, input[:findings])
+            |> maybe_put(:tags, input[:tags])
 
-        # Map recommendations to findings if provided (schema stores findings only)
-        attrs =
-          if input[:recommendations] do
-            current_findings = attrs[:findings] || investigation.findings || ""
-            combined =
-              if current_findings == "" do
-                "Recommendations: #{input[:recommendations]}"
-              else
-                "#{current_findings}\n\nRecommendations: #{input[:recommendations]}"
-              end
-            Map.put(attrs, :findings, combined)
-          else
-            attrs
+          # Map recommendations to findings if provided (schema stores findings only)
+          attrs =
+            if input[:recommendations] do
+              current_findings = attrs[:findings] || investigation.findings || ""
+
+              combined =
+                if current_findings == "" do
+                  "Recommendations: #{input[:recommendations]}"
+                else
+                  "#{current_findings}\n\nRecommendations: #{input[:recommendations]}"
+                end
+
+              Map.put(attrs, :findings, combined)
+            else
+              attrs
+            end
+
+          case Investigations.update_investigation(investigation, attrs) do
+            {:ok, updated} ->
+              {:ok, to_graphql(updated)}
+
+            {:error, %Ecto.Changeset{} = changeset} ->
+              {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
           end
 
-        case Investigations.update_investigation(investigation, attrs) do
-          {:ok, updated} ->
-            {:ok, to_graphql(updated)}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
-        end
-
-      {:error, :not_found} ->
-        {:error, message: "Investigation not found", code: "NOT_FOUND"}
+        {:error, :not_found} ->
+          {:error, message: "Investigation not found", code: "NOT_FOUND"}
+      end
+    else
+      _ -> unauthorized()
     end
   end
 
@@ -248,7 +293,7 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     # Resolve author name from user_id
     author_name =
       if user_id do
-        case Accounts.get_user(user_id) do
+        case scoped_user(context, user_id) do
           nil -> nil
           user -> user.email || user.name
         end
@@ -256,30 +301,48 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
         nil
       end
 
-    case Investigations.add_note(investigation_id, content, author_name) do
-      {:ok, _investigation} ->
-        # Return the note that was just added
-        note = %{
-          id: Ecto.UUID.generate(),
-          content: content,
-          author_id: user_id,
-          author_name: author_name,
-          created_at: DateTime.utc_now(),
-          is_internal: input[:is_internal] || false
-        }
+    with {:ok, org_id} <- organization_id_from_context(context),
+         result <-
+           Investigations.add_note(investigation_id, content, author_name,
+             organization_id: org_id
+           ) do
+      case result do
+        {:ok, _investigation} ->
+          note = %{
+            id: Ecto.UUID.generate(),
+            content: content,
+            author_id: user_id,
+            author_name: author_name,
+            created_at: DateTime.utc_now(),
+            is_internal: input[:is_internal] || false
+          }
 
-        {:ok, note}
+          {:ok, note}
 
-      {:error, :not_found} ->
-        {:error, message: "Investigation not found", code: "NOT_FOUND"}
+        {:error, :not_found} ->
+          {:error, message: "Investigation not found", code: "NOT_FOUND"}
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
+        {:error, %Ecto.Changeset{} = changeset} ->
+          {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
+      end
+    else
+      _ -> unauthorized()
     end
   end
 
-  def add_alerts_to_investigation(_parent, %{investigation_id: id, alert_ids: alert_ids}, _resolution) do
-    case Investigations.add_alerts_to_investigation(id, alert_ids) do
+  def add_alerts_to_investigation(_parent, %{investigation_id: id, alert_ids: alert_ids}, %{
+        context: context
+      }) do
+    case organization_id_from_context(context) do
+      {:ok, organization_id} -> add_alerts_to_scoped_investigation(id, alert_ids, organization_id)
+      _ -> unauthorized()
+    end
+  end
+
+  defp add_alerts_to_scoped_investigation(id, alert_ids, organization_id) do
+    case Investigations.add_alerts_to_investigation(id, alert_ids,
+           organization_id: organization_id
+         ) do
       {:ok, investigation} ->
         {:ok, to_graphql(investigation)}
 
@@ -291,47 +354,54 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     end
   end
 
-  def close_investigation(_parent, args, _resolution) do
+  def close_investigation(_parent, args, %{context: context}) do
     id = args[:id]
     findings = args[:findings]
     recommendations = args[:recommendations]
 
-    case Investigations.get_investigation(id) do
-      {:ok, investigation} ->
-        close_attrs = %{status: "closed"}
+    with {:ok, org_id} <- organization_id_from_context(context),
+         result <- Investigations.get_investigation_for_org(org_id, id) do
+      case result do
+        {:ok, investigation} ->
+          close_attrs = %{status: "closed"}
 
-        close_attrs =
-          if findings do
-            Map.put(close_attrs, :findings, findings)
-          else
-            close_attrs
+          close_attrs =
+            if findings do
+              Map.put(close_attrs, :findings, findings)
+            else
+              close_attrs
+            end
+
+          # Store recommendations alongside findings
+          close_attrs =
+            if recommendations do
+              existing_findings = close_attrs[:findings] || investigation.findings || ""
+
+              combined =
+                if existing_findings == "" do
+                  "Recommendations: #{recommendations}"
+                else
+                  "#{existing_findings}\n\nRecommendations: #{recommendations}"
+                end
+
+              Map.put(close_attrs, :findings, combined)
+            else
+              close_attrs
+            end
+
+          case Investigations.update_investigation(investigation, close_attrs) do
+            {:ok, updated} ->
+              {:ok, to_graphql(updated)}
+
+            {:error, %Ecto.Changeset{} = changeset} ->
+              {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
           end
 
-        # Store recommendations alongside findings
-        close_attrs =
-          if recommendations do
-            existing_findings = close_attrs[:findings] || investigation.findings || ""
-            combined =
-              if existing_findings == "" do
-                "Recommendations: #{recommendations}"
-              else
-                "#{existing_findings}\n\nRecommendations: #{recommendations}"
-              end
-            Map.put(close_attrs, :findings, combined)
-          else
-            close_attrs
-          end
-
-        case Investigations.update_investigation(investigation, close_attrs) do
-          {:ok, updated} ->
-            {:ok, to_graphql(updated)}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:error, message: format_changeset_errors(changeset), code: "VALIDATION_ERROR"}
-        end
-
-      {:error, :not_found} ->
-        {:error, message: "Investigation not found", code: "NOT_FOUND"}
+        {:error, :not_found} ->
+          {:error, message: "Investigation not found", code: "NOT_FOUND"}
+      end
+    else
+      _ -> unauthorized()
     end
   end
 
@@ -339,119 +409,111 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
   # Investigation graph builder
   # ===========================================================================
 
-  def build_investigation_graph(_parent, %{alert_id: alert_id}, %{context: _context}) do
+  def build_investigation_graph(_parent, %{alert_id: alert_id}, %{context: context}) do
     # Build investigation graph starting from an alert
-    case Repo.get(Alert, alert_id) do
-      nil ->
-        {:error, message: "Alert not found", code: "NOT_FOUND"}
+    with {:ok, org_id} <- organization_id_from_context(context) do
+      case Alerts.get_alert_for_org(org_id, alert_id) do
+        {:error, :not_found} ->
+          {:error, message: "Alert not found", code: "NOT_FOUND"}
 
-      alert ->
-        graph = build_graph_from_alert(alert)
-        {:ok, graph}
+        {:ok, alert} ->
+          graph = build_graph_from_alert(alert)
+          {:ok, graph}
+      end
+    else
+      _ -> unauthorized()
     end
   end
 
-  def build_investigation_graph(_parent, %{process_id: process_id, agent_id: agent_id}, %{context: _context}) do
-    # Build investigation graph starting from a process
-    graph = build_graph_from_process(agent_id, process_id)
-    {:ok, graph}
+  def build_investigation_graph(_parent, %{process_id: process_id, agent_id: agent_id}, %{
+        context: context
+      }) do
+    with {:ok, org_id} <- organization_id_from_context(context),
+         {:ok, _agent} <- Agents.get_agent_for_org(org_id, agent_id) do
+      {:ok, build_graph_from_process(agent_id, process_id)}
+    else
+      {:error, :not_found} -> {:error, message: "Agent not found", code: "NOT_FOUND"}
+      _ -> unauthorized()
+    end
   end
 
   # ===========================================================================
   # AI Analysis
   # ===========================================================================
 
-  def ai_analyze_investigation(_parent, %{investigation_id: id}, %{context: _context}) do
-    case Investigations.get_investigation(id) do
-      {:ok, investigation} ->
-        # Attempt to use the AgenticAnalyst if it is running
-        case analyze_with_ai(investigation) do
-          {:ok, analysis} ->
-            {:ok, analysis}
+  def ai_analyze_investigation(_parent, %{investigation_id: id}, %{context: context}) do
+    with {:ok, organization_id} <- organization_id_from_context(context),
+         {:ok, investigation} <-
+           Investigations.get_investigation_for_org(organization_id, id) do
+      # Attempt to use the AgenticAnalyst if it is running
+      case analyze_with_ai(investigation, organization_id) do
+        {:ok, analysis} ->
+          {:ok, analysis}
 
-          {:error, :not_available} ->
-            {:error,
-              message: "AI analysis requires configuration. " <>
-                "Ensure the AgenticAnalyst GenServer is started and " <>
-                "the ML service is reachable at the configured ML_SERVICE_URL.",
-              code: "AI_NOT_CONFIGURED"}
-        end
+        {:error, :not_available} ->
+          {:error,
+           message:
+             "AI analysis requires configuration. " <>
+               "Ensure the AgenticAnalyst GenServer is started and " <>
+               "the ML service is reachable at the configured ML_SERVICE_URL.",
+           code: "AI_NOT_CONFIGURED"}
+      end
+    else
+      {:error, :organization_required} ->
+        {:error, message: "Not authorized: missing organization context", code: "UNAUTHORIZED"}
 
       {:error, :not_found} ->
         {:error, message: "Investigation not found", code: "NOT_FOUND"}
     end
   end
 
-  # ===========================================================================
-  # Forensics
-  # ===========================================================================
-
-  def collect_forensics(_parent, %{input: input}, %{context: context}) do
-    agent_id = input.agent_id
-    collection_type = input[:collection_type] || "full"
-
-    # Org-scope authorization: forensics collection was previously executable
-    # against ANY agent_id with no tenancy check. The actor is enforced by the
-    # Response Executor (cross-org targets rejected as :unauthorized).
-    case context[:organization_id] do
-      nil ->
-        {:error, message: "Not authorized: missing organization context", code: "UNAUTHORIZED"}
-
-      org_id ->
-        actor = %{organization_id: org_id, user_id: context[:current_user_id]}
-
-        case TamanduaServer.Response.Executor.collect_forensics(agent_id, %{
-               type: collection_type,
-               requested_by: context[:current_user_id],
-               actor: actor
-             }) do
-          {:ok, collection_id} ->
-            {:ok, %{
-              success: true,
-              collection_id: collection_id,
-              agent_id: agent_id,
-              status: "in_progress",
-              artifacts_count: 0,
-              size_bytes: 0,
-              message: "Forensics collection started"
-            }}
-
-          {:error, :unauthorized} ->
-            # Do not leak whether the agent exists in another organization.
-            {:ok, %{
-              success: false,
-              collection_id: nil,
-              agent_id: agent_id,
-              status: "failed",
-              artifacts_count: 0,
-              size_bytes: 0,
-              message: "Agent not found"
-            }}
-
-          {:error, reason} ->
-            {:ok, %{
-              success: false,
-              collection_id: nil,
-              agent_id: agent_id,
-              status: "failed",
-              artifacts_count: 0,
-              size_bytes: 0,
-              message: "Failed to start collection: #{inspect(reason)}"
-            }}
-        end
+  defp organization_id_from_context(context) when is_map(context) do
+    case Ecto.UUID.cast(Map.get(context, :organization_id)) do
+      {:ok, organization_id} -> {:ok, organization_id}
+      :error -> {:error, :organization_required}
     end
   end
 
-  def get_forensic_collection(_parent, %{id: id}, %{context: _context}) do
-    # Forensic collections are tracked in-memory by the Executor.
-    # Query the Executor for collection status.
-    case get_collection_status(id) do
-      {:ok, collection} ->
-        {:ok, collection}
+  defp organization_id_from_context(_context), do: {:error, :organization_required}
 
-      {:error, :not_found} ->
-        {:error, message: "Forensic collection not found", code: "NOT_FOUND"}
+  defp unauthorized,
+    do: {:error, message: "Not authorized: missing organization context", code: "UNAUTHORIZED"}
+
+  defp scoped_user(context, user_id) do
+    case organization_id_from_context(context) do
+      {:ok, org_id} -> Repo.get_by(User, id: user_id, organization_id: org_id)
+      _ -> nil
     end
+  end
+
+  defp parent_scoped?(parent, context) do
+    parent_org_id = Map.get(parent, :organization_id) || Map.get(parent, "organization_id")
+
+    case organization_id_from_context(context) do
+      {:ok, org_id} -> parent_org_id == org_id
+      _ -> false
+    end
+  end
+
+  defp ensure_alert_ids_for_org([], _org_id), do: :ok
+
+  defp ensure_alert_ids_for_org(alert_ids, org_id) do
+    unique_ids = Enum.uniq(alert_ids)
+
+    count =
+      Alert
+      |> where([a], a.organization_id == ^org_id and a.id in ^unique_ids)
+      |> Repo.aggregate(:count, :id)
+
+    if count == length(unique_ids), do: :ok, else: {:error, :not_found}
+  end
+
+  defp ensure_user_for_org(nil, _org_id), do: :ok
+
+  defp ensure_user_for_org(user_id, org_id) do
+    if Repo.exists?(from(u in User, where: u.id == ^user_id and u.organization_id == ^org_id)),
+      do: :ok,
+      else: {:error, :not_found}
   end
 
   # ===========================================================================
@@ -560,12 +622,12 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
   # Private helpers - AI analysis
   # ===========================================================================
 
-  defp analyze_with_ai(investigation) do
+  defp analyze_with_ai(investigation, organization_id) do
     # Check if the AgenticAnalyst GenServer is available
     case Process.whereis(TamanduaServer.AISecurity.AgenticAnalyst) do
       nil ->
         # AgenticAnalyst is not running, try a basic local analysis
-        build_basic_analysis(investigation)
+        build_basic_analysis(investigation, organization_id)
 
       _pid ->
         # Attempt to use the AgenticAnalyst
@@ -573,17 +635,20 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
           alert_ids = investigation.alert_ids || []
 
           if Enum.empty?(alert_ids) do
-            build_basic_analysis(investigation)
+            build_basic_analysis(investigation, organization_id)
           else
             # Use the first alert as the primary analysis target
             primary_alert_id = List.first(alert_ids)
 
-            case TamanduaServer.AISecurity.AgenticAnalyst.triage_alert(primary_alert_id) do
+            case TamanduaServer.AISecurity.AgenticAnalyst.triage_alert(
+                   primary_alert_id,
+                   organization_id
+                 ) do
               {:ok, result} ->
                 {:ok, format_ai_result(result, investigation)}
 
               {:error, _reason} ->
-                build_basic_analysis(investigation)
+                build_basic_analysis(investigation, organization_id)
             end
           end
         rescue
@@ -594,14 +659,16 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     end
   end
 
-  defp build_basic_analysis(investigation) do
+  defp build_basic_analysis(investigation, organization_id) do
     alert_ids = investigation.alert_ids || []
 
     alerts =
       if Enum.empty?(alert_ids) do
         []
       else
-        from(a in Alert, where: a.id in ^alert_ids)
+        from(a in Alert,
+          where: a.id in ^alert_ids and a.organization_id == ^organization_id
+        )
         |> Repo.all()
       end
 
@@ -610,8 +677,8 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     else
       # Build a basic analysis from linked alerts
       severities = Enum.map(alerts, & &1.severity)
-      techniques = alerts |> Enum.flat_map(& (&1.mitre_techniques || [])) |> Enum.uniq()
-      _tactics = alerts |> Enum.flat_map(& (&1.mitre_tactics || [])) |> Enum.uniq()
+      techniques = alerts |> Enum.flat_map(&(&1.mitre_techniques || [])) |> Enum.uniq()
+      _tactics = alerts |> Enum.flat_map(&(&1.mitre_tactics || [])) |> Enum.uniq()
 
       threat_level =
         cond do
@@ -648,22 +715,24 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
 
       summary =
         "Investigation contains #{length(alerts)} linked alert(s). " <>
-        "Highest severity: #{threat_level}. " <>
-        if(length(techniques) > 0,
-          do: "MITRE techniques: #{Enum.join(techniques, ", ")}. ",
-          else: "") <>
-        "Manual review recommended."
+          "Highest severity: #{threat_level}. " <>
+          if(length(techniques) > 0,
+            do: "MITRE techniques: #{Enum.join(techniques, ", ")}. ",
+            else: ""
+          ) <>
+          "Manual review recommended."
 
-      {:ok, %{
-        summary: summary,
-        threat_level: threat_level,
-        confidence: 0.5,
-        attack_chain: [],
-        recommended_actions: recommended_actions,
-        iocs_extracted: [],
-        mitre_mapping: mitre_mapping,
-        similar_incidents: []
-      }}
+      {:ok,
+       %{
+         summary: summary,
+         threat_level: threat_level,
+         confidence: 0.5,
+         attack_chain: [],
+         recommended_actions: recommended_actions,
+         iocs_extracted: [],
+         mitre_mapping: mitre_mapping,
+         similar_incidents: []
+       }}
     end
   end
 
@@ -678,43 +747,6 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
       mitre_mapping: result[:mitre_mapping] || [],
       similar_incidents: result[:similar_incidents] || []
     }
-  end
-
-  # ===========================================================================
-  # Private helpers - Forensics
-  # ===========================================================================
-
-  defp get_collection_status(collection_id) do
-    # Try to get status from the Executor's in-memory state.
-    # The Executor tracks active collections internally.
-    try do
-      case TamanduaServer.Response.Executor.get_collection_status(collection_id) do
-        {:ok, status} ->
-          {:ok, %{
-            id: collection_id,
-            agent_id: status[:agent_id],
-            collection_type: status[:type] || "full",
-            status: status[:status] || "unknown",
-            progress: status[:progress] || 0,
-            artifacts: status[:artifacts] || [],
-            size_bytes: status[:size_bytes] || 0,
-            started_at: status[:started_at],
-            completed_at: status[:completed_at],
-            error_message: status[:error_message],
-            requested_by_id: status[:requested_by]
-          }}
-
-        {:error, _} ->
-          {:error, :not_found}
-      end
-    rescue
-      UndefinedFunctionError ->
-        # get_collection_status/1 is not yet implemented on the Executor
-        {:error, :not_found}
-    catch
-      :exit, _ ->
-        {:error, :not_found}
-    end
   end
 
   # ===========================================================================
@@ -766,48 +798,50 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     nodes = [alert_node | nodes]
 
     # Add agent as a node if present
-    {nodes, edges} = if alert.agent_id do
-      agent_node = %{
-        id: "host_#{alert.agent_id}",
-        type: "host",
-        label: "Agent",
-        properties: %{agent_id: alert.agent_id},
-        severity: nil,
-        is_suspicious: false
-      }
-
-      edge = %{
-        source: "alert_#{alert.id}",
-        target: "host_#{alert.agent_id}",
-        type: "on_host",
-        label: "detected on",
-        timestamp: alert.inserted_at
-      }
-
-      {[agent_node | nodes], [edge | edges]}
-    else
-      {nodes, edges}
-    end
-
-    # Add process chain nodes if present
-    {nodes, edges} = if alert.process_chain do
-      Enum.reduce(alert.process_chain, {nodes, edges}, fn process, {n, e} ->
-        proc_id = "process_#{process["pid"] || "unknown"}"
-
-        proc_node = %{
-          id: proc_id,
-          type: "process",
-          label: process["name"] || "unknown",
-          properties: process,
+    {nodes, edges} =
+      if alert.agent_id do
+        agent_node = %{
+          id: "host_#{alert.agent_id}",
+          type: "host",
+          label: "Agent",
+          properties: %{agent_id: alert.agent_id},
           severity: nil,
-          is_suspicious: process["is_suspicious"] || false
+          is_suspicious: false
         }
 
-        {[proc_node | n], e}
-      end)
-    else
-      {nodes, edges}
-    end
+        edge = %{
+          source: "alert_#{alert.id}",
+          target: "host_#{alert.agent_id}",
+          type: "on_host",
+          label: "detected on",
+          timestamp: alert.inserted_at
+        }
+
+        {[agent_node | nodes], [edge | edges]}
+      else
+        {nodes, edges}
+      end
+
+    # Add process chain nodes if present
+    {nodes, edges} =
+      if alert.process_chain do
+        Enum.reduce(alert.process_chain, {nodes, edges}, fn process, {n, e} ->
+          proc_id = "process_#{process["pid"] || "unknown"}"
+
+          proc_node = %{
+            id: proc_id,
+            type: "process",
+            label: process["name"] || "unknown",
+            properties: process,
+            severity: nil,
+            is_suspicious: process["is_suspicious"] || false
+          }
+
+          {[proc_node | n], e}
+        end)
+      else
+        {nodes, edges}
+      end
 
     %{
       nodes: nodes,
@@ -816,36 +850,38 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver do
     }
   end
 
-  defp build_graph_from_process(agent_id, process_id) do
+  defp build_graph_from_process(agent_id, _process_id) do
     # Get process tree from correlator
     case TamanduaServer.Detection.Correlator.get_process_tree(agent_id) do
       {:ok, graph} ->
         # Convert libgraph to our graph format
-        nodes = Graph.vertices(graph)
-        |> Enum.map(fn pid ->
-          labels = Graph.vertex_labels(graph, pid)
-          info = List.first(labels) || %{}
+        nodes =
+          Graph.vertices(graph)
+          |> Enum.map(fn pid ->
+            labels = Graph.vertex_labels(graph, pid)
+            info = List.first(labels) || %{}
 
-          %{
-            id: "process_#{pid}",
-            type: "process",
-            label: info[:name] || "PID #{pid}",
-            properties: info,
-            severity: nil,
-            is_suspicious: info[:is_suspicious] || false
-          }
-        end)
+            %{
+              id: "process_#{pid}",
+              type: "process",
+              label: info[:name] || "PID #{pid}",
+              properties: info,
+              severity: nil,
+              is_suspicious: info[:is_suspicious] || false
+            }
+          end)
 
-        edges = Graph.edges(graph)
-        |> Enum.map(fn edge ->
-          %{
-            source: "process_#{edge.v1}",
-            target: "process_#{edge.v2}",
-            type: "spawned",
-            label: "spawned",
-            timestamp: nil
-          }
-        end)
+        edges =
+          Graph.edges(graph)
+          |> Enum.map(fn edge ->
+            %{
+              source: "process_#{edge.v1}",
+              target: "process_#{edge.v2}",
+              type: "spawned",
+              label: "spawned",
+              timestamp: nil
+            }
+          end)
 
         %{nodes: nodes, edges: edges, clusters: []}
 

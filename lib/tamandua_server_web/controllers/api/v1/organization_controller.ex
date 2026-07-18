@@ -10,9 +10,7 @@ defmodule TamanduaServerWeb.API.V1.OrganizationController do
   use TamanduaServerWeb, :controller
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Accounts
   alias TamanduaServer.Accounts.Organization
-  alias TamanduaServer.Agents
   alias TamanduaServer.TenantScope
 
   import Ecto.Query
@@ -468,7 +466,7 @@ defmodule TamanduaServerWeb.API.V1.OrganizationController do
     TamanduaServer.Authorization.RBAC.can?(user, :system_settings)
   end
 
-  defp initialize_org_roles(org) do
+  defp initialize_org_roles(_org) do
     # Create organization-specific custom roles can be done here
     # Builtin roles are global and don't need per-org creation
     :ok

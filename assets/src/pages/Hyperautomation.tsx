@@ -185,7 +185,7 @@ export default function Automation({
     name: '',
     description: '',
     triggerType: 'manual',
-    enabled: true,
+    enabled: false,
   })
 
   useEffect(() => {
@@ -221,7 +221,7 @@ export default function Automation({
       name: template.name || '',
       description: template.description || '',
       triggerType: template.triggerType || template.trigger_type || 'manual',
-      enabled: true,
+      enabled: false,
     })
     setCreateError(null)
     setShowCreateModal(true)
@@ -283,7 +283,7 @@ export default function Automation({
           description,
           trigger_type: newWorkflow.triggerType,
           trigger_config: {},
-          enabled: newWorkflow.enabled,
+          enabled: false,
           steps: [
             {
               id: 'step-1',
@@ -291,7 +291,7 @@ export default function Automation({
               name: 'Create starter ticket',
               params: {
                 title: `Workflow review: ${name}`,
-                description: description || 'Starter workflow created from Hyperautomation.',
+                description: description || 'Draft starter workflow created from Hyperautomation. Review connector, target, and approval policy before enabling.',
               },
             },
           ],
@@ -303,8 +303,8 @@ export default function Automation({
       }
 
       setShowCreateModal(false)
-      setNewWorkflow({ name: '', description: '', triggerType: 'manual', enabled: true })
-      setActionNotice({ type: 'success', message: 'Workflow created with an executable starter step.' })
+      setNewWorkflow({ name: '', description: '', triggerType: 'manual', enabled: false })
+      setActionNotice({ type: 'success', message: 'Draft workflow created disabled. Review connector, target, and approval policy before enabling.' })
       router.reload({ only: ['workflows', 'executionStats', 'recentExecutions'] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : 'Failed to create workflow')
@@ -330,7 +330,7 @@ export default function Automation({
         body: JSON.stringify({
           context: {},
           async: true,
-          dry_run: false,
+          dry_run: true,
         }),
       })
 
@@ -338,7 +338,7 @@ export default function Automation({
         throw new Error(await getApiErrorMessage(response, 'Failed to execute workflow'))
       }
 
-      setActionNotice({ type: 'success', message: `Workflow "${workflow.name}" execution started.` })
+      setActionNotice({ type: 'success', message: `Dry-run queued for workflow "${workflow.name}". No connector action was executed.` })
       router.reload({ only: ['workflows', 'executionStats', 'recentExecutions'] })
     } catch (error) {
       setActionNotice({
@@ -700,7 +700,7 @@ export default function Automation({
                       ) : (
                         <Play className="h-4 w-4" />
                       )}
-                      {executingWorkflowId === selectedWorkflow.id ? 'Running...' : 'Run Now'}
+                      {executingWorkflowId === selectedWorkflow.id ? 'Checking...' : 'Dry Run'}
                     </button>
                     <button
                       type="button"

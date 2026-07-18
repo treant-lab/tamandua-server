@@ -95,6 +95,45 @@ interface AnalystStats {
   confirmedThreats: number
 }
 
+interface SuggestedAction {
+  id: string
+  investigationId: string
+  alertId: string
+  actionType: string
+  target?: string | null
+  parameters: Record<string, unknown>
+  confidence: number
+  rationale?: string | null
+  riskLevel?: string | null
+  requiresApproval: boolean
+  autoExecutable: boolean
+}
+
+type ApprovalState = {
+  status: 'idle' | 'pending' | 'succeeded' | 'failed'
+  message?: string
+}
+
+interface ReconciliationExecution {
+  execution_id: string
+  investigation_id: string
+  recommendation_id: string
+  status: 'reconciliation_required'
+  action_type: string
+  target_agent_id?: string | null
+  started_at?: string | null
+  lease_expires_at?: string | null
+  completed_at?: string | null
+  inserted_at?: string | null
+}
+
+type ReconciliationDraft = {
+  outcome: 'succeeded' | 'failed'
+  commandId: string
+  status: 'idle' | 'pending' | 'failed'
+  message?: string
+}
+
 interface AgenticAnalystProps {
   investigations: Investigation[]
   activeInvestigation: Investigation | null
@@ -102,6 +141,7 @@ interface AgenticAnalystProps {
   stats: AnalystStats
   insights?: AIInsight[]
   chatHistory?: ChatMessage[]
+  suggestedActions?: SuggestedAction[]
 }
 
 function getCsrfToken(): string {
@@ -114,7 +154,8 @@ export default function Analyst({
   triageQueue: initialTriageQueue,
   stats: initialStats,
   insights: initialInsights = [],
-  chatHistory = []
+  chatHistory = [],
+  suggestedActions = []
 }: AgenticAnalystProps) {
   const [investigations, setInvestigations] = useState<Investigation[]>(initialInvestigations)
   const [selectedInvestigation, setSelectedInvestigation] = useState<Investigation | null>(activeInvestigation)
@@ -124,6 +165,11 @@ export default function Analyst({
   const [insights, setInsights] = useState<AIInsight[]>(initialInsights)
   const [triageQueue, setTriageQueue] = useState<TriageResult[]>(initialTriageQueue)
   const [stats, setStats] = useState<AnalystStats>(initialStats)
+  const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalState>>({})
+  const [reconciliationExecutions, setReconciliationExecutions] = useState<ReconciliationExecution[]>([])
+  const [reconciliationDrafts, setReconciliationDrafts] = useState<Record<string, ReconciliationDraft>>({})
+  const [isLoadingReconciliations, setIsLoadingReconciliations] = useState(false)
+  const [reconciliationError, setReconciliationError] = useState<string | null>(null)
 
   // Evidence collection state
   const [evidence, setEvidence] = useState<EvidenceItem[]>([])
@@ -179,6 +225,158 @@ export default function Analyst({
 
     loadInvestigationData()
   }, [])
+
+  const loadReconciliationQueue = useCallback(async () => {
+    setIsLoadingReconciliations(true)
+    setReconciliationError(null)
+
+    try {
+      const response = await fetch('/api/v1/analyst/approval-executions?limit=50', {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+      const body = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        if (response.status === 403) {
+          setReconciliationExecutions([])
+          return
+        }
+        throw new Error(body?.message || body?.error || `HTTP ${response.status}`)
+      }
+
+      setReconciliationExecutions(Array.isArray(body?.data) ? body.data : [])
+    } catch (error) {
+      logger.error('Failed to load approval reconciliation queue:', error)
+      setReconciliationError('Reconciliation queue is temporarily unavailable.')
+    } finally {
+      setIsLoadingReconciliations(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadReconciliationQueue()
+  }, [loadReconciliationQueue])
+
+  const reconciliationDraft = (executionId: string): ReconciliationDraft =>
+    reconciliationDrafts[executionId] || {
+      outcome: 'succeeded',
+      commandId: '',
+      status: 'idle',
+    }
+
+  const updateReconciliationDraft = (
+    executionId: string,
+    patch: Partial<ReconciliationDraft>
+  ) => {
+    setReconciliationDrafts(current => {
+      const existing = current[executionId] || {
+        outcome: 'succeeded' as const,
+        commandId: '',
+        status: 'idle' as const,
+      }
+      return { ...current, [executionId]: { ...existing, ...patch } }
+    })
+  }
+
+  const reconcileExecution = async (execution: ReconciliationExecution) => {
+    const draft = reconciliationDraft(execution.execution_id)
+    const commandId = draft.commandId.trim()
+    if (!commandId || draft.status === 'pending') return
+
+    updateReconciliationDraft(execution.execution_id, {
+      status: 'pending',
+      message: 'Verifying terminal command evidence…',
+    })
+
+    try {
+      const response = await fetch(
+        `/api/v1/analyst/approval-executions/${encodeURIComponent(execution.execution_id)}/reconcile`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': getCsrfToken(),
+          },
+          body: JSON.stringify({
+            outcome: draft.outcome,
+            evidence_ref: { type: 'agent_command', id: commandId },
+          }),
+        }
+      )
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.status === 'error') {
+        throw new Error(body?.message || body?.error || `HTTP ${response.status}`)
+      }
+
+      setReconciliationExecutions(current =>
+        current.filter(item => item.execution_id !== execution.execution_id)
+      )
+      setReconciliationDrafts(current => {
+        const next = { ...current }
+        delete next[execution.execution_id]
+        return next
+      })
+    } catch (error) {
+      logger.error('Failed to reconcile approval execution:', error)
+      updateReconciliationDraft(execution.execution_id, {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Reconciliation failed.',
+      })
+    }
+  }
+
+  const approveSuggestedAction = async (action: SuggestedAction) => {
+    const currentState = approvalStates[action.id]?.status
+    if (currentState === 'pending' || currentState === 'succeeded') return
+
+    const confirmed = window.confirm(
+      `Approve ${action.actionType} for ${action.target || 'the investigation target'}? This may execute a response action.`
+    )
+    if (!confirmed) return
+
+    setApprovalStates(current => ({
+      ...current,
+      [action.id]: { status: 'pending', message: 'Submitting approval…' },
+    }))
+
+    try {
+      const response = await fetch(
+        `/api/v1/analyst/investigations/${encodeURIComponent(action.investigationId)}/recommendations/${encodeURIComponent(action.id)}/approve`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': getCsrfToken(),
+          },
+          body: JSON.stringify({}),
+        }
+      )
+
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok || body?.status === 'error') {
+        throw new Error(body?.message || body?.error || `HTTP ${response.status}`)
+      }
+
+      setApprovalStates(current => ({
+        ...current,
+        [action.id]: { status: 'succeeded', message: 'Approved and submitted safely.' },
+      }))
+    } catch (error) {
+      logger.error('Failed to approve recommendation:', error)
+      setApprovalStates(current => ({
+        ...current,
+        [action.id]: {
+          status: 'failed',
+          message: error instanceof Error ? error.message : 'Approval failed.',
+        },
+      }))
+    }
+  }
 
   // Send message in investigation chat context
   const handleSendMessage = async () => {
@@ -913,6 +1111,182 @@ export default function Analyst({
                 </div>
               </div>
             )}
+
+            {/* Governed response approvals */}
+            <div className="card-sentinel rounded-xl">
+              <div className="p-4 border-b border-[var(--surface)]">
+                <h2 className="text-lg font-semibold text-[var(--fg)] flex items-center gap-2">
+                  <Shield className="h-5 w-5 text-primary-400" />
+                  Response Approvals
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">
+                  Human approval is required before a governed response can execute.
+                </p>
+              </div>
+              {suggestedActions.length === 0 ? (
+                <div className="p-6 text-center text-sm text-[var(--muted)]">
+                  No response recommendations are awaiting review.
+                </div>
+              ) : (
+                <div className="divide-y divide-[var(--surface)]">
+                  {suggestedActions.map(action => {
+                    const approval = approvalStates[action.id] || { status: 'idle' as const }
+                    const disabled = approval.status === 'pending' || approval.status === 'succeeded'
+
+                    return (
+                      <div key={action.id} className="p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-[var(--fg)]">{action.actionType}</span>
+                              {action.riskLevel && (
+                                <span className="text-[10px] uppercase tracking-wide rounded bg-[var(--surface)] px-2 py-0.5 text-[var(--muted)]">
+                                  {action.riskLevel} risk
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-[var(--muted)] mt-1 break-words">
+                              Target: {action.target || 'investigation target'} · {Math.round(action.confidence * 100)}% confidence
+                            </p>
+                            {action.rationale && (
+                              <p className="text-sm text-[var(--muted)] mt-2">{action.rationale}</p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => void approveSuggestedAction(action)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {approval.status === 'pending' ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : approval.status === 'succeeded' ? (
+                              <CheckCircle className="h-3.5 w-3.5" />
+                            ) : (
+                              <Play className="h-3.5 w-3.5" />
+                            )}
+                            {approval.status === 'succeeded' ? 'Approved' : 'Approve'}
+                          </button>
+                        </div>
+                        {approval.message && (
+                          <p
+                            className={cn(
+                              'mt-2 text-xs',
+                              approval.status === 'failed' ? 'text-red-400' : 'text-[var(--muted)]'
+                            )}
+                          >
+                            {approval.message}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className="border-t border-[var(--surface)]">
+                <div className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-[var(--fg)]">Reconciliation Queue</h3>
+                    <p className="text-xs text-[var(--muted)]">
+                      Expired executions require terminal AgentCommand evidence. This never re-executes the action.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadReconciliationQueue()}
+                    disabled={isLoadingReconciliations}
+                    className="p-2 rounded-lg text-[var(--muted)] hover:text-[var(--fg)] hover:bg-[var(--surface)] disabled:opacity-50"
+                    aria-label="Refresh reconciliation queue"
+                  >
+                    <RefreshCw className={cn('h-4 w-4', isLoadingReconciliations && 'animate-spin')} />
+                  </button>
+                </div>
+
+                {reconciliationError && (
+                  <div className="mx-4 mb-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
+                    {reconciliationError}
+                  </div>
+                )}
+
+                {!isLoadingReconciliations && !reconciliationError && reconciliationExecutions.length === 0 && (
+                  <div className="px-4 pb-4 text-xs text-[var(--muted)]">
+                    No executions require reconciliation.
+                  </div>
+                )}
+
+                <div className="divide-y divide-[var(--surface)]">
+                  {reconciliationExecutions.map(execution => {
+                    const draft = reconciliationDraft(execution.execution_id)
+                    const pending = draft.status === 'pending'
+
+                    return (
+                      <div key={execution.execution_id} className="p-4 space-y-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-[var(--fg)]">{execution.action_type}</span>
+                              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
+                                reconciliation required
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-[var(--muted)] break-all">
+                              Agent: {execution.target_agent_id || 'unknown'} · Execution: {execution.execution_id}
+                            </p>
+                            <p className="mt-1 text-[10px] text-[var(--muted)]">
+                              Lease expired: {execution.lease_expires_at ? new Date(execution.lease_expires_at).toLocaleString() : 'unknown'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
+                          <Select
+                            value={draft.outcome}
+                            onValueChange={value => updateReconciliationDraft(execution.execution_id, {
+                              outcome: value as 'succeeded' | 'failed',
+                              status: 'idle',
+                              message: undefined,
+                            })}
+                            disabled={pending}
+                            className="bg-[var(--surface)] border border-[var(--surface)] rounded-lg px-2 py-2 text-xs text-[var(--fg)]"
+                          >
+                            <SelectItem value="succeeded">Succeeded</SelectItem>
+                            <SelectItem value="failed">Failed</SelectItem>
+                          </Select>
+                          <input
+                            type="text"
+                            value={draft.commandId}
+                            onChange={event => updateReconciliationDraft(execution.execution_id, {
+                              commandId: event.target.value,
+                              status: 'idle',
+                              message: undefined,
+                            })}
+                            disabled={pending}
+                            placeholder="Terminal AgentCommand UUID"
+                            className="min-w-0 rounded-lg border border-[var(--surface)] bg-[var(--surface)] px-3 py-2 font-mono text-xs text-[var(--fg)] placeholder-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          />
+                          <button
+                            type="button"
+                            disabled={pending || !draft.commandId.trim()}
+                            onClick={() => void reconcileExecution(execution)}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white hover:bg-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                            Reconcile
+                          </button>
+                        </div>
+
+                        {draft.message && (
+                          <p className={cn('text-xs', draft.status === 'failed' ? 'text-red-400' : 'text-[var(--muted)]')}>
+                            {draft.message}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
 
             {/* Automated Triage Results */}
             <div className="card-sentinel rounded-xl">

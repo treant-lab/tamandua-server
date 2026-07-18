@@ -48,7 +48,7 @@ defmodule TamanduaServer.Authorization.AccessPolicy do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias TamanduaServer.Accounts.{Organization, Role}
+  alias TamanduaServer.Accounts.{Organization}
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id

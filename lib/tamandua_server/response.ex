@@ -40,14 +40,15 @@ defmodule TamanduaServer.Response do
   - :alert_id - Filter by specific alert
   - :status - Filter by action status
   """
-  def list_actions(filters \\ %{}) do
-    query = from(a in Action, order_by: [desc: a.inserted_at])
+  def list_actions(filters \\ %{})
 
-    query = if filters[:organization_id] do
-      where(query, [a], a.organization_id == ^filters[:organization_id])
-    else
-      query
-    end
+  def list_actions(%{organization_id: organization_id} = filters)
+      when is_binary(organization_id) and organization_id != "" do
+    query =
+      from(a in Action,
+        where: a.organization_id == ^organization_id,
+        order_by: [desc: a.inserted_at]
+      )
 
     query = if filters[:agent_id] do
       where(query, [a], a.agent_id == ^filters[:agent_id])
@@ -67,8 +68,40 @@ defmodule TamanduaServer.Response do
       query
     end
 
-    Repo.all(query)
+    query = if filters[:action_type] do
+      where(query, [a], a.action_type == ^filters[:action_type])
+    else
+      query
+    end
+
+    query = if filters[:requested_by_id] do
+      where(query, [a], a.executed_by_id == ^filters[:requested_by_id])
+    else
+      query
+    end
+
+    query = if filters[:since] do
+      where(query, [a], a.inserted_at >= ^filters[:since])
+    else
+      query
+    end
+
+    query = if filters[:until] do
+      where(query, [a], a.inserted_at <= ^filters[:until])
+    else
+      query
+    end
+
+    limit = filters |> Map.get(:limit, 100) |> normalize_limit()
+    offset = filters |> Map.get(:offset, 0) |> normalize_offset()
+
+    query
+    |> limit(^limit)
+    |> offset(^offset)
+    |> Repo.all()
   end
+
+  def list_actions(_filters), do: []
 
   @doc """
   Get pending actions for an agent.
@@ -81,4 +114,10 @@ defmodule TamanduaServer.Response do
     )
     |> Repo.all()
   end
+
+  defp normalize_limit(value) when is_integer(value), do: value |> max(1) |> min(100)
+  defp normalize_limit(_value), do: 100
+
+  defp normalize_offset(value) when is_integer(value), do: max(value, 0)
+  defp normalize_offset(_value), do: 0
 end

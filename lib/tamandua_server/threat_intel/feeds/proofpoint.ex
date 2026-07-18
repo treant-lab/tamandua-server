@@ -34,7 +34,6 @@ defmodule TamanduaServer.ThreatIntel.Feeds.Proofpoint do
   @http_timeout 60_000
 
   # Campaign types
-  @campaign_types ~w(malware phishing bec credential_theft)
 
   # ============================================================================
   # Client API

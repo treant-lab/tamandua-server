@@ -405,7 +405,7 @@ defmodule TamanduaServer.Bounties.ContributorReputation do
     {:error, "Contributor wallet is required before bounty payment"}
   end
 
-  def check_bounty_requirements(wallet_address, amount_lamports, _submission)
+  def check_bounty_requirements(_wallet_address, amount_lamports, _submission)
       when not is_integer(amount_lamports) or amount_lamports <= 0 do
     {:error, "Bounty amount must be a positive integer number of lamports"}
   end

@@ -29,21 +29,24 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   ## Usage
 
       # Start autonomous triage
-      AgenticAnalyst.triage_alert(alert_id)
+      AgenticAnalyst.triage_alert(alert_id, organization_id)
 
       # Get investigation status
-      AgenticAnalyst.get_investigation(investigation_id)
+      AgenticAnalyst.get_investigation(investigation_id, organization_id: organization_id)
 
       # Submit analyst feedback
-      AgenticAnalyst.submit_feedback(investigation_id, feedback)
+      AgenticAnalyst.submit_feedback(investigation_id, feedback, organization_id)
   """
 
   use GenServer
   require Logger
+  import Ecto.Query, only: [from: 2]
 
   alias TamanduaServer.Alerts
   alias TamanduaServer.Alerts.Alert
-  alias TamanduaServer.Detection.{Correlator, Engine, Mitre}
+  alias TamanduaServer.AISecurity.AgenticInvestigationStore
+  alias TamanduaServer.AISecurity.ApprovalExecutions
+  alias TamanduaServer.Detection.{Correlator}
   alias TamanduaServer.Detection.Evidence, as: DetectionEvidence
   alias TamanduaServer.Response.Executor
   alias TamanduaServer.Agents.Registry
@@ -73,16 +76,32 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   # MITRE technique base priors (frequency in real-world attacks)
   @technique_priors %{
-    "T1059" => 0.35, "T1059.001" => 0.30,   # Command & Scripting Interpreter
-    "T1003" => 0.20, "T1003.001" => 0.18,   # OS Credential Dumping
-    "T1486" => 0.10,                          # Data Encrypted for Impact (Ransomware)
-    "T1021" => 0.25, "T1021.001" => 0.20,   # Remote Services
-    "T1021.002" => 0.22,                      # SMB/Windows Admin Shares
-    "T1547" => 0.28, "T1547.001" => 0.25,   # Boot/Logon Autostart
-    "T1053" => 0.22, "T1053.005" => 0.20,   # Scheduled Task
-    "T1218" => 0.18, "T1218.011" => 0.15,   # Rundll32
-    "T1105" => 0.30,                          # Ingress Tool Transfer
-    "T1027" => 0.25                           # Obfuscated Files
+    # Command & Scripting Interpreter
+    "T1059" => 0.35,
+    "T1059.001" => 0.30,
+    # OS Credential Dumping
+    "T1003" => 0.20,
+    "T1003.001" => 0.18,
+    # Data Encrypted for Impact (Ransomware)
+    "T1486" => 0.10,
+    # Remote Services
+    "T1021" => 0.25,
+    "T1021.001" => 0.20,
+    # SMB/Windows Admin Shares
+    "T1021.002" => 0.22,
+    # Boot/Logon Autostart
+    "T1547" => 0.28,
+    "T1547.001" => 0.25,
+    # Scheduled Task
+    "T1053" => 0.22,
+    "T1053.005" => 0.20,
+    # Rundll32
+    "T1218" => 0.18,
+    "T1218.011" => 0.15,
+    # Ingress Tool Transfer
+    "T1105" => 0.30,
+    # Obfuscated Files
+    "T1027" => 0.25
   }
   @default_technique_prior 0.15
 
@@ -94,7 +113,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defstruct [
     :stats,
     :config,
-    :active_investigations
+    :active_investigations,
+    :persistence
   ]
 
   # ============================================================================
@@ -106,6 +126,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     defstruct [
       :id,
+      :organization_id,
       :alert_id,
       :alert,
       :state,
@@ -119,26 +140,33 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       :explanation,
       :confidence,
       :analyst_feedback,
-      :resolution
+      :resolution,
+      :created_at,
+      :source,
+      :analyst_notes,
+      :timeline,
+      :persistence_status,
+      :persistence_error
     ]
 
     @type t :: %__MODULE__{
-      id: String.t(),
-      alert_id: String.t(),
-      alert: map(),
-      state: atom(),
-      started_at: DateTime.t(),
-      updated_at: DateTime.t(),
-      triage_result: map() | nil,
-      hypotheses: [map()],
-      evidence: [map()],
-      correlations: [map()],
-      recommendations: [map()],
-      explanation: String.t() | nil,
-      confidence: float(),
-      analyst_feedback: map() | nil,
-      resolution: map() | nil
-    }
+            id: String.t(),
+            organization_id: String.t(),
+            alert_id: String.t(),
+            alert: map(),
+            state: atom(),
+            started_at: DateTime.t(),
+            updated_at: DateTime.t(),
+            triage_result: map() | nil,
+            hypotheses: [map()],
+            evidence: [map()],
+            correlations: [map()],
+            recommendations: [map()],
+            explanation: String.t() | nil,
+            confidence: float(),
+            analyst_feedback: map() | nil,
+            resolution: map() | nil
+          }
   end
 
   defmodule Hypothesis do
@@ -200,32 +228,38 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   Returns an investigation ID for tracking.
   """
   @spec triage_alert(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def triage_alert(alert_id) do
-    GenServer.call(__MODULE__, {:triage_alert, alert_id})
+  def triage_alert(_alert_id), do: {:error, :organization_required}
+
+  def triage_alert(alert_id, organization_id) when not is_nil(organization_id) do
+    GenServer.call(__MODULE__, {:triage_alert, alert_id, organization_id})
   end
 
   @doc """
   Initiates autonomous triage of multiple alerts in batch.
   """
   @spec triage_batch([String.t()]) :: {:ok, [String.t()]} | {:error, term()}
-  def triage_batch(alert_ids) do
-    GenServer.call(__MODULE__, {:triage_batch, alert_ids}, 60_000)
+  def triage_batch(_alert_ids), do: {:error, :organization_required}
+
+  def triage_batch(alert_ids, organization_id) when not is_nil(organization_id) do
+    GenServer.call(__MODULE__, {:triage_batch, alert_ids, organization_id}, 60_000)
   end
 
   @doc """
   Gets the current state of an investigation.
   """
   @spec get_investigation(String.t()) :: {:ok, Investigation.t()} | {:error, :not_found}
-  def get_investigation(investigation_id) do
-    GenServer.call(__MODULE__, {:get_investigation, investigation_id})
-  end
+  def get_investigation(_investigation_id), do: {:error, :organization_required}
 
   @doc """
   Lists all active investigations.
   """
   @spec list_investigations(keyword()) :: [Investigation.t()]
   def list_investigations(opts \\ []) do
-    GenServer.call(__MODULE__, {:list_investigations, opts})
+    if opts[:organization_id] do
+      GenServer.call(__MODULE__, {:list_investigations, opts})
+    else
+      []
+    end
   end
 
   @doc """
@@ -233,48 +267,100 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   This feedback is used to improve future analysis.
   """
   @spec submit_feedback(String.t(), map()) :: :ok | {:error, term()}
-  def submit_feedback(investigation_id, feedback) do
-    GenServer.call(__MODULE__, {:submit_feedback, investigation_id, feedback})
+  def submit_feedback(_investigation_id, _feedback), do: {:error, :organization_required}
+
+  @spec submit_feedback(String.t(), map(), String.t()) :: :ok | {:error, term()}
+  def submit_feedback(investigation_id, feedback, organization_id)
+      when not is_nil(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:submit_feedback, investigation_id, feedback, organization_id}
+    )
   end
 
   @doc """
   Approves a recommended action for execution.
   """
   @spec approve_action(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def approve_action(investigation_id, recommendation_id) do
-    GenServer.call(__MODULE__, {:approve_action, investigation_id, recommendation_id})
+  def approve_action(_investigation_id, _recommendation_id),
+    do: {:error, :organization_required}
+
+  @spec approve_action(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def approve_action(_investigation_id, _recommendation_id, _organization_id),
+    do: {:error, :approver_required}
+
+  @spec approve_action(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def approve_action(investigation_id, recommendation_id, organization_id, approver_id)
+      when is_binary(organization_id) and organization_id != "" and is_binary(approver_id) and
+             approver_id != "" do
+    GenServer.call(
+      __MODULE__,
+      {:approve_action, investigation_id, recommendation_id, organization_id, approver_id}
+    )
   end
+
+  def approve_action(_investigation_id, _recommendation_id, organization_id, _approver_id)
+      when organization_id in [nil, ""],
+      do: {:error, :organization_required}
+
+  def approve_action(_investigation_id, _recommendation_id, _organization_id, _approver_id),
+    do: {:error, :approver_required}
 
   @doc """
   Rejects a recommended action.
   """
   @spec reject_action(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def reject_action(investigation_id, recommendation_id, reason) do
-    GenServer.call(__MODULE__, {:reject_action, investigation_id, recommendation_id, reason})
+  def reject_action(_investigation_id, _recommendation_id, _reason),
+    do: {:error, :organization_required}
+
+  @spec reject_action(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def reject_action(investigation_id, recommendation_id, reason, organization_id)
+      when not is_nil(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:reject_action, investigation_id, recommendation_id, reason, organization_id}
+    )
   end
 
   @doc """
   Generates a natural language explanation of an investigation.
   """
   @spec explain_investigation(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def explain_investigation(investigation_id) do
-    GenServer.call(__MODULE__, {:explain_investigation, investigation_id})
+  def explain_investigation(_investigation_id), do: {:error, :organization_required}
+
+  @spec explain_investigation(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def explain_investigation(investigation_id, organization_id) when not is_nil(organization_id) do
+    GenServer.call(__MODULE__, {:explain_investigation, investigation_id, organization_id})
   end
 
   @doc """
   Gets analyst statistics.
   """
-  @spec get_stats() :: map()
-  def get_stats do
-    GenServer.call(__MODULE__, :get_stats)
+  @spec get_stats() :: {:error, :organization_required}
+  def get_stats, do: {:error, :organization_required}
+
+  @spec get_stats(String.t()) :: map() | {:error, :organization_required}
+  def get_stats(organization_id) when organization_id not in [nil, ""] do
+    GenServer.call(__MODULE__, {:get_stats, organization_id})
   end
+
+  def get_stats(_organization_id), do: {:error, :organization_required}
 
   @doc """
   Forces resolution of an investigation.
   """
   @spec resolve_investigation(String.t(), map()) :: :ok | {:error, term()}
-  def resolve_investigation(investigation_id, resolution) do
-    GenServer.call(__MODULE__, {:resolve_investigation, investigation_id, resolution})
+  def resolve_investigation(_investigation_id, _resolution),
+    do: {:error, :organization_required}
+
+  @spec resolve_investigation(String.t(), map(), String.t()) :: :ok | {:error, term()}
+  def resolve_investigation(investigation_id, resolution, organization_id)
+      when not is_nil(organization_id) do
+    GenServer.call(
+      __MODULE__,
+      {:resolve_investigation, investigation_id, resolution, organization_id}
+    )
   end
 
   # ============================================================================
@@ -284,9 +370,11 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   @impl true
   def init(_opts) do
     # Create ETS tables
-    :ets.new(@investigations_table, [:named_table, :set, :public, read_concurrency: true])
-    :ets.new(@evidence_table, [:named_table, :bag, :public, read_concurrency: true])
-    :ets.new(@feedback_table, [:named_table, :bag, :public, read_concurrency: true])
+    :ets.new(@investigations_table, [:named_table, :set, :protected, read_concurrency: true])
+    :ets.new(@evidence_table, [:named_table, :bag, :protected, read_concurrency: true])
+    :ets.new(@feedback_table, [:named_table, :bag, :protected, read_concurrency: true])
+
+    persistence = restore_durable_investigations()
 
     state = %__MODULE__{
       stats: %{
@@ -307,7 +395,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         max_concurrent_investigations: 50,
         hypothesis_depth: 3
       },
-      active_investigations: %{}
+      active_investigations: %{},
+      persistence: persistence
     }
 
     Logger.info("Agentic Security Analyst started")
@@ -316,7 +405,13 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   @impl true
   def handle_call({:triage_alert, alert_id}, _from, state) do
-    case do_triage_alert(alert_id, state) do
+    Logger.warning("Rejected unscoped triage request for alert #{alert_id}")
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:triage_alert, alert_id, organization_id}, _from, state) do
+    case do_triage_alert(alert_id, organization_id, state) do
       {:ok, investigation_id, new_state} ->
         {:reply, {:ok, investigation_id}, new_state}
 
@@ -327,9 +422,15 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   @impl true
   def handle_call({:triage_batch, alert_ids}, _from, state) do
+    Logger.warning("Rejected unscoped batch triage request for #{length(alert_ids)} alerts")
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:triage_batch, alert_ids, organization_id}, _from, state) do
     {investigation_ids, final_state} =
       Enum.map_reduce(alert_ids, state, fn alert_id, acc_state ->
-        case do_triage_alert(alert_id, acc_state) do
+        case do_triage_alert(alert_id, organization_id, acc_state) do
           {:ok, inv_id, new_state} -> {inv_id, new_state}
           {:error, _} -> {nil, acc_state}
         end
@@ -341,32 +442,46 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   @impl true
   def handle_call({:get_investigation, investigation_id}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] -> {:reply, {:ok, investigation}, state}
-      [] -> {:reply, {:error, :not_found}, state}
-    end
+    {:reply, {:error, :organization_required}, state}
   end
 
   @impl true
   def handle_call({:list_investigations, opts}, _from, state) do
-    investigations = :ets.tab2list(@investigations_table)
-    |> Enum.map(fn {_id, inv} -> inv end)
-    |> filter_investigations(opts)
-    |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
+    organization_id = opts[:organization_id]
+
+    investigations =
+      if is_nil(organization_id) do
+        []
+      else
+        :ets.tab2list(@investigations_table)
+        |> Enum.map(fn {_id, inv} -> inv end)
+        |> Enum.filter(&(Map.get(&1, :organization_id) == organization_id))
+        |> filter_investigations(opts)
+        |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
+      end
 
     {:reply, investigations, state}
   end
 
   @impl true
-  def handle_call({:submit_feedback, investigation_id, feedback}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
-        updated = %{investigation |
-          analyst_feedback: feedback,
-          updated_at: DateTime.utc_now()
-        }
-        :ets.insert(@investigations_table, {investigation_id, updated})
-        :ets.insert(@feedback_table, {investigation_id, feedback})
+  def handle_call({:submit_feedback, _investigation_id, _feedback}, _from, state),
+    do: {:reply, {:error, :organization_required}, state}
+
+  @impl true
+  def handle_call(
+        {:submit_feedback, investigation_id, feedback, organization_id},
+        _from,
+        state
+      ) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
+        updated = %{investigation | analyst_feedback: feedback, updated_at: DateTime.utc_now()}
+        {_updated, state} = persist_and_cache(updated, state)
+
+        :ets.insert(
+          @feedback_table,
+          {investigation_key(organization_id, investigation_id), feedback}
+        )
 
         # Learn from feedback
         learn_from_feedback(investigation, feedback)
@@ -380,16 +495,31 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   @impl true
-  def handle_call({:approve_action, investigation_id, recommendation_id}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
-        case execute_recommendation(investigation, recommendation_id) do
-          {:ok, result} ->
-            new_stats = update_stat(state.stats, :actions_executed)
-            {:reply, {:ok, result}, %{state | stats: new_stats}}
+  def handle_call({:approve_action, _investigation_id, _recommendation_id}, _from, state) do
+    {:reply, {:error, :organization_required}, state}
+  end
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
+  @impl true
+  def handle_call(
+        {:approve_action, _investigation_id, _recommendation_id, _organization_id},
+        _from,
+        state
+      ) do
+    {:reply, {:error, :approver_required}, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:approve_action, investigation_id, recommendation_id, organization_id, approver_id},
+        _from,
+        state
+      ) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
+        if approver_belongs_to_organization?(approver_id, organization_id) do
+          approve_reserved_action(investigation, recommendation_id, approver_id, state)
+        else
+          {:reply, {:error, :unauthorized}, state}
         end
 
       [] ->
@@ -398,23 +528,35 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   @impl true
-  def handle_call({:reject_action, investigation_id, recommendation_id, reason}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
-        updated_recommendations = Enum.map(investigation.recommendations, fn rec ->
-          if rec.id == recommendation_id do
-            Map.put(rec, :rejected, true)
-            |> Map.put(:rejection_reason, reason)
-          else
-            rec
-          end
-        end)
+  def handle_call({:reject_action, _investigation_id, _recommendation_id, _reason}, _from, state) do
+    {:reply, {:error, :organization_required}, state}
+  end
 
-        updated = %{investigation |
-          recommendations: updated_recommendations,
-          updated_at: DateTime.utc_now()
+  @impl true
+  def handle_call(
+        {:reject_action, investigation_id, recommendation_id, reason, organization_id},
+        _from,
+        state
+      ) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
+        updated_recommendations =
+          Enum.map(investigation.recommendations, fn rec ->
+            if rec.id == recommendation_id do
+              Map.put(rec, :rejected, true)
+              |> Map.put(:rejection_reason, reason)
+            else
+              rec
+            end
+          end)
+
+        updated = %{
+          investigation
+          | recommendations: updated_recommendations,
+            updated_at: DateTime.utc_now()
         }
-        :ets.insert(@investigations_table, {investigation_id, updated})
+
+        {_updated, state} = persist_and_cache(updated, state)
         {:reply, :ok, state}
 
       [] ->
@@ -423,12 +565,17 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   @impl true
-  def handle_call({:explain_investigation, investigation_id}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
+  def handle_call({:explain_investigation, _investigation_id}, _from, state) do
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:explain_investigation, investigation_id, organization_id}, _from, state) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
         explanation = generate_natural_language_explanation(investigation)
         updated = %{investigation | explanation: explanation, updated_at: DateTime.utc_now()}
-        :ets.insert(@investigations_table, {investigation_id, updated})
+        {_updated, state} = persist_and_cache(updated, state)
         {:reply, {:ok, explanation}, state}
 
       [] ->
@@ -438,26 +585,44 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   @impl true
   def handle_call(:get_stats, _from, state) do
-    {:reply, state.stats, state}
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:get_stats, organization_id}, _from, state) do
+    stats =
+      organization_id
+      |> investigations_for_organization()
+      |> build_organization_stats()
+      |> Map.put(:persistence, state.persistence)
+
+    {:reply, stats, state}
   end
 
   @impl true
   def handle_call({:auto_triage, alert_id}, _from, state) do
-    # Auto-triage uses the same logic as triage_alert but with automatic context analysis
-    case do_triage_alert(alert_id, state) do
+    Logger.warning("Rejected unscoped automatic triage request for alert #{alert_id}")
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:auto_triage, alert_id, organization_id}, _from, state) do
+    case do_triage_alert(alert_id, organization_id, state) do
       {:ok, investigation_id, new_state} ->
-        # Immediately analyze and provide triage result
-        case :ets.lookup(@investigations_table, investigation_id) do
-          [{^investigation_id, investigation}] ->
+        case lookup_investigation(organization_id, investigation_id) do
+          [{_key, investigation}] ->
             triage_result = %{
               investigation_id: investigation_id,
-              priority: investigation.triage_result && investigation.triage_result.priority || :medium,
-              severity: investigation.alert && investigation.alert.severity || "medium",
-              confidence: investigation.triage_result && investigation.triage_result.confidence || 0.5,
+              priority:
+                (investigation.triage_result && investigation.triage_result.priority) || :medium,
+              severity: (investigation.alert && investigation.alert.severity) || "medium",
+              confidence:
+                (investigation.triage_result && investigation.triage_result.confidence) || 0.5,
               recommended_actions: Enum.take(investigation.recommendations || [], 3),
               auto_triaged: true,
               triaged_at: DateTime.utc_now()
             }
+
             {:reply, {:ok, triage_result}, new_state}
 
           [] ->
@@ -471,24 +636,28 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   @impl true
   def handle_call({:get_investigation, investigation_id, opts}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
+    organization_id = opts[:organization_id]
+    opts_map = Map.new(opts)
+
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] when not is_nil(organization_id) ->
         # Apply optional enrichments
-        result = case opts do
-          %{include_timeline: true} ->
-            Map.put(investigation, :timeline, build_investigation_timeline(investigation))
+        result =
+          case opts_map do
+            %{include_timeline: true} ->
+              Map.put(investigation, :timeline, build_investigation_timeline(investigation))
 
-          %{include_evidence: true} ->
-            evidence = Map.get(investigation, :evidence, [])
-            Map.put(investigation, :evidence_details, evidence)
+            %{include_evidence: true} ->
+              evidence = Map.get(investigation, :evidence, [])
+              Map.put(investigation, :evidence_details, evidence)
 
-          %{include_recommendations: true} ->
-            recs = investigation.recommendations || []
-            Map.put(investigation, :all_recommendations, recs)
+            %{include_recommendations: true} ->
+              recs = investigation.recommendations || []
+              Map.put(investigation, :all_recommendations, recs)
 
-          _ ->
-            investigation
-        end
+            _ ->
+              investigation
+          end
 
         {:reply, {:ok, result}, state}
 
@@ -500,66 +669,68 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   @impl true
   def handle_call({:start_investigation, params}, _from, state) when is_map(params) do
     # Start investigation from params (without requiring an existing alert)
-    investigation_id = generate_investigation_id()
+    organization_id = params[:organization_id]
 
-    investigation = %{
-      id: investigation_id,
-      state: :in_progress,
-      created_at: DateTime.utc_now(),
-      updated_at: DateTime.utc_now(),
-      alert: params[:alert] || %{id: params[:alert_id], severity: params[:severity] || "medium"},
-      source: params[:source] || :manual,
-      triage_result: nil,
-      hypotheses: [],
-      evidence: [],
-      recommendations: [],
-      analyst_notes: params[:notes]
-    }
+    with false <- is_nil(organization_id),
+         {:ok, alert} <- investigation_alert(params, organization_id) do
+      investigation_id = generate_investigation_id(organization_id)
 
-    :ets.insert(@investigations_table, {investigation_id, investigation})
+      investigation = %Investigation{
+        id: investigation_id,
+        organization_id: organization_id,
+        alert_id: params[:alert_id],
+        state: :pending,
+        created_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now(),
+        alert: alert,
+        source: params[:source] || :manual,
+        triage_result: nil,
+        hypotheses: [],
+        evidence: [],
+        recommendations: [],
+        analyst_notes: params[:notes]
+      }
 
-    # Start investigation process
-    Process.send_after(self(), {:continue_investigation, investigation_id}, 100)
+      {_investigation, state} = persist_and_cache(investigation, state)
 
-    new_stats = update_stat(state.stats, :investigations_started)
-    {:reply, {:ok, investigation_id}, %{state | stats: new_stats}}
-  end
+      Process.send_after(
+        self(),
+        {:continue_investigation, organization_id, investigation_id},
+        100
+      )
 
-  @impl true
-  def handle_call({:submit_feedback, params}, _from, state) when is_map(params) do
-    investigation_id = params[:investigation_id]
-    feedback = Map.drop(params, [:investigation_id])
-
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
-        updated = %{investigation |
-          analyst_feedback: feedback,
-          updated_at: DateTime.utc_now()
-        }
-        :ets.insert(@investigations_table, {investigation_id, updated})
-        :ets.insert(@feedback_table, {investigation_id, feedback})
-
-        # Learn from feedback
-        learn_from_feedback(investigation, feedback)
-
-        new_stats = update_stat(state.stats, :feedback_received)
-        {:reply, :ok, %{state | stats: new_stats}}
-
-      [] ->
-        {:reply, {:error, :not_found}, state}
+      new_stats = update_stat(state.stats, :investigations_started)
+      {:reply, {:ok, investigation_id}, %{state | stats: new_stats}}
+    else
+      true -> {:reply, {:error, :organization_required}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
-  def handle_call({:resolve_investigation, investigation_id, resolution}, _from, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
-        updated = %{investigation |
-          state: :resolved,
-          resolution: resolution,
-          updated_at: DateTime.utc_now()
+  def handle_call({:submit_feedback, _params}, _from, state),
+    do: {:reply, {:error, :organization_required}, state}
+
+  @impl true
+  def handle_call({:resolve_investigation, _investigation_id, _resolution}, _from, state),
+    do: {:reply, {:error, :organization_required}, state}
+
+  @impl true
+  def handle_call(
+        {:resolve_investigation, investigation_id, resolution, organization_id},
+        _from,
+        state
+      ) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
+        updated = %{
+          investigation
+          | state: :resolved,
+            resolution: resolution,
+            updated_at: DateTime.utc_now()
         }
-        :ets.insert(@investigations_table, {investigation_id, updated})
+
+        {_updated, state} = persist_and_cache(updated, state)
 
         new_stats = update_stat(state.stats, :investigations_completed)
         {:reply, :ok, %{state | stats: new_stats}}
@@ -569,13 +740,159 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     end
   end
 
+  # Handle get_chat_history
   @impl true
-  def handle_info({:continue_investigation, investigation_id}, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
+  def handle_call(:get_chat_history, _from, state) do
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:get_chat_history, investigation_id}, _from, state) do
+    Logger.warning("Rejected unscoped chat history request for investigation #{investigation_id}")
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:get_chat_history_for_org, organization_id}, _from, state) do
+    {:reply, {:ok, get_all_chat_messages(organization_id)}, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:get_chat_history_for_org, investigation_id, organization_id},
+        _from,
+        state
+      ) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, _investigation}] ->
+        messages = get_chat_messages_for_investigation(investigation_id, organization_id)
+        {:reply, {:ok, messages}, state}
+
+      _ ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  defp approve_reserved_action(investigation, recommendation_id, approver_id, state) do
+    recommendation = Enum.find(investigation.recommendations, &(&1.id == recommendation_id))
+
+    cond do
+      is_nil(recommendation) ->
+        {:reply, {:error, :recommendation_not_found}, state}
+
+      Map.get(recommendation, :rejected, false) == true ->
+        {:reply, {:error, :recommendation_rejected}, state}
+
+      true ->
+        reservation_attrs = %{
+          investigation_id: investigation.id,
+          recommendation_id: recommendation_id,
+          approver_id: approver_id,
+          action_type: to_string(recommendation.action_type),
+          target: %{
+            agent_id: investigation.alert.agent_id,
+            recommendation_target: Map.get(recommendation, :target)
+          }
+        }
+
+        case ApprovalExecutions.reserve_and_claim(
+               investigation.organization_id,
+               reservation_attrs
+             ) do
+          {:ok, {:execute, execution}} ->
+            execute_reserved_action(
+              investigation,
+              recommendation_id,
+              approver_id,
+              execution,
+              state
+            )
+
+          {:ok, {:succeeded, execution}} ->
+            {:reply, {:ok, execution.result || %{}}, state}
+
+          {:ok, {:in_progress, execution}} ->
+            {:reply, {:error, {:in_progress, execution.id}}, state}
+
+          {:ok, {:failed, execution}} ->
+            {:reply, {:error, {:previous_execution_failed, execution.id}}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, {:execution_reservation_failed, reason}}, state}
+        end
+    end
+  end
+
+  defp execute_reserved_action(
+         investigation,
+         recommendation_id,
+         approver_id,
+         execution,
+         state
+       ) do
+    result = execute_recommendation(investigation, recommendation_id, approver_id)
+
+    outcome =
+      case result do
+        {:ok, response} ->
+          ApprovalExecutions.succeed(investigation.organization_id, execution.id, response)
+
+        {:error, reason} ->
+          ApprovalExecutions.fail(investigation.organization_id, execution.id, reason)
+      end
+
+    case {result, outcome} do
+      {{:ok, response}, {:ok, _execution}} ->
+        new_stats = update_stat(state.stats, :actions_executed)
+        {:reply, {:ok, response}, %{state | stats: new_stats}}
+
+      {{:error, reason}, {:ok, _execution}} ->
+        {:reply, {:error, reason}, state}
+
+      {_result, {:error, persistence_reason}} ->
+        Logger.error(
+          "Response outcome persistence failed for approval execution #{execution.id}: " <>
+            inspect(persistence_reason)
+        )
+
+        {:reply, {:error, {:outcome_persistence_failed, execution.id}}, state}
+    end
+  end
+
+  # Handle get_insights
+  @impl true
+  def handle_call(:get_insights, _from, state) do
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:get_insights, investigation_id}, _from, state) do
+    Logger.warning("Rejected unscoped insights request for investigation #{investigation_id}")
+    {:reply, {:error, :organization_required}, state}
+  end
+
+  @impl true
+  def handle_call({:get_insights_for_org, organization_id}, _from, state) do
+    insights = generate_insights_from_state(state, organization_id)
+    {:reply, {:ok, insights}, state}
+  end
+
+  @impl true
+  def handle_call({:get_insights_for_org, investigation_id, organization_id}, _from, state) do
+    insights = generate_insights_for_investigation(investigation_id, organization_id, state)
+    {:reply, {:ok, insights}, state}
+  end
+
+  @impl true
+  def handle_info({:continue_investigation, organization_id, investigation_id}, state) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
         previous_state = investigation.state
-        {updated_investigation, new_stats} = advance_investigation(investigation, state.stats)
-        :ets.insert(@investigations_table, {investigation_id, updated_investigation})
+
+        {updated_investigation, new_stats} =
+          advance_investigation(investigation, state.stats, state.config)
+
+        {updated_investigation, state} = persist_and_cache(updated_investigation, state)
 
         # Broadcast state transition if state changed
         if updated_investigation.state != previous_state do
@@ -588,7 +905,11 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
         # Schedule next step if not terminal state
         unless updated_investigation.state in [:resolved, :escalated, :awaiting_review] do
-          Process.send_after(self(), {:continue_investigation, investigation_id}, 100)
+          Process.send_after(
+            self(),
+            {:continue_investigation, organization_id, investigation_id},
+            100
+          )
         end
 
         {:noreply, %{state | stats: new_stats}}
@@ -599,16 +920,20 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   @impl true
-  def handle_info({:investigation_timeout, investigation_id}, state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] when investigation.state not in [:resolved, :escalated] ->
+  def handle_info({:investigation_timeout, organization_id, investigation_id}, state) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}]
+      when investigation.state not in [:resolved, :escalated] ->
         Logger.warning("Investigation #{investigation_id} timed out, escalating")
-        updated = %{investigation |
-          state: :escalated,
-          resolution: %{reason: :timeout, message: "Investigation timed out"},
-          updated_at: DateTime.utc_now()
+
+        updated = %{
+          investigation
+          | state: :escalated,
+            resolution: %{reason: :timeout, message: "Investigation timed out"},
+            updated_at: DateTime.utc_now()
         }
-        :ets.insert(@investigations_table, {investigation_id, updated})
+
+        {_updated, state} = persist_and_cache(updated, state)
         {:noreply, state}
 
       _ ->
@@ -622,13 +947,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   # Investigation State Machine
   # ============================================================================
 
-  defp do_triage_alert(alert_id, state) do
-    with {:ok, alert} <- fetch_alert(alert_id) do
-      investigation_id = generate_investigation_id()
+  defp do_triage_alert(_alert_id, nil, _state), do: {:error, :organization_required}
+
+  defp do_triage_alert(alert_id, organization_id, state) do
+    with {:ok, alert} <- fetch_alert(alert_id, organization_id) do
+      investigation_id = generate_investigation_id(organization_id)
       now = DateTime.utc_now()
 
       investigation = %Investigation{
         id: investigation_id,
+        organization_id: alert.organization_id,
         alert_id: alert_id,
         alert: alert,
         state: :pending,
@@ -641,20 +969,24 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         confidence: 0.0
       }
 
-      :ets.insert(@investigations_table, {investigation_id, investigation})
+      {_investigation, state} = persist_and_cache(investigation, state)
 
       # Schedule investigation processing
-      send(self(), {:continue_investigation, investigation_id})
+      send(self(), {:continue_investigation, organization_id, investigation_id})
 
       # Set timeout
-      Process.send_after(self(), {:investigation_timeout, investigation_id}, @investigation_timeout)
+      Process.send_after(
+        self(),
+        {:investigation_timeout, organization_id, investigation_id},
+        @investigation_timeout
+      )
 
       new_stats = update_stat(state.stats, :alerts_triaged)
       {:ok, investigation_id, %{state | stats: new_stats}}
     end
   end
 
-  defp advance_investigation(investigation, stats) do
+  defp advance_investigation(investigation, stats, config) do
     case investigation.state do
       :pending ->
         advance_to_triaging(investigation, stats)
@@ -672,7 +1004,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         advance_to_action_recommendation(investigation, stats)
 
       :action_recommendation ->
-        advance_to_awaiting_review(investigation, stats)
+        advance_to_awaiting_review(investigation, stats, config)
 
       terminal when terminal in [:awaiting_review, :resolved, :escalated] ->
         {investigation, stats}
@@ -684,11 +1016,12 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     triage_result = perform_triage(investigation.alert)
 
-    updated = %{investigation |
-      state: :triaging,
-      triage_result: triage_result,
-      confidence: triage_result.confidence,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :triaging,
+        triage_result: triage_result,
+        confidence: triage_result.confidence,
+        updated_at: DateTime.utc_now()
     }
 
     {updated, stats}
@@ -700,13 +1033,15 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # Generate initial hypotheses based on triage
     hypotheses = generate_hypotheses(investigation)
 
-    updated = %{investigation |
-      state: :investigating,
-      hypotheses: hypotheses,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :investigating,
+        hypotheses: hypotheses,
+        updated_at: DateTime.utc_now()
     }
 
-    new_stats = Map.update(stats, :hypotheses_generated, length(hypotheses), &(&1 + length(hypotheses)))
+    new_stats =
+      Map.update(stats, :hypotheses_generated, length(hypotheses), &(&1 + length(hypotheses)))
 
     {updated, new_stats}
   end
@@ -715,18 +1050,20 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     Logger.debug("Investigation #{investigation.id}: Validating hypotheses")
 
     # Validate each hypothesis
-    validated_hypotheses = Enum.map(investigation.hypotheses, &validate_hypothesis(&1, investigation))
+    validated_hypotheses =
+      Enum.map(investigation.hypotheses, &validate_hypothesis(&1, investigation))
 
     # Calculate overall confidence
     confidence = calculate_hypothesis_confidence(validated_hypotheses)
 
     validated_count = Enum.count(validated_hypotheses, & &1.validated)
 
-    updated = %{investigation |
-      state: :hypothesis_validation,
-      hypotheses: validated_hypotheses,
-      confidence: confidence,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :hypothesis_validation,
+        hypotheses: validated_hypotheses,
+        confidence: confidence,
+        updated_at: DateTime.utc_now()
     }
 
     new_stats = Map.update(stats, :hypotheses_validated, validated_count, &(&1 + validated_count))
@@ -741,16 +1078,20 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     evidence = collect_evidence(investigation)
     correlations = correlate_evidence(evidence, investigation)
 
-    updated = %{investigation |
-      state: :evidence_collection,
-      evidence: evidence,
-      correlations: correlations,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :evidence_collection,
+        evidence: evidence,
+        correlations: correlations,
+        updated_at: DateTime.utc_now()
     }
 
     # Store evidence in ETS for cross-investigation correlation
     Enum.each(evidence, fn ev ->
-      :ets.insert(@evidence_table, {investigation.id, ev})
+      :ets.insert(
+        @evidence_table,
+        {investigation_key(investigation.organization_id, investigation.id), ev}
+      )
     end)
 
     {updated, stats}
@@ -764,39 +1105,53 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # Update confidence based on evidence
     confidence = calculate_final_confidence(investigation)
 
-    updated = %{investigation |
-      state: :action_recommendation,
-      recommendations: recommendations,
-      confidence: confidence,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :action_recommendation,
+        recommendations: recommendations,
+        confidence: confidence,
+        updated_at: DateTime.utc_now()
     }
 
-    new_stats = Map.update(stats, :actions_recommended, length(recommendations), &(&1 + length(recommendations)))
+    new_stats =
+      Map.update(
+        stats,
+        :actions_recommended,
+        length(recommendations),
+        &(&1 + length(recommendations))
+      )
 
     {updated, new_stats}
   end
 
-  defp advance_to_awaiting_review(investigation, stats) do
+  defp advance_to_awaiting_review(investigation, stats, config) do
     Logger.debug("Investigation #{investigation.id}: Awaiting analyst review")
 
     # Generate explanation
     explanation = generate_natural_language_explanation(investigation)
 
     # Auto-execute high-confidence actions if enabled
-    {auto_executed, remaining} = maybe_auto_execute(investigation.recommendations, investigation)
+    {auto_executed, remaining} =
+      maybe_auto_execute(
+        investigation.recommendations,
+        investigation,
+        Map.get(config, :auto_action_enabled, false)
+      )
 
-    updated = %{investigation |
-      state: :awaiting_review,
-      recommendations: remaining,
-      explanation: explanation,
-      updated_at: DateTime.utc_now()
+    updated = %{
+      investigation
+      | state: :awaiting_review,
+        recommendations: remaining,
+        explanation: explanation,
+        updated_at: DateTime.utc_now()
     }
 
-    new_stats = if length(auto_executed) > 0 do
-      Map.update(stats, :actions_executed, length(auto_executed), &(&1 + length(auto_executed)))
-    else
-      stats
-    end
+    new_stats =
+      if length(auto_executed) > 0 do
+        Map.update(stats, :actions_executed, length(auto_executed), &(&1 + length(auto_executed)))
+      else
+        stats
+      end
 
     {updated, new_stats}
   end
@@ -813,13 +1168,14 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # Weighted combination
     overall_score = severity_score * 0.4 + context_score * 0.35 + historical_score * 0.25
 
-    priority = cond do
-      overall_score >= 0.9 -> :critical
-      overall_score >= 0.7 -> :high
-      overall_score >= 0.5 -> :medium
-      overall_score >= 0.3 -> :low
-      true -> :informational
-    end
+    priority =
+      cond do
+        overall_score >= 0.9 -> :critical
+        overall_score >= 0.7 -> :high
+        overall_score >= 0.5 -> :medium
+        overall_score >= 0.3 -> :low
+        true -> :informational
+      end
 
     %{
       priority: priority,
@@ -842,23 +1198,28 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   defp triage_severity(alert) do
-    base_score = case alert.severity do
-      "critical" -> 1.0
-      "high" -> 0.8
-      "medium" -> 0.5
-      "low" -> 0.3
-      _ -> 0.1
-    end
+    base_score =
+      case alert.severity do
+        "critical" -> 1.0
+        "high" -> 0.8
+        "medium" -> 0.5
+        "low" -> 0.3
+        _ -> 0.1
+      end
 
     # Boost for specific MITRE techniques
-    technique_boost = Enum.reduce(alert.mitre_techniques || [], 0.0, fn tech, acc ->
-      cond do
-        String.starts_with?(tech, "T1003") -> acc + 0.15  # Credential access
-        String.starts_with?(tech, "T1486") -> acc + 0.2   # Ransomware
-        String.starts_with?(tech, "T1059") -> acc + 0.1   # Command execution
-        true -> acc
-      end
-    end)
+    technique_boost =
+      Enum.reduce(alert.mitre_techniques || [], 0.0, fn tech, acc ->
+        cond do
+          # Credential access
+          String.starts_with?(tech, "T1003") -> acc + 0.15
+          # Ransomware
+          String.starts_with?(tech, "T1486") -> acc + 0.2
+          # Command execution
+          String.starts_with?(tech, "T1059") -> acc + 0.1
+          true -> acc
+        end
+      end)
 
     min(base_score + technique_boost, 1.0)
   end
@@ -868,28 +1229,35 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     # Check asset criticality with real score from Registry
     criticality_score = get_asset_criticality_score(alert.agent_id)
-    factors = if criticality_score >= 0.7 do
-      [{:critical_asset, criticality_score * 0.3} | factors]
-    else
-      if criticality_score >= 0.4 do
-        [{:elevated_asset, criticality_score * 0.15} | factors]
+
+    factors =
+      if criticality_score >= 0.7 do
+        [{:critical_asset, criticality_score * 0.3} | factors]
       else
-        factors
+        if criticality_score >= 0.4 do
+          [{:elevated_asset, criticality_score * 0.15} | factors]
+        else
+          factors
+        end
       end
-    end
 
     # Check business hours
     factors = if in_business_hours?(), do: factors, else: [{:off_hours, 0.1} | factors]
 
     # Check for related alerts
     related_count = count_related_alerts(alert)
-    factors = if related_count > 0, do: [{:related_alerts, min(related_count * 0.05, 0.2)} | factors], else: factors
+
+    factors =
+      if related_count > 0,
+        do: [{:related_alerts, min(related_count * 0.05, 0.2)} | factors],
+        else: factors
 
     # Check agent status
-    factors = case Registry.get(alert.agent_id) do
-      {:ok, %{status: :isolated}} -> [{:already_isolated, 0.1} | factors]
-      _ -> factors
-    end
+    factors =
+      case Registry.get(alert.agent_id) do
+        {:ok, %{status: :isolated}} -> [{:already_isolated, 0.1} | factors]
+        _ -> factors
+      end
 
     base_score = 0.5
     boost = Enum.reduce(factors, 0.0, fn {_type, score}, acc -> acc + score end)
@@ -902,7 +1270,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     similar = find_similar_alerts(alert)
 
     if Enum.empty?(similar) do
-      0.5  # Neutral if no history
+      # Neutral if no history
+      0.5
     else
       true_positive_rate = Enum.count(similar, & &1.confirmed_threat) / length(similar)
       true_positive_rate
@@ -921,15 +1290,25 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     criticality = get_asset_criticality(alert.agent_id)
     criticality_score = get_asset_criticality_score(alert.agent_id)
 
-    agent_status = case Registry.get(alert.agent_id) do
-      {:ok, info} -> to_string(info[:status] || "unknown")
-      _ -> "unknown"
-    end
+    agent_status =
+      case Registry.get(alert.agent_id) do
+        {:ok, info} -> to_string(info[:status] || "unknown")
+        _ -> "unknown"
+      end
 
     [
-      %{factor: "Asset Criticality", value: criticality, score: criticality_score, impact: "high"},
+      %{
+        factor: "Asset Criticality",
+        value: criticality,
+        score: criticality_score,
+        impact: "high"
+      },
       %{factor: "Agent Status", value: agent_status, impact: "medium"},
-      %{factor: "Time Context", value: if(in_business_hours?(), do: "business_hours", else: "off_hours"), impact: "low"},
+      %{
+        factor: "Time Context",
+        value: if(in_business_hours?(), do: "business_hours", else: "off_hours"),
+        impact: "low"
+      },
       %{factor: "Related Alerts", value: count_related_alerts(alert), impact: "medium"}
     ]
   end
@@ -950,14 +1329,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   defp generate_hypotheses(investigation) do
     alert = investigation.alert
-    triage = investigation.triage_result
+    _triage = investigation.triage_result
 
     hypotheses = []
 
     # Generate hypotheses based on MITRE techniques
-    technique_hypotheses = Enum.flat_map(alert.mitre_techniques || [], fn technique ->
-      generate_technique_hypotheses(technique, alert)
-    end)
+    technique_hypotheses =
+      Enum.flat_map(alert.mitre_techniques || [], fn technique ->
+        generate_technique_hypotheses(technique, alert)
+      end)
+
     hypotheses = hypotheses ++ technique_hypotheses
 
     # Generate hypotheses based on alert title/description patterns
@@ -975,55 +1356,64 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     |> Enum.take(10)
   end
 
-  defp generate_technique_hypotheses(technique, alert) do
+  defp generate_technique_hypotheses(technique, _alert) do
     case technique do
       t when t in ["T1059", "T1059.001"] ->
-        [%Hypothesis{
-          id: generate_id(),
-          type: :malicious_script_execution,
-          description: "Malicious script execution detected - possible initial access or lateral movement",
-          indicators: ["PowerShell execution", "Encoded commands", "Bypass attempts"],
-          mitre_technique: technique,
-          confidence: 0.7,
-          validated: false,
-          evidence_refs: []
-        }]
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :malicious_script_execution,
+            description:
+              "Malicious script execution detected - possible initial access or lateral movement",
+            indicators: ["PowerShell execution", "Encoded commands", "Bypass attempts"],
+            mitre_technique: technique,
+            confidence: 0.7,
+            validated: false,
+            evidence_refs: []
+          }
+        ]
 
       t when t in ["T1003", "T1003.001"] ->
-        [%Hypothesis{
-          id: generate_id(),
-          type: :credential_theft,
-          description: "Credential theft attempt - LSASS memory access or SAM extraction",
-          indicators: ["LSASS access", "Mimikatz signatures", "Procdump usage"],
-          mitre_technique: technique,
-          confidence: 0.85,
-          validated: false,
-          evidence_refs: []
-        }]
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :credential_theft,
+            description: "Credential theft attempt - LSASS memory access or SAM extraction",
+            indicators: ["LSASS access", "Mimikatz signatures", "Procdump usage"],
+            mitre_technique: technique,
+            confidence: 0.85,
+            validated: false,
+            evidence_refs: []
+          }
+        ]
 
       "T1486" ->
-        [%Hypothesis{
-          id: generate_id(),
-          type: :ransomware_activity,
-          description: "Potential ransomware activity - encryption or shadow copy deletion",
-          indicators: ["Mass file encryption", "Shadow copy deletion", "Ransom note creation"],
-          mitre_technique: technique,
-          confidence: 0.9,
-          validated: false,
-          evidence_refs: []
-        }]
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :ransomware_activity,
+            description: "Potential ransomware activity - encryption or shadow copy deletion",
+            indicators: ["Mass file encryption", "Shadow copy deletion", "Ransom note creation"],
+            mitre_technique: technique,
+            confidence: 0.9,
+            validated: false,
+            evidence_refs: []
+          }
+        ]
 
       t when t in ["T1021", "T1021.001", "T1021.002"] ->
-        [%Hypothesis{
-          id: generate_id(),
-          type: :lateral_movement,
-          description: "Lateral movement detected - remote service execution",
-          indicators: ["Remote execution tools", "PsExec/WMI usage", "RDP connections"],
-          mitre_technique: technique,
-          confidence: 0.75,
-          validated: false,
-          evidence_refs: []
-        }]
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :lateral_movement,
+            description: "Lateral movement detected - remote service execution",
+            indicators: ["Remote execution tools", "PsExec/WMI usage", "RDP connections"],
+            mitre_technique: technique,
+            confidence: 0.75,
+            validated: false,
+            evidence_refs: []
+          }
+        ]
 
       _ ->
         []
@@ -1037,35 +1427,43 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     hypotheses = []
 
-    hypotheses = if String.contains?(combined, ["malware", "virus", "trojan"]) do
-      [%Hypothesis{
-        id: generate_id(),
-        type: :malware_infection,
-        description: "Malware infection detected based on alert patterns",
-        indicators: extract_indicators_from_text(combined),
-        mitre_technique: nil,
-        confidence: 0.6,
-        validated: false,
-        evidence_refs: []
-      } | hypotheses]
-    else
-      hypotheses
-    end
+    hypotheses =
+      if String.contains?(combined, ["malware", "virus", "trojan"]) do
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :malware_infection,
+            description: "Malware infection detected based on alert patterns",
+            indicators: extract_indicators_from_text(combined),
+            mitre_technique: nil,
+            confidence: 0.6,
+            validated: false,
+            evidence_refs: []
+          }
+          | hypotheses
+        ]
+      else
+        hypotheses
+      end
 
-    hypotheses = if String.contains?(combined, ["suspicious", "anomaly", "unusual"]) do
-      [%Hypothesis{
-        id: generate_id(),
-        type: :anomalous_behavior,
-        description: "Anomalous behavior detected requiring investigation",
-        indicators: ["Behavioral anomaly", "Unusual pattern"],
-        mitre_technique: nil,
-        confidence: 0.5,
-        validated: false,
-        evidence_refs: []
-      } | hypotheses]
-    else
-      hypotheses
-    end
+    hypotheses =
+      if String.contains?(combined, ["suspicious", "anomaly", "unusual"]) do
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :anomalous_behavior,
+            description: "Anomalous behavior detected requiring investigation",
+            indicators: ["Behavioral anomaly", "Unusual pattern"],
+            mitre_technique: nil,
+            confidence: 0.5,
+            validated: false,
+            evidence_refs: []
+          }
+          | hypotheses
+        ]
+      else
+        hypotheses
+      end
 
     hypotheses
   end
@@ -1074,16 +1472,18 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # Check for related process chains
     case Correlator.get_process_tree(alert.agent_id) do
       {:ok, _tree} ->
-        [%Hypothesis{
-          id: generate_id(),
-          type: :attack_chain,
-          description: "Part of a larger attack chain based on process correlation",
-          indicators: ["Process tree correlation", "Parent-child suspicious patterns"],
-          mitre_technique: nil,
-          confidence: 0.65,
-          validated: false,
-          evidence_refs: []
-        }]
+        [
+          %Hypothesis{
+            id: generate_id(),
+            type: :attack_chain,
+            description: "Part of a larger attack chain based on process correlation",
+            indicators: ["Process tree correlation", "Parent-child suspicious patterns"],
+            mitre_technique: nil,
+            confidence: 0.65,
+            validated: false,
+            evidence_refs: []
+          }
+        ]
 
       _ ->
         []
@@ -1106,10 +1506,11 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     prior = get_technique_prior(hypothesis.mitre_technique)
 
     # 3. Score each piece of evidence against the hypothesis
-    scored_evidence = Enum.map(evidence_items, fn ev ->
-      score = score_evidence_for_hypothesis(ev, hypothesis)
-      Map.put(ev, :score, score)
-    end)
+    scored_evidence =
+      Enum.map(evidence_items, fn ev ->
+        score = score_evidence_for_hypothesis(ev, hypothesis)
+        Map.put(ev, :score, score)
+      end)
 
     # 4. Separate supporting vs contradicting evidence
     supporting = Enum.filter(scored_evidence, fn ev -> ev.score > 0.0 end)
@@ -1124,25 +1525,33 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # 7. Determine validation outcome
     validated = posterior >= @medium_confidence_threshold
 
-    evidence_refs = Enum.map(supporting, fn ev ->
-      ev[:description] || ev[:source] || "evidence"
-    end)
+    evidence_refs =
+      Enum.map(supporting, fn ev ->
+        ev[:description] || ev[:source] || "evidence"
+      end)
 
-    rejection_reason = if validated do
-      nil
-    else
-      cond do
-        Enum.empty?(evidence_items) -> "No evidence available for validation"
-        length(contradicting) > length(supporting) -> "Contradicting evidence outweighs supporting evidence"
-        true -> "Insufficient evidence (posterior: #{Float.round(posterior * 100, 1)}%)"
+    rejection_reason =
+      if validated do
+        nil
+      else
+        cond do
+          Enum.empty?(evidence_items) ->
+            "No evidence available for validation"
+
+          length(contradicting) > length(supporting) ->
+            "Contradicting evidence outweighs supporting evidence"
+
+          true ->
+            "Insufficient evidence (posterior: #{Float.round(posterior * 100, 1)}%)"
+        end
       end
-    end
 
-    %{hypothesis |
-      validated: validated,
-      confidence: posterior,
-      evidence_refs: evidence_refs,
-      rejection_reason: rejection_reason
+    %{
+      hypothesis
+      | validated: validated,
+        confidence: posterior,
+        evidence_refs: evidence_refs,
+        rejection_reason: rejection_reason
     }
   end
 
@@ -1169,13 +1578,15 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     Enum.flat_map(indicators, fn {pattern_list, ev_description, quality, weight} ->
       if Enum.any?(pattern_list, &String.contains?(combined, &1)) do
-        [%{
-          source: :alert_text,
-          quality: quality,
-          weight: weight,
-          description: ev_description,
-          direction: :supporting
-        }]
+        [
+          %{
+            source: :alert_text,
+            quality: quality,
+            weight: weight,
+            description: ev_description,
+            direction: :supporting
+          }
+        ]
       else
         []
       end
@@ -1185,10 +1596,14 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   # Define text indicators by hypothesis type
   defp hypothesis_text_indicators(:malicious_script_execution) do
     [
-      {["-enc", "encodedcommand", "base64"], "Encoded command pattern detected", :direct_observation, 0.9},
-      {["bypass", "-ep bypass", "executionpolicy"], "Execution policy bypass", :direct_observation, 0.85},
-      {["invoke-expression", "iex", "downloadstring"], "Remote code execution pattern", :direct_observation, 0.9},
-      {["hidden", "-windowstyle hidden", "-w hidden"], "Hidden window execution", :behavioral, 0.7}
+      {["-enc", "encodedcommand", "base64"], "Encoded command pattern detected",
+       :direct_observation, 0.9},
+      {["bypass", "-ep bypass", "executionpolicy"], "Execution policy bypass",
+       :direct_observation, 0.85},
+      {["invoke-expression", "iex", "downloadstring"], "Remote code execution pattern",
+       :direct_observation, 0.9},
+      {["hidden", "-windowstyle hidden", "-w hidden"], "Hidden window execution", :behavioral,
+       0.7}
     ]
   end
 
@@ -1197,16 +1612,19 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       {["lsass", "mimikatz"], "Direct LSASS/Mimikatz indicator", :direct_observation, 0.95},
       {["credential", "procdump"], "Credential dumping tool", :direct_observation, 0.85},
       {["sam", "ntds", "secrets"], "Registry/database credential target", :tool_output, 0.8},
-      {["sekurlsa", "logonpasswords", "kerberos::"], "Mimikatz module invocation", :direct_observation, 0.95},
+      {["sekurlsa", "logonpasswords", "kerberos::"], "Mimikatz module invocation",
+       :direct_observation, 0.95},
       {["hashdump", "lsadump"], "Hash extraction pattern", :direct_observation, 0.9}
     ]
   end
 
   defp hypothesis_text_indicators(:ransomware_activity) do
     [
-      {["vssadmin", "shadow", "wmic shadowcopy"], "Shadow copy deletion", :direct_observation, 0.95},
+      {["vssadmin", "shadow", "wmic shadowcopy"], "Shadow copy deletion", :direct_observation,
+       0.95},
       {["encrypt", ".locked", ".crypt", ".enc"], "File encryption pattern", :behavioral, 0.85},
-      {["ransom", "decrypt", "bitcoin", "wallet"], "Ransom note indicators", :direct_observation, 0.9},
+      {["ransom", "decrypt", "bitcoin", "wallet"], "Ransom note indicators", :direct_observation,
+       0.9},
       {["bcdedit", "recoveryenabled no"], "Boot recovery disabled", :direct_observation, 0.9}
     ]
   end
@@ -1216,8 +1634,10 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       {["psexec", "psexesvc"], "PsExec lateral movement", :direct_observation, 0.85},
       {["wmi", "wmic", "wmiprvse"], "WMI-based execution", :tool_output, 0.8},
       {["remote", "lateral"], "Remote access pattern", :heuristic, 0.5},
-      {["smbexec", "atexec", "dcomexec"], "Impacket-style lateral movement", :direct_observation, 0.9},
-      {["winrm", "invoke-command", "enter-pssession"], "PowerShell remoting", :direct_observation, 0.85}
+      {["smbexec", "atexec", "dcomexec"], "Impacket-style lateral movement", :direct_observation,
+       0.9},
+      {["winrm", "invoke-command", "enter-pssession"], "PowerShell remoting", :direct_observation,
+       0.85}
     ]
   end
 
@@ -1255,54 +1675,74 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         evidence = []
 
         # Deep process tree suggests complex activity
-        evidence = if vertex_count > 5 do
-          [%{
-            source: :process_tree,
-            quality: :correlation,
-            weight: 0.6,
-            description: "Complex process tree (#{vertex_count} processes, #{edge_count} edges)",
-            direction: :supporting,
-            data: %{vertex_count: vertex_count, edge_count: edge_count}
-          } | evidence]
-        else
-          evidence
-        end
+        evidence =
+          if vertex_count > 5 do
+            [
+              %{
+                source: :process_tree,
+                quality: :correlation,
+                weight: 0.6,
+                description:
+                  "Complex process tree (#{vertex_count} processes, #{edge_count} edges)",
+                direction: :supporting,
+                data: %{vertex_count: vertex_count, edge_count: edge_count}
+              }
+              | evidence
+            ]
+          else
+            evidence
+          end
 
         # Check for suspicious chain patterns via correlator
-        chain_evidence = case hypothesis_type do
-          type when type in [:malicious_script_execution, :credential_theft, :lateral_movement, :attack_chain] ->
-            # Analyze chains for all leaf nodes
-            leaf_pids = Graph.vertices(tree)
-            |> Enum.filter(fn v -> Graph.out_neighbors(tree, v) == [] end)
-            |> Enum.take(5)
+        chain_evidence =
+          case hypothesis_type do
+            type
+            when type in [
+                   :malicious_script_execution,
+                   :credential_theft,
+                   :lateral_movement,
+                   :attack_chain
+                 ] ->
+              # Analyze chains for all leaf nodes
+              leaf_pids =
+                Graph.vertices(tree)
+                |> Enum.filter(fn v -> Graph.out_neighbors(tree, v) == [] end)
+                |> Enum.take(5)
 
-            Enum.flat_map(leaf_pids, fn pid ->
-              case Correlator.analyze_chain(agent_id, pid) do
-                {:ok, detections} when detections != [] ->
-                  Enum.map(detections, fn det ->
-                    %{
-                      source: :process_chain_analysis,
-                      quality: :direct_observation,
-                      weight: 0.85,
-                      description: det[:description] || "Suspicious process chain detected",
-                      direction: :supporting,
-                      data: det
-                    }
-                  end)
-                _ -> []
-              end
-            end)
+              Enum.flat_map(leaf_pids, fn pid ->
+                case Correlator.analyze_chain(agent_id, pid) do
+                  {:ok, detections} when detections != [] ->
+                    Enum.map(detections, fn det ->
+                      %{
+                        source: :process_chain_analysis,
+                        quality: :direct_observation,
+                        weight: 0.85,
+                        description: det[:description] || "Suspicious process chain detected",
+                        direction: :supporting,
+                        data: det
+                      }
+                    end)
 
-          _ -> []
-        end
+                  _ ->
+                    []
+                end
+              end)
+
+            _ ->
+              []
+          end
 
         evidence ++ chain_evidence
 
-      _ -> []
+      _ ->
+        []
     end
   rescue
     e ->
-      Logger.warning("[AgenticAnalyst] Process evidence gathering failed: #{Exception.message(e)}")
+      Logger.warning(
+        "[AgenticAnalyst] Process evidence gathering failed: #{Exception.message(e)}"
+      )
+
       []
   end
 
@@ -1311,66 +1751,85 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     evidence = []
 
     # Query recent network events from telemetry
-    network_events = try do
-      Telemetry.list_events_for_agent(agent_id, 50)
-      |> Enum.filter(fn e ->
-        event_type = to_string(e.event_type || "")
-        event_type in ["network_connect", "network", "dns_query", "connection"]
-      end)
-    rescue
-      e ->
-        Logger.warning("[AgenticAnalyst] Network event query failed: #{Exception.message(e)}")
-        []
-    end
+    network_events =
+      try do
+        Telemetry.list_events_for_agent(agent_id, 50)
+        |> Enum.filter(fn e ->
+          event_type = to_string(e.event_type || "")
+          event_type in ["network_connect", "network", "dns_query", "connection"]
+        end)
+      rescue
+        e ->
+          Logger.warning("[AgenticAnalyst] Network event query failed: #{Exception.message(e)}")
+          []
+      end
 
     # Check for suspicious outbound connections
-    evidence = if length(network_events) > 0 do
-      external_connections = Enum.filter(network_events, fn e ->
-        payload = e.payload || %{}
-        ip = payload["remote_ip"] || payload[:remote_ip] || ""
-        not String.starts_with?(ip, ["10.", "172.16.", "192.168.", "127."])
-      end)
+    evidence =
+      if length(network_events) > 0 do
+        external_connections =
+          Enum.filter(network_events, fn e ->
+            payload = e.payload || %{}
+            ip = payload["remote_ip"] || payload[:remote_ip] || ""
+            not String.starts_with?(ip, ["10.", "172.16.", "192.168.", "127."])
+          end)
 
-      if length(external_connections) > 3 do
-        [%{
-          source: :network_analysis,
-          quality: :behavioral,
-          weight: 0.6,
-          description: "#{length(external_connections)} external connections detected",
-          direction: if(hypothesis_type in [:lateral_movement, :malware_infection, :attack_chain], do: :supporting, else: :neutral),
-          data: %{external_connection_count: length(external_connections)}
-        } | evidence]
+        if length(external_connections) > 3 do
+          [
+            %{
+              source: :network_analysis,
+              quality: :behavioral,
+              weight: 0.6,
+              description: "#{length(external_connections)} external connections detected",
+              direction:
+                if(hypothesis_type in [:lateral_movement, :malware_infection, :attack_chain],
+                  do: :supporting,
+                  else: :neutral
+                ),
+              data: %{external_connection_count: length(external_connections)}
+            }
+            | evidence
+          ]
+        else
+          evidence
+        end
       else
         evidence
       end
-    else
-      evidence
-    end
 
     # Check for beaconing patterns (relevant for C2-related hypotheses)
-    evidence = if hypothesis_type in [:malware_infection, :attack_chain] do
-      try do
-        correlation_result = Correlator.correlate_events(agent_id, time_window_ms: :timer.minutes(10), limit: 50)
-        case correlation_result do
-          {:ok, %{correlations: correlations}} when length(correlations) > 3 ->
-            [%{
-              source: :correlation_engine,
-              quality: :correlation,
-              weight: 0.7,
-              description: "#{length(correlations)} event correlations found in 10-minute window",
-              direction: :supporting,
-              data: %{correlation_count: length(correlations)}
-            } | evidence]
-          _ -> evidence
+    evidence =
+      if hypothesis_type in [:malware_infection, :attack_chain] do
+        try do
+          correlation_result =
+            Correlator.correlate_events(agent_id, time_window_ms: :timer.minutes(10), limit: 50)
+
+          case correlation_result do
+            {:ok, %{correlations: correlations}} when length(correlations) > 3 ->
+              [
+                %{
+                  source: :correlation_engine,
+                  quality: :correlation,
+                  weight: 0.7,
+                  description:
+                    "#{length(correlations)} event correlations found in 10-minute window",
+                  direction: :supporting,
+                  data: %{correlation_count: length(correlations)}
+                }
+                | evidence
+              ]
+
+            _ ->
+              evidence
+          end
+        rescue
+          e ->
+            Logger.warning("[AgenticAnalyst] Network correlation failed: #{Exception.message(e)}")
+            evidence
         end
-      rescue
-        e ->
-          Logger.warning("[AgenticAnalyst] Network correlation failed: #{Exception.message(e)}")
-          evidence
+      else
+        evidence
       end
-    else
-      evidence
-    end
 
     evidence
   end
@@ -1381,50 +1840,70 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
     # Extract file hashes from alert event IDs
     event_ids = alert.event_ids || []
-    file_hashes = Enum.flat_map(event_ids, fn event_id ->
-      try do
-        case Telemetry.get_event(event_id) do
-          nil -> []
-          event ->
-            extracted = DetectionEvidence.extract_file_hashes(event.payload || %{})
-            extracted
+
+    file_hashes =
+      Enum.flat_map(event_ids, fn event_id ->
+        try do
+          case Telemetry.get_event(event_id) do
+            nil ->
+              []
+
+            event ->
+              extracted = DetectionEvidence.extract_file_hashes(event.payload || %{})
+              extracted
+          end
+        rescue
+          e ->
+            Logger.warning(
+              "[AgenticAnalyst] File hash extraction failed for event #{event_id}: #{Exception.message(e)}"
+            )
+
+            []
         end
-      rescue
-        e ->
-          Logger.warning("[AgenticAnalyst] File hash extraction failed for event #{event_id}: #{Exception.message(e)}")
-          []
-      end
-    end)
+      end)
 
     # Check hashes against threat intel
-    evidence = Enum.reduce(file_hashes, evidence, fn hash_info, acc ->
-      sha256 = hash_info[:sha256]
-      if sha256 do
-        case check_threat_intel_hash(sha256) do
-          {:ok, :malicious, details} ->
-            [%{
-              source: :threat_intel,
-              quality: :tool_output,
-              weight: 0.9,
-              description: "File hash #{String.slice(sha256, 0, 12)}... flagged as malicious: #{details}",
-              direction: :supporting,
-              data: %{sha256: sha256, threat_intel_match: true}
-            } | acc]
-          {:ok, :clean} ->
-            [%{
-              source: :threat_intel,
-              quality: :tool_output,
-              weight: 0.5,
-              description: "File hash #{String.slice(sha256, 0, 12)}... clean in threat intel",
-              direction: :contradicting,
-              data: %{sha256: sha256, threat_intel_match: false}
-            } | acc]
-          _ -> acc
+    evidence =
+      Enum.reduce(file_hashes, evidence, fn hash_info, acc ->
+        sha256 = hash_info[:sha256]
+
+        if sha256 do
+          case check_threat_intel_hash(sha256) do
+            {:ok, :malicious, details} ->
+              [
+                %{
+                  source: :threat_intel,
+                  quality: :tool_output,
+                  weight: 0.9,
+                  description:
+                    "File hash #{String.slice(sha256, 0, 12)}... flagged as malicious: #{details}",
+                  direction: :supporting,
+                  data: %{sha256: sha256, threat_intel_match: true}
+                }
+                | acc
+              ]
+
+            {:ok, :clean} ->
+              [
+                %{
+                  source: :threat_intel,
+                  quality: :tool_output,
+                  weight: 0.5,
+                  description:
+                    "File hash #{String.slice(sha256, 0, 12)}... clean in threat intel",
+                  direction: :contradicting,
+                  data: %{sha256: sha256, threat_intel_match: false}
+                }
+                | acc
+              ]
+
+            _ ->
+              acc
+          end
+        else
+          acc
         end
-      else
-        acc
-      end
-    end)
+      end)
 
     evidence
   end
@@ -1435,44 +1914,64 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       {:ok, ioc} ->
         severity = ioc[:severity] || "unknown"
         {:ok, :malicious, "severity: #{severity}, source: #{ioc[:source] || "unknown"}"}
+
       :not_found ->
         {:ok, :clean}
+
       _ ->
         {:error, :lookup_failed}
     end
   rescue
     e ->
-      Logger.warning("[AgenticAnalyst] Threat intel lookup failed for hash #{String.slice(sha256 || "", 0, 12)}: #{Exception.message(e)}")
+      Logger.warning(
+        "[AgenticAnalyst] Threat intel lookup failed for hash #{String.slice(sha256 || "", 0, 12)}: #{Exception.message(e)}"
+      )
+
       {:error, :lookup_failed}
   end
 
   # Registry evidence: check for persistence indicators
-  defp gather_registry_evidence(hypothesis_type, agent_id) when hypothesis_type in [:malware_infection, :attack_chain, :malicious_script_execution] do
+  defp gather_registry_evidence(hypothesis_type, agent_id)
+       when hypothesis_type in [:malware_infection, :attack_chain, :malicious_script_execution] do
     try do
       events = Telemetry.list_events_for_agent(agent_id, 30)
-      registry_events = Enum.filter(events, fn e ->
-        event_type = to_string(e.event_type || "")
-        event_type in ["registry_modify", "registry_create", "registry"]
-      end)
 
-      persistence_keys = ["run", "runonce", "currentversion\\run", "services",
-                          "winlogon", "shell", "userinit", "startup"]
+      registry_events =
+        Enum.filter(events, fn e ->
+          event_type = to_string(e.event_type || "")
+          event_type in ["registry_modify", "registry_create", "registry"]
+        end)
 
-      suspicious_reg = Enum.filter(registry_events, fn e ->
-        payload = e.payload || %{}
-        key_path = String.downcase(to_string(payload["key_path"] || payload[:key_path] || ""))
-        Enum.any?(persistence_keys, &String.contains?(key_path, &1))
-      end)
+      persistence_keys = [
+        "run",
+        "runonce",
+        "currentversion\\run",
+        "services",
+        "winlogon",
+        "shell",
+        "userinit",
+        "startup"
+      ]
+
+      suspicious_reg =
+        Enum.filter(registry_events, fn e ->
+          payload = e.payload || %{}
+          key_path = String.downcase(to_string(payload["key_path"] || payload[:key_path] || ""))
+          Enum.any?(persistence_keys, &String.contains?(key_path, &1))
+        end)
 
       if length(suspicious_reg) > 0 do
-        [%{
-          source: :registry_analysis,
-          quality: :direct_observation,
-          weight: 0.85,
-          description: "#{length(suspicious_reg)} suspicious registry modifications (persistence indicators)",
-          direction: :supporting,
-          data: %{suspicious_registry_count: length(suspicious_reg)}
-        }]
+        [
+          %{
+            source: :registry_analysis,
+            quality: :direct_observation,
+            weight: 0.85,
+            description:
+              "#{length(suspicious_reg)} suspicious registry modifications (persistence indicators)",
+            direction: :supporting,
+            data: %{suspicious_registry_count: length(suspicious_reg)}
+          }
+        ]
       else
         []
       end
@@ -1485,6 +1984,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   # Get the prior probability for a MITRE technique
   defp get_technique_prior(nil), do: @default_technique_prior
+
   defp get_technique_prior(technique_id) do
     # Check exact match first, then parent technique
     case Map.get(@technique_priors, technique_id) do
@@ -1492,7 +1992,9 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         # Try parent technique (e.g., T1059.001 -> T1059)
         parent = String.split(technique_id, ".") |> List.first()
         Map.get(@technique_priors, parent, @default_technique_prior)
-      prior -> prior
+
+      prior ->
+        prior
     end
   end
 
@@ -1501,38 +2003,42 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     quality_weight = Map.get(@evidence_quality_weights, evidence.quality, 0.5)
     base_weight = evidence.weight || 0.5
 
-    direction_multiplier = case evidence[:direction] do
-      :supporting -> 1.0
-      :contradicting -> -0.5
-      :neutral -> 0.0
-      _ -> 0.3
-    end
+    direction_multiplier =
+      case evidence[:direction] do
+        :supporting -> 1.0
+        :contradicting -> -0.5
+        :neutral -> 0.0
+        _ -> 0.3
+      end
 
     quality_weight * base_weight * direction_multiplier
   end
 
   # Combine multiple evidence scores into a single likelihood
   defp combine_evidence_scores([]), do: 0.5
+
   defp combine_evidence_scores(scored_evidence) do
-    total_weight = scored_evidence
-    |> Enum.map(fn ev ->
-      quality_weight = Map.get(@evidence_quality_weights, ev.quality, 0.5)
-      abs(ev[:score] || 0.0) * quality_weight
-    end)
-    |> Enum.sum()
+    total_weight =
+      scored_evidence
+      |> Enum.map(fn ev ->
+        quality_weight = Map.get(@evidence_quality_weights, ev.quality, 0.5)
+        abs(ev[:score] || 0.0) * quality_weight
+      end)
+      |> Enum.sum()
 
     if total_weight == 0.0 do
       0.5
     else
-      weighted_sum = scored_evidence
-      |> Enum.map(fn ev ->
-        quality_weight = Map.get(@evidence_quality_weights, ev.quality, 0.5)
-        score = ev[:score] || 0.0
-        # Normalize score to 0..1 range (from -0.5..1.0)
-        normalized = (score + 0.5) / 1.5
-        normalized * quality_weight * abs(score)
-      end)
-      |> Enum.sum()
+      weighted_sum =
+        scored_evidence
+        |> Enum.map(fn ev ->
+          quality_weight = Map.get(@evidence_quality_weights, ev.quality, 0.5)
+          score = ev[:score] || 0.0
+          # Normalize score to 0..1 range (from -0.5..1.0)
+          normalized = (score + 0.5) / 1.5
+          normalized * quality_weight * abs(score)
+        end)
+        |> Enum.sum()
 
       # Clamp to 0.05..0.95
       min(max(weighted_sum / total_weight, 0.05), 0.95)
@@ -1543,13 +2049,14 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp bayesian_update(prior, likelihood) do
     # P(E) = P(E|H)*P(H) + P(E|~H)*P(~H)
     complement_likelihood = 1.0 - likelihood
-    p_evidence = (likelihood * prior) + (complement_likelihood * (1.0 - prior))
+    p_evidence = likelihood * prior + complement_likelihood * (1.0 - prior)
 
-    posterior = if p_evidence > 0.0 do
-      (likelihood * prior) / p_evidence
-    else
-      prior
-    end
+    posterior =
+      if p_evidence > 0.0 do
+        likelihood * prior / p_evidence
+      else
+        prior
+      end
 
     # Clamp to valid range
     min(max(posterior, 0.01), 0.99)
@@ -1593,6 +2100,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       relevance_score: 1.0,
       supporting_hypotheses: Enum.map(investigation.hypotheses, & &1.id)
     }
+
     evidence = [alert_evidence | evidence]
 
     # 2. Process tree evidence: walk parent chain, detect suspicious lineage
@@ -1632,40 +2140,61 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             depth: estimate_tree_depth(tree)
           },
           relevance_score: if(vertex_count > 5, do: 0.9, else: 0.6),
-          supporting_hypotheses: Enum.filter(validated_hypotheses, fn h ->
-            h.type in [:attack_chain, :malicious_script_execution, :credential_theft, :lateral_movement]
-          end) |> Enum.map(& &1.id)
+          supporting_hypotheses:
+            Enum.filter(validated_hypotheses, fn h ->
+              h.type in [
+                :attack_chain,
+                :malicious_script_execution,
+                :credential_theft,
+                :lateral_movement
+              ]
+            end)
+            |> Enum.map(& &1.id)
         }
+
         evidence = [tree_evidence | evidence]
 
         # Analyze suspicious process chains (leaf nodes)
-        leaf_pids = Graph.vertices(tree)
-        |> Enum.filter(fn v -> Graph.out_neighbors(tree, v) == [] end)
-        |> Enum.take(10)
+        leaf_pids =
+          Graph.vertices(tree)
+          |> Enum.filter(fn v -> Graph.out_neighbors(tree, v) == [] end)
+          |> Enum.take(10)
 
-        chain_evidence = Enum.flat_map(leaf_pids, fn pid ->
-          case Correlator.analyze_chain(agent_id, pid) do
-            {:ok, detections} when detections != [] ->
-              [%Evidence{
-                id: generate_id(),
-                type: :suspicious_chain,
-                source: :correlator,
-                timestamp: DateTime.utc_now(),
-                data: %{
-                  pid: pid,
-                  detections: Enum.map(detections, fn d ->
-                    %{description: d[:description], techniques: d[:techniques] || [], tactics: d[:tactics] || []}
-                  end),
-                  detection_count: length(detections)
-                },
-                relevance_score: 0.9,
-                supporting_hypotheses: Enum.filter(validated_hypotheses, fn h ->
-                  h.type in [:attack_chain, :malicious_script_execution]
-                end) |> Enum.map(& &1.id)
-              }]
-            _ -> []
-          end
-        end)
+        chain_evidence =
+          Enum.flat_map(leaf_pids, fn pid ->
+            case Correlator.analyze_chain(agent_id, pid) do
+              {:ok, detections} when detections != [] ->
+                [
+                  %Evidence{
+                    id: generate_id(),
+                    type: :suspicious_chain,
+                    source: :correlator,
+                    timestamp: DateTime.utc_now(),
+                    data: %{
+                      pid: pid,
+                      detections:
+                        Enum.map(detections, fn d ->
+                          %{
+                            description: d[:description],
+                            techniques: d[:techniques] || [],
+                            tactics: d[:tactics] || []
+                          }
+                        end),
+                      detection_count: length(detections)
+                    },
+                    relevance_score: 0.9,
+                    supporting_hypotheses:
+                      Enum.filter(validated_hypotheses, fn h ->
+                        h.type in [:attack_chain, :malicious_script_execution]
+                      end)
+                      |> Enum.map(& &1.id)
+                  }
+                ]
+
+              _ ->
+                []
+            end
+          end)
 
         evidence ++ chain_evidence
 
@@ -1680,34 +2209,41 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp collect_network_evidence(agent_id, evidence) do
     try do
       events = Telemetry.list_events_for_agent(agent_id, 100)
-      network_events = Enum.filter(events, fn e ->
-        event_type = to_string(e.event_type || "")
-        event_type in ["network_connect", "network", "dns_query", "connection"]
-      end)
+
+      network_events =
+        Enum.filter(events, fn e ->
+          event_type = to_string(e.event_type || "")
+          event_type in ["network_connect", "network", "dns_query", "connection"]
+        end)
 
       if length(network_events) > 0 do
         # Classify connections
-        external = Enum.filter(network_events, fn e ->
-          payload = e.payload || %{}
-          ip = to_string(payload["remote_ip"] || payload[:remote_ip] || "")
-          ip != "" and not String.starts_with?(ip, ["10.", "172.16.", "192.168.", "127.", "0.0.0.0"])
-        end)
+        external =
+          Enum.filter(network_events, fn e ->
+            payload = e.payload || %{}
+            ip = to_string(payload["remote_ip"] || payload[:remote_ip] || "")
+
+            ip != "" and
+              not String.starts_with?(ip, ["10.", "172.16.", "192.168.", "127.", "0.0.0.0"])
+          end)
 
         # Extract unique remote IPs
-        remote_ips = external
-        |> Enum.map(fn e ->
-          payload = e.payload || %{}
-          to_string(payload["remote_ip"] || payload[:remote_ip] || "")
-        end)
-        |> Enum.uniq()
+        remote_ips =
+          external
+          |> Enum.map(fn e ->
+            payload = e.payload || %{}
+            to_string(payload["remote_ip"] || payload[:remote_ip] || "")
+          end)
+          |> Enum.uniq()
 
         # Check each IP against threat intel
-        malicious_ips = Enum.filter(remote_ips, fn ip ->
-          case ThreatIntel.lookup(:ip, ip) do
-            {:ok, _ioc} -> true
-            _ -> false
-          end
-        end)
+        malicious_ips =
+          Enum.filter(remote_ips, fn ip ->
+            case ThreatIntel.lookup(:ip, ip) do
+              {:ok, _ioc} -> true
+              _ -> false
+            end
+          end)
 
         # Build network evidence
         net_evidence = %Evidence{
@@ -1722,12 +2258,13 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             malicious_ips: malicious_ips,
             has_threat_intel_hits: length(malicious_ips) > 0
           },
-          relevance_score: cond do
-            length(malicious_ips) > 0 -> 0.95
-            length(external) > 10 -> 0.8
-            length(external) > 3 -> 0.6
-            true -> 0.4
-          end,
+          relevance_score:
+            cond do
+              length(malicious_ips) > 0 -> 0.95
+              length(external) > 10 -> 0.8
+              length(external) > 3 -> 0.6
+              true -> 0.4
+            end,
           supporting_hypotheses: []
         }
 
@@ -1744,43 +2281,50 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp collect_file_evidence(alert, evidence) do
     event_ids = alert.event_ids || []
 
-    file_results = Enum.flat_map(event_ids, fn event_id ->
-      try do
-        case Telemetry.get_event(event_id) do
-          nil -> []
-          event ->
-            payload = event.payload || %{}
-            hashes = DetectionEvidence.extract_file_hashes(payload)
-            network = DetectionEvidence.extract_network_indicators(payload)
-            process_info = DetectionEvidence.extract_process_info(payload)
+    file_results =
+      Enum.flat_map(event_ids, fn event_id ->
+        try do
+          case Telemetry.get_event(event_id) do
+            nil ->
+              []
 
-            # Check each hash against threat intel
-            hash_results = Enum.map(hashes, fn h ->
-              sha256 = h[:sha256]
-              ti_result = if sha256 do
-                case check_threat_intel_hash(sha256) do
-                  {:ok, :malicious, details} -> %{match: true, details: details}
-                  {:ok, :clean} -> %{match: false, details: "clean"}
-                  _ -> %{match: :unknown, details: "lookup failed"}
-                end
-              else
-                %{match: :no_hash, details: "no SHA256"}
-              end
+            event ->
+              payload = event.payload || %{}
+              hashes = DetectionEvidence.extract_file_hashes(payload)
+              network = DetectionEvidence.extract_network_indicators(payload)
+              process_info = DetectionEvidence.extract_process_info(payload)
 
-              Map.merge(h, %{threat_intel: ti_result})
-            end)
+              # Check each hash against threat intel
+              hash_results =
+                Enum.map(hashes, fn h ->
+                  sha256 = h[:sha256]
 
-            [{event_id, %{hashes: hash_results, network: network, process: process_info}}]
+                  ti_result =
+                    if sha256 do
+                      case check_threat_intel_hash(sha256) do
+                        {:ok, :malicious, details} -> %{match: true, details: details}
+                        {:ok, :clean} -> %{match: false, details: "clean"}
+                        _ -> %{match: :unknown, details: "lookup failed"}
+                      end
+                    else
+                      %{match: :no_hash, details: "no SHA256"}
+                    end
+
+                  Map.merge(h, %{threat_intel: ti_result})
+                end)
+
+              [{event_id, %{hashes: hash_results, network: network, process: process_info}}]
+          end
+        rescue
+          _ -> []
         end
-      rescue
-        _ -> []
-      end
-    end)
+      end)
 
     if length(file_results) > 0 do
-      malicious_count = file_results
-      |> Enum.flat_map(fn {_, data} -> data.hashes end)
-      |> Enum.count(fn h -> h[:threat_intel] && h.threat_intel[:match] == true end)
+      malicious_count =
+        file_results
+        |> Enum.flat_map(fn {_, data} -> data.hashes end)
+        |> Enum.count(fn h -> h[:threat_intel] && h.threat_intel[:match] == true end)
 
       file_ev = %Evidence{
         id: generate_id(),
@@ -1789,9 +2333,10 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         timestamp: DateTime.utc_now(),
         data: %{
           events_analyzed: length(file_results),
-          file_details: Enum.map(file_results, fn {eid, data} ->
-            %{event_id: eid, hashes: data.hashes, process: data.process}
-          end),
+          file_details:
+            Enum.map(file_results, fn {eid, data} ->
+              %{event_id: eid, hashes: data.hashes, process: data.process}
+            end),
           malicious_hash_count: malicious_count
         },
         relevance_score: if(malicious_count > 0, do: 0.95, else: 0.5),
@@ -1808,20 +2353,32 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp collect_registry_evidence(agent_id, evidence) do
     try do
       events = Telemetry.list_events_for_agent(agent_id, 50)
-      registry_events = Enum.filter(events, fn e ->
-        event_type = to_string(e.event_type || "")
-        event_type in ["registry_modify", "registry_create", "registry"]
-      end)
 
-      persistence_keys = ["run", "runonce", "currentversion\\run", "services",
-                          "winlogon", "shell", "userinit", "startup",
-                          "explorer\\shellserviceobjects", "image file execution"]
+      registry_events =
+        Enum.filter(events, fn e ->
+          event_type = to_string(e.event_type || "")
+          event_type in ["registry_modify", "registry_create", "registry"]
+        end)
 
-      suspicious = Enum.filter(registry_events, fn e ->
-        payload = e.payload || %{}
-        key_path = String.downcase(to_string(payload["key_path"] || payload[:key_path] || ""))
-        Enum.any?(persistence_keys, &String.contains?(key_path, &1))
-      end)
+      persistence_keys = [
+        "run",
+        "runonce",
+        "currentversion\\run",
+        "services",
+        "winlogon",
+        "shell",
+        "userinit",
+        "startup",
+        "explorer\\shellserviceobjects",
+        "image file execution"
+      ]
+
+      suspicious =
+        Enum.filter(registry_events, fn e ->
+          payload = e.payload || %{}
+          key_path = String.downcase(to_string(payload["key_path"] || payload[:key_path] || ""))
+          Enum.any?(persistence_keys, &String.contains?(key_path, &1))
+        end)
 
       if length(registry_events) > 0 do
         reg_ev = %Evidence{
@@ -1832,10 +2389,12 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
           data: %{
             total_registry_events: length(registry_events),
             suspicious_persistence_count: length(suspicious),
-            suspicious_keys: Enum.map(suspicious, fn e ->
-              payload = e.payload || %{}
-              to_string(payload["key_path"] || payload[:key_path] || "")
-            end) |> Enum.take(10)
+            suspicious_keys:
+              Enum.map(suspicious, fn e ->
+                payload = e.payload || %{}
+                to_string(payload["key_path"] || payload[:key_path] || "")
+              end)
+              |> Enum.take(10)
           },
           relevance_score: if(length(suspicious) > 0, do: 0.85, else: 0.3),
           supporting_hypotheses: []
@@ -1863,13 +2422,21 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             data: %{
               total_events_analyzed: total,
               correlation_count: length(correlations),
-              correlation_types: correlations
+              correlation_types:
+                correlations
                 |> Enum.map(& &1[:correlation_type])
                 |> Enum.frequencies(),
-              strongest_correlations: correlations
+              strongest_correlations:
+                correlations
                 |> Enum.sort_by(fn c -> c[:strength] || 0 end, :desc)
                 |> Enum.take(5)
-                |> Enum.map(fn c -> %{type: c[:correlation_type], strength: c[:strength], description: c[:description]} end)
+                |> Enum.map(fn c ->
+                  %{
+                    type: c[:correlation_type],
+                    strength: c[:strength],
+                    description: c[:description]
+                  }
+                end)
             },
             relevance_score: min(0.5 + length(correlations) * 0.05, 0.95),
             supporting_hypotheses: []
@@ -1877,7 +2444,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
           [corr_ev | evidence]
 
-        _ -> evidence
+        _ ->
+          evidence
       end
     rescue
       _ -> evidence
@@ -1886,8 +2454,9 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   # Estimate the depth of the process tree
   defp estimate_tree_depth(tree) do
-    roots = Graph.vertices(tree)
-    |> Enum.filter(fn v -> Graph.in_neighbors(tree, v) == [] end)
+    roots =
+      Graph.vertices(tree)
+      |> Enum.filter(fn v -> Graph.in_neighbors(tree, v) == [] end)
 
     case roots do
       [] -> 0
@@ -1899,6 +2468,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   defp do_estimate_depth(tree, vertex, current_depth) do
     children = Graph.out_neighbors(tree, vertex)
+
     if Enum.empty?(children) do
       current_depth
     else
@@ -1910,9 +2480,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   defp correlate_evidence(evidence, investigation) do
     # Cross-reference evidence with other investigations
-    related_evidence = :ets.tab2list(@evidence_table)
-    |> Enum.filter(fn {inv_id, _ev} -> inv_id != investigation.id end)
-    |> Enum.map(fn {inv_id, ev} -> {inv_id, ev} end)
+    related_evidence =
+      :ets.tab2list(@evidence_table)
+      |> Enum.filter(fn
+        {{organization_id, inv_id}, _ev} ->
+          organization_id == investigation.organization_id and inv_id != investigation.id
+
+        _legacy_or_invalid ->
+          false
+      end)
+      |> Enum.map(fn {{_organization_id, inv_id}, ev} -> {inv_id, ev} end)
 
     # Find correlations
     Enum.flat_map(evidence, fn ev ->
@@ -1923,13 +2500,15 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp find_evidence_correlations(evidence, related_evidence) do
     Enum.flat_map(related_evidence, fn {inv_id, related_ev} ->
       if evidence_matches?(evidence, related_ev) do
-        [%{
-          source_evidence_id: evidence.id,
-          related_investigation_id: inv_id,
-          related_evidence_id: related_ev.id,
-          correlation_type: determine_correlation_type(evidence, related_ev),
-          confidence: calculate_correlation_confidence(evidence, related_ev)
-        }]
+        [
+          %{
+            source_evidence_id: evidence.id,
+            related_investigation_id: inv_id,
+            related_evidence_id: related_ev.id,
+            correlation_type: determine_correlation_type(evidence, related_ev),
+            confidence: calculate_correlation_confidence(evidence, related_ev)
+          }
+        ]
       else
         []
       end
@@ -1960,9 +2539,10 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     recommendations = []
 
     # Generate based on validated hypotheses
-    hypothesis_recommendations = investigation.hypotheses
-    |> Enum.filter(& &1.validated)
-    |> Enum.flat_map(&generate_hypothesis_recommendations/1)
+    hypothesis_recommendations =
+      investigation.hypotheses
+      |> Enum.filter(& &1.validated)
+      |> Enum.flat_map(&generate_hypothesis_recommendations/1)
 
     recommendations = recommendations ++ hypothesis_recommendations
 
@@ -2068,36 +2648,42 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   defp generate_priority_recommendations(investigation) do
     case investigation.triage_result.priority do
       :critical ->
-        [%Recommendation{
-          id: generate_id(),
-          action_type: :escalate_to_soc,
-          target: :investigation,
-          parameters: %{priority: :critical},
-          confidence: 1.0,
-          rationale: "Critical priority requires immediate SOC attention",
-          risk_level: :low,
-          requires_approval: false,
-          auto_executable: true
-        }]
+        [
+          %Recommendation{
+            id: generate_id(),
+            action_type: :escalate_to_soc,
+            target: :investigation,
+            parameters: %{priority: :critical},
+            confidence: 1.0,
+            rationale: "Critical priority requires immediate SOC attention",
+            risk_level: :low,
+            requires_approval: false,
+            auto_executable: true
+          }
+        ]
 
       _ ->
         []
     end
   end
 
-  defp maybe_auto_execute(recommendations, investigation) do
-    {auto_exec, manual} = Enum.split_with(recommendations, fn rec ->
-      rec.auto_executable and rec.confidence >= @auto_action_threshold
-    end)
+  # Automatic response remains product-locked until this path is mediated by the
+  # tenant DecisionEngine policy, emergency kill switch, execution budget and a
+  # durable per-recommendation outcome. A configuration toggle alone must never
+  # turn an investigation recommendation into an endpoint action.
+  defp maybe_auto_execute(recommendations, _investigation, _configured),
+    do: {[], recommendations}
 
-    # Execute auto-executable recommendations
-    Enum.each(auto_exec, fn rec ->
-      Logger.info("Auto-executing recommendation #{rec.id}: #{rec.action_type}")
-      execute_recommendation(investigation, rec.id)
-    end)
-
-    {auto_exec, manual}
+  @doc false
+  def auto_executable_recommendation?(recommendation) when is_map(recommendation) do
+    Map.get(recommendation, :rejected, false) != true and
+      Map.get(recommendation, :requires_approval, true) == false and
+      Map.get(recommendation, :auto_executable, false) == true and
+      is_number(Map.get(recommendation, :confidence)) and
+      Map.get(recommendation, :confidence) >= @auto_action_threshold
   end
+
+  def auto_executable_recommendation?(_), do: false
 
   @doc """
   Executes a recommended response action with pre-execution validation.
@@ -2110,8 +2696,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   5. Records execution results in the investigation timeline
   6. Broadcasts update via PubSub
   """
-  defp execute_recommendation(investigation, recommendation_id) do
-    recommendation = Enum.find(investigation.recommendations, & &1.id == recommendation_id)
+  defp execute_recommendation(investigation, recommendation_id, approver_id \\ nil) do
+    recommendation = Enum.find(investigation.recommendations, &(&1.id == recommendation_id))
 
     unless recommendation do
       {:error, :recommendation_not_found}
@@ -2119,12 +2705,12 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       agent_id = investigation.alert.agent_id
 
       # Pre-execution validation: check agent is online
-      case validate_agent_online(agent_id) do
+      case validate_agent_online(agent_id, investigation.organization_id) do
         :ok ->
-          result = execute_action_by_type(recommendation, investigation)
+          result = execute_action_by_type(recommendation, investigation, approver_id)
 
           # Record execution in investigation timeline
-          record_execution_in_timeline(investigation, recommendation, result)
+          record_execution_in_timeline(investigation, recommendation, result, approver_id)
 
           # Broadcast investigation update
           broadcast_investigation_update(investigation.id, :action_executed, %{
@@ -2136,18 +2722,32 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
           result
 
         {:error, reason} ->
-          Logger.warning("Pre-execution validation failed for #{recommendation.action_type}: #{inspect(reason)}")
+          Logger.warning(
+            "Pre-execution validation failed for #{recommendation.action_type}: #{inspect(reason)}"
+          )
+
           {:error, reason}
       end
     end
   end
 
   # Validate that the target agent is online and reachable
-  defp validate_agent_online(agent_id) do
-    case Registry.get(agent_id) do
-      {:ok, %{status: :online}} -> :ok
-      {:ok, %{status: :isolated}} -> :ok  # Isolated agents can still receive commands
-      {:ok, %{status: status}} -> {:error, {:agent_not_available, status}}
+  defp validate_agent_online(agent_id, organization_id) do
+    scoped_agent =
+      TamanduaServer.Repo.MultiTenant.with_organization(organization_id, fn ->
+        TamanduaServer.Agents.get_agent_for_org(organization_id, agent_id)
+      end)
+
+    with {:ok, _agent} <- scoped_agent do
+      case Registry.get(agent_id) do
+        {:ok, %{status: :online}} -> :ok
+        # Isolated agents can still receive commands
+        {:ok, %{status: :isolated}} -> :ok
+        {:ok, %{status: status}} -> {:error, {:agent_not_available, status}}
+        {:error, :not_found} -> {:error, :agent_not_found}
+      end
+    else
+      # Do not disclose whether the target exists in a different organization.
       {:error, :not_found} -> {:error, :agent_not_found}
     end
   rescue
@@ -2155,42 +2755,59 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   # Execute action based on recommendation type, extracting parameters from evidence
-  defp execute_action_by_type(recommendation, investigation) do
+  defp execute_action_by_type(recommendation, investigation, approver_id) do
     agent_id = investigation.alert.agent_id
+    actor = agentic_response_actor(investigation, approver_id)
 
     case recommendation.action_type do
       :isolate_network ->
         duration = recommendation.parameters[:duration_seconds] || 3600
         Logger.info("Executing network isolation on #{agent_id} for #{duration}s")
-        Executor.isolate_network(agent_id, duration: duration)
+        Executor.isolate_network(agent_id, duration: duration, actor: actor)
 
       :kill_process ->
         # Extract PID from investigation evidence
         pid = extract_pid_from_evidence(investigation)
+
         if pid do
           Logger.info("Executing kill_process on #{agent_id}, PID: #{pid}")
-          Executor.kill_process(agent_id, pid, force: recommendation.parameters[:force] || true)
+
+          Executor.kill_process(agent_id, pid,
+            force: recommendation.parameters[:force] || true,
+            actor: actor
+          )
         else
           # Fall back to process name-based kill if we have it
           case extract_process_name_from_evidence(investigation) do
             nil ->
-              Logger.warning("No PID or process name found in evidence for kill_process on #{agent_id}")
+              Logger.warning(
+                "No PID or process name found in evidence for kill_process on #{agent_id}"
+              )
+
               {:error, :no_target_pid}
+
             process_name ->
               Logger.info("Executing kill_process by name on #{agent_id}: #{process_name}")
-              Executor.execute_action(agent_id, "kill_process", %{
-                process_name: process_name,
-                force: recommendation.parameters[:force] || true
-              })
+
+              Executor.execute_action(
+                agent_id,
+                "kill_process",
+                %{
+                  process_name: process_name,
+                  force: recommendation.parameters[:force] || true
+                },
+                actor: actor
+              )
           end
         end
 
       :quarantine_file ->
         # Extract file path from recommendation params or evidence
         path = recommendation.parameters[:path] || extract_file_path_from_evidence(investigation)
+
         if path do
           Logger.info("Executing quarantine_file on #{agent_id}: #{path}")
-          Executor.quarantine_file(agent_id, path)
+          Executor.quarantine_file(agent_id, path, actor: actor)
         else
           Logger.warning("No file path found for quarantine on #{agent_id}")
           {:error, :no_file_path}
@@ -2199,32 +2816,70 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       :block_remote_access ->
         # Block remote access from source
         Logger.info("Executing block_remote_access on #{agent_id}")
-        Executor.execute_action(agent_id, "block_remote_access", %{
-          duration_seconds: recommendation.parameters[:duration_seconds] || 3600
-        })
+
+        Executor.execute_action(
+          agent_id,
+          "block_remote_access",
+          %{duration_seconds: recommendation.parameters[:duration_seconds] || 3600},
+          actor: actor
+        )
 
       :force_password_reset ->
         Logger.info("Executing force_password_reset for investigation #{investigation.id}")
-        Executor.execute_action(agent_id, "force_password_reset", %{
-          reason: recommendation.rationale
-        })
+
+        Executor.execute_action(
+          agent_id,
+          "force_password_reset",
+          %{reason: recommendation.rationale},
+          actor: actor
+        )
 
       :escalate_to_soc ->
         Logger.info("Escalating investigation #{investigation.id} to SOC")
+
         broadcast_investigation_update(investigation.id, :escalated_to_soc, %{
           priority: recommendation.parameters[:priority] || :high,
           rationale: recommendation.rationale
         })
+
         {:ok, %{status: :escalated, escalated_at: DateTime.utc_now()}}
 
       :collect_forensics ->
         Logger.info("Collecting forensics from #{agent_id}")
-        Executor.collect_forensics(agent_id, recommendation.parameters || %{})
+
+        Executor.collect_forensics(
+          agent_id,
+          Map.put(recommendation.parameters || %{}, :actor, actor)
+        )
 
       other ->
         Logger.info("Executing generic action #{other} on #{agent_id}")
-        Executor.execute_action(agent_id, to_string(other), recommendation.parameters || %{})
+
+        Executor.execute_action(
+          agent_id,
+          to_string(other),
+          recommendation.parameters || %{},
+          actor: actor
+        )
     end
+  end
+
+  # Automated actions use a nil user_id (system); reviewed actions carry the human approver.
+  # Both forms remain constrained to the investigation tenant by Response.Executor.
+  defp agentic_response_actor(investigation, approver_id) do
+    %{organization_id: investigation.organization_id, user_id: approver_id}
+  end
+
+  defp approver_belongs_to_organization?(approver_id, organization_id) do
+    TamanduaServer.Repo.MultiTenant.with_organization(organization_id, fn ->
+      Repo.exists?(
+        from(u in TamanduaServer.Accounts.User,
+          where: u.id == ^approver_id and u.organization_id == ^organization_id
+        )
+      )
+    end)
+  rescue
+    _ -> false
   end
 
   # Extract PID from collected investigation evidence
@@ -2236,10 +2891,13 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
         %{type: :alert_data, data: data} ->
           # Check event payloads for PID
           event_ids = data[:event_ids] || []
+
           Enum.find_value(event_ids, fn event_id ->
             try do
               case Telemetry.get_event(event_id) do
-                nil -> nil
+                nil ->
+                  nil
+
                 event ->
                   payload = event.payload || %{}
                   payload["pid"] || payload[:pid]
@@ -2258,7 +2916,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             process_info[:pid]
           end)
 
-        _ -> nil
+        _ ->
+          nil
       end
     end)
   end
@@ -2270,13 +2929,18 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       case ev do
         %{type: :alert_data, data: data} ->
           event_ids = data[:event_ids] || []
+
           Enum.find_value(event_ids, fn event_id ->
             try do
               case Telemetry.get_event(event_id) do
-                nil -> nil
+                nil ->
+                  nil
+
                 event ->
                   payload = event.payload || %{}
-                  payload["name"] || payload[:name] || payload["process_name"] || payload[:process_name]
+
+                  payload["name"] || payload[:name] || payload["process_name"] ||
+                    payload[:process_name]
               end
             rescue
               _ -> nil
@@ -2289,7 +2953,8 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             process_info[:name] || process_info[:process_name]
           end)
 
-        _ -> nil
+        _ ->
+          nil
       end
     end)
   end
@@ -2307,10 +2972,13 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
         %{type: :alert_data, data: data} ->
           event_ids = data[:event_ids] || []
+
           Enum.find_value(event_ids, fn event_id ->
             try do
               case Telemetry.get_event(event_id) do
-                nil -> nil
+                nil ->
+                  nil
+
                 event ->
                   payload = event.payload || %{}
                   payload["path"] || payload[:path] || payload["file_path"] || payload[:file_path]
@@ -2320,18 +2988,20 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
             end
           end)
 
-        _ -> nil
+        _ ->
+          nil
       end
     end)
   end
 
   # Record execution result in investigation timeline
-  defp record_execution_in_timeline(investigation, recommendation, result) do
-    status = case result do
-      {:ok, _} -> :success
-      {:error, _} -> :failed
-      _ -> :unknown
-    end
+  defp record_execution_in_timeline(investigation, recommendation, result, approver_id) do
+    status =
+      case result do
+        {:ok, _} -> :success
+        {:error, _} -> :failed
+        _ -> :unknown
+      end
 
     timeline_entry = %{
       timestamp: DateTime.utc_now(),
@@ -2340,19 +3010,69 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       data: %{
         recommendation_id: recommendation.id,
         action_type: recommendation.action_type,
+        approved_by: approver_id || :system,
         status: status,
         result: inspect(result)
       }
     }
 
+    audit_response_execution(investigation, recommendation, status, approver_id)
+
     # Update investigation with timeline entry
-    case :ets.lookup(@investigations_table, investigation.id) do
-      [{id, inv}] ->
+    key = investigation_key(investigation.organization_id, investigation.id)
+
+    case :ets.lookup(@investigations_table, key) do
+      [{^key, inv}] ->
         existing_timeline = Map.get(inv, :timeline, [])
         updated = Map.put(inv, :timeline, existing_timeline ++ [timeline_entry])
-        :ets.insert(@investigations_table, {id, updated})
-      _ -> :ok
+        :ets.insert(@investigations_table, {key, updated})
+
+      _ ->
+        :ok
     end
+  end
+
+  defp audit_response_execution(investigation, recommendation, status, approver_id) do
+    actor_type = if is_binary(approver_id), do: "user", else: "system"
+
+    attrs = %{
+      action_type: "agentic_response_#{status}",
+      organization_id: investigation.organization_id,
+      agent_id: investigation.alert.agent_id,
+      actor_type: actor_type,
+      actor_id: approver_id,
+      performed_at: DateTime.utc_now(),
+      details: %{
+        investigation_id: investigation.id,
+        recommendation_id: recommendation.id,
+        action_type: recommendation.action_type
+      }
+    }
+
+    result =
+      TamanduaServer.Repo.MultiTenant.with_organization(
+        investigation.organization_id,
+        fn ->
+          %TamanduaServer.Response.Audit.AuditEntry{}
+          |> TamanduaServer.Response.Audit.AuditEntry.changeset(attrs)
+          |> Repo.insert()
+        end
+      )
+
+    if match?({:error, _}, result) do
+      Logger.error(
+        "Failed to persist agentic response audit for investigation #{investigation.id}"
+      )
+    end
+
+    result
+  rescue
+    error ->
+      Logger.error(
+        "Failed to audit agentic response for investigation #{investigation.id}: #{Exception.message(error)}"
+      )
+
+      {:error, :audit_failed}
   end
 
   # Broadcast investigation updates via PubSub
@@ -2383,7 +3103,9 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     recommendations = investigation.recommendations
 
     validated_hypotheses = Enum.filter(hypotheses, & &1.validated)
-    high_conf_recommendations = Enum.filter(recommendations, & &1.confidence >= @high_confidence_threshold)
+
+    high_conf_recommendations =
+      Enum.filter(recommendations, &(&1.confidence >= @high_confidence_threshold))
 
     """
     ## Investigation Summary
@@ -2405,9 +3127,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       """
       The following threat hypotheses were validated:
 
-      #{Enum.map_join(validated_hypotheses, "\n", fn h ->
-        "- **#{format_hypothesis_type(h.type)}**: #{h.description} (#{Float.round(h.confidence * 100, 1)}% confidence)"
-      end)}
+      #{Enum.map_join(validated_hypotheses, "\n", fn h -> "- **#{format_hypothesis_type(h.type)}**: #{h.description} (#{Float.round(h.confidence * 100, 1)}% confidence)" end)}
       """
     end}
 
@@ -2417,9 +3137,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       "No automated actions are recommended. Manual review is suggested."
     else
       """
-      #{Enum.map_join(high_conf_recommendations, "\n", fn r ->
-        "- **#{format_action_type(r.action_type)}**: #{r.rationale}"
-      end)}
+      #{Enum.map_join(high_conf_recommendations, "\n", fn r -> "- **#{format_action_type(r.action_type)}**: #{r.rationale}" end)}
       """
     end}
 
@@ -2507,6 +3225,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   defp extract_keywords(nil), do: []
+
   defp extract_keywords(text) do
     text
     |> String.downcase()
@@ -2519,8 +3238,137 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   # Helper Functions
   # ============================================================================
 
-  defp fetch_alert(alert_id) do
-    case Repo.get(Alert, alert_id) do
+  defp investigation_key(organization_id, investigation_id)
+       when not is_nil(organization_id) and not is_nil(investigation_id),
+       do: {organization_id, investigation_id}
+
+  defp lookup_investigation(organization_id, investigation_id)
+       when not is_nil(organization_id) and not is_nil(investigation_id) do
+    :ets.lookup(@investigations_table, investigation_key(organization_id, investigation_id))
+  end
+
+  defp lookup_investigation(_organization_id, _investigation_id), do: []
+
+  defp persist_and_cache(investigation, state) do
+    durable_candidate =
+      investigation
+      |> Map.put(:persistence_status, :durable)
+      |> Map.put(:persistence_error, nil)
+
+    {cached, persistence} =
+      case AgenticInvestigationStore.upsert(durable_candidate) do
+        {:ok, _snapshot} ->
+          {durable_candidate, %{status: :durable, error: nil}}
+
+        {:error, reason} ->
+          degraded =
+            investigation
+            |> Map.put(:persistence_status, :degraded)
+            |> Map.put(:persistence_error, reason)
+
+          Logger.warning(
+            "Agentic investigation persistence degraded " <>
+              "organization_id=#{investigation.organization_id} " <>
+              "investigation_id=#{investigation.id} error=#{inspect(reason)}"
+          )
+
+          {degraded, %{status: :degraded, error: reason}}
+      end
+
+    :ets.insert(
+      @investigations_table,
+      {investigation_key(cached.organization_id, cached.id), cached}
+    )
+
+    {cached, %{state | persistence: persistence}}
+  end
+
+  defp restore_durable_investigations do
+    case AgenticInvestigationStore.restore_non_terminal(:system_startup,
+           tenant_limit: 100,
+           per_tenant_limit: 10
+         ) do
+      {:ok, snapshots, restore_meta} ->
+        restored =
+          Enum.reduce(snapshots, 0, fn snapshot, count ->
+            with {:ok, investigation} <- restored_investigation(snapshot) do
+              :ets.insert(
+                @investigations_table,
+                {investigation_key(investigation.organization_id, investigation.id),
+                 investigation}
+              )
+
+              count + 1
+            else
+              _ -> count
+            end
+          end)
+
+        degraded = restore_meta.tenants_truncated
+
+        Logger.info(
+          "Agentic Security Analyst restored #{restored} bounded non-terminal investigations " <>
+            "without resuming response-capable transitions"
+        )
+
+        %{
+          status: if(degraded, do: :degraded, else: :durable),
+          error: if(degraded, do: :bounded_restore_incomplete, else: nil),
+          restored: restored,
+          tenants_truncated: restore_meta.tenants_truncated,
+          id_collisions: 0
+        }
+
+      {:error, reason} ->
+        Logger.warning("Agentic investigation durable restore degraded: #{inspect(reason)}")
+        %{status: :degraded, error: reason, restored: 0}
+    end
+  end
+
+  defp restored_investigation(snapshot) when is_map(snapshot) do
+    state = Map.get(snapshot, :state)
+    organization_id = Map.get(snapshot, :organization_id)
+    alert_id = Map.get(snapshot, :alert_id)
+    alert = Map.get(snapshot, :alert)
+
+    with true <- state in @states and state not in [:resolved, :escalated],
+         {:ok, _organization_uuid} <- Ecto.UUID.cast(organization_id),
+         {:ok, _alert_uuid} <- Ecto.UUID.cast(alert_id),
+         true <- is_map(alert),
+         true <- Map.get(alert, :organization_id) == organization_id,
+         true <- Map.get(alert, :id) == alert_id do
+      fields = %Investigation{} |> Map.from_struct() |> Map.keys()
+
+      investigation =
+        snapshot
+        |> Map.take(fields)
+        |> then(&struct(Investigation, &1))
+        |> Map.put(:hypotheses, Map.get(snapshot, :hypotheses) || [])
+        |> Map.put(:evidence, Map.get(snapshot, :evidence) || [])
+        |> Map.put(:correlations, Map.get(snapshot, :correlations) || [])
+        |> Map.put(:recommendations, Map.get(snapshot, :recommendations) || [])
+        |> Map.put(:timeline, Map.get(snapshot, :timeline) || [])
+        |> Map.put(:persistence_status, :durable)
+        |> Map.put(:persistence_error, nil)
+
+      {:ok, investigation}
+    else
+      _ -> {:error, :invalid_snapshot}
+    end
+  end
+
+  defp restored_investigation(_snapshot), do: {:error, :invalid_snapshot}
+
+  defp fetch_alert(_alert_id, nil), do: {:error, :organization_required}
+
+  defp fetch_alert(alert_id, organization_id) do
+    query =
+      from(alert in Alert,
+        where: alert.id == ^alert_id,
+        where: alert.organization_id == ^organization_id
+      )
+
+    case Repo.one(query) do
       nil -> {:error, :not_found}
       alert -> {:ok, Map.from_struct(alert)}
     end
@@ -2528,8 +3376,23 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     _ -> {:error, :database_error}
   end
 
-  defp generate_investigation_id do
-    "inv_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  defp investigation_alert(%{alert_id: alert_id}, organization_id) when not is_nil(alert_id),
+    do: fetch_alert(alert_id, organization_id)
+
+  # Synthetic/custom triggers need their own persisted, tenant-bound evidence
+  # contract. Until that exists, fail closed instead of constructing an alert-like
+  # map that bypasses the canonical alert ownership check.
+  defp investigation_alert(_params, _organization_id), do: {:error, :unsupported_trigger}
+
+  defp generate_investigation_id(organization_id) do
+    tenant_prefix =
+      organization_id
+      |> to_string()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+      |> String.slice(0, 12)
+
+    "inv_#{tenant_prefix}_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
   defp generate_id do
@@ -2544,13 +3407,15 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   end
 
   defp filter_by_state(investigations, nil), do: investigations
+
   defp filter_by_state(investigations, state) do
-    Enum.filter(investigations, & &1.state == state)
+    Enum.filter(investigations, &(&1.state == state))
   end
 
   defp filter_by_priority(investigations, nil), do: investigations
+
   defp filter_by_priority(investigations, priority) do
-    Enum.filter(investigations, & &1.triage_result && &1.triage_result.priority == priority)
+    Enum.filter(investigations, &(&1.triage_result && &1.triage_result.priority == priority))
   end
 
   defp maybe_limit(investigations, nil), do: investigations
@@ -2562,7 +3427,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     if Enum.empty?(validated) do
       0.3
     else
-      Enum.reduce(validated, 0.0, & &1.confidence + &2) / length(validated)
+      Enum.reduce(validated, 0.0, &(&1.confidence + &2)) / length(validated)
     end
   end
 
@@ -2574,7 +3439,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     ]
 
     Enum.reduce(weights, 0.0, fn {score, weight}, acc ->
-      acc + (score * weight)
+      acc + score * weight
     end)
   end
 
@@ -2615,14 +3480,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     Alerts.list_alerts(%{})
     |> Enum.filter(fn a ->
       a.id != alert.id and
-      (a.severity == alert.severity or
-       Enum.any?(a.mitre_techniques || [], &(&1 in (alert.mitre_techniques || []))))
+        (a.severity == alert.severity or
+           Enum.any?(a.mitre_techniques || [], &(&1 in (alert.mitre_techniques || []))))
     end)
     |> Enum.map(fn a ->
       %{
         id: a.id,
         severity: a.severity,
-        confirmed_threat: a.status == "resolved" and a.resolution_notes && String.contains?(String.downcase(a.resolution_notes || ""), "confirmed")
+        confirmed_threat:
+          a.status == "resolved" and a.resolution_notes &&
+            String.contains?(String.downcase(a.resolution_notes || ""), "confirmed")
       }
     end)
     |> Enum.take(10)
@@ -2638,6 +3505,7 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   """
   defp get_asset_criticality(agent_id) do
     score = get_asset_criticality_score(agent_id)
+
     cond do
       score >= 0.9 -> "critical"
       score >= 0.7 -> "high"
@@ -2657,10 +3525,11 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   """
   defp get_asset_criticality_score(agent_id) do
     # Query agent registry for metadata
-    agent_info = case Registry.get(agent_id) do
-      {:ok, info} -> info
-      _ -> %{}
-    end
+    agent_info =
+      case Registry.get(agent_id) do
+        {:ok, info} -> info
+        _ -> %{}
+      end
 
     hostname = String.downcase(to_string(agent_info[:hostname] || ""))
     os_type = String.downcase(to_string(agent_info[:os_type] || ""))
@@ -2669,41 +3538,44 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     base_score = 0.3
 
     # Hostname-based criticality patterns
-    hostname_boost = cond do
-      # Domain controllers
-      Regex.match?(~r/(^dc|domain.?controller|^ad[0-9]|^pdc|^bdc)/i, hostname) -> 0.5
-      # Database servers
-      Regex.match?(~r/(^db|^sql|^mysql|^postgres|^oracle|^mongo|database)/i, hostname) -> 0.4
-      # Certificate authority / PKI
-      Regex.match?(~r/(^ca|^pki|cert.?auth|root.?ca)/i, hostname) -> 0.45
-      # Exchange / mail servers
-      Regex.match?(~r/(^mail|^mx|^exchange|^smtp)/i, hostname) -> 0.35
-      # Web / application servers
-      Regex.match?(~r/(^web|^app|^api|^proxy|^lb)/i, hostname) -> 0.3
-      # Executive / VIP workstations
-      Regex.match?(~r/(^exec|^ceo|^cfo|^cto|^vip|^c-suite)/i, hostname) -> 0.4
-      # Build / CI-CD
-      Regex.match?(~r/(^build|^jenkins|^ci|^cd|^deploy)/i, hostname) -> 0.25
-      # File servers
-      Regex.match?(~r/(^file|^nas|^share|^backup)/i, hostname) -> 0.3
-      true -> 0.0
-    end
+    hostname_boost =
+      cond do
+        # Domain controllers
+        Regex.match?(~r/(^dc|domain.?controller|^ad[0-9]|^pdc|^bdc)/i, hostname) -> 0.5
+        # Database servers
+        Regex.match?(~r/(^db|^sql|^mysql|^postgres|^oracle|^mongo|database)/i, hostname) -> 0.4
+        # Certificate authority / PKI
+        Regex.match?(~r/(^ca|^pki|cert.?auth|root.?ca)/i, hostname) -> 0.45
+        # Exchange / mail servers
+        Regex.match?(~r/(^mail|^mx|^exchange|^smtp)/i, hostname) -> 0.35
+        # Web / application servers
+        Regex.match?(~r/(^web|^app|^api|^proxy|^lb)/i, hostname) -> 0.3
+        # Executive / VIP workstations
+        Regex.match?(~r/(^exec|^ceo|^cfo|^cto|^vip|^c-suite)/i, hostname) -> 0.4
+        # Build / CI-CD
+        Regex.match?(~r/(^build|^jenkins|^ci|^cd|^deploy)/i, hostname) -> 0.25
+        # File servers
+        Regex.match?(~r/(^file|^nas|^share|^backup)/i, hostname) -> 0.3
+        true -> 0.0
+      end
 
     # OS-type boost (servers are more critical)
-    os_boost = cond do
-      String.contains?(os_type, "server") -> 0.15
-      String.contains?(os_type, "windows") and String.contains?(hostname, "srv") -> 0.10
-      String.contains?(os_type, "linux") -> 0.05
-      true -> 0.0
-    end
+    os_boost =
+      cond do
+        String.contains?(os_type, "server") -> 0.15
+        String.contains?(os_type, "windows") and String.contains?(hostname, "srv") -> 0.10
+        String.contains?(os_type, "linux") -> 0.05
+        true -> 0.0
+      end
 
     # Status factor (online agents can be responded to)
-    status_factor = case status do
-      :online -> 1.0
-      :isolated -> 0.9
-      :offline -> 0.7
-      _ -> 0.8
-    end
+    status_factor =
+      case status do
+        :online -> 1.0
+        :isolated -> 0.9
+        :offline -> 0.7
+        _ -> 0.8
+      end
 
     # Compute final score, clamped to 0..1
     raw_score = (base_score + hostname_boost + os_boost) * status_factor
@@ -2716,9 +3588,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     # Extract potential indicators from text
     indicators = []
 
-    indicators = if String.contains?(text, "powershell"), do: ["PowerShell" | indicators], else: indicators
-    indicators = if String.contains?(text, "malware"), do: ["Malware" | indicators], else: indicators
-    indicators = if String.contains?(text, "suspicious"), do: ["Suspicious behavior" | indicators], else: indicators
+    indicators =
+      if String.contains?(text, "powershell"), do: ["PowerShell" | indicators], else: indicators
+
+    indicators =
+      if String.contains?(text, "malware"), do: ["Malware" | indicators], else: indicators
+
+    indicators =
+      if String.contains?(text, "suspicious"),
+        do: ["Suspicious behavior" | indicators],
+        else: indicators
 
     indicators
   end
@@ -2733,37 +3612,49 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
     ]
 
     # Add triage result to timeline
-    timeline = if investigation.triage_result do
-      timeline ++ [%{
-        timestamp: investigation.triage_result[:timestamp] || investigation.created_at,
-        action: :triage_completed,
-        details: "Triage completed with priority: #{investigation.triage_result.priority}"
-      }]
-    else
-      timeline
-    end
+    timeline =
+      if investigation.triage_result do
+        timeline ++
+          [
+            %{
+              timestamp: investigation.triage_result[:timestamp] || investigation.created_at,
+              action: :triage_completed,
+              details: "Triage completed with priority: #{investigation.triage_result.priority}"
+            }
+          ]
+      else
+        timeline
+      end
 
     # Add hypothesis generation to timeline
-    timeline = if length(investigation.hypotheses || []) > 0 do
-      timeline ++ [%{
-        timestamp: investigation.updated_at,
-        action: :hypotheses_generated,
-        details: "Generated #{length(investigation.hypotheses)} hypotheses"
-      }]
-    else
-      timeline
-    end
+    timeline =
+      if length(investigation.hypotheses || []) > 0 do
+        timeline ++
+          [
+            %{
+              timestamp: investigation.updated_at,
+              action: :hypotheses_generated,
+              details: "Generated #{length(investigation.hypotheses)} hypotheses"
+            }
+          ]
+      else
+        timeline
+      end
 
     # Add evidence gathering to timeline
-    timeline = if length(investigation.evidence || []) > 0 do
-      timeline ++ [%{
-        timestamp: investigation.updated_at,
-        action: :evidence_gathered,
-        details: "Gathered #{length(investigation.evidence)} pieces of evidence"
-      }]
-    else
-      timeline
-    end
+    timeline =
+      if length(investigation.evidence || []) > 0 do
+        timeline ++
+          [
+            %{
+              timestamp: investigation.updated_at,
+              action: :evidence_gathered,
+              details: "Gathered #{length(investigation.evidence)} pieces of evidence"
+            }
+          ]
+      else
+        timeline
+      end
 
     Enum.sort_by(timeline, & &1.timestamp)
   end
@@ -2775,29 +3666,51 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   @doc """
   Auto-triage an alert using AI analysis.
   """
-  def auto_triage(alert_id) do
-    GenServer.call(__MODULE__, {:auto_triage, alert_id}, 30_000)
+  def auto_triage(_alert_id), do: {:error, :organization_required}
+
+  def auto_triage(alert_id, organization_id) when not is_nil(organization_id) do
+    GenServer.call(__MODULE__, {:auto_triage, alert_id, organization_id}, 30_000)
   end
 
   @doc """
-  Get an investigation by ID with optional filters.
+  Get an investigation by ID with filters.
+
+  Note: no default for `opts` here — `get_investigation/1` is defined
+  separately above and dispatches to the 2-tuple GenServer message; a
+  default arg would generate a shadowed (unreachable) /1 clause.
   """
-  def get_investigation(investigation_id, opts \\ %{}) do
-    GenServer.call(__MODULE__, {:get_investigation, investigation_id, opts})
+  def get_investigation(investigation_id, opts) do
+    if opts[:organization_id] do
+      GenServer.call(__MODULE__, {:get_investigation, investigation_id, opts})
+    else
+      {:error, :organization_required}
+    end
   end
 
   @doc """
   Start a new investigation.
   """
   def start_investigation(params) when is_map(params) do
-    GenServer.call(__MODULE__, {:start_investigation, params}, 30_000)
+    if params[:organization_id] do
+      GenServer.call(__MODULE__, {:start_investigation, params}, 30_000)
+    else
+      {:error, :organization_required}
+    end
   end
 
   @doc """
   Submit feedback for an investigation or triage decision.
   """
   def submit_feedback(params) when is_map(params) do
-    GenServer.call(__MODULE__, {:submit_feedback, params})
+    case {params[:investigation_id], params[:organization_id]} do
+      {investigation_id, organization_id}
+      when not is_nil(investigation_id) and not is_nil(organization_id) ->
+        feedback = Map.drop(params, [:investigation_id, :organization_id])
+        submit_feedback(investigation_id, feedback, organization_id)
+
+      _ ->
+        {:error, :organization_required}
+    end
   end
 
   # ETS table for chat history
@@ -2807,74 +3720,110 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
   Get chat history for the analyst interface.
   Retrieves stored chat messages from ETS, ordered by timestamp.
   """
-  @spec get_chat_history() :: {:ok, [map()]}
-  def get_chat_history do
-    GenServer.call(__MODULE__, :get_chat_history)
+  @spec get_chat_history() :: {:error, :organization_required}
+  def get_chat_history, do: {:error, :organization_required}
+
+  @spec get_chat_history(keyword()) :: {:ok, [map()]} | {:error, :organization_required}
+  def get_chat_history(opts) when is_list(opts) do
+    case Keyword.get(opts, :organization_id) do
+      organization_id when organization_id not in [nil, ""] ->
+        GenServer.call(__MODULE__, {:get_chat_history_for_org, organization_id})
+
+      _ ->
+        {:error, :organization_required}
+    end
   end
 
   @doc """
   Get chat history for a specific investigation.
   """
-  @spec get_chat_history(String.t()) :: {:ok, [map()]}
-  def get_chat_history(investigation_id) do
-    GenServer.call(__MODULE__, {:get_chat_history, investigation_id})
+  @spec get_chat_history(String.t()) :: {:error, :organization_required}
+  def get_chat_history(_investigation_id), do: {:error, :organization_required}
+
+  @spec get_chat_history(String.t(), String.t()) ::
+          {:ok, [map()]} | {:error, :organization_required | :not_found}
+  def get_chat_history(investigation_id, organization_id)
+      when organization_id not in [nil, ""] do
+    GenServer.call(
+      __MODULE__,
+      {:get_chat_history_for_org, investigation_id, organization_id}
+    )
   end
+
+  def get_chat_history(_investigation_id, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   Add a message to chat history.
   """
-  @spec add_chat_message(String.t() | nil, map()) :: :ok
-  def add_chat_message(investigation_id, message) do
-    GenServer.cast(__MODULE__, {:add_chat_message, investigation_id, message})
+  @spec add_chat_message(String.t() | nil, map()) :: {:error, :organization_required}
+  def add_chat_message(_investigation_id, _message), do: {:error, :organization_required}
+
+  @spec add_chat_message(String.t() | nil, map(), String.t()) ::
+          :ok | {:error, :organization_required}
+  def add_chat_message(investigation_id, message, organization_id)
+      when is_map(message) and organization_id not in [nil, ""] do
+    GenServer.cast(
+      __MODULE__,
+      {:add_chat_message, investigation_id, message, organization_id}
+    )
   end
+
+  def add_chat_message(_investigation_id, _message, _organization_id),
+    do: {:error, :organization_required}
 
   @doc """
   Get AI-generated insights from recent analysis.
   Returns aggregated insights based on recent investigations, alerts, and patterns.
   """
-  @spec get_insights() :: {:ok, [map()]}
-  def get_insights do
-    GenServer.call(__MODULE__, :get_insights)
+  @spec get_insights() :: {:error, :organization_required}
+  def get_insights, do: {:error, :organization_required}
+
+  @spec get_insights(keyword()) :: {:ok, [map()]} | {:error, :organization_required}
+  def get_insights(opts) when is_list(opts) do
+    case Keyword.get(opts, :organization_id) do
+      organization_id when organization_id not in [nil, ""] ->
+        GenServer.call(__MODULE__, {:get_insights_for_org, organization_id})
+
+      _ ->
+        {:error, :organization_required}
+    end
   end
 
   @doc """
   Get insights for a specific investigation.
   """
-  @spec get_insights(String.t()) :: {:ok, [map()]}
-  def get_insights(investigation_id) do
-    GenServer.call(__MODULE__, {:get_insights, investigation_id})
+  @spec get_insights(String.t()) :: {:error, :organization_required}
+  def get_insights(_investigation_id), do: {:error, :organization_required}
+
+  @spec get_insights(String.t(), String.t()) ::
+          {:ok, [map()]} | {:error, :organization_required}
+  def get_insights(investigation_id, organization_id)
+      when organization_id not in [nil, ""] do
+    GenServer.call(__MODULE__, {:get_insights_for_org, investigation_id, organization_id})
   end
 
-  # Handle get_chat_history
-  @impl true
-  def handle_call(:get_chat_history, _from, state) do
-    messages = get_all_chat_messages()
-    {:reply, {:ok, messages}, state}
-  end
-
-  @impl true
-  def handle_call({:get_chat_history, investigation_id}, _from, state) do
-    messages = get_chat_messages_for_investigation(investigation_id)
-    {:reply, {:ok, messages}, state}
-  end
-
-  # Handle get_insights
-  @impl true
-  def handle_call(:get_insights, _from, state) do
-    insights = generate_insights_from_state(state)
-    {:reply, {:ok, insights}, state}
-  end
-
-  @impl true
-  def handle_call({:get_insights, investigation_id}, _from, state) do
-    insights = generate_insights_for_investigation(investigation_id, state)
-    {:reply, {:ok, insights}, state}
-  end
+  def get_insights(_investigation_id, _organization_id),
+    do: {:error, :organization_required}
 
   # Handle add_chat_message
   @impl true
   def handle_cast({:add_chat_message, investigation_id, message}, state) do
-    store_chat_message(investigation_id, message)
+    Logger.warning("Rejected unscoped chat message for investigation #{investigation_id}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:add_chat_message, investigation_id, message, organization_id},
+        state
+      ) do
+    if chat_message_scope_valid?(investigation_id, organization_id) do
+      store_chat_message(investigation_id, message, organization_id)
+    else
+      Logger.warning("Rejected chat message outside the requested organization")
+    end
+
     {:noreply, state}
   end
 
@@ -2884,15 +3833,16 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
 
   defp ensure_chat_history_table do
     if :ets.whereis(@chat_history_table) == :undefined do
-      :ets.new(@chat_history_table, [:named_table, :bag, :public, read_concurrency: true])
+      :ets.new(@chat_history_table, [:named_table, :bag, :protected, read_concurrency: true])
     end
   end
 
-  defp store_chat_message(investigation_id, message) do
+  defp store_chat_message(investigation_id, message, organization_id) do
     ensure_chat_history_table()
 
     entry = %{
       id: generate_id(),
+      organization_id: organization_id,
       investigation_id: investigation_id,
       role: message[:role] || "user",
       content: message[:content] || "",
@@ -2900,270 +3850,385 @@ defmodule TamanduaServer.AISecurity.AgenticAnalyst do
       metadata: message[:metadata] || %{}
     }
 
-    key = investigation_id || :global
+    key = investigation_key(organization_id, investigation_id || :global)
     :ets.insert(@chat_history_table, {key, entry})
   end
 
-  defp get_all_chat_messages do
+  defp chat_message_scope_valid?(nil, organization_id),
+    do: organization_id not in [nil, ""]
+
+  defp chat_message_scope_valid?(investigation_id, organization_id) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, _investigation}] -> true
+      _ -> false
+    end
+  end
+
+  defp get_all_chat_messages(organization_id) do
     ensure_chat_history_table()
 
     :ets.tab2list(@chat_history_table)
     |> Enum.map(fn {_key, msg} -> msg end)
+    |> Enum.filter(&(Map.get(&1, :organization_id) == organization_id))
     |> Enum.sort_by(& &1.timestamp, {:asc, DateTime})
     |> Enum.take(100)
   end
 
-  defp get_chat_messages_for_investigation(investigation_id) do
+  defp get_chat_messages_for_investigation(investigation_id, organization_id) do
     ensure_chat_history_table()
 
-    :ets.lookup(@chat_history_table, investigation_id)
+    :ets.lookup(@chat_history_table, investigation_key(organization_id, investigation_id))
     |> Enum.map(fn {_key, msg} -> msg end)
+    |> Enum.filter(&(Map.get(&1, :organization_id) == organization_id))
     |> Enum.sort_by(& &1.timestamp, {:asc, DateTime})
   end
+
+  defp investigations_for_organization(organization_id) do
+    @investigations_table
+    |> :ets.tab2list()
+    |> Enum.map(fn {_id, investigation} -> investigation end)
+    |> Enum.filter(&(Map.get(&1, :organization_id) == organization_id))
+  end
+
+  defp build_organization_stats(investigations) do
+    hypotheses = Enum.flat_map(investigations, &(Map.get(&1, :hypotheses) || []))
+    recommendations = Enum.flat_map(investigations, &(Map.get(&1, :recommendations) || []))
+
+    feedback =
+      investigations |> Enum.map(&Map.get(&1, :analyst_feedback)) |> Enum.reject(&is_nil/1)
+
+    confidences =
+      investigations
+      |> Enum.map(&Map.get(&1, :confidence))
+      |> Enum.filter(&is_number/1)
+
+    average_confidence =
+      case confidences do
+        [] -> 0.0
+        values -> Enum.sum(values) / length(values)
+      end
+
+    %{
+      alerts_triaged: length(investigations),
+      investigations_started: length(investigations),
+      investigations_completed: Enum.count(investigations, &(Map.get(&1, :state) == :resolved)),
+      hypotheses_generated: length(hypotheses),
+      hypotheses_validated: Enum.count(hypotheses, &(map_value(&1, :validated) == true)),
+      actions_recommended: length(recommendations),
+      actions_executed: Enum.count(recommendations, &executed_recommendation?/1),
+      false_positives_identified:
+        Enum.count(feedback, &(map_value(&1, :verdict) in [:false_positive, "false_positive"])),
+      true_positives_confirmed:
+        Enum.count(feedback, &(map_value(&1, :verdict) in [:true_positive, "true_positive"])),
+      average_confidence: average_confidence,
+      feedback_received: length(feedback)
+    }
+  end
+
+  defp executed_recommendation?(recommendation) do
+    map_value(recommendation, :executed) == true or
+      map_value(recommendation, :status) in [:executed, "executed"]
+  end
+
+  defp map_value(value, key) when is_map(value),
+    do: Map.get(value, key) || Map.get(value, Atom.to_string(key))
+
+  defp map_value(_value, _key), do: nil
 
   # ============================================================================
   # Insights Generation Implementation
   # ============================================================================
 
-  defp generate_insights_from_state(state) do
+  defp generate_insights_from_state(_state, organization_id) do
     insights = []
 
     # Insight 1: Investigation activity summary
-    total_investigations = map_size(state.active_investigations)
-    investigations_list = :ets.tab2list(@investigations_table)
+    investigations = investigations_for_organization(organization_id)
+    tenant_stats = build_organization_stats(investigations)
+    total_investigations = length(investigations)
 
-    completed = Enum.count(investigations_list, fn {_id, inv} ->
-      inv.state == :resolved
-    end)
+    completed =
+      Enum.count(investigations, fn inv ->
+        inv.state == :resolved
+      end)
 
-    pending = Enum.count(investigations_list, fn {_id, inv} ->
-      inv.state in [:pending, :triaging, :investigating]
-    end)
+    pending =
+      Enum.count(investigations, fn inv ->
+        inv.state in [:pending, :triaging, :investigating]
+      end)
 
-    insights = if total_investigations > 0 do
-      [%{
-        id: generate_id(),
-        type: :activity_summary,
-        title: "Investigation Activity",
-        description: "#{total_investigations} active investigations: #{completed} resolved, #{pending} in progress",
-        priority: if(pending > 5, do: :high, else: :medium),
-        timestamp: DateTime.utc_now(),
-        data: %{
-          total: total_investigations,
-          completed: completed,
-          pending: pending
-        }
-      } | insights]
-    else
-      insights
-    end
-
-    # Insight 2: Hypothesis validation rate
-    validated_count = state.stats[:hypotheses_validated] || 0
-    generated_count = state.stats[:hypotheses_generated] || 0
-
-    validation_rate = if generated_count > 0 do
-      Float.round(validated_count / generated_count * 100, 1)
-    else
-      0.0
-    end
-
-    insights = if generated_count > 10 do
-      priority = cond do
-        validation_rate > 70 -> :low
-        validation_rate > 40 -> :medium
-        true -> :high
+    insights =
+      if total_investigations > 0 do
+        [
+          %{
+            id: generate_id(),
+            type: :activity_summary,
+            title: "Investigation Activity",
+            description:
+              "#{total_investigations} active investigations: #{completed} resolved, #{pending} in progress",
+            priority: if(pending > 5, do: :high, else: :medium),
+            timestamp: DateTime.utc_now(),
+            data: %{
+              total: total_investigations,
+              completed: completed,
+              pending: pending
+            }
+          }
+          | insights
+        ]
+      else
+        insights
       end
 
-      [%{
-        id: generate_id(),
-        type: :validation_rate,
-        title: "Hypothesis Validation Rate",
-        description: "#{validation_rate}% of generated hypotheses have been validated (#{validated_count}/#{generated_count})",
-        priority: priority,
-        timestamp: DateTime.utc_now(),
-        data: %{
-          validated: validated_count,
-          generated: generated_count,
-          rate: validation_rate
-        }
-      } | insights]
-    else
-      insights
-    end
+    # Insight 2: Hypothesis validation rate
+    validated_count = tenant_stats[:hypotheses_validated] || 0
+    generated_count = tenant_stats[:hypotheses_generated] || 0
+
+    validation_rate =
+      if generated_count > 0 do
+        Float.round(validated_count / generated_count * 100, 1)
+      else
+        0.0
+      end
+
+    insights =
+      if generated_count > 10 do
+        priority =
+          cond do
+            validation_rate > 70 -> :low
+            validation_rate > 40 -> :medium
+            true -> :high
+          end
+
+        [
+          %{
+            id: generate_id(),
+            type: :validation_rate,
+            title: "Hypothesis Validation Rate",
+            description:
+              "#{validation_rate}% of generated hypotheses have been validated (#{validated_count}/#{generated_count})",
+            priority: priority,
+            timestamp: DateTime.utc_now(),
+            data: %{
+              validated: validated_count,
+              generated: generated_count,
+              rate: validation_rate
+            }
+          }
+          | insights
+        ]
+      else
+        insights
+      end
 
     # Insight 3: Recent alert patterns
-    recent_alerts = try do
-      Alerts.list_recent(limit: 50)
-    rescue
-      _ -> []
-    end
+    recent_alerts =
+      try do
+        Alerts.list_recent_for_org(organization_id, limit: 50)
+      rescue
+        _ -> []
+      end
 
-    severity_distribution = recent_alerts
-    |> Enum.group_by(& &1.severity)
-    |> Enum.map(fn {sev, alerts} -> {sev, length(alerts)} end)
-    |> Map.new()
+    severity_distribution =
+      recent_alerts
+      |> Enum.group_by(& &1.severity)
+      |> Enum.map(fn {sev, alerts} -> {sev, length(alerts)} end)
+      |> Map.new()
 
     critical_count = severity_distribution["critical"] || 0
     high_count = severity_distribution["high"] || 0
 
-    insights = if length(recent_alerts) > 0 do
-      priority = cond do
-        critical_count > 3 -> :high
-        high_count > 5 -> :medium
-        true -> :low
+    insights =
+      if length(recent_alerts) > 0 do
+        priority =
+          cond do
+            critical_count > 3 -> :high
+            high_count > 5 -> :medium
+            true -> :low
+          end
+
+        [
+          %{
+            id: generate_id(),
+            type: :alert_pattern,
+            title: "Recent Alert Distribution",
+            description:
+              "#{length(recent_alerts)} recent alerts: #{critical_count} critical, #{high_count} high severity",
+            priority: priority,
+            timestamp: DateTime.utc_now(),
+            data: %{
+              total: length(recent_alerts),
+              distribution: severity_distribution
+            }
+          }
+          | insights
+        ]
+      else
+        insights
       end
 
-      [%{
-        id: generate_id(),
-        type: :alert_pattern,
-        title: "Recent Alert Distribution",
-        description: "#{length(recent_alerts)} recent alerts: #{critical_count} critical, #{high_count} high severity",
-        priority: priority,
-        timestamp: DateTime.utc_now(),
-        data: %{
-          total: length(recent_alerts),
-          distribution: severity_distribution
-        }
-      } | insights]
-    else
-      insights
-    end
-
     # Insight 4: Common MITRE techniques
-    mitre_counts = recent_alerts
-    |> Enum.flat_map(fn alert ->
-      alert.mitre_techniques || []
-    end)
-    |> Enum.frequencies()
-    |> Enum.sort_by(fn {_tech, count} -> count end, :desc)
-    |> Enum.take(5)
+    mitre_counts =
+      recent_alerts
+      |> Enum.flat_map(fn alert ->
+        alert.mitre_techniques || []
+      end)
+      |> Enum.frequencies()
+      |> Enum.sort_by(fn {_tech, count} -> count end, :desc)
+      |> Enum.take(5)
 
-    insights = if length(mitre_counts) > 0 do
-      top_techniques = Enum.map(mitre_counts, fn {tech, count} -> "#{tech} (#{count})" end)
+    insights =
+      if length(mitre_counts) > 0 do
+        top_techniques = Enum.map(mitre_counts, fn {tech, count} -> "#{tech} (#{count})" end)
 
-      [%{
-        id: generate_id(),
-        type: :mitre_trends,
-        title: "Common Attack Techniques",
-        description: "Top MITRE techniques: #{Enum.join(top_techniques, ", ")}",
-        priority: :medium,
-        timestamp: DateTime.utc_now(),
-        data: %{
-          techniques: mitre_counts
-        }
-      } | insights]
-    else
-      insights
-    end
+        [
+          %{
+            id: generate_id(),
+            type: :mitre_trends,
+            title: "Common Attack Techniques",
+            description: "Top MITRE techniques: #{Enum.join(top_techniques, ", ")}",
+            priority: :medium,
+            timestamp: DateTime.utc_now(),
+            data: %{
+              techniques: mitre_counts
+            }
+          }
+          | insights
+        ]
+      else
+        insights
+      end
 
     # Insight 5: Feedback loop status
-    feedback_count = state.stats[:feedback_received] || 0
-    false_positives = state.stats[:false_positives_identified] || 0
-    true_positives = state.stats[:true_positives_confirmed] || 0
+    feedback_count = tenant_stats[:feedback_received] || 0
+    false_positives = tenant_stats[:false_positives_identified] || 0
+    true_positives = tenant_stats[:true_positives_confirmed] || 0
 
-    insights = if feedback_count > 0 do
-      [%{
-        id: generate_id(),
-        type: :feedback_summary,
-        title: "Analyst Feedback Summary",
-        description: "#{feedback_count} feedback entries: #{true_positives} true positives, #{false_positives} false positives",
-        priority: :low,
-        timestamp: DateTime.utc_now(),
-        data: %{
-          total_feedback: feedback_count,
-          true_positives: true_positives,
-          false_positives: false_positives
-        }
-      } | insights]
-    else
-      insights
-    end
+    insights =
+      if feedback_count > 0 do
+        [
+          %{
+            id: generate_id(),
+            type: :feedback_summary,
+            title: "Analyst Feedback Summary",
+            description:
+              "#{feedback_count} feedback entries: #{true_positives} true positives, #{false_positives} false positives",
+            priority: :low,
+            timestamp: DateTime.utc_now(),
+            data: %{
+              total_feedback: feedback_count,
+              true_positives: true_positives,
+              false_positives: false_positives
+            }
+          }
+          | insights
+        ]
+      else
+        insights
+      end
 
     Enum.reverse(insights)
   end
 
-  defp generate_insights_for_investigation(investigation_id, _state) do
-    case :ets.lookup(@investigations_table, investigation_id) do
-      [{^investigation_id, investigation}] ->
+  defp generate_insights_for_investigation(investigation_id, organization_id, _state) do
+    case lookup_investigation(organization_id, investigation_id) do
+      [{_key, investigation}] ->
         insights = []
 
         # Insight 1: Investigation status
-        insights = [%{
-          id: generate_id(),
-          type: :investigation_status,
-          title: "Investigation Status",
-          description: "Current state: #{investigation.state}, Confidence: #{Float.round(investigation.confidence * 100, 1)}%",
-          priority: if(investigation.state == :awaiting_review, do: :high, else: :medium),
-          timestamp: DateTime.utc_now(),
-          data: %{
-            state: investigation.state,
-            confidence: investigation.confidence
+        insights = [
+          %{
+            id: generate_id(),
+            type: :investigation_status,
+            title: "Investigation Status",
+            description:
+              "Current state: #{investigation.state}, Confidence: #{Float.round(investigation.confidence * 100, 1)}%",
+            priority: if(investigation.state == :awaiting_review, do: :high, else: :medium),
+            timestamp: DateTime.utc_now(),
+            data: %{
+              state: investigation.state,
+              confidence: investigation.confidence
+            }
           }
-        } | insights]
+          | insights
+        ]
 
         # Insight 2: Validated hypotheses
         validated_hypotheses = Enum.filter(investigation.hypotheses || [], & &1.validated)
 
-        insights = if length(validated_hypotheses) > 0 do
-          hypothesis_types = Enum.map(validated_hypotheses, & &1.type)
+        insights =
+          if length(validated_hypotheses) > 0 do
+            hypothesis_types = Enum.map(validated_hypotheses, & &1.type)
 
-          [%{
-            id: generate_id(),
-            type: :validated_hypotheses,
-            title: "Validated Threat Hypotheses",
-            description: "#{length(validated_hypotheses)} hypotheses validated: #{Enum.join(hypothesis_types, ", ")}",
-            priority: :high,
-            timestamp: DateTime.utc_now(),
-            data: %{
-              count: length(validated_hypotheses),
-              types: hypothesis_types
-            }
-          } | insights]
-        else
-          insights
-        end
+            [
+              %{
+                id: generate_id(),
+                type: :validated_hypotheses,
+                title: "Validated Threat Hypotheses",
+                description:
+                  "#{length(validated_hypotheses)} hypotheses validated: #{Enum.join(hypothesis_types, ", ")}",
+                priority: :high,
+                timestamp: DateTime.utc_now(),
+                data: %{
+                  count: length(validated_hypotheses),
+                  types: hypothesis_types
+                }
+              }
+              | insights
+            ]
+          else
+            insights
+          end
 
         # Insight 3: Evidence collected
         evidence_count = length(investigation.evidence || [])
 
-        insights = if evidence_count > 0 do
-          [%{
-            id: generate_id(),
-            type: :evidence_collected,
-            title: "Evidence Collection",
-            description: "#{evidence_count} pieces of evidence collected",
-            priority: :medium,
-            timestamp: DateTime.utc_now(),
-            data: %{
-              count: evidence_count
-            }
-          } | insights]
-        else
-          insights
-        end
+        insights =
+          if evidence_count > 0 do
+            [
+              %{
+                id: generate_id(),
+                type: :evidence_collected,
+                title: "Evidence Collection",
+                description: "#{evidence_count} pieces of evidence collected",
+                priority: :medium,
+                timestamp: DateTime.utc_now(),
+                data: %{
+                  count: evidence_count
+                }
+              }
+              | insights
+            ]
+          else
+            insights
+          end
 
         # Insight 4: Recommended actions
         recommendations = investigation.recommendations || []
-        high_conf_recommendations = Enum.filter(recommendations, & &1.confidence >= 0.8)
+        high_conf_recommendations = Enum.filter(recommendations, &(&1.confidence >= 0.8))
 
-        insights = if length(recommendations) > 0 do
-          [%{
-            id: generate_id(),
-            type: :recommendations,
-            title: "Response Recommendations",
-            description: "#{length(recommendations)} actions recommended, #{length(high_conf_recommendations)} high-confidence",
-            priority: if(length(high_conf_recommendations) > 0, do: :high, else: :medium),
-            timestamp: DateTime.utc_now(),
-            data: %{
-              total: length(recommendations),
-              high_confidence: length(high_conf_recommendations),
-              actions: Enum.map(recommendations, & &1.action_type)
-            }
-          } | insights]
-        else
-          insights
-        end
+        insights =
+          if length(recommendations) > 0 do
+            [
+              %{
+                id: generate_id(),
+                type: :recommendations,
+                title: "Response Recommendations",
+                description:
+                  "#{length(recommendations)} actions recommended, #{length(high_conf_recommendations)} high-confidence",
+                priority: if(length(high_conf_recommendations) > 0, do: :high, else: :medium),
+                timestamp: DateTime.utc_now(),
+                data: %{
+                  total: length(recommendations),
+                  high_confidence: length(high_conf_recommendations),
+                  actions: Enum.map(recommendations, & &1.action_type)
+                }
+              }
+              | insights
+            ]
+          else
+            insights
+          end
 
         Enum.reverse(insights)
 

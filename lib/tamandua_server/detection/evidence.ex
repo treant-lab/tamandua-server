@@ -124,7 +124,50 @@ defmodule TamanduaServer.Detection.Evidence do
       # Backward compatibility -- some callers reference :file_hashes
       file_hashes: extract_file_hashes(payload)
     }
+    |> Map.merge(extract_consumer_context(event, payload))
   end
+
+  @consumer_context_fields ~w(
+    ai_network_risk ai_evidence_limit network_visibility_state
+    tls_fingerprints_available certificate_visibility risk_indicators
+    matched_patterns artifact_type redacted_preview
+  )
+
+  defp extract_consumer_context(event, payload) do
+    metadata = event[:metadata] || event["metadata"] || %{}
+    contexts = [metadata, payload]
+
+    fields =
+      Enum.reduce(@consumer_context_fields, %{}, fn key, acc ->
+        value = Enum.reduce_while(contexts, nil, fn context, _acc ->
+          case consumer_context_value(context, key) do
+            :missing -> {:cont, nil}
+            value -> {:halt, value}
+          end
+        end)
+        if value in [nil, "", []], do: acc, else: Map.put(acc, String.to_atom(key), value)
+      end)
+
+    if is_map(metadata) and map_size(metadata) > 0,
+      do: Map.put(fields, :metadata, metadata),
+      else: fields
+  end
+
+  defp consumer_context_value(context, key) when is_map(context) do
+    atom_key = String.to_atom(key)
+
+    case Map.fetch(context, key) do
+      {:ok, value} -> value
+
+      :error ->
+        case Map.fetch(context, atom_key) do
+          {:ok, value} -> value
+          :error -> :missing
+        end
+    end
+  end
+
+  defp consumer_context_value(_, _), do: :missing
 
   @doc """
   Extract file hash information from the event payload.
@@ -242,7 +285,12 @@ defmodule TamanduaServer.Detection.Evidence do
   @spec extract_process_info(map()) :: map()
   def extract_process_info(payload) do
     %{
-      pid: get_field(payload, :pid),
+      pid:
+        get_field(payload, :pid) ||
+          get_field(payload, :process_id) ||
+          get_field(payload, :process_pid) ||
+          get_field(payload, :source_pid) ||
+          get_field(payload, :target_pid),
       ppid: get_field(payload, :ppid),
       name: get_field(payload, :name) || get_field(payload, :process_name),
       cmdline: get_field(payload, :cmdline) || get_field(payload, :command_line),

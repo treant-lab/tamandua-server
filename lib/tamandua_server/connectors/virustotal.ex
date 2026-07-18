@@ -13,7 +13,7 @@ defmodule TamanduaServer.Connectors.VirusTotal do
   use TamanduaServer.Connectors.Behaviour
   require Logger
 
-  alias TamanduaServer.Connectors.Helpers.{Auth, Retry, Transform, RateLimiter}
+  alias TamanduaServer.Connectors.Helpers.{Auth, Retry, RateLimiter}
 
   defmodule State do
     @moduledoc false

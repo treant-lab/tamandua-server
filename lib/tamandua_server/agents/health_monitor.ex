@@ -17,7 +17,7 @@ defmodule TamanduaServer.Agents.HealthMonitor do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Repo, Agents}
+  alias TamanduaServer.{Agents}
   alias Phoenix.PubSub
 
   @heartbeat_timeout_seconds 300  # 5 minutes

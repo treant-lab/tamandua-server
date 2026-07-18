@@ -16,7 +16,10 @@ defmodule TamanduaServer.Response.PlaybookTest do
 
   use TamanduaServer.DataCase, async: false
 
+  import TamanduaServer.AccountsFixtures
+
   alias TamanduaServer.Response.Playbook
+  alias TamanduaServer.Response.Playbook.Execution
   alias TamanduaServer.Response.Playbook.Schema
 
   # ============================================================================
@@ -155,7 +158,7 @@ defmodule TamanduaServer.Response.PlaybookTest do
         tags: ["test"]
       }
 
-      result = Playbook.create_playbook(attrs)
+      result = Playbook.create_playbook(attrs, :system)
 
       case result do
         {:ok, playbook} ->
@@ -170,19 +173,19 @@ defmodule TamanduaServer.Response.PlaybookTest do
     end
 
     test "rejects playbook without required fields" do
-      result = Playbook.create_playbook(%{description: "Missing name and steps"})
+      result = Playbook.create_playbook(%{description: "Missing name and steps"}, :system)
       assert {:error, _reason} = result
     end
   end
 
   describe "list_playbooks/1" do
     test "returns {:ok, list}" do
-      {:ok, playbooks} = Playbook.list_playbooks()
+      {:ok, playbooks} = Playbook.list_playbooks(%{}, :system)
       assert is_list(playbooks)
     end
 
     test "supports filter by trigger_type" do
-      {:ok, playbooks} = Playbook.list_playbooks(%{trigger_type: "manual"})
+      {:ok, playbooks} = Playbook.list_playbooks(%{trigger_type: "manual"}, :system)
       assert is_list(playbooks)
 
       for pb <- playbooks do
@@ -193,13 +196,13 @@ defmodule TamanduaServer.Response.PlaybookTest do
 
   describe "get_playbook/1" do
     test "returns {:error, :not_found} for unknown id" do
-      assert {:error, :not_found} = Playbook.get_playbook(Ecto.UUID.generate())
+      assert {:error, :not_found} = Playbook.get_playbook(Ecto.UUID.generate(), :system)
     end
   end
 
   describe "delete_playbook/1" do
     test "returns {:error, :not_found} for unknown id" do
-      assert {:error, :not_found} = Playbook.delete_playbook(Ecto.UUID.generate())
+      assert {:error, :not_found} = Playbook.delete_playbook(Ecto.UUID.generate(), :system)
     end
   end
 
@@ -209,7 +212,7 @@ defmodule TamanduaServer.Response.PlaybookTest do
 
   describe "get_pending_approvals/0" do
     test "returns {:ok, list}" do
-      {:ok, approvals} = Playbook.get_pending_approvals()
+      {:ok, approvals} = Playbook.get_pending_approvals(:system)
       assert is_list(approvals)
     end
   end
@@ -220,19 +223,179 @@ defmodule TamanduaServer.Response.PlaybookTest do
 
   describe "execute_playbook/2" do
     test "returns {:error, :not_found} for unknown playbook_id" do
-      assert {:error, :not_found} = Playbook.execute_playbook(Ecto.UUID.generate())
+      assert {:error, :not_found} = Playbook.execute_playbook(Ecto.UUID.generate(), %{}, :system)
+    end
+
+    test "refuses to dispatch when the execution cannot be persisted" do
+      {:ok, playbook} =
+        Playbook.create_playbook(
+          %{
+            name: "Persistence guard #{System.unique_integer([:positive])}",
+            trigger_type: "manual",
+            steps: [%{"action" => "send_notification"}]
+          },
+          :system
+        )
+
+      # Keep the playbook in the GenServer cache while invalidating the FK
+      # used by playbook_executions. The action must not enter active state.
+      TamanduaServer.Repo.delete!(playbook)
+      state_before = :sys.get_state(Playbook)
+
+      assert {:error, {:execution_persistence_failed, _reason}} =
+               Playbook.execute(playbook.id, %{}, %{scope: :system})
+
+      state_after = :sys.get_state(Playbook)
+      assert state_after.active_executions == state_before.active_executions
+      assert state_after.pending_approvals == state_before.pending_approvals
+    end
+
+    test "dry_run persists a completed simulation without dispatching steps" do
+      {:ok, playbook} =
+        Playbook.create_playbook(
+          %{
+            name: "Dry run guard #{System.unique_integer([:positive])}",
+            trigger_type: "manual",
+            require_approval: true,
+            steps: [%{"action" => "isolate_host"}]
+          },
+          :system
+        )
+
+      assert {:ok, execution} =
+               Playbook.execute(playbook.id, %{}, %{
+                 dry_run: true,
+                 skip_approval: true,
+                 scope: :system
+               })
+
+      assert execution.status == "completed"
+      assert execution.dry_run
+      assert execution.completed_at
+
+      state = :sys.get_state(Playbook)
+      refute Map.has_key?(state.active_executions, execution.id)
+      refute Map.has_key?(state.pending_approvals, execution.id)
+
+      persisted = TamanduaServer.Repo.get!(Execution, execution.id)
+      assert persisted.status == "completed"
+      assert persisted.dry_run
+    end
+  end
+
+  describe "tenant scoping" do
+    test "public APIs fail closed when callers omit tenant scope" do
+      assert {:error, :tenant_required} =
+               Playbook.create_playbook(%{name: "Unscoped", steps: []})
+
+      assert {:error, :tenant_required} = Playbook.list_playbooks()
+      assert {:error, :tenant_required} = Playbook.get_playbook(Ecto.UUID.generate())
+      assert {:error, :tenant_required} = Playbook.get_pending_approvals()
+    end
+
+    test "CRUD and execution do not reveal a playbook across organizations" do
+      organization_a = organization_fixture()
+      organization_b = organization_fixture()
+      scope_a = {:organization, organization_a.id}
+      scope_b = {:organization, organization_b.id}
+
+      {:ok, playbook} =
+        Playbook.create_playbook(
+          %{
+            name: "Tenant scoped #{System.unique_integer([:positive])}",
+            trigger_type: "manual",
+            steps: [%{"action" => "wait", "params" => %{"duration_seconds" => 1}}]
+          },
+          scope_a
+        )
+
+      assert playbook.organization_id == organization_a.id
+      assert {:ok, ^playbook} = Playbook.get_playbook(playbook.id, scope_a)
+      assert {:error, :not_found} = Playbook.get_playbook(playbook.id, scope_b)
+      assert {:error, :not_found} = Playbook.update_playbook(playbook.id, %{name: "leak"}, scope_b)
+      assert {:error, :not_found} = Playbook.delete_playbook(playbook.id, scope_b)
+      assert {:error, :not_found} = Playbook.execute(playbook.id, %{}, %{scope: scope_b})
+
+      assert {:ok, tenant_b_playbooks} = Playbook.list_playbooks(%{}, scope_b)
+      refute Enum.any?(tenant_b_playbooks, &(&1.id == playbook.id))
+    end
+
+    test "scope overwrites conflicting atom and string organization keys" do
+      organization_a = organization_fixture()
+      organization_b = organization_fixture()
+
+      {:ok, playbook} =
+        Playbook.create_playbook(
+          %{
+            "organization_id" => organization_b.id,
+            name: "Dual key guard #{System.unique_integer([:positive])}",
+            steps: [%{"action" => "wait"}],
+            organization_id: organization_b.id
+          },
+          {:organization, organization_a.id}
+        )
+
+      assert playbook.organization_id == organization_a.id
+    end
+
+    test "invalid organization scopes fail instead of matching legacy nil records" do
+      assert {:error, :tenant_required} =
+               Playbook.list_playbooks(%{}, {:organization, nil})
+
+      assert {:error, :tenant_required} =
+               Playbook.get_pending_approvals({:organization, nil})
+
+      assert {:error, :tenant_required} =
+               Playbook.list_recent_executions(scope: {:organization, nil})
+    end
+
+    test "endpoint steps fail closed when execution has no organization" do
+      execution = %Execution{
+        id: Ecto.UUID.generate(),
+        playbook_id: Ecto.UUID.generate(),
+        status: "running",
+        execution_context: %{agent_id: "agent-from-client"}
+      }
+
+      assert {:error, "Playbook execution is missing organization_id"} =
+               Playbook.execute_single_step(
+                 %{"action" => "block_ip", "params" => %{"ip" => "203.0.113.1"}},
+                 execution
+               )
+    end
+
+    test "block_ip requires an explicit agent and never broadcasts tenant-wide" do
+      organization = organization_fixture()
+
+      execution = %Execution{
+        id: Ecto.UUID.generate(),
+        playbook_id: Ecto.UUID.generate(),
+        organization_id: organization.id,
+        status: "running",
+        execution_context: %{}
+      }
+
+      assert {:error, message} =
+               Playbook.execute_single_step(
+                 %{"action" => "block_ip", "params" => %{"ip" => "203.0.113.1"}},
+                 execution
+               )
+
+      assert message =~ "tenant-wide broadcast is disabled"
     end
   end
 
   describe "approve_execution/2" do
     test "returns {:error, :not_found} for unknown execution_id" do
-      assert {:error, :not_found} = Playbook.approve_execution(Ecto.UUID.generate(), Ecto.UUID.generate())
+      assert {:error, :not_found} =
+               Playbook.approve_execution(Ecto.UUID.generate(), Ecto.UUID.generate(), :system)
     end
   end
 
   describe "cancel_execution/2" do
     test "returns {:error, :not_found} for unknown execution_id" do
-      assert {:error, :not_found} = Playbook.cancel_execution(Ecto.UUID.generate(), "test cancellation")
+      assert {:error, :not_found} =
+               Playbook.cancel_execution(Ecto.UUID.generate(), "test cancellation", :system)
     end
   end
 
@@ -242,19 +405,19 @@ defmodule TamanduaServer.Response.PlaybookTest do
 
   describe "get_execution_history/2" do
     test "returns {:ok, list} for a playbook (even with no executions)" do
-      {:ok, history} = Playbook.get_execution_history(Ecto.UUID.generate())
+      {:ok, history} = Playbook.get_execution_history(Ecto.UUID.generate(), [], :system)
       assert is_list(history)
     end
   end
 
   describe "list_recent_executions/1" do
     test "returns {:ok, list}" do
-      {:ok, executions} = Playbook.list_recent_executions()
+      {:ok, executions} = Playbook.list_recent_executions(scope: :system)
       assert is_list(executions)
     end
 
     test "respects limit option" do
-      {:ok, executions} = Playbook.list_recent_executions(limit: 5)
+      {:ok, executions} = Playbook.list_recent_executions(limit: 5, scope: :system)
       assert is_list(executions)
       assert length(executions) <= 5
     end

@@ -306,9 +306,6 @@ defmodule TamanduaServer.Detection.EtwTamperingHandler do
   @byte_ret EtwConstants.patch_ret()
   @byte_jmp EtwConstants.patch_jmp()
   @byte_int3 EtwConstants.patch_int3()
-  @byte_xor_eax_ret EtwConstants.patch_xor_eax_ret()
-  @byte_ud2 EtwConstants.patch_ud2()
-  @byte_nop EtwConstants.patch_nop()
 
   defp classify_bytes_pattern(nil), do: "unknown"
   defp classify_bytes_pattern(<<@byte_ret, _rest::binary>>), do: "ret"

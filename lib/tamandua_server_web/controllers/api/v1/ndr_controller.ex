@@ -937,16 +937,115 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
     }
 
     live_ready? = Enum.all?(live_modules, fn {_name, status} -> status.status == "available" end)
+    historical = historical_status()
+    capabilities = data_source_capabilities(live_modules, historical)
 
     %{
+      status: visibility_status(capabilities),
       live: %{
-        status: if(live_ready?, do: "available", else: "degraded"),
+        status: live_status_label(live_modules),
+        available: Enum.any?(live_modules, fn {_name, status} -> status.status == "available" end),
         source: "memory",
         retention: "active lab window",
+        visibility_level: if(live_ready?, do: "real_time", else: "degraded"),
         modules: live_modules
       },
-      historical: historical_status()
+      historical: historical,
+      capabilities: capabilities,
+      gaps: capability_gaps(capabilities)
     }
+  end
+
+  defp live_status_label(live_modules) do
+    cond do
+      Enum.all?(live_modules, fn {_name, status} -> status.status == "available" end) -> "live_only"
+      Enum.any?(live_modules, fn {_name, status} -> status.status == "available" end) -> "degraded"
+      true -> "unavailable"
+    end
+  end
+
+  defp data_source_capabilities(live_modules, historical) do
+    flow_live? = live_module_available?(live_modules, :flow_analyzer)
+    protocol_live? = live_module_available?(live_modules, :protocol_analyzer)
+    encrypted_live? = live_module_available?(live_modules, :encrypted_traffic)
+    flow_rows = historical_table_rows(historical, :ndr_flows) + historical_table_rows(historical, :network_flows)
+    tls_rows = historical_table_rows(historical, :ndr_tls_sessions)
+    ja3_rows = historical_table_rows(historical, :ndr_ja3_stats)
+    cert_rows = historical_table_rows(historical, :ndr_certificate_analyses)
+    historical_rows = historical_row_count(historical)
+
+    %{
+      flows:
+        capability_status(flow_live?, flow_rows > 0, [
+          if(flow_live?, do: nil, else: "flow_analyzer_not_live"),
+          if(flow_rows > 0, do: nil, else: "no_persisted_flow_rows")
+        ]),
+      dns:
+        capability_status(protocol_live? or flow_live?, false, [
+          "no_dedicated_dns_persistence",
+          "domain_visibility_depends_on_domain_source_or_tls_sni"
+        ]),
+      packet_dpi:
+        capability_status(false, false, [
+          "packet_capture_not_configured",
+          "dpi_payload_visibility_unavailable"
+        ]),
+      tls_metadata:
+        capability_status(encrypted_live? or flow_live?, tls_rows + ja3_rows + cert_rows > 0, [
+          if(encrypted_live? or flow_live?, do: nil, else: "encrypted_traffic_analyzer_not_live"),
+          if(tls_rows + ja3_rows + cert_rows > 0, do: nil, else: "no_persisted_tls_metadata_rows")
+        ]),
+      bytes:
+        capability_status(flow_live?, flow_rows > 0, [
+          if(flow_live?, do: nil, else: "flow_analyzer_not_live"),
+          if(flow_rows > 0, do: nil, else: "no_persisted_byte_counters")
+        ]),
+      persistence:
+        capability_status(false, historical_rows > 0, [
+          if(historical_rows > 0, do: nil, else: "no_historical_rows_retained")
+        ])
+    }
+  end
+
+  defp capability_status(live?, historical?, gaps) do
+    gaps = Enum.reject(gaps, &is_nil/1)
+
+    %{
+      status: capability_label(live?, historical?),
+      live: live?,
+      historical: historical?,
+      gaps: gaps
+    }
+  end
+
+  defp capability_label(true, false), do: "live_only"
+  defp capability_label(true, true), do: "degraded"
+  defp capability_label(false, true), do: "degraded"
+  defp capability_label(false, false), do: "unavailable"
+
+  defp visibility_status(capabilities) do
+    statuses = Enum.map(capabilities, fn {_name, capability} -> capability.status end)
+
+    cond do
+      Enum.any?(statuses, &(&1 == "degraded")) -> "degraded"
+      Enum.any?(statuses, &(&1 == "live_only")) -> "live_only"
+      true -> "unavailable"
+    end
+  end
+
+  defp capability_gaps(capabilities) do
+    capabilities
+    |> Enum.flat_map(fn {name, capability} ->
+      Enum.map(capability.gaps, &"#{name}:#{&1}")
+    end)
+    |> Enum.uniq()
+  end
+
+  defp live_module_available?(live_modules, module_name) do
+    case Map.get(live_modules, module_name) do
+      %{status: "available"} -> true
+      _ -> false
+    end
   end
 
   defp module_status(module) do
@@ -987,7 +1086,7 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
 
       not ClickHouse.enabled?() ->
         %{
-          status: "disabled",
+          status: "unavailable",
           source: "clickhouse",
           available: false,
           reason: "clickhouse_disabled"
@@ -1024,18 +1123,19 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
   end
 
   defp historical_status_label(postgres_rows, _clickhouse_available?) when postgres_rows > 0,
-    do: "available"
+    do: "degraded"
 
-  defp historical_status_label(_postgres_rows, true), do: "available"
-  defp historical_status_label(_postgres_rows, false), do: "empty"
+  defp historical_status_label(_postgres_rows, true), do: "live_only"
+  defp historical_status_label(_postgres_rows, false), do: "live_only"
 
   defp clickhouse_available_status do
     coverage = clickhouse_ndr_coverage()
+    rows = coverage |> Enum.map(fn {_table, table} -> table.row_count || 0 end) |> Enum.sum()
 
     %{
-      status: "available",
+      status: if(rows > 0, do: "degraded", else: "live_only"),
       source: "clickhouse",
-      available: true,
+      available: rows > 0,
       retention: clickhouse_retention_summary(coverage),
       coverage: coverage,
       writer: ClickHouseWriter.get_stats()
@@ -1055,7 +1155,7 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
 
           {String.to_atom(table),
            %{
-             status: if(row_count > 0, do: "available", else: "empty"),
+             status: if(row_count > 0, do: "degraded", else: "live_only"),
              exists: true,
              label: "ClickHouse network flows",
              row_count: row_count,
@@ -1107,7 +1207,7 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
     cond do
       not ClickHouse.enabled?() ->
         %{
-          status: "disabled",
+          status: "unavailable",
           source: "clickhouse",
           available: false,
           reason: "clickhouse_disabled"
@@ -1157,6 +1257,45 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
     Map.new(tables, fn {table, coverage} -> {table, coverage.row_count} end)
   end
 
+  defp historical_row_count(historical) do
+    postgres_rows =
+      historical
+      |> Map.get(:tables, %{})
+      |> Enum.map(fn {_table, rows} -> normalize_count(rows) end)
+      |> Enum.sum()
+
+    clickhouse_rows =
+      historical
+      |> historical_clickhouse_coverage()
+      |> Enum.map(fn {_table, table} -> normalize_count(table[:row_count]) end)
+      |> Enum.sum()
+
+    postgres_rows + clickhouse_rows
+  end
+
+  defp historical_table_rows(historical, table) do
+    postgres_rows =
+      historical
+      |> Map.get(:tables, %{})
+      |> Map.get(table)
+      |> normalize_count()
+
+    clickhouse_rows =
+      historical
+      |> historical_clickhouse_coverage()
+      |> Map.get(table)
+      |> case do
+        nil -> 0
+        table_coverage -> normalize_count(table_coverage[:row_count])
+      end
+
+    postgres_rows + clickhouse_rows
+  end
+
+  defp historical_clickhouse_coverage(historical) do
+    get_in(historical, [:clickhouse, :coverage]) || Map.get(historical, :coverage, %{})
+  end
+
   defp postgres_ndr_table_coverage do
     Map.new(postgres_ndr_table_specs(), fn spec ->
       {spec.name, postgres_table_coverage(spec)}
@@ -1197,7 +1336,7 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
       row_count = stats.row_count || 0
 
       %{
-        status: if(row_count > 0, do: "available", else: "empty"),
+        status: if(row_count > 0, do: "degraded", else: "live_only"),
         exists: true,
         label: label,
         row_count: row_count,
@@ -1207,7 +1346,7 @@ defmodule TamanduaServerWeb.API.V1.NDRController do
       }
     else
       %{
-        status: "missing",
+        status: "unavailable",
         exists: false,
         label: label,
         row_count: nil,

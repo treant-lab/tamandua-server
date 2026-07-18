@@ -135,80 +135,11 @@ defmodule TamanduaServer.Hunting.WorkflowExecutor do
     end
   end
 
-  defp start_workflow_execution(workflow, user_id, organization_id, state) do
-    changeset = WorkflowExecution.new_from_workflow(workflow, user_id, organization_id)
-
-    case Repo.insert(changeset) do
-      {:ok, execution} ->
-        execution = execution
-        |> Ecto.Changeset.change(%{
-          status: "in_progress",
-          started_at: DateTime.utc_now()
-        })
-        |> Repo.update!()
-
-        {:reply, {:ok, execution}, state}
-
-      {:error, changeset} ->
-        {:reply, {:error, changeset}, state}
-    end
-  end
-
   @impl true
   def handle_call({:execute_next_step, execution_id}, _from, state) do
     case Repo.get(WorkflowExecution, execution_id) do
       nil -> {:reply, {:error, :execution_not_found}, state}
       execution -> do_execute_next_step(Repo.preload(execution, :workflow), state)
-    end
-  end
-
-  defp do_execute_next_step(execution, state) do
-    if execution.status != "in_progress" do
-      {:reply, {:error, :not_in_progress}, state}
-    else
-      step_index = execution.current_step_index
-      steps = execution.workflow.steps
-
-      if step_index >= length(steps) do
-        # All steps completed
-        execution = complete_execution(execution)
-        {:reply, {:ok, execution}, state}
-      else
-        step = Enum.at(steps, step_index)
-        result = execute_step_impl(execution, step, step_index)
-
-        case result do
-          {:ok, step_result, next_step_index} ->
-            # Update execution
-            execution = execution
-            |> Ecto.Changeset.change(%{
-              current_step_index: next_step_index,
-              progress_percentage: calculate_progress(next_step_index, length(steps))
-            })
-            |> Repo.update!()
-
-            {:reply, {:ok, %{execution: execution, step_result: step_result}}, state}
-
-          {:error, reason} ->
-            # Mark execution as failed
-            execution
-            |> Ecto.Changeset.change(%{
-              status: "failed",
-              error_message: inspect(reason)
-            })
-            |> Repo.update!()
-
-            {:reply, {:error, reason}, state}
-
-          {:wait_for_decision, step_result} ->
-            # Waiting for manual decision
-            {:reply, {:ok, %{execution: execution, step_result: step_result, waiting_for: :decision}}, state}
-
-          {:wait_for_review, step_result} ->
-            # Waiting for manual review
-            {:reply, {:ok, %{execution: execution, step_result: step_result, waiting_for: :review}}, state}
-        end
-      end
     end
   end
 
@@ -220,27 +151,6 @@ defmodule TamanduaServer.Hunting.WorkflowExecutor do
     end
   end
 
-  defp do_execute_step(execution, step_index, state) do
-    steps = execution.workflow.steps
-    step = Enum.at(steps, step_index)
-
-    result = execute_step_impl(execution, step, step_index)
-
-    case result do
-      {:ok, step_result, _next_step} ->
-        {:reply, {:ok, step_result}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-
-      {:wait_for_decision, step_result} ->
-        {:reply, {:ok, step_result}, state}
-
-      {:wait_for_review, step_result} ->
-        {:reply, {:ok, step_result}, state}
-    end
-  end
-
   @impl true
   def handle_call({:make_decision, execution_id, step_index, decision}, _from, state) do
     case Repo.get(WorkflowExecution, execution_id) do
@@ -249,42 +159,6 @@ defmodule TamanduaServer.Hunting.WorkflowExecutor do
 
       execution ->
         do_make_decision(Repo.preload(execution, :workflow), execution_id, step_index, decision, state)
-    end
-  end
-
-  defp do_make_decision(execution, execution_id, step_index, decision, state) do
-    # Find the step result
-    step_result_query =
-      from sr in WorkflowStepResult,
-      where: sr.execution_id == ^execution_id and sr.step_index == ^step_index
-
-    case Repo.one(step_result_query) do
-      nil ->
-        {:reply, {:error, :step_result_not_found}, state}
-
-      step_result ->
-        # Update step result with decision
-        step_result
-        |> Ecto.Changeset.change(%{
-          decision: decision,
-          status: "completed",
-          completed_at: DateTime.utc_now()
-        })
-        |> Repo.update!()
-
-        # Determine next step based on decision
-        step = Enum.at(execution.workflow.steps, step_index)
-        next_step_index = get_next_step_from_decision(step, decision, step_index)
-
-        # Update execution
-        execution = execution
-        |> Ecto.Changeset.change(%{
-          current_step_index: next_step_index,
-          progress_percentage: calculate_progress(next_step_index, length(execution.workflow.steps))
-        })
-        |> Repo.update!()
-
-        {:reply, {:ok, execution}, state}
     end
   end
 
@@ -391,6 +265,137 @@ defmodule TamanduaServer.Hunting.WorkflowExecutor do
     case execution do
       nil -> {:reply, {:error, :not_found}, state}
       exec -> {:reply, {:ok, exec}, state}
+    end
+  end
+
+  # ============================================================================
+  # Call Handlers' Implementations
+  # ============================================================================
+  # (moved below the handle_call/3 group so callback clauses stay contiguous)
+
+  defp start_workflow_execution(workflow, user_id, organization_id, state) do
+    changeset = WorkflowExecution.new_from_workflow(workflow, user_id, organization_id)
+
+    case Repo.insert(changeset) do
+      {:ok, execution} ->
+        execution = execution
+        |> Ecto.Changeset.change(%{
+          status: "in_progress",
+          started_at: DateTime.utc_now()
+        })
+        |> Repo.update!()
+
+        {:reply, {:ok, execution}, state}
+
+      {:error, changeset} ->
+        {:reply, {:error, changeset}, state}
+    end
+  end
+
+  defp do_execute_next_step(execution, state) do
+    if execution.status != "in_progress" do
+      {:reply, {:error, :not_in_progress}, state}
+    else
+      step_index = execution.current_step_index
+      steps = execution.workflow.steps
+
+      if step_index >= length(steps) do
+        # All steps completed
+        execution = complete_execution(execution)
+        {:reply, {:ok, execution}, state}
+      else
+        step = Enum.at(steps, step_index)
+        result = execute_step_impl(execution, step, step_index)
+
+        case result do
+          {:ok, step_result, next_step_index} ->
+            # Update execution
+            execution = execution
+            |> Ecto.Changeset.change(%{
+              current_step_index: next_step_index,
+              progress_percentage: calculate_progress(next_step_index, length(steps))
+            })
+            |> Repo.update!()
+
+            {:reply, {:ok, %{execution: execution, step_result: step_result}}, state}
+
+          {:error, reason} ->
+            # Mark execution as failed
+            execution
+            |> Ecto.Changeset.change(%{
+              status: "failed",
+              error_message: inspect(reason)
+            })
+            |> Repo.update!()
+
+            {:reply, {:error, reason}, state}
+
+          {:wait_for_decision, step_result} ->
+            # Waiting for manual decision
+            {:reply, {:ok, %{execution: execution, step_result: step_result, waiting_for: :decision}}, state}
+
+          {:wait_for_review, step_result} ->
+            # Waiting for manual review
+            {:reply, {:ok, %{execution: execution, step_result: step_result, waiting_for: :review}}, state}
+        end
+      end
+    end
+  end
+
+  defp do_execute_step(execution, step_index, state) do
+    steps = execution.workflow.steps
+    step = Enum.at(steps, step_index)
+
+    result = execute_step_impl(execution, step, step_index)
+
+    case result do
+      {:ok, step_result, _next_step} ->
+        {:reply, {:ok, step_result}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+
+      {:wait_for_decision, step_result} ->
+        {:reply, {:ok, step_result}, state}
+
+      {:wait_for_review, step_result} ->
+        {:reply, {:ok, step_result}, state}
+    end
+  end
+
+  defp do_make_decision(execution, execution_id, step_index, decision, state) do
+    # Find the step result
+    step_result_query =
+      from sr in WorkflowStepResult,
+      where: sr.execution_id == ^execution_id and sr.step_index == ^step_index
+
+    case Repo.one(step_result_query) do
+      nil ->
+        {:reply, {:error, :step_result_not_found}, state}
+
+      step_result ->
+        # Update step result with decision
+        step_result
+        |> Ecto.Changeset.change(%{
+          decision: decision,
+          status: "completed",
+          completed_at: DateTime.utc_now()
+        })
+        |> Repo.update!()
+
+        # Determine next step based on decision
+        step = Enum.at(execution.workflow.steps, step_index)
+        next_step_index = get_next_step_from_decision(step, decision, step_index)
+
+        # Update execution
+        execution = execution
+        |> Ecto.Changeset.change(%{
+          current_step_index: next_step_index,
+          progress_percentage: calculate_progress(next_step_index, length(execution.workflow.steps))
+        })
+        |> Repo.update!()
+
+        {:reply, {:ok, execution}, state}
     end
   end
 

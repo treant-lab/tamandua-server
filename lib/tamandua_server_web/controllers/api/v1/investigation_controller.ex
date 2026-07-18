@@ -14,7 +14,6 @@ defmodule TamanduaServerWeb.API.V1.InvestigationController do
   alias TamanduaServer.Agents
   alias TamanduaServer.Alerts
   alias TamanduaServer.Detection.Correlator
-  import Ecto.Query
 
   require Logger
 

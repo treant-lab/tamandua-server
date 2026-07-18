@@ -52,77 +52,162 @@ defmodule TamanduaServer.Accounts.Role do
     "security_analyst" => %{
       name: "Security Analyst",
       description: "Security analyst with investigation capabilities",
-      permissions: [:alerts_read, :alerts_update, :alerts_assign, :alerts_comment,
-                    :events_read, :events_search, :agents_read, :agents_list,
-                    :hunting_read, :hunting_execute, :hunting_save,
-                    :detection_read, :detection_test, :forensics_read,
-                    :forensics_collect, :behavioral_read, :behavioral_analyze,
-                    :reports_read, :reports_create, :dashboard_read]
+      permissions: [
+        :alerts_read,
+        :alerts_update,
+        :alerts_assign,
+        :alerts_comment,
+        :events_read,
+        :events_search,
+        :agents_read,
+        :agents_list,
+        :hunting_read,
+        :hunting_execute,
+        :hunting_save,
+        :detection_read,
+        :detection_test,
+        :forensics_read,
+        :forensics_collect,
+        :behavioral_read,
+        :behavioral_analyze,
+        :investigations_read,
+        :investigations_create,
+        :investigations_update,
+        :reports_read,
+        :reports_create,
+        :dashboard_read
+      ]
     },
     "incident_responder" => %{
       name: "Incident Responder",
       description: "Incident response specialist with containment capabilities",
-      permissions: [:alerts_read, :alerts_update, :alerts_assign, :alerts_respond,
-                    :events_read, :events_search, :agents_read, :agents_command,
-                    :response_execute, :response_isolate, :response_contain,
-                    :live_response_access, :live_response_file, :live_response_process,
-                    :forensics_read, :forensics_collect, :forensics_advanced,
-                    :dashboard_read]
+      permissions: [
+        :alerts_read,
+        :alerts_update,
+        :alerts_assign,
+        :alerts_respond,
+        :events_read,
+        :events_search,
+        :agents_read,
+        :agents_command,
+        :response_execute,
+        :response_isolate,
+        :response_contain,
+        :live_response_access,
+        :live_response_file,
+        :live_response_process,
+        :live_response_screen,
+        :forensics_read,
+        :forensics_collect,
+        :forensics_advanced,
+        :dashboard_read
+      ]
     },
     "threat_hunter" => %{
       name: "Threat Hunter",
       description: "Proactive threat hunter with advanced query capabilities",
-      permissions: [:alerts_read, :events_read, :events_search, :events_export,
-                    :agents_read, :hunting_read, :hunting_create, :hunting_execute,
-                    :hunting_save, :hunting_schedule, :hunting_advanced,
-                    :detection_read, :detection_create, :detection_update,
-                    :detection_test, :behavioral_read, :behavioral_analyze,
-                    :threat_intel_read, :dashboard_read]
+      permissions: [
+        :alerts_read,
+        :events_read,
+        :events_search,
+        :events_export,
+        :agents_read,
+        :hunting_read,
+        :hunting_create,
+        :hunting_execute,
+        :hunting_save,
+        :hunting_schedule,
+        :hunting_advanced,
+        :detection_read,
+        :detection_create,
+        :detection_update,
+        :detection_test,
+        :behavioral_read,
+        :behavioral_analyze,
+        :threat_intel_read,
+        :dashboard_read
+      ]
     },
     "soc_manager" => %{
       name: "SOC Manager",
       description: "Security operations center manager",
-      permissions: [:alerts_read, :alerts_update, :alerts_assign, :alerts_bulk,
-                    :events_read, :events_search, :agents_read, :agents_list,
-                    :agents_policy, :agents_group, :response_approve,
-                    :detection_read, :detection_deploy, :users_read,
-                    :users_role_assign, :roles_read, :reports_read,
-                    :reports_create, :reports_schedule, :dashboard_read,
-                    :dashboard_create, :dashboard_share]
+      permissions: [
+        :alerts_read,
+        :alerts_update,
+        :alerts_assign,
+        :alerts_bulk,
+        :events_read,
+        :events_search,
+        :agents_read,
+        :agents_list,
+        :agents_policy,
+        :agents_group,
+        :response_approve,
+        :detection_read,
+        :detection_deploy,
+        :users_read,
+        :users_role_assign,
+        :roles_read,
+        :reports_read,
+        :reports_create,
+        :reports_schedule,
+        :dashboard_read,
+        :dashboard_create,
+        :dashboard_share
+      ]
     },
     "compliance_auditor" => %{
       name: "Compliance Auditor",
       description: "Compliance-focused read-only with reporting",
-      permissions: [:alerts_read, :events_read, :agents_read, :compliance_read,
-                    :compliance_assess, :compliance_evidence, :compliance_report,
-                    :compliance_export, :reports_read, :reports_create,
-                    :reports_export, :system_audit, :dashboard_read]
+      permissions: [
+        :alerts_read,
+        :events_read,
+        :agents_read,
+        :compliance_read,
+        :compliance_assess,
+        :compliance_evidence,
+        :compliance_report,
+        :compliance_export,
+        :reports_read,
+        :reports_create,
+        :reports_export,
+        :system_audit,
+        :dashboard_read
+      ]
     },
     "read_only" => %{
       name: "Read Only",
       description: "View-only access to dashboards and reports",
-      permissions: [:alerts_read, :events_read, :agents_read, :detection_read,
-                    :compliance_read, :reports_read, :dashboard_read]
+      permissions: [
+        :alerts_read,
+        :events_read,
+        :agents_read,
+        :detection_read,
+        :compliance_read,
+        :reports_read,
+        :dashboard_read
+      ]
     }
   }
 
   schema "roles" do
-    field :name, :string
-    field :slug, :string
-    field :description, :string
-    field :builtin, :boolean, default: false
-    field :priority, :integer, default: 0
-    field :api_only, :boolean, default: false
-    field :inherit_from_id, :binary_id
-    field :color, :string, default: "#6366f1"  # For UI display
+    field(:name, :string)
+    field(:slug, :string)
+    field(:description, :string)
+    field(:builtin, :boolean, default: false)
+    field(:priority, :integer, default: 0)
+    field(:api_only, :boolean, default: false)
+    field(:inherit_from_id, :binary_id)
+    # For UI display
+    field(:color, :string, default: "#6366f1")
 
-    belongs_to :organization, TamanduaServer.Accounts.Organization
-    belongs_to :inherit_from, __MODULE__, foreign_key: :inherit_from_id, define_field: false
+    belongs_to(:organization, TamanduaServer.Accounts.Organization)
+    belongs_to(:inherit_from, __MODULE__, foreign_key: :inherit_from_id, define_field: false)
 
-    has_many :role_permissions, RolePermission, on_delete: :delete_all
-    has_many :permissions, through: [:role_permissions, :permission]
-    has_many :user_roles, UserRole, on_delete: :delete_all
-    has_many :users, through: [:user_roles, :user]
+    has_many(:role_permissions, RolePermission, on_delete: :delete_all)
+    has_many(:permissions, through: [:role_permissions, :permission])
+    has_many(:user_roles, UserRole, on_delete: :delete_all)
+    has_many(:users, through: [:user_roles, :user])
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -207,28 +292,47 @@ defmodule TamanduaServer.Accounts.Role do
   def default_permissions(:analyst) do
     [
       # Alerts
-      :alerts_read, :alerts_update, :alerts_assign, :alerts_comment,
+      :alerts_read,
+      :alerts_update,
+      :alerts_assign,
+      :alerts_comment,
       # Events
-      :events_read, :events_search,
+      :events_read,
+      :events_search,
       # Agents
-      :agents_read, :agents_list,
+      :agents_read,
+      :agents_list,
       # Hunting
-      :hunting_read, :hunting_execute, :hunting_save,
+      :hunting_read,
+      :hunting_execute,
+      :hunting_save,
       # Detection
-      :detection_read, :detection_test,
+      :detection_read,
+      :detection_test,
       # Forensics
-      :forensics_read, :forensics_collect,
+      :forensics_read,
+      :forensics_collect,
       # Behavioral
-      :behavioral_read, :behavioral_analyze,
+      :behavioral_read,
+      :behavioral_analyze,
+      # Investigations
+      :investigations_read,
+      :investigations_create,
+      :investigations_update,
       # Compliance
       :compliance_read,
       # Reports
-      :reports_read, :reports_create,
+      :reports_read,
+      :reports_create,
       # Dashboard
       :dashboard_read,
       # App Guard / research review
-      :app_guard_apps_read, :app_guard_builds_read, :app_guard_events_read,
-      :research_programs_read, :research_submissions_read, :research_submissions_validate
+      :app_guard_apps_read,
+      :app_guard_builds_read,
+      :app_guard_events_read,
+      :research_programs_read,
+      :research_submissions_read,
+      :research_submissions_validate
     ]
   end
 
@@ -248,32 +352,40 @@ defmodule TamanduaServer.Accounts.Role do
   end
 
   def default_permissions(:responder) do
-    default_permissions(:analyst) ++ [
-      :alerts_respond,
-      :response_execute,
-      :response_isolate,
-      :response_contain,
-      :live_response_access,
-      :agents_command
-    ]
+    default_permissions(:analyst) ++
+      [
+        :alerts_respond,
+        :response_execute,
+        :response_isolate,
+        :response_contain,
+        :live_response_access,
+        :live_response_screen,
+        :agents_command
+      ]
   end
 
   def default_permissions(:hunter) do
-    default_permissions(:analyst) ++ [
-      :hunting_create,
-      :hunting_advanced,
-      :detection_create,
-      :detection_update,
-      :detection_deploy,
-      :forensics_advanced
-    ]
+    default_permissions(:analyst) ++
+      [
+        :hunting_create,
+        :hunting_advanced,
+        :detection_create,
+        :detection_update,
+        :detection_deploy,
+        :forensics_advanced
+      ]
   end
 
   def default_permissions(:compliance_officer) do
     [
-      :compliance_read, :compliance_assess, :compliance_report,
-      :compliance_evidence, :compliance_export,
-      :reports_read, :reports_create, :reports_export,
+      :compliance_read,
+      :compliance_assess,
+      :compliance_report,
+      :compliance_evidence,
+      :compliance_export,
+      :reports_read,
+      :reports_create,
+      :reports_export,
       :alerts_read,
       :dashboard_read
     ]
@@ -281,37 +393,56 @@ defmodule TamanduaServer.Accounts.Role do
 
   def default_permissions(:manager) do
     # Manager has analyst permissions plus team management
-    default_permissions(:analyst) ++ [
-      # User management
-      :users_read, :users_create, :users_update, :users_role_assign,
-      # Role management (read only)
-      :roles_read,
-      # Response approval
-      :response_approve,
-      # Detection deployment
-      :detection_deploy,
-      # Reports
-      :reports_create, :reports_schedule, :reports_share,
-      # Dashboard management
-      :dashboard_create, :dashboard_share,
-      # Playbooks
-      :playbooks_read, :playbooks_execute, :playbooks_approve,
-      # App Guard / research program ownership
-      :app_guard_apps_read, :app_guard_apps_create, :app_guard_apps_update,
-      :app_guard_builds_read, :app_guard_events_read,
-      :app_guard_policy_read, :app_guard_policy_update,
-      :research_programs_read, :research_programs_create, :research_programs_update,
-      :research_submissions_read, :research_submissions_validate,
-      :research_rewards_manage
-    ]
+    default_permissions(:analyst) ++
+      [
+        # User management
+        :users_read,
+        :users_create,
+        :users_update,
+        :users_role_assign,
+        # Role management (read only)
+        :roles_read,
+        # Response approval
+        :response_approve,
+        # Detection deployment
+        :detection_deploy,
+        # Reports
+        :reports_create,
+        :reports_schedule,
+        :reports_share,
+        # Dashboard management
+        :dashboard_create,
+        :dashboard_share,
+        # Playbooks
+        :playbooks_read,
+        :playbooks_execute,
+        :playbooks_approve,
+        # App Guard / research program ownership
+        :app_guard_apps_read,
+        :app_guard_apps_create,
+        :app_guard_apps_update,
+        :app_guard_builds_read,
+        :app_guard_events_read,
+        :app_guard_policy_read,
+        :app_guard_policy_update,
+        :research_programs_read,
+        :research_programs_create,
+        :research_programs_update,
+        :research_submissions_read,
+        :research_submissions_validate,
+        :research_rewards_manage
+      ]
   end
 
   def default_permissions(:api_only) do
     [
       # API-only role has programmatic access for integrations
-      :alerts_read, :alerts_update,
-      :events_read, :events_search,
-      :agents_read, :agents_list,
+      :alerts_read,
+      :alerts_update,
+      :events_read,
+      :events_search,
+      :agents_read,
+      :agents_list,
       :detection_read,
       :threat_intel_read,
       :reports_read,

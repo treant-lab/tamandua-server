@@ -1037,7 +1037,7 @@ export default function InvestigationCaseDetail({
                         Link More Alerts
                       </a>
                       <a
-                        href="/app/analyst"
+                        href="/app/ai-assistant"
                         className="w-full px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 hover:opacity-80"
                         style={{ backgroundColor: 'var(--surface)', color: 'var(--fg)', border: '1px solid var(--muted)' }}
                       >

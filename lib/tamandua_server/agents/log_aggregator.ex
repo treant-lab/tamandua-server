@@ -22,13 +22,13 @@ defmodule TamanduaServer.Agents.LogAggregator do
 
   # Error patterns to detect
   @error_patterns [
-    %{pattern: ~r/panic/i, severity: :critical, category: :panic},
-    %{pattern: ~r/segmentation fault/i, severity: :critical, category: :crash},
-    %{pattern: ~r/out of memory/i, severity: :critical, category: :resource},
-    %{pattern: ~r/connection refused/i, severity: :high, category: :network},
-    %{pattern: ~r/timeout/i, severity: :medium, category: :timeout},
-    %{pattern: ~r/permission denied/i, severity: :medium, category: :permission},
-    %{pattern: ~r/file not found/i, severity: :low, category: :file_system}
+    %{pattern: "panic", severity: :critical, category: :panic},
+    %{pattern: "segmentation fault", severity: :critical, category: :crash},
+    %{pattern: "out of memory", severity: :critical, category: :resource},
+    %{pattern: "connection refused", severity: :high, category: :network},
+    %{pattern: "timeout", severity: :medium, category: :timeout},
+    %{pattern: "permission denied", severity: :medium, category: :permission},
+    %{pattern: "file not found", severity: :low, category: :file_system}
   ]
 
   ## Client API
@@ -316,7 +316,7 @@ defmodule TamanduaServer.Agents.LogAggregator do
   defp detect_error_patterns(log) do
     # Only check error and warn level logs
     if log.level in ["error", "warn"] do
-      Enum.each(@error_patterns, fn pattern_def ->
+      Enum.each(error_patterns(), fn pattern_def ->
         if Regex.match?(pattern_def.pattern, log.message) do
           pattern_entry = %{
             timestamp: log.timestamp,
@@ -337,6 +337,12 @@ defmodule TamanduaServer.Agents.LogAggregator do
         end
       end)
     end
+  end
+
+  defp error_patterns do
+    Enum.map(@error_patterns, fn pattern_def ->
+      %{pattern_def | pattern: Regex.compile!(pattern_def.pattern, "i")}
+    end)
   end
 
   defp create_pattern_alert(pattern) do

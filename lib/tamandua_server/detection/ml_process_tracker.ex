@@ -14,23 +14,27 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
   require Logger
   alias Phoenix.PubSub
 
-  @ml_process_patterns %{
-    # Python patterns
-    python: ~r/^python[0-9.]*$/i,
-    # Ollama patterns
-    ollama: ~r/^ollama$/i,
-    # llama.cpp patterns
-    llama_cpp: ~r/^(llama-server|llama-cli|main)$/i,
-    # vLLM patterns
-    vllm: ~r/vllm/i
-  }
+  defp ml_process_patterns do
+    %{
+      # Python patterns
+      python: ~r/^python[0-9.]*$/i,
+      # Ollama patterns
+      ollama: ~r/^ollama$/i,
+      # llama.cpp patterns
+      llama_cpp: ~r/^(llama-server|llama-cli|main)$/i,
+      # vLLM patterns
+      vllm: ~r/vllm/i
+    }
+  end
 
-  @framework_patterns [
-    {"torch", ~r/torch|pytorch/i},
-    {"tensorflow", ~r/tensorflow|tf\./i},
-    {"transformers", ~r/transformers|huggingface/i},
-    {"langchain", ~r/langchain/i}
-  ]
+  defp framework_patterns do
+    [
+      {"torch", ~r/torch|pytorch/i},
+      {"tensorflow", ~r/tensorflow|tf\./i},
+      {"transformers", ~r/transformers|huggingface/i},
+      {"langchain", ~r/langchain/i}
+    ]
+  end
 
   @garbage_collection_interval :timer.minutes(5)
 
@@ -314,18 +318,19 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
   defp detect_ml_runtime(image, path, cmdline) do
     image_name = extract_name(image, path)
     cmdline_lower = String.downcase(cmdline)
+    process_patterns = ml_process_patterns()
 
     cond do
       # Python detection
-      Regex.match?(@ml_process_patterns.python, image_name) ->
+      Regex.match?(process_patterns.python, image_name) ->
         :python
 
       # Ollama detection
-      Regex.match?(@ml_process_patterns.ollama, image_name) or String.contains?(cmdline_lower, "ollama") ->
+      Regex.match?(process_patterns.ollama, image_name) or String.contains?(cmdline_lower, "ollama") ->
         :ollama
 
       # llama.cpp detection
-      Regex.match?(@ml_process_patterns.llama_cpp, image_name) and
+      Regex.match?(process_patterns.llama_cpp, image_name) and
         (String.contains?(path, "llama") or String.contains?(cmdline_lower, "gguf") or String.contains?(cmdline_lower, "ggml")) ->
         :llama_cpp
 
@@ -341,12 +346,12 @@ defmodule TamanduaServer.Detection.MLProcessTracker do
   defp detect_framework(cmdline) do
     cmdline_lower = String.downcase(cmdline)
 
-    Enum.find_value(@framework_patterns, fn {name, pattern} ->
+    Enum.find_value(framework_patterns(), fn {name, pattern} ->
       if Regex.match?(pattern, cmdline_lower), do: name
     end)
   end
 
-  defp extract_name(image, path) when is_binary(image) and image != "" do
+  defp extract_name(image, _path) when is_binary(image) and image != "" do
     Path.basename(image)
   end
 

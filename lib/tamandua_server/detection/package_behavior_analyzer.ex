@@ -13,7 +13,8 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
 
   alias TamanduaServer.Detection.InstallScriptAnalyzer
 
-  @trusted_destinations [
+  defp trusted_destinations do
+    [
     # npm
     ~r/registry\.npmjs\.org/,
     ~r/npm\.pkg\.github\.com/,
@@ -31,9 +32,11 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
     # common CDNs
     ~r/cloudflare/,
     ~r/fastly/
-  ]
+    ]
+  end
 
-  @sensitive_file_patterns [
+  defp sensitive_file_patterns do
+    [
     ~r/\.ssh[\/\\]/i,
     ~r/id_rsa|id_ed25519|id_dsa/i,
     ~r/\.aws[\/\\]credentials/i,
@@ -44,7 +47,8 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
     ~r/secrets?\.(json|ya?ml|env)/i,
     ~r/\.gnupg[\/\\]/i,
     ~r/\.kube[\/\\]config/i
-  ]
+    ]
+  end
 
   @doc """
   Analyze events collected during a package install window.
@@ -96,7 +100,7 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
     Boolean indicating if the destination is anomalous
   """
   def is_anomalous_network?(%{"destination_hostname" => hostname}) when is_binary(hostname) do
-    not Enum.any?(@trusted_destinations, &Regex.match?(&1, hostname))
+    not Enum.any?(trusted_destinations(), &Regex.match?(&1, hostname))
   end
 
   def is_anomalous_network?(%{"destination_ip" => ip}) when is_binary(ip) do
@@ -116,7 +120,7 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
     Boolean indicating if the file is sensitive
   """
   def is_sensitive_file?(%{"file_path" => path}) when is_binary(path) do
-    Enum.any?(@sensitive_file_patterns, &Regex.match?(&1, path))
+    Enum.any?(sensitive_file_patterns(), &Regex.match?(&1, path))
   end
 
   def is_sensitive_file?(_), do: false
@@ -133,9 +137,20 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
     Map with alert structure
   """
   def build_supply_chain_alert(agent_id, ecosystem, anomalies) do
+    build_supply_chain_alert(agent_id, ecosystem, anomalies, %{})
+  end
+
+  def build_supply_chain_alert(agent_id, ecosystem, anomalies, metadata) when is_map(metadata) do
     risk_score = calculate_overall_risk(anomalies)
 
-    %{
+    event_ids = metadata[:event_ids] || metadata["event_ids"]
+    source_event_id = metadata[:source_event_id] || metadata["source_event_id"]
+    contributing_events = metadata[:contributing_events] || metadata["contributing_events"]
+
+    has_event_linkage? =
+      present?(source_event_id) or present?(event_ids) or present?(contributing_events)
+
+    base_alert = %{
       type: "supply_chain",
       severity: severity_from_risk(risk_score),
       title: "Suspicious package install behavior detected",
@@ -151,9 +166,27 @@ defmodule TamanduaServer.Detection.PackageBehaviorAnalyzer do
       mitre_techniques: ["T1195.001", "T1059"],
       mitre_tactics: ["initial_access", "execution"]
     }
+
+    base_alert
+    |> maybe_put_non_nil(:agent_id, if(has_event_linkage?, do: agent_id))
+    |> maybe_put_non_nil(:organization_id, metadata[:organization_id] || metadata["organization_id"])
+    |> maybe_put_non_nil(:source_event_id, source_event_id)
+    |> maybe_put_non_empty(:event_ids, event_ids)
+    |> maybe_put_non_empty(:contributing_events, contributing_events)
   end
 
   # Private functions
+
+  defp present?(value) when is_list(value), do: value != []
+  defp present?(nil), do: false
+  defp present?(_), do: true
+
+  defp maybe_put_non_nil(map, _key, nil), do: map
+  defp maybe_put_non_nil(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_non_empty(map, _key, nil), do: map
+  defp maybe_put_non_empty(map, _key, []), do: map
+  defp maybe_put_non_empty(map, key, value), do: Map.put(map, key, value)
 
   defp private_ip?(ip) when is_binary(ip) do
     case :inet.parse_address(to_charlist(ip)) do

@@ -301,7 +301,7 @@ defmodule TamanduaServer.Detection.AttackChainDetector do
 
   defp check_condition(_, _, _, _), do: true
 
-  defp advance_chain(agent_id, chain, chain_state, current_step, event, steps) do
+  defp advance_chain(agent_id, chain, chain_state, _current_step, event, steps) do
     new_step_index = chain_state.current_step + 1
     new_matched_events = chain_state.matched_events ++ [event]
 

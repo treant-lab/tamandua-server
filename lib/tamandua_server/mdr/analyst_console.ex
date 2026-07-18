@@ -383,7 +383,7 @@ defmodule TamanduaServer.MDR.AnalystConsole do
   @impl true
   def handle_call({:record_triage, analyst_id, alert_id, verdict, opts}, _from, state) do
     triage_time = Keyword.get(opts, :triage_time_sec, 0)
-    notes = Keyword.get(opts, :notes)
+    _notes = Keyword.get(opts, :notes)
 
     # Update performance tracking
     case :ets.lookup(@ets_performance, analyst_id) do
@@ -513,45 +513,6 @@ defmodule TamanduaServer.MDR.AnalystConsole do
       end)
 
     {:reply, matches, state}
-  end
-
-  @impl true
-  def handle_cast({:submit_correlation, org_id, indicator}, state) do
-    key = {indicator[:type] || indicator["type"], indicator[:value] || indicator["value"]}
-
-    existing = :ets.lookup(@ets_correlations, key)
-
-    if existing == [] do
-      entry = %{
-        org_ids: MapSet.new([org_id]),
-        org_count: 1,
-        first_seen: DateTime.utc_now(),
-        last_seen: DateTime.utc_now(),
-        severity: indicator[:severity] || "medium",
-        mitre_techniques: indicator[:mitre_techniques] || [],
-        alert_count: 1
-      }
-      :ets.insert(@ets_correlations, {key, entry})
-    else
-      # Update existing correlation
-      [{^key, entry}] = existing
-      updated = %{entry |
-        org_ids: MapSet.put(entry.org_ids, org_id),
-        org_count: MapSet.size(MapSet.put(entry.org_ids, org_id)),
-        last_seen: DateTime.utc_now(),
-        alert_count: entry.alert_count + 1
-      }
-      :ets.delete(@ets_correlations, key)
-      :ets.insert(@ets_correlations, {key, updated})
-    end
-
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_cast({:auto_correlate, _alert_id}, state) do
-    # In production, this would extract IOCs from the alert and submit them
-    {:noreply, state}
   end
 
   # -- Knowledge Base ------------------------------------------------------
@@ -690,7 +651,7 @@ defmodule TamanduaServer.MDR.AnalystConsole do
   end
 
   @impl true
-  def handle_call({:acknowledge_handoff, handoff_id, analyst_id}, _from, state) do
+  def handle_call({:acknowledge_handoff, handoff_id, _analyst_id}, _from, state) do
     case :ets.lookup(@ets_handoffs, handoff_id) do
       [{^handoff_id, handoff}] ->
         updated = %{handoff | acknowledged: true, acknowledged_at: DateTime.utc_now()}
@@ -780,6 +741,45 @@ defmodule TamanduaServer.MDR.AnalystConsole do
   @impl true
   def handle_call(:get_stats, _from, state) do
     {:reply, state.stats, state}
+  end
+
+  @impl true
+  def handle_cast({:submit_correlation, org_id, indicator}, state) do
+    key = {indicator[:type] || indicator["type"], indicator[:value] || indicator["value"]}
+
+    existing = :ets.lookup(@ets_correlations, key)
+
+    if existing == [] do
+      entry = %{
+        org_ids: MapSet.new([org_id]),
+        org_count: 1,
+        first_seen: DateTime.utc_now(),
+        last_seen: DateTime.utc_now(),
+        severity: indicator[:severity] || "medium",
+        mitre_techniques: indicator[:mitre_techniques] || [],
+        alert_count: 1
+      }
+      :ets.insert(@ets_correlations, {key, entry})
+    else
+      # Update existing correlation
+      [{^key, entry}] = existing
+      updated = %{entry |
+        org_ids: MapSet.put(entry.org_ids, org_id),
+        org_count: MapSet.size(MapSet.put(entry.org_ids, org_id)),
+        last_seen: DateTime.utc_now(),
+        alert_count: entry.alert_count + 1
+      }
+      :ets.delete(@ets_correlations, key)
+      :ets.insert(@ets_correlations, {key, updated})
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:auto_correlate, _alert_id}, state) do
+    # In production, this would extract IOCs from the alert and submit them
+    {:noreply, state}
   end
 
   # -- Periodic tasks ------------------------------------------------------

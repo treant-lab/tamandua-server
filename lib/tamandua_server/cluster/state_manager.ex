@@ -13,7 +13,6 @@ defmodule TamanduaServer.Cluster.StateManager do
   require Logger
 
   @sync_interval :timer.seconds(30)
-  @state_version_key :cluster_state_version
 
   defstruct [
     :state_version,

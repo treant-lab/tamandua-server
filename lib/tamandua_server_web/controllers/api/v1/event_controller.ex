@@ -31,7 +31,7 @@ defmodule TamanduaServerWeb.API.V1.EventController do
     serialized_events =
       events
       |> Enum.map(&serialize/1)
-      |> merge_mobile_events(organization_id, limit, params)
+      |> maybe_merge_mobile_events(organization_id, limit, params)
 
     json(conn, %{
       data: serialized_events,
@@ -173,12 +173,12 @@ defmodule TamanduaServerWeb.API.V1.EventController do
             "[EventController] related events correlation failed event=#{event_id} agent=#{agent_id}: #{Exception.message(exception)}"
           )
 
-          fallback_events =
-            agent_id
-            |> Telemetry.list_events_for_agent(limit)
-            |> Enum.map(&serialize_recent_event/1)
+          {fallback_raw_events, fallback_partial_reason} =
+            safe_list_events_for_agent(agent_id, limit, "related_events_fallback")
 
-          {fallback_events, "correlation_fallback_recent_agent_events"}
+          fallback_events = Enum.map(fallback_raw_events, &serialize_recent_event/1)
+
+          {fallback_events, fallback_partial_reason || "correlation_fallback_recent_agent_events"}
       end
 
     json(conn, %{
@@ -279,6 +279,20 @@ defmodule TamanduaServerWeb.API.V1.EventController do
       payload: event.payload || %{}
     }
   end
+
+  defp maybe_merge_mobile_events(serialized_events, organization_id, limit, params) do
+    case mobile_event_mode(params) do
+      :endpoint_only -> serialized_events
+      :with_mobile -> merge_mobile_events(serialized_events, organization_id, limit, params)
+      :mobile_only -> merge_mobile_events([], organization_id, limit, params)
+    end
+  end
+
+  defp mobile_event_mode(%{"source" => "mobile"}), do: :mobile_only
+  defp mobile_event_mode(%{"source" => "all"}), do: :with_mobile
+  defp mobile_event_mode(%{"include_mobile" => "true"}), do: :with_mobile
+  defp mobile_event_mode(%{"include_mobile" => true}), do: :with_mobile
+  defp mobile_event_mode(_params), do: :endpoint_only
 
   defp merge_mobile_events(serialized_events, nil, _limit, _params), do: serialized_events
 
@@ -434,6 +448,21 @@ defmodule TamanduaServerWeb.API.V1.EventController do
   catch
     :exit, reason ->
       Logger.warning("[EventController] #{label} failed: exit #{inspect(reason)}")
+      {[], "event_query_exit"}
+  end
+
+  defp safe_list_events_for_agent(agent_id, limit, label) do
+    {Telemetry.list_events_for_agent(agent_id, limit), nil}
+  rescue
+    exception ->
+      Logger.warning(
+        "[EventController] #{label} failed for #{agent_id}: #{Exception.message(exception)}"
+      )
+
+      {[], "event_query_failed"}
+  catch
+    :exit, reason ->
+      Logger.warning("[EventController] #{label} failed for #{agent_id}: exit #{inspect(reason)}")
       {[], "event_query_exit"}
   end
 end

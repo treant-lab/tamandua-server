@@ -260,7 +260,7 @@ defmodule TamanduaServer.Hunting.QuerySuggester do
     |> String.trim()
   end
 
-  defp build_persistence_query(alert) do
+  defp build_persistence_query(_alert) do
     """
     (
       registry.path:(*\\Run OR *\\RunOnce OR *\\RunServices)

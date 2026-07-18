@@ -16,7 +16,6 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceInventory do
 
   use GenServer
   require Logger
-  import Ecto.Query
 
   alias TamanduaServer.Repo
 

@@ -41,6 +41,29 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
 
   action_fallback(TamanduaServerWeb.FallbackController)
 
+  # Batch endpoints carry the same authorization requirements as their
+  # single-resource counterparts. Authentication and tenant scoping alone do
+  # not authorize destructive or endpoint-response operations.
+  plug(TamanduaServerWeb.Plugs.Authorize, :alerts_resolve when action in [:close_alerts])
+  plug(TamanduaServerWeb.Plugs.Authorize, :alerts_assign when action in [:assign_alerts])
+  plug(TamanduaServerWeb.Plugs.Authorize, :alerts_update when action in [:tag_alerts])
+  plug(TamanduaServerWeb.Plugs.Authorize, :alerts_delete when action in [:delete_alerts])
+
+  plug(TamanduaServerWeb.Plugs.Authorize, :threat_intel_add when action in [:import_iocs])
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :threat_intel_manage when action in [:delete_iocs, :update_iocs]
+  )
+
+  plug(TamanduaServerWeb.Plugs.Authorize, :response_isolate when action in [:isolate_agents])
+  plug(TamanduaServerWeb.Plugs.Authorize, :agents_command when action in [:scan_agents])
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :forensics_collect when action in [:collect_forensics]
+  )
+
   # ===========================================================================
   # Alert Batch Operations
   # ===========================================================================
@@ -603,6 +626,8 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     end)
   end
 
+  defp format_job_errors(_), do: []
+
   defp reject_mobile_batch_isolation(_organization_id, []), do: :ok
 
   defp reject_mobile_batch_isolation(organization_id, agent_ids) do
@@ -626,6 +651,4 @@ defmodule TamanduaServerWeb.API.V1.BatchController do
     String.contains?(os, "android") or String.contains?(os, "ios") or
       String.contains?(os, "iphone") or String.contains?(os, "ipad")
   end
-
-  defp format_job_errors(_), do: []
 end

@@ -480,8 +480,10 @@ defmodule TamanduaServer.ThreatIntel.FeedHealthMonitor do
       reasons
     end
 
-    if health.last_error_message do
-      reasons = ["Last error: #{health.last_error_message}" | reasons]
+    reasons = if health.last_error_message do
+      ["Last error: #{health.last_error_message}" | reasons]
+    else
+      reasons
     end
 
     """

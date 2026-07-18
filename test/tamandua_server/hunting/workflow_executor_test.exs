@@ -49,7 +49,7 @@ defmodule TamanduaServer.Hunting.WorkflowExecutorTest do
       {:ok, execution} = WorkflowExecutor.start_workflow(workflow.id, user_id, org_id)
 
       assert execution.workflow_id == workflow.id
-      assert execution.executed_by_id == user_id
+      assert execution.executed_by == user_id
       assert execution.organization_id == org_id
       assert execution.status == "in_progress"
       assert execution.current_step_index == 0

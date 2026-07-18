@@ -9,6 +9,8 @@ defmodule TamanduaServer.Telemetry do
   alias TamanduaServer.Telemetry.Event
 
   @data_source_categories ~w(process file dns network registry driver ai ndr)
+  @runtime_integrity_preview_page_size 32
+  @runtime_integrity_preview_scan_ceiling 1_024
 
   @doc """
   Returns the list of events.
@@ -111,10 +113,123 @@ defmodule TamanduaServer.Telemetry do
   def list_events_for_agent(agent_id, limit \\ 100) do
     from(e in Event,
       where: e.agent_id == ^agent_id,
-      order_by: [desc: e.timestamp],
+      order_by: [desc: e.timestamp, desc: e.id],
       limit: ^limit
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Returns the newest canonical runtime-integrity Preview event for an
+  already-authorized tenant and agent.
+  """
+  def latest_runtime_integrity_preview_event_for_agent(organization_id, agent_id) do
+    fetch_page = fn cursor, limit ->
+      organization_id
+      |> latest_runtime_integrity_preview_event_query(agent_id, cursor, limit)
+      |> Repo.all()
+    end
+
+    latest_valid_runtime_integrity_preview_event(fetch_page)
+  end
+
+  @doc false
+  def latest_runtime_integrity_preview_event_query(organization_id, agent_id) do
+    latest_runtime_integrity_preview_event_query(
+      organization_id,
+      agent_id,
+      nil,
+      @runtime_integrity_preview_page_size
+    )
+  end
+
+  @doc false
+  def latest_runtime_integrity_preview_event_query(organization_id, agent_id, cursor, limit)
+      when is_integer(limit) and limit > 0 do
+    query =
+      from(e in Event,
+        where: e.organization_id == ^organization_id,
+        where: e.agent_id == ^agent_id,
+        where: e.event_type == "runtime_integrity_preview",
+        where:
+          fragment(
+            "((?->>'schema' = 'tamandua.runtime_integrity_preview/v1' AND ?->'metadata'->>'server_projection_authority' = 'tamandua_server/runtime_integrity_preview/v1') OR (?->>'schema' = 'tamandua.runtime_integrity_preview/v2' AND ?->'metadata'->>'server_projection_authority' = 'tamandua_server/runtime_integrity_preview/v2'))",
+            e.payload,
+            e.enrichment,
+            e.payload,
+            e.enrichment
+          ),
+        order_by: [desc: e.timestamp, desc: e.id],
+        limit: ^min(limit, @runtime_integrity_preview_page_size)
+      )
+
+    case cursor do
+      nil ->
+        query
+
+      {timestamp, id} ->
+        from(e in query,
+          where: e.timestamp < ^timestamp or (e.timestamp == ^timestamp and e.id < ^id)
+        )
+    end
+  end
+
+  @doc false
+  def latest_valid_runtime_integrity_preview_event(events) when is_list(events) do
+    Enum.find(
+      events,
+      &TamanduaServer.Agents.RuntimeIntegrityPreview.server_authorized_canonical_event?/1
+    )
+  end
+
+  def latest_valid_runtime_integrity_preview_event(fetch_page) when is_function(fetch_page, 2) do
+    scan_runtime_integrity_preview_pages(fetch_page, nil, 0)
+  end
+
+  defp scan_runtime_integrity_preview_pages(_fetch_page, _cursor, scanned)
+       when scanned >= @runtime_integrity_preview_scan_ceiling,
+       do: nil
+
+  defp scan_runtime_integrity_preview_pages(fetch_page, cursor, scanned) do
+    remaining = @runtime_integrity_preview_scan_ceiling - scanned
+    limit = min(@runtime_integrity_preview_page_size, remaining)
+    events = fetch_page.(cursor, limit)
+
+    case latest_valid_runtime_integrity_preview_event(events) do
+      nil when length(events) == limit ->
+        last = List.last(events)
+        next_cursor = {last.timestamp, last.id}
+
+        scan_runtime_integrity_preview_pages(
+          fetch_page,
+          next_cursor,
+          scanned + length(events)
+        )
+
+      nil ->
+        nil
+
+      valid ->
+        valid
+    end
+  end
+
+  @doc """
+  Returns the newest persisted AI discovery event for an already-authorized agent.
+
+  This keeps model-runtime posture independent from the bounded recent-events
+  list used by the agent detail UI.
+  """
+  def latest_ai_discovery_event_for_agent(organization_id, agent_id) do
+    from(e in Event,
+      where: e.organization_id == ^organization_id,
+      where: e.agent_id == ^agent_id,
+      where: e.event_type == "ai_discovery",
+      where: fragment("?->>'ai_discovery' = 'true'", e.payload),
+      order_by: [desc: e.timestamp, desc: e.id],
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   @doc """
@@ -138,6 +253,7 @@ defmodule TamanduaServer.Telemetry do
 
     window_hours = opts |> Keyword.get(:window_hours, 24) |> normalize_window_hours()
     window_start = DateTime.add(now, -window_hours * 60 * 60, :second)
+
     history_hours =
       opts
       |> Keyword.get(:history_hours, max(window_hours, 24))
@@ -572,7 +688,7 @@ defmodule TamanduaServer.Telemetry do
     query =
       if params[:query] do
         # This is a naive implementation, ideally use full text search
-        term = "%#{params[:query]}%"
+        _term = "%#{params[:query]}%"
         # Note: Ecto doesn't support JSONB text search easily without fragments
         # For now, we skip payload search or implement it later
         query
@@ -609,7 +725,7 @@ defmodule TamanduaServer.Telemetry do
     query =
       if params[:query] do
         # This is a naive implementation, ideally use full text search
-        term = "%#{params[:query]}%"
+        _term = "%#{params[:query]}%"
         # Note: Ecto doesn't support JSONB text search easily without fragments
         # For now, we skip payload search or implement it later
         query
@@ -682,15 +798,26 @@ defmodule TamanduaServer.Telemetry do
     limit = filters[:limit] || 100
     offset = filters[:offset] || 0
 
-    events =
+    if filters[:skip_agent_lookup] do
       query
+      |> select([e], %{
+        id: e.id,
+        agent_id: e.agent_id,
+        event_type: e.event_type,
+        timestamp: e.timestamp,
+        severity: e.severity,
+        payload: e.payload
+      })
       |> limit(^limit)
       |> offset(^offset)
-      |> Repo.all()
-
-    if filters[:skip_agent_lookup] do
-      events
+      |> Repo.all(timeout: 2_000)
     else
+      events =
+        query
+        |> limit(^limit)
+        |> offset(^offset)
+        |> Repo.all()
+
       Enum.map(events, fn event ->
         Map.put(event, :agent_hostname, get_agent_hostname(event.agent_id))
       end)
@@ -827,7 +954,7 @@ defmodule TamanduaServer.Telemetry do
 
   Supports queries like:
     - `pid:1234` — search payload for pid field
-    - `process.name:cmd.exe` — search payload for process_name or name
+    - `process.name:cmd.exe` — search payload for process_name
     - `hash:abc123` — search by SHA256 hash
     - `remote_ip:192.168.1.1` — search network events by IP
     - `event_type:process_create` — filter by event type
@@ -837,6 +964,7 @@ defmodule TamanduaServer.Telemetry do
   def hunt_search(query_string, time_range, limit, opts \\ []) do
     start_time = parse_time_range(time_range)
     agent_ids = Keyword.get(opts, :agent_ids)
+    organization_id = Keyword.get(opts, :organization_id)
 
     base =
       from(e in Event,
@@ -848,6 +976,13 @@ defmodule TamanduaServer.Telemetry do
     base =
       if agent_ids && is_list(agent_ids) && length(agent_ids) > 0 do
         where(base, [e], e.agent_id in ^agent_ids)
+      else
+        base
+      end
+
+    base =
+      if organization_id do
+        where(base, [e], e.organization_id == ^organization_id)
       else
         base
       end
@@ -898,6 +1033,9 @@ defmodule TamanduaServer.Telemetry do
 
         # Determine match type
         cond do
+          String.starts_with?(value, "~") ->
+            {:regex, normalize_field(field), String.trim_leading(value, "~")}
+
           String.starts_with?(value, "*") && String.ends_with?(value, "*") ->
             # Contains match
             inner = String.trim(value, "*")
@@ -955,10 +1093,10 @@ defmodule TamanduaServer.Telemetry do
         {:payload, "pid"}
 
       "process.name" ->
-        {:payload, "name"}
+        {:payload, "process_name"}
 
       "process_name" ->
-        {:payload, "name"}
+        {:payload, "process_name"}
 
       "process.path" ->
         {:payload, "path"}
@@ -1106,6 +1244,10 @@ defmodule TamanduaServer.Telemetry do
     where(query, [e], fragment("?->>? ILIKE ?", e.payload, ^key, ^pattern))
   end
 
+  defp apply_condition(query, {:regex, {:payload, key}, value}) do
+    where(query, [e], fragment("?->>? ~* ?", e.payload, ^key, ^value))
+  end
+
   defp apply_condition(query, {:starts_with, {:payload, key}, value}) do
     pattern = "#{value}%"
     where(query, [e], fragment("?->>? ILIKE ?", e.payload, ^key, ^pattern))
@@ -1201,5 +1343,89 @@ defmodule TamanduaServer.Telemetry do
       order_by: [asc: e.event_type]
     )
     |> Repo.all()
+  end
+
+  # ===========================================================================
+  # Autocomplete Helpers (hunting Query DSL)
+  # ===========================================================================
+
+  @doc """
+  Top process names (by event count) from the JSONB payload, matching a
+  prefix. Used by `TamanduaServer.Hunting.QueryDSL.autocomplete_field/3`.
+
+  `organization_id` may be `nil` (no tenant filter).
+  """
+  def top_process_names(organization_id, prefix, limit) do
+    top_payload_values("process_name", organization_id, prefix, limit)
+  end
+
+  @doc """
+  Top remote IPs (by event count) from the JSONB payload, matching a prefix.
+  """
+  def top_remote_ips(organization_id, prefix, limit) do
+    top_payload_values("remote_ip", organization_id, prefix, limit)
+  end
+
+  @doc """
+  Top file extensions (by event count) extracted from `payload->>'file_path'`,
+  matching a prefix. Extensions are lowercased; events whose file_path has no
+  extension are excluded (the SQL substring returns NULL, which fails ILIKE).
+  """
+  def top_file_extensions(organization_id, prefix, limit)
+      when is_binary(prefix) and is_integer(limit) and limit > 0 do
+    pattern = escape_like_pattern(prefix) <> "%"
+
+    Event
+    |> where(
+      [e],
+      fragment(
+        "lower(substring(?->>'file_path' from '\\.([A-Za-z0-9]+)$')) ILIKE ?",
+        e.payload,
+        ^pattern
+      )
+    )
+    |> maybe_scope_org(organization_id)
+    |> group_by(
+      [e],
+      fragment("lower(substring(?->>'file_path' from '\\.([A-Za-z0-9]+)$'))", e.payload)
+    )
+    |> order_by([e], desc: count(e.id))
+    |> limit(^limit)
+    |> select(
+      [e],
+      fragment("lower(substring(?->>'file_path' from '\\.([A-Za-z0-9]+)$'))", e.payload)
+    )
+    |> Repo.all()
+  end
+
+  def top_file_extensions(_organization_id, _prefix, _limit), do: []
+
+  defp top_payload_values(key, organization_id, prefix, limit)
+       when is_binary(prefix) and is_integer(limit) and limit > 0 do
+    pattern = escape_like_pattern(prefix) <> "%"
+
+    Event
+    |> where([e], fragment("?->>? ILIKE ?", e.payload, ^key, ^pattern))
+    |> maybe_scope_org(organization_id)
+    |> group_by([e], fragment("?->>?", e.payload, ^key))
+    |> order_by([e], desc: count(e.id))
+    |> limit(^limit)
+    |> select([e], fragment("?->>?", e.payload, ^key))
+    |> Repo.all()
+  end
+
+  defp top_payload_values(_key, _organization_id, _prefix, _limit), do: []
+
+  defp maybe_scope_org(query, nil), do: query
+
+  defp maybe_scope_org(query, organization_id) do
+    where(query, [e], e.organization_id == ^organization_id)
+  end
+
+  defp escape_like_pattern(value) when is_binary(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
   end
 end

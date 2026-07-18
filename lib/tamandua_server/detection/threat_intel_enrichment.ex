@@ -24,11 +24,9 @@ defmodule TamanduaServer.Detection.ThreatIntelEnrichment do
   require Logger
 
   alias TamanduaServer.ThreatIntel
-  alias TamanduaServer.Detection.IOCs
 
   @virustotal_api "https://www.virustotal.com/api/v3"
   @abuseipdb_api "https://api.abuseipdb.com/api/v2"
-  @urlscan_api "https://urlscan.io/api/v1"
 
   # Cache TTL for enrichment results (1 hour)
   @cache_ttl :timer.hours(1)
@@ -335,7 +333,7 @@ defmodule TamanduaServer.Detection.ThreatIntelEnrichment do
     {{:ok, enrichment}, state}
   end
 
-  defp query_virustotal_hash(hash, hash_type, state) do
+  defp query_virustotal_hash(hash, _hash_type, state) do
     # Check rate limit
     {state, allowed} = check_rate_limit(state, :virustotal)
 
@@ -674,11 +672,15 @@ defmodule TamanduaServer.Detection.ThreatIntelEnrichment do
   # ============================================================================
 
   defp do_check_url(url, local_match, state) do
+    # `extracted_domain` must exist here: line ~695 uses map-update syntax
+    # (`%{enrichment | extracted_domain: ...}`), which raises KeyError for
+    # missing keys — every URL enrichment crashed before this was seeded.
     enrichment = %{
       url: url,
       local_match: local_match != :not_found,
       local_data: if(local_match != :not_found, do: elem(local_match, 1), else: nil),
       virustotal: nil,
+      extracted_domain: nil,
       verdict: :unknown,
       enriched_at: DateTime.utc_now()
     }

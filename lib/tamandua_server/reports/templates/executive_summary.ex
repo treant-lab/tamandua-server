@@ -12,8 +12,7 @@ defmodule TamanduaServer.Reports.Templates.ExecutiveSummary do
 
   @behaviour TamanduaServer.Reports.Templates.TemplateBehaviour
 
-  alias TamanduaServer.{Agents, Alerts, Telemetry, Detection, ThreatIntel}
-  alias TamanduaServer.Detection.{IOCs, Mitre}
+  alias TamanduaServer.{Agents, Alerts, Telemetry, Detection}
 
   @impl true
   def name, do: "Executive Summary"

@@ -99,7 +99,7 @@ defmodule TamanduaServer.Alerts.EscalationEngine do
       tier_config = get_tier_config(rule, next_tier)
 
       if tier_config do
-        perform_escalation(alert, next_tier, tier_config, escalated_by_id, reason)
+        perform_escalation(alert, next_tier, rule, tier_config, escalated_by_id, reason)
       else
         Logger.warning("[EscalationEngine] No tier #{next_tier} configuration for alert #{alert.id}")
         {:error, :no_tier_config}
@@ -253,8 +253,8 @@ defmodule TamanduaServer.Alerts.EscalationEngine do
     )
   end
 
-  defp perform_escalation(alert, tier, tier_config, escalated_by_id, reason) do
-    now = DateTime.utc_now()
+  defp perform_escalation(alert, tier, rule, tier_config, escalated_by_id, reason) do
+    _now = DateTime.utc_now()
 
     # Determine escalation target user
     escalate_to_id = select_escalation_target(tier_config)
@@ -289,7 +289,7 @@ defmodule TamanduaServer.Alerts.EscalationEngine do
     end)
     |> Ecto.Multi.run(:notify, fn _repo, %{transition_state: updated_alert} ->
       # Send escalation notifications
-      send_escalation_notifications(updated_alert, tier, tier_config)
+      send_escalation_notifications(updated_alert, rule)
       {:ok, updated_alert}
     end)
     |> Repo.transaction()
@@ -338,18 +338,12 @@ defmodule TamanduaServer.Alerts.EscalationEngine do
     end
   end
 
-  defp send_escalation_notifications(alert, tier, tier_config) do
-    channels = tier_config["channels"] || tier_config[:channels] || ["email"]
-    escalate_to = tier_config["escalate_to"] || tier_config[:escalate_to] || []
-
-    TamanduaServer.Alerts.Notifier.send_escalation(
-      alert,
-      %{
-        tier: tier,
-        escalate_to: escalate_to,
-        channels: channels
-      }
-    )
+  # Notifier.send_escalation/2 resolves contacts from the EscalationRule
+  # (rule.id / rule.created_by_id); passing a bare tier-config map here was a
+  # latent KeyError. The matching rule is already resolved in escalate_alert/2,
+  # so thread it through instead of re-querying.
+  defp send_escalation_notifications(alert, rule) do
+    TamanduaServer.Alerts.Notifier.send_escalation(alert, rule)
   end
 
   @impl true

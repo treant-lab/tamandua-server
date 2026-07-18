@@ -38,9 +38,27 @@ defmodule TamanduaServer.Detection.EngineSupervisor do
     # These are :public and :named_table so any process (workers, the
     # Engine facade, Broadway processors) can read from them.
 
-    create_ets_table(:detection_sigma_rules, [:set, :public, :named_table, {:read_concurrency, true}])
-    create_ets_table(:detection_yara_rules, [:set, :public, :named_table, {:read_concurrency, true}])
-    create_ets_table(:detection_ioc_rules, [:set, :public, :named_table, {:read_concurrency, true}])
+    create_ets_table(:detection_sigma_rules, [
+      :set,
+      :public,
+      :named_table,
+      {:read_concurrency, true}
+    ])
+
+    create_ets_table(:detection_yara_rules, [
+      :set,
+      :public,
+      :named_table,
+      {:read_concurrency, true}
+    ])
+
+    create_ets_table(:detection_ioc_rules, [
+      :set,
+      :public,
+      :named_table,
+      {:read_concurrency, true}
+    ])
+
     create_ets_table(:detection_stats, [:set, :public, :named_table, {:write_concurrency, true}])
 
     # Seed per-shard stat counters so :ets.update_counter never fails on
@@ -63,6 +81,14 @@ defmodule TamanduaServer.Detection.EngineSupervisor do
       :ets.insert_new(:detection_stats, {{shard, key}, 0})
     end
 
+    # Detection workers must never process against an implicit empty or stale
+    # IOC table. This synchronous, epoch-fenced snapshot is part of subsystem
+    # readiness and runs before any shard child is started.
+    case TamanduaServer.Detection.IOCSnapshotProvider.reconcile() do
+      {:ok, _receipt} -> :ok
+      {:error, reason} -> throw({:ioc_initial_snapshot_failed, reason})
+    end
+
     Logger.info("[EngineSupervisor] Starting #{@num_shards} detection worker shards")
 
     children =
@@ -74,6 +100,10 @@ defmodule TamanduaServer.Detection.EngineSupervisor do
       end
 
     Supervisor.init(children, strategy: :one_for_one, max_restarts: 50, max_seconds: 60)
+  catch
+    reason ->
+      Logger.error("[EngineSupervisor] refusing to start IOC detection: #{inspect(reason)}")
+      {:stop, reason}
   end
 
   # ── Helpers ────────────────────────────────────────────────────────
@@ -131,6 +161,7 @@ defmodule TamanduaServer.Detection.EngineSupervisor do
     case :ets.whereis(name) do
       :undefined ->
         :ets.new(name, opts)
+
       _ref ->
         # Table already exists (supervisor restarted but ETS persists
         # because the owner is the supervisor process itself).

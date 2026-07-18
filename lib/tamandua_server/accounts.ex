@@ -5,9 +5,17 @@ defmodule TamanduaServer.Accounts do
 
   import Ecto.Query
   import Bitwise
+  require Logger
   alias TamanduaServer.Repo
   alias Ecto.Multi
-  alias TamanduaServer.Accounts.{User, Organization, WalletIdentity, WalletAuthEvent}
+
+  alias TamanduaServer.Accounts.{
+    PersistentUserSessionStore,
+    User,
+    Organization,
+    WalletIdentity,
+    WalletAuthEvent
+  }
 
   # -------------------------------------------------------------------
   # Users
@@ -21,6 +29,46 @@ defmodule TamanduaServer.Accounts do
   end
 
   @doc """
+  Proves the active organization for an authenticated Inertia user.
+
+  The organization candidate must come from the authenticated user. Both IDs
+  are canonicalized before an exact user/organization join is executed inside
+  that organization's transaction-local tenant context.
+  """
+  def resolve_active_user_organization(user_id, organization_id) do
+    alias TamanduaServer.Repo.MultiTenant
+
+    with {:ok, canonical_user_id} <- Ecto.UUID.cast(user_id),
+         {:ok, canonical_organization_id} <- Ecto.UUID.cast(organization_id) do
+      MultiTenant.with_organization(canonical_organization_id, fn ->
+        from(u in User,
+          join: organization in Organization,
+          on:
+            organization.id == u.organization_id and
+              organization.id == ^canonical_organization_id and organization.is_active == true,
+          where:
+            u.id == ^canonical_user_id and
+              u.organization_id == ^canonical_organization_id and u.is_active == true,
+          select: {u, organization},
+          limit: 1
+        )
+        |> Repo.one()
+        |> case do
+          {%User{} = user, %Organization{} = organization} ->
+            {:ok, user, organization}
+
+          nil ->
+            {:error, :tenant_unproven}
+        end
+      end)
+    else
+      :error -> {:error, :tenant_unproven}
+    end
+  rescue
+    _ -> {:error, :tenant_unproven}
+  end
+
+  @doc """
   Get a user by email.
   """
   def get_user_by_email(email) do
@@ -31,20 +79,31 @@ defmodule TamanduaServer.Accounts do
   Authenticate a user by email and password.
   """
   def authenticate_user(email, password) do
-    case get_user_by_email(email) do
-      nil ->
-        # Prevent timing attacks
+    try do
+      case get_user_by_email(email) do
+        nil ->
+          # Prevent timing attacks
+          Bcrypt.no_user_verify()
+          {:error, :invalid_credentials}
+
+        user ->
+          if valid_password_hash?(user.password_hash) and Bcrypt.verify_pass(password, user.password_hash) do
+            {:ok, user}
+          else
+            Bcrypt.no_user_verify()
+            {:error, :invalid_credentials}
+          end
+      end
+    rescue
+      exception ->
+        Logger.warning("User authentication failed safely: #{inspect(exception.__struct__)}")
         Bcrypt.no_user_verify()
         {:error, :invalid_credentials}
-
-      user ->
-        if Bcrypt.verify_pass(password, user.password_hash) do
-          {:ok, user}
-        else
-          {:error, :invalid_credentials}
-        end
     end
   end
+
+  defp valid_password_hash?(hash) when is_binary(hash) and byte_size(hash) > 0, do: true
+  defp valid_password_hash?(_hash), do: false
 
   @doc """
   Create a new user.
@@ -146,6 +205,15 @@ defmodule TamanduaServer.Accounts do
     user
     |> User.changeset(attrs)
     |> Repo.update()
+    |> tap(fn
+      {:ok, updated_user} ->
+        # Organization reassignment must evict every {user, organization}
+        # authorization entry, including tuples retained by stale sockets.
+        TamanduaServer.Authorization.RBAC.invalidate_cache(updated_user)
+
+      _ ->
+        :ok
+    end)
   end
 
   @doc """
@@ -153,6 +221,10 @@ defmodule TamanduaServer.Accounts do
   """
   def delete_user(%User{} = user) do
     Repo.delete(user)
+    |> tap(fn
+      {:ok, deleted_user} -> TamanduaServer.Authorization.RBAC.invalidate_cache(deleted_user)
+      _ -> :ok
+    end)
   end
 
   @doc """
@@ -336,37 +408,48 @@ defmodule TamanduaServer.Accounts do
   - Rate limiting: max #{@totp_rate_limit_max_attempts} attempts per #{@totp_rate_limit_window} seconds
   """
   def verify_totp(secret, code) when is_binary(secret) and is_binary(code) do
+    match?({:ok, _counter}, verify_totp_with_counter(secret, code))
+  end
+
+  def verify_totp(_, _), do: false
+
+  @doc """
+  Verify a TOTP code and return the RFC 6238 counter that actually matched.
+
+  The same rate limit and tolerance window as `verify_totp/2` are used. All
+  counters in the tolerance window are calculated and compared before a match
+  is selected, avoiding the previous early-exit timing difference between the
+  previous, current, and next counters.
+  """
+  def verify_totp_with_counter(secret, code, opts \\ [])
+
+  def verify_totp_with_counter(secret, code, opts)
+      when is_binary(secret) and is_binary(code) and is_list(opts) do
     # Rate limit check using secret as the key (to prevent brute force)
     rate_key = :crypto.hash(:sha256, secret) |> Base.encode16()
 
     case check_totp_rate_limit(rate_key) do
       :ok ->
-        current_time = System.system_time(:second)
+        current_time = Keyword.get(opts, :unix_time, System.system_time(:second))
         current_step = div(current_time, @totp_time_step)
 
-        # Check current step and +/- tolerance steps
-        matched = Enum.any?(
-          (current_step - @totp_tolerance)..(current_step + @totp_tolerance),
-          fn step ->
-            expected = generate_totp_at_step(secret, step)
-            Plug.Crypto.secure_compare(expected, code)
-          end
-        )
+        case matched_totp_counter(secret, code, current_step) do
+          {:ok, counter} ->
+            {:ok, counter}
 
-        unless matched do
-          record_totp_failure(rate_key)
+          :error ->
+            record_totp_failure(rate_key)
+            {:error, :invalid_totp}
         end
 
-        matched
-
       {:error, :rate_limited} ->
-        false
+        {:error, :rate_limited}
     end
   rescue
-    _ -> false
+    _ -> {:error, :invalid_totp}
   end
 
-  def verify_totp(_, _), do: false
+  def verify_totp_with_counter(_, _, _), do: {:error, :invalid_totp}
 
   # -------------------------------------------------------------------
   # Session Tokens (in-memory for now - use DB in production)
@@ -424,6 +507,21 @@ defmodule TamanduaServer.Accounts do
   end
 
   def delete_user_session_token(_), do: :ok
+
+  @doc false
+  def create_persistent_user_session(%User{} = user, opts \\ []) do
+    PersistentUserSessionStore.create(user, opts)
+  end
+
+  @doc false
+  def get_user_by_persistent_session(token, binding) do
+    PersistentUserSessionStore.authenticate(token, binding)
+  end
+
+  @doc false
+  def revoke_persistent_user_session(token, binding) do
+    PersistentUserSessionStore.revoke(token, binding)
+  end
 
   @doc """
   Get a user by API token.
@@ -539,6 +637,26 @@ defmodule TamanduaServer.Accounts do
 
     String.pad_leading(Integer.to_string(code), @totp_digits, "0")
   end
+
+  defp matched_totp_counter(secret, code, current_step)
+       when byte_size(code) == @totp_digits do
+    counters =
+      [0, -@totp_tolerance, @totp_tolerance]
+      |> Enum.map(&(&1 + current_step))
+
+    matches =
+      Enum.map(counters, fn counter ->
+        expected = generate_totp_at_step(secret, counter)
+        {counter, Plug.Crypto.secure_compare(expected, code)}
+      end)
+
+    case Enum.find(matches, fn {_counter, matched?} -> matched? end) do
+      {counter, true} -> {:ok, counter}
+      nil -> :error
+    end
+  end
+
+  defp matched_totp_counter(_secret, _code, _current_step), do: :error
 
   # Rate limiting for TOTP verification attempts
   defp ensure_totp_rate_table do

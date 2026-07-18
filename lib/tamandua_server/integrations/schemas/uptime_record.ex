@@ -8,7 +8,7 @@ defmodule TamanduaServer.Integrations.Schemas.UptimeRecord do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Integrations.Schemas.{HealthMetric, Incident}
+  alias TamanduaServer.Integrations.Schemas.{Incident}
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id

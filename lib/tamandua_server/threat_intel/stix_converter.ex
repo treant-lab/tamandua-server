@@ -37,11 +37,12 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
     tags = ioc[:tags] || ioc["tags"] || []
     confidence = normalize_confidence(ioc[:confidence] || ioc["confidence"])
 
-    indicator_id = if ioc[:id] || ioc["id"] do
-      "indicator--#{ioc[:id] || ioc["id"]}"
-    else
-      "indicator--#{UUID.uuid4()}"
-    end
+    indicator_id =
+      if ioc[:id] || ioc["id"] do
+        "indicator--#{ioc[:id] || ioc["id"]}"
+      else
+        "indicator--#{UUID.uuid4()}"
+      end
 
     %{
       "type" => "indicator",
@@ -86,10 +87,11 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
         tags = indicator["labels"] || []
         description = indicator["name"] || indicator["description"] || ""
 
-        source = case indicator["created_by_ref"] do
-          nil -> "stix_import"
-          ref -> "stix_#{String.slice(ref, 0, 20)}"
-        end
+        source =
+          case indicator["created_by_ref"] do
+            nil -> "stix_import"
+            ref -> "stix_#{String.slice(ref, 0, 20)}"
+          end
 
         severity = determine_severity_from_confidence(confidence)
 
@@ -145,21 +147,28 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
   @spec alert_to_sighting(map()) :: map()
   def alert_to_sighting(alert) do
     alert_id = alert[:id] || alert["id"] || UUID.uuid4()
-    created = format_stix_datetime(alert[:inserted_at] || alert["inserted_at"]) || DateTime.to_iso8601(DateTime.utc_now())
+
+    created =
+      format_stix_datetime(alert[:inserted_at] || alert["inserted_at"]) ||
+        DateTime.to_iso8601(DateTime.utc_now())
 
     source_ioc_id = alert[:source_ioc_id] || alert["source_ioc_id"]
-    sighting_of_ref = if source_ioc_id do
-      "indicator--#{source_ioc_id}"
-    else
-      nil
-    end
+
+    sighting_of_ref =
+      if source_ioc_id do
+        "indicator--#{source_ioc_id}"
+      else
+        nil
+      end
 
     agent_id = alert[:agent_id] || alert["agent_id"]
-    observed_data_refs = if agent_id do
-      ["observed-data--#{agent_id}"]
-    else
-      []
-    end
+
+    observed_data_refs =
+      if agent_id do
+        ["observed-data--#{agent_id}"]
+      else
+        []
+      end
 
     sighting = %{
       "type" => "sighting",
@@ -168,7 +177,8 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
       "created" => created,
       "modified" => created,
       "first_seen" => created,
-      "last_seen" => format_stix_datetime(alert[:last_seen_at] || alert["last_seen_at"]) || created,
+      "last_seen" =>
+        format_stix_datetime(alert[:last_seen_at] || alert["last_seen_at"]) || created,
       "count" => alert[:occurrence_count] || alert["occurrence_count"] || 1,
       "where_sighted_refs" => [@tamandua_identity_id],
       "observed_data_refs" => observed_data_refs,
@@ -218,19 +228,26 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
 
     # Fetch IOCs
     ioc_opts = [limit: limit, enabled: true]
-    ioc_opts = if type = Keyword.get(opts, :type), do: Keyword.put(ioc_opts, :type, type), else: ioc_opts
-    ioc_opts = if source = Keyword.get(opts, :source), do: Keyword.put(ioc_opts, :source, source), else: ioc_opts
+
+    ioc_opts =
+      if type = Keyword.get(opts, :type), do: Keyword.put(ioc_opts, :type, type), else: ioc_opts
+
+    ioc_opts =
+      if source = Keyword.get(opts, :source),
+        do: Keyword.put(ioc_opts, :source, source),
+        else: ioc_opts
 
     iocs = TamanduaServer.Detection.IOCs.list(ioc_opts)
     indicators = Enum.map(iocs, &to_stix_indicator/1)
 
-    objects = if include_sightings do
-      # Fetch recent alerts related to these IOCs
-      sightings = fetch_related_sightings(iocs)
-      indicators ++ sightings
-    else
-      indicators
-    end
+    objects =
+      if include_sightings do
+        # Fetch recent alerts related to these IOCs
+        sightings = fetch_related_sightings(iocs)
+        indicators ++ sightings
+      else
+        indicators
+      end
 
     create_bundle(objects)
   end
@@ -251,14 +268,15 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
     iocs = from_stix_indicators(indicators)
 
     # Bulk insert IOCs
-    {inserted, failed} = case TamanduaServer.Detection.IOCs.bulk_add(iocs, on_conflict: :nothing) do
-      {:ok, result} -> {result.successful, result.failed}
-      {:error, _} -> {0, length(iocs)}
-    end
+    {inserted, failed} =
+      case TamanduaServer.Detection.IOCs.bulk_add_global(iocs, on_conflict: :nothing) do
+        {:ok, result} -> {result.successful, result.failed}
+        {:error, _} -> {0, length(iocs)}
+      end
 
     # Trigger retroactive scan and detection engine refresh for new IOCs
     if inserted > 0 do
-      Task.start(fn -> TamanduaServer.Detection.Engine.reload_iocs() end)
+      TamanduaServer.Detection.IOCReload.schedule()
 
       try do
         TamanduaServer.ThreatIntel.RetroactiveScanner.scan_new_iocs(iocs)
@@ -267,15 +285,16 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
       end
     end
 
-    {:ok, %{
-      total_objects: length(objects),
-      indicators_found: length(indicators),
-      sightings_found: length(sightings),
-      other_objects: length(other),
-      iocs_converted: length(iocs),
-      iocs_inserted: inserted,
-      iocs_failed: failed
-    }}
+    {:ok,
+     %{
+       total_objects: length(objects),
+       indicators_found: length(indicators),
+       sightings_found: length(sightings),
+       other_objects: length(other),
+       iocs_converted: length(iocs),
+       iocs_inserted: inserted,
+       iocs_failed: failed
+     }}
   end
 
   def import_bundle(%{"type" => "bundle"}) do
@@ -437,6 +456,7 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
   defp normalize_labels(_), do: []
 
   defp normalize_tags(tags) when is_list(tags) do
@@ -445,25 +465,35 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
   defp normalize_tags(_), do: []
 
   defp determine_indicator_types(type, tags) do
-    base_types = case type do
-      "ip" -> ["malicious-activity"]
-      "domain" -> ["malicious-activity"]
-      "url" -> ["malicious-activity"]
-      t when t in ["hash_sha256", "hash_sha1", "hash_md5"] -> ["malicious-activity"]
-      "email" -> ["malicious-activity"]
-      _ -> ["anomalous-activity"]
-    end
+    base_types =
+      case type do
+        "ip" -> ["malicious-activity"]
+        "domain" -> ["malicious-activity"]
+        "url" -> ["malicious-activity"]
+        t when t in ["hash_sha256", "hash_sha1", "hash_md5"] -> ["malicious-activity"]
+        "email" -> ["malicious-activity"]
+        _ -> ["anomalous-activity"]
+      end
 
     # Check tags for more specific types
     tag_strs = Enum.map(tags, &to_string/1)
+
     cond do
-      Enum.any?(tag_strs, &String.contains?(&1, "c2")) -> ["malicious-activity", "command-and-control"]
-      Enum.any?(tag_strs, &String.contains?(&1, "phish")) -> ["malicious-activity", "phishing"]
-      Enum.any?(tag_strs, &String.contains?(&1, "ransomware")) -> ["malicious-activity"]
-      true -> base_types
+      Enum.any?(tag_strs, &String.contains?(&1, "c2")) ->
+        ["malicious-activity", "command-and-control"]
+
+      Enum.any?(tag_strs, &String.contains?(&1, "phish")) ->
+        ["malicious-activity", "phishing"]
+
+      Enum.any?(tag_strs, &String.contains?(&1, "ransomware")) ->
+        ["malicious-activity"]
+
+      true ->
+        base_types
     end
   end
 
@@ -475,6 +505,7 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
       true -> "low"
     end
   end
+
   defp determine_severity_from_confidence(_), do: "medium"
 
   defp stix_type_to_internal("ipv4-addr"), do: "ip"
@@ -490,6 +521,7 @@ defmodule TamanduaServer.ThreatIntel.StixConverter do
     |> String.replace("\\", "\\\\")
     |> String.replace("'", "\\'")
   end
+
   defp escape_stix_value(value), do: escape_stix_value(to_string(value))
 
   defp fetch_related_sightings(_iocs) do

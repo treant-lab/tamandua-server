@@ -21,7 +21,6 @@ defmodule TamanduaServer.Workers.APISunsetNotifier do
   require Logger
 
   alias TamanduaServerWeb.API.{VersionNegotiator, DeprecationWarner}
-  alias TamanduaServer.Analytics.APIUsageTracker
 
   @notification_intervals [90, 60, 30, 14, 7, 3, 1]
 

@@ -14,6 +14,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
   use TamanduaServerWeb.ChannelCase, async: false
 
   alias TamanduaServer.Agents.Credentials
+  alias TamanduaServer.Agents.TokenManager
   alias TamanduaServer.Repo
 
   setup do
@@ -40,6 +41,24 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
   end
 
   describe "DB-backed credential validation" do
+    test "active AgentToken cannot rescue a missing managed credential", %{
+      agent: agent,
+      org: org
+    } do
+      Application.put_env(:tamandua_server, :env, :test)
+      Application.put_env(:tamandua_server, :require_mtls, false)
+
+      {:ok, token, _token_record} = TokenManager.issue_token(agent.id, org.id)
+      {:ok, claims} = TamanduaServer.Guardian.decode_and_verify(token)
+
+      {:ok, credential} =
+        Credentials.get_by_jti(claims["credential_jti"], agent.id, org.id)
+
+      Repo.delete!(credential)
+
+      assert :error = connect(TamanduaServerWeb.AgentSocket, socket_params(agent, token))
+    end
+
     test "rejects connection with revoked credential", %{agent: agent, org: org} do
       # Set test environment
       Application.put_env(:tamandua_server, :env, :test)
@@ -49,11 +68,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       {:ok, jti, _credential} = Credentials.issue_credential(agent.id, org.id)
 
       # Create a JWT with the jti
-      claims = %{
-        "agent_id" => agent.id,
-        "org_id" => org.id,
-        "jti" => jti
-      }
+      claims = managed_claims(agent.id, org.id, jti)
 
       {:ok, token, _} = TamanduaServer.Guardian.encode_and_sign(
         %{id: agent.id},
@@ -62,7 +77,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       )
 
       # Revoke the credential
-      {:ok, _} = Credentials.revoke(jti, "test_revocation")
+      {:ok, _} = Credentials.revoke(jti, agent.id, org.id, "test_revocation")
 
       # Try to connect - should fail
       params = %{
@@ -90,11 +105,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       |> Repo.update!()
 
       # Create a JWT with the jti
-      claims = %{
-        "agent_id" => agent.id,
-        "org_id" => org.id,
-        "jti" => jti
-      }
+      claims = managed_claims(agent.id, org.id, jti)
 
       {:ok, token, _} = TamanduaServer.Guardian.encode_and_sign(
         %{id: agent.id},
@@ -125,11 +136,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       assert is_nil(credential.last_used_at)
 
       # Create a JWT with the jti
-      claims = %{
-        "agent_id" => agent.id,
-        "org_id" => org.id,
-        "jti" => jti
-      }
+      claims = managed_claims(agent.id, org.id, jti)
 
       {:ok, token, _} = TamanduaServer.Guardian.encode_and_sign(
         %{id: agent.id},
@@ -150,7 +157,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       assert socket.assigns.credential_jti == jti
 
       # Check that last_used_at was updated
-      updated_credential = Credentials.get_by_jti(jti)
+      {:ok, updated_credential} = Credentials.get_by_jti(jti, agent.id, org.id)
       assert not is_nil(updated_credential.last_used_at)
       assert updated_credential.use_count == 1
     end
@@ -165,11 +172,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
 
       # Create a JWT with a DIFFERENT org_id
       wrong_org_id = Ecto.UUID.generate()
-      claims = %{
-        "agent_id" => agent.id,
-        "org_id" => wrong_org_id,
-        "jti" => jti
-      }
+      claims = managed_claims(agent.id, wrong_org_id, jti)
 
       {:ok, token, _} = TamanduaServer.Guardian.encode_and_sign(
         %{id: agent.id},
@@ -200,11 +203,7 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       other_agent = insert(:agent, organization: org)
 
       # Create a JWT with the OTHER agent's ID but the first agent's credential
-      claims = %{
-        "agent_id" => other_agent.id,
-        "org_id" => org.id,
-        "jti" => jti
-      }
+      claims = managed_claims(other_agent.id, org.id, jti)
 
       {:ok, token, _} = TamanduaServer.Guardian.encode_and_sign(
         %{id: other_agent.id},
@@ -221,6 +220,56 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       }
 
       assert :error = connect(TamanduaServerWeb.AgentSocket, params)
+    end
+  end
+
+  describe "managed JWT duplicate identity claims" do
+    test "rejects disagreeing subject and agent_id", %{agent: agent, org: org} do
+      Application.put_env(:tamandua_server, :env, :test)
+      Application.put_env(:tamandua_server, :require_mtls, false)
+      {:ok, jti, _credential} = Credentials.issue_credential(agent.id, org.id)
+      other_agent_id = Ecto.UUID.generate()
+
+      {:ok, token, _} =
+        TamanduaServer.Guardian.encode_and_sign(
+          %{id: agent.id},
+          managed_claims(other_agent_id, org.id, jti),
+          ttl: {1, :hour}
+        )
+
+      assert :error = connect(TamanduaServerWeb.AgentSocket, socket_params(agent, token))
+    end
+
+    test "rejects disagreeing organization duplicates", %{agent: agent, org: org} do
+      Application.put_env(:tamandua_server, :env, :test)
+      Application.put_env(:tamandua_server, :require_mtls, false)
+      {:ok, jti, _credential} = Credentials.issue_credential(agent.id, org.id)
+
+      claims =
+        agent.id
+        |> managed_claims(org.id, jti)
+        |> Map.put("organization_id", Ecto.UUID.generate())
+
+      {:ok, token, _} =
+        TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims, ttl: {1, :hour})
+
+      assert :error = connect(TamanduaServerWeb.AgentSocket, socket_params(agent, token))
+    end
+
+    test "rejects disagreeing credential jti duplicates", %{agent: agent, org: org} do
+      Application.put_env(:tamandua_server, :env, :test)
+      Application.put_env(:tamandua_server, :require_mtls, false)
+      {:ok, jti, _credential} = Credentials.issue_credential(agent.id, org.id)
+
+      claims =
+        agent.id
+        |> managed_claims(org.id, jti)
+        |> Map.put("jti", "different-managed-jti")
+
+      {:ok, token, _} =
+        TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims, ttl: {1, :hour})
+
+      assert :error = connect(TamanduaServerWeb.AgentSocket, socket_params(agent, token))
     end
   end
 
@@ -299,7 +348,10 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       assert :error = connect(TamanduaServerWeb.AgentSocket, params)
     end
 
-    test "accepts JWT without jti in test environment", %{agent: agent, org: org} do
+    test "rejects incomplete managed JWT without jti in test environment", %{
+      agent: agent,
+      org: org
+    } do
       # Set test environment
       Application.put_env(:tamandua_server, :env, :test)
       Application.put_env(:tamandua_server, :require_mtls, false)
@@ -323,9 +375,10 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
         "os_type" => agent.os_type
       }
 
-      # Should work in test env
-      assert {:ok, socket} = connect(TamanduaServerWeb.AgentSocket, params)
-      assert socket.assigns.agent_id == agent.id
+      # An org-bound Guardian JWT is a managed-token candidate. Missing the
+      # duplicate managed identity/JTI claims must fail closed rather than
+      # downgrade to the environment-gated legacy JWT policy.
+      assert :error = connect(TamanduaServerWeb.AgentSocket, params)
     end
   end
 
@@ -412,11 +465,13 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       {:ok, jti2, _} = Credentials.issue_credential(agent.id, org.id)
 
       # Create tokens
-      claims1 = %{"agent_id" => agent.id, "org_id" => org.id, "jti" => jti1}
-      {:ok, token1, _} = TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims1, ttl: {1, :hour})
+      claims1 = managed_claims(agent.id, org.id, jti1)
+      {:ok, token1, _} =
+        TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims1, ttl: {1, :hour})
 
-      claims2 = %{"agent_id" => agent.id, "org_id" => org.id, "jti" => jti2}
-      {:ok, token2, _} = TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims2, ttl: {1, :hour})
+      claims2 = managed_claims(agent.id, org.id, jti2)
+      {:ok, token2, _} =
+        TamanduaServer.Guardian.encode_and_sign(%{id: agent.id}, claims2, ttl: {1, :hour})
 
       # Both should work initially
       params1 = %{"token" => token1, "agent_id" => agent.id, "hostname" => agent.hostname, "os_type" => agent.os_type}
@@ -425,10 +480,35 @@ defmodule TamanduaServerWeb.AgentSocketIdentityTest do
       assert {:ok, _} = connect(TamanduaServerWeb.AgentSocket, params1)
 
       # Revoke all credentials for this agent
-      {:ok, 2} = TamanduaServer.Agents.revoke_all_agent_credentials(agent.id, "agent_compromised")
+      {:ok, 2} =
+        TamanduaServer.Agents.revoke_all_agent_credentials(
+          agent.id,
+          org.id,
+          "agent_compromised"
+        )
 
       # Now both should fail
       assert :error = connect(TamanduaServerWeb.AgentSocket, params2)
     end
+  end
+
+  defp managed_claims(agent_id, organization_id, jti) do
+    %{
+      "agent_id" => agent_id,
+      "org_id" => organization_id,
+      "organization_id" => organization_id,
+      "credential_jti" => jti,
+      "jti" => jti,
+      "type" => "agent"
+    }
+  end
+
+  defp socket_params(agent, token) do
+    %{
+      "token" => token,
+      "agent_id" => agent.id,
+      "hostname" => agent.hostname,
+      "os_type" => agent.os_type
+    }
   end
 end

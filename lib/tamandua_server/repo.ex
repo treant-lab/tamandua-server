@@ -62,8 +62,14 @@ defmodule TamanduaServer.Repo do
       end
   """
   def put_organization_id(organization_id) when is_binary(organization_id) do
-    Process.put(:current_organization_id, organization_id)
-    :ok
+    case Ecto.UUID.cast(organization_id) do
+      {:ok, canonical_id} ->
+        Process.put(:current_organization_id, canonical_id)
+        :ok
+
+      :error ->
+        raise ArgumentError, "organization_id must be a valid UUID"
+    end
   end
 
   @doc """
@@ -101,20 +107,20 @@ defmodule TamanduaServer.Repo do
       {:ok, _} ->
         :ok
 
-      {:error, reason} ->
-        Logger.error("Failed to set organization context for query: #{inspect(reason)}")
-        :ok
+      {:error, _reason} ->
+        Logger.error("Failed to set organization context for query")
+        raise "tenant context unavailable"
     end
   rescue
-    error ->
-      Logger.error("Exception setting organization context: #{inspect(error)}")
-      :ok
+    _error ->
+      Logger.error("Exception setting organization context")
+      raise "tenant context unavailable"
   end
 
   defp format_uuid(uuid) when is_binary(uuid) do
     case Ecto.UUID.cast(uuid) do
       {:ok, uuid_string} -> uuid_string
-      :error -> uuid
+      :error -> raise ArgumentError, "organization_id must be a valid UUID"
     end
   end
 end

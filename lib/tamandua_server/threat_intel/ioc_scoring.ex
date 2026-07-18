@@ -48,7 +48,6 @@ defmodule TamanduaServer.ThreatIntel.IOCScoring do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Detection.IOC
-  alias TamanduaServer.ThreatIntel.MISPInstance
 
   import Ecto.Query
 

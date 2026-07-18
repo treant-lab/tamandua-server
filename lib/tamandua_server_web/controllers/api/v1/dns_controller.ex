@@ -18,22 +18,30 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   alias TamanduaServer.Telemetry.Event
   alias TamanduaServer.Detection.DNSAnalyzer
   alias TamanduaServer.Detection.DNSBlocklist
+  alias TamanduaServer.Detection.DNSCommandDispatch
   alias TamanduaServer.AuditLog
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
+
+  plug(
+    TamanduaServerWeb.Plugs.Authorize,
+    :response_execute
+    when action in [:blocklist_create, :blocklist_delete, :blocklist_import]
+  )
 
   def action(conn, _opts) do
     apply(__MODULE__, action_name(conn), [conn, conn.params])
   rescue
     exception ->
-      Logger.warning("DNS API action #{action_name(conn)} failed: #{Exception.message(exception)}")
+      Logger.warning(
+        "DNS API action #{action_name(conn)} failed: #{Exception.message(exception)}"
+      )
 
       conn
       |> put_status(:service_unavailable)
       |> json(%{
         error: "dns_service_unavailable",
-        message: "DNS service is unavailable",
-        detail: Exception.message(exception)
+        message: "DNS service is unavailable"
       })
   catch
     :exit, {:noproc, _} ->
@@ -50,7 +58,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> json(%{error: "dns_service_timeout", message: "DNS service timed out"})
 
     kind, reason ->
-      Logger.warning("DNS API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}")
+      Logger.warning(
+        "DNS API action #{action_name(conn)} failed: #{inspect(kind)} #{inspect(reason)}"
+      )
 
       conn
       |> put_status(:service_unavailable)
@@ -157,7 +167,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> scope_event_org(organization_id)
       |> where([e], e.timestamp >= ^today_start)
       |> where([e], e.timestamp <= ^now)
-      |> select([e],
+      |> select(
+        [e],
         fragment(
           "COUNT(DISTINCT COALESCE(?->>'query', ?->>'query_name', ?->>'domain', ?->>'dns_query', ?->>'dns.domain', ?->>'host', ?->>'hostname', ?->'dns'->>'query', ?->'dns'->>'query_name', ?->'dns'->>'domain'))",
           e.payload,
@@ -185,7 +196,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp <= ^now)
       |> where([e], fragment("?->>'blocked' = 'true'", e.payload))
       |> then(fn query ->
-        safe_repo_value_with_meta("DNS stats blocked count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+        safe_repo_value_with_meta("DNS stats blocked count", 0, fn ->
+          Repo.aggregate(query, :count, :id)
+        end)
       end)
 
     # Suspicious count: events with severity above info
@@ -197,7 +210,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> where([e], e.timestamp <= ^now)
       |> where([e], e.severity in ["medium", "high", "critical"])
       |> then(fn query ->
-        safe_repo_value_with_meta("DNS stats suspicious count", 0, fn -> Repo.aggregate(query, :count, :id) end)
+        safe_repo_value_with_meta("DNS stats suspicious count", 0, fn ->
+          Repo.aggregate(query, :count, :id)
+        end)
       end)
 
     meta =
@@ -257,7 +272,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
           {pp, (p - 1) * pp}
 
         _ ->
-          {bounded_limit(params["limit"], @default_query_limit, @max_query_limit), bounded_offset(params["offset"])}
+          {bounded_limit(params["limit"], @default_query_limit, @max_query_limit),
+           bounded_offset(params["offset"])}
       end
 
     base =
@@ -271,10 +287,15 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     # Domain search (ILIKE on known DNS domain fields)
     base =
       case params["domain"] do
-        nil -> base
-        "" -> base
+        nil ->
+          base
+
+        "" ->
+          base
+
         domain ->
           pattern = "%#{domain}%"
+
           where(
             base,
             [e],
@@ -329,11 +350,21 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     # Query type filter
     base =
       case params["query_type"] do
-        nil -> base
-        "" -> base
-        "TRANSPORT" -> where(base, ^dns_transport_dynamic())
-        "DOH" -> where(base, ^doh_dynamic())
-        "DOT" -> where(base, ^dot_dynamic())
+        nil ->
+          base
+
+        "" ->
+          base
+
+        "TRANSPORT" ->
+          where(base, ^dns_transport_dynamic())
+
+        "DOH" ->
+          where(base, ^doh_dynamic())
+
+        "DOT" ->
+          where(base, ^dot_dynamic())
+
         qt ->
           where(
             base,
@@ -388,16 +419,20 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
     json(conn, %{
       data: events,
-      meta: Map.merge(%{
-        total: total,
-        limit: limit,
-        offset: offset,
-        has_more: has_more,
-        total_is_estimate: true,
-        default_window_hours: default_query_window_hours(params),
-        time_range: dns_time_range(params),
-        scope: "organization_dns_telemetry"
-      }, dns_partial_meta([query_error]))
+      meta:
+        Map.merge(
+          %{
+            total: total,
+            limit: limit,
+            offset: offset,
+            has_more: has_more,
+            total_is_estimate: true,
+            default_window_hours: default_query_window_hours(params),
+            time_range: dns_time_range(params),
+            scope: "organization_dns_telemetry"
+          },
+          dns_partial_meta([query_error])
+        )
     })
   end
 
@@ -495,14 +530,17 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   end
 
   defp default_query_window_hours(params) do
-    if blank_param?(params["from"]) and blank_param?(params["to"]) and dns_time_range(params) == "24h" do
+    if blank_param?(params["from"]) and blank_param?(params["to"]) and
+         dns_time_range(params) == "24h" do
       @default_query_window_hours
     else
       nil
     end
   end
 
-  defp dns_time_range(%{"time_range" => value}) when value in ["1h", "24h", "7d", "30d", "all"], do: value
+  defp dns_time_range(%{"time_range" => value}) when value in ["1h", "24h", "7d", "30d", "all"],
+    do: value
+
   defp dns_time_range(_params), do: "24h"
 
   defp blank_param?(nil), do: true
@@ -577,17 +615,29 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     case safe_dns_analyzer_call("DNS blocklist overrides", fn ->
            DNSAnalyzer.get_blocklist(organization_id)
          end) do
-      {:ok, entries} when is_list(entries) ->
+      {:ok, {:ok, entries, :fresh}} when is_list(entries) ->
         {entries, nil}
 
+      {:ok, {:ok, entries, freshness}}
+      when is_list(entries) and freshness in [:stale, :degraded] ->
+        {entries, "DNS blocklist snapshot is #{freshness}"}
+
+      {:ok, {:error, reason}} when is_atom(reason) ->
+        fallback_dns_blocklist_entries(organization_id, reason)
+
       {:ok, _unexpected} ->
-        {[], "DNS blocklist overrides returned an unexpected payload"}
+        {[], "DNS blocklist overrides are unavailable"}
 
       {:error, reason} ->
-        entries =
-          organization_id
-          |> DNSBlocklist.list_entries()
-          |> Enum.map(fn entry ->
+        fallback_dns_blocklist_entries(organization_id, reason)
+    end
+  end
+
+  defp fallback_dns_blocklist_entries(organization_id, _analyzer_reason) do
+    case DNSBlocklist.list_entries(organization_id) do
+      {:ok, entries} ->
+        mapped =
+          Enum.map(entries, fn entry ->
             %{
               domain: entry.normalized_domain || entry.domain,
               blocked_at: entry.updated_at || entry.inserted_at,
@@ -597,13 +647,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
             }
           end)
 
-        {entries, reason}
+        {mapped, "DNS blocklist cache is unavailable; served from durable storage"}
+
+      {:error, _reason} ->
+        {[], "DNS blocklist overrides are unavailable"}
     end
-  rescue
-    error ->
-      message = "DNS blocklist overrides fallback: #{Exception.message(error)}"
-      Logger.warning(message)
-      {[], message}
   end
 
   defp dns_partial_meta(errors) do
@@ -625,7 +673,11 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   end
 
   defp dns_event_dynamic(time_range) when time_range in ["24h", "1h"] do
-    dynamic([e], ^dns_explicit_event_dynamic() or ^dns_transport_dynamic() or ^doh_dynamic() or ^dot_dynamic())
+    dynamic(
+      [e],
+      ^dns_explicit_event_dynamic() or ^dns_transport_dynamic() or ^doh_dynamic() or
+        ^dot_dynamic()
+    )
   end
 
   defp dns_event_dynamic(_time_range), do: dns_explicit_event_dynamic()
@@ -682,7 +734,8 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
         e.payload,
         ^ports
       ) or
-        (fragment("lower(COALESCE(?->>'protocol', ?->>'transport'))", e.payload, e.payload) == "udp" and
+        (fragment("lower(COALESCE(?->>'protocol', ?->>'transport'))", e.payload, e.payload) ==
+           "udp" and
            fragment(
              "COALESCE(?->>'local_port', ?->>'source_port', ?->>'src_port') = ANY(?::text[])",
              e.payload,
@@ -753,17 +806,21 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
       json(conn, %{
         data: entries,
-        meta: Map.merge(%{
-          explicit_overrides: length(entries),
-          default_feed_count: length(@default_dns_feed_names),
-          default_feeds_loaded: false,
-          default_feeds: default_dns_feed_summaries(),
-          default_feed_source: "threat_intel_feed_status",
-          default_feed_note:
-            "Default feed names are configured references, not tenant DNS blocklist entries. Use feed_status_endpoint for live IOC counts and health.",
-          feed_status_endpoint: "/api/v1/threat-intel/feed-status",
-          scope: "tenant_dns_blocklist_overrides"
-        }, dns_partial_meta([blocklist_error]))
+        meta:
+          Map.merge(
+            %{
+              explicit_overrides: length(entries),
+              default_feed_count: length(@default_dns_feed_names),
+              default_feeds_loaded: false,
+              default_feeds: default_dns_feed_summaries(),
+              default_feed_source: "threat_intel_feed_status",
+              default_feed_note:
+                "Default feed names are configured references, not tenant DNS blocklist entries. Use feed_status_endpoint for live IOC counts and health.",
+              feed_status_endpoint: "/api/v1/threat-intel/feed-status",
+              scope: "tenant_dns_blocklist_overrides"
+            },
+            dns_partial_meta([blocklist_error])
+          )
       })
     else
       {:error, :missing_organization} -> missing_organization_response(conn)
@@ -783,28 +840,36 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       "reason": "Malicious C2"
     }
 
-  Broadcasts a dns_block command to all connected agents.
+  Queues bounded dns_block commands for the tenant's connected agents.
   """
   def blocklist_create(conn, %{"domains" => domains} = params) when is_list(domains) do
     reason = params["reason"] || "Manual block"
     blocked_by = get_current_user(conn)
 
     with {:ok, organization_id} <- current_organization_id(conn),
-         {:ok, {:ok, count}} <-
+         {:ok, {:ok, applied_domains}} <-
            safe_dns_analyzer_call("DNS blocklist add", fn ->
              DNSAnalyzer.add_to_blocklist(domains, reason, blocked_by, organization_id)
            end) do
-      # Broadcast block command to all agents
-      broadcast_dns_command(:block, domains, reason, organization_id)
-      log_dns_blocklist_change(conn, "add", domains, %{added: count, reason: reason})
+      dispatch =
+        dispatch_dns_command(:block, applied_domains, reason, organization_id, conn)
+
+      log_dns_blocklist_change(conn, "add", applied_domains, %{
+        added: length(applied_domains),
+        reason: reason,
+        endpoint_dispatch: dispatch_summary(dispatch)
+      })
 
       conn
-      |> put_status(:created)
+      |> put_status(dispatch_http_status(dispatch, :created))
       |> json(%{
         data: %{
-          added: count,
-          domains: domains,
-          reason: reason
+          added: length(applied_domains),
+          domains: applied_domains,
+          reason: reason,
+          durable_applied: true,
+          partial: match?({:error, _summary}, dispatch),
+          endpoint_dispatch: dispatch_summary(dispatch)
         }
       })
     else
@@ -813,6 +878,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
       {:error, reason} when is_binary(reason) ->
         dns_analyzer_unavailable_response(conn, reason)
+
+      {:ok, {:error, :mutation_outcome_unknown}} ->
+        mutation_outcome_unknown_response(conn)
 
       {:error, reason} ->
         conn
@@ -839,22 +907,43 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
   @doc """
   Remove a domain from the blocklist.
 
-  Broadcasts a dns_unblock command to all connected agents.
+  Queues bounded dns_unblock commands for the tenant's connected agents.
   """
   def blocklist_delete(conn, %{"domain" => domain}) do
     with {:ok, organization_id} <- current_organization_id(conn) do
       case safe_dns_analyzer_call("DNS blocklist remove", fn ->
              DNSAnalyzer.remove_from_blocklist(domain, organization_id)
            end) do
-        {:ok, :ok} ->
-          broadcast_dns_command(:unblock, [domain], "Removed from blocklist", organization_id)
-          log_dns_blocklist_change(conn, "remove", [domain], %{reason: "Removed from blocklist"})
-          send_resp(conn, :no_content, "")
+        {:ok, {:ok, applied_domains}} ->
+          reason = "Removed from blocklist"
+
+          dispatch =
+            dispatch_dns_command(:unblock, applied_domains, reason, organization_id, conn)
+
+          log_dns_blocklist_change(conn, "remove", applied_domains, %{
+            reason: reason,
+            endpoint_dispatch: dispatch_summary(dispatch)
+          })
+
+          conn
+          |> put_status(dispatch_http_status(dispatch, :ok))
+          |> json(%{
+            data: %{
+              removed: length(applied_domains),
+              domains: applied_domains,
+              durable_applied: true,
+              partial: match?({:error, _summary}, dispatch),
+              endpoint_dispatch: dispatch_summary(dispatch)
+            }
+          })
 
         {:ok, {:error, :not_found}} ->
           conn
           |> put_status(:not_found)
           |> json(%{error: "Domain '#{domain}' not found in blocklist"})
+
+        {:ok, {:error, :mutation_outcome_unknown}} ->
+          mutation_outcome_unknown_response(conn)
 
         {:ok, {:error, reason}} ->
           conn
@@ -987,14 +1076,18 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     json(conn, %{
       data: alerts,
       alerts: alerts,
-      meta: Map.merge(%{
-        total: offset + length(alerts) + if(has_more, do: 1, else: 0),
-        limit: limit,
-        offset: offset,
-        has_more: has_more,
-        total_is_estimate: true,
-        scope: "organization_dns_alerts"
-      }, dns_partial_meta([alerts_error]))
+      meta:
+        Map.merge(
+          %{
+            total: offset + length(alerts) + if(has_more, do: 1, else: 0),
+            limit: limit,
+            offset: offset,
+            has_more: has_more,
+            total_is_estimate: true,
+            scope: "organization_dns_alerts"
+          },
+          dns_partial_meta([alerts_error])
+        )
     })
   end
 
@@ -1021,28 +1114,31 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
 
     with {:ok, organization_id} <- current_organization_id(conn),
-         {:ok, {:ok, count}} <-
+         {:ok, {:ok, applied_domains}} <-
            safe_dns_analyzer_call("DNS blocklist import", fn ->
              DNSAnalyzer.import_blocklist(domains, reason, organization_id)
            end) do
-      # Broadcast block commands for imported domains
-      if count > 0 do
-        broadcast_dns_command(:block, domains, reason, organization_id)
-      end
+      dispatch =
+        dispatch_dns_command(:block, applied_domains, reason, organization_id, conn)
 
-      log_dns_blocklist_change(conn, "import", domains, %{
-        imported: count,
+      log_dns_blocklist_change(conn, "import", applied_domains, %{
+        imported: length(applied_domains),
         total_lines: length(domains),
-        reason: reason
+        reason: reason,
+        endpoint_dispatch: dispatch_summary(dispatch)
       })
 
       conn
-      |> put_status(:created)
+      |> put_status(dispatch_http_status(dispatch, :created))
       |> json(%{
         data: %{
-          imported: count,
+          imported: length(applied_domains),
           total_lines: length(domains),
-          reason: reason
+          domains: applied_domains,
+          reason: reason,
+          durable_applied: true,
+          partial: match?({:error, _summary}, dispatch),
+          endpoint_dispatch: dispatch_summary(dispatch)
         }
       })
     else
@@ -1051,6 +1147,9 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
       {:error, reason} when is_binary(reason) ->
         dns_analyzer_unavailable_response(conn, reason)
+
+      {:ok, {:error, :mutation_outcome_unknown}} ->
+        mutation_outcome_unknown_response(conn)
 
       {:error, reason} ->
         conn
@@ -1080,6 +1179,7 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     dns_payload = payload["dns"] || payload[:dns] || %{}
     classification = classify_dns_event(event.event_type, payload)
     remote_ip = payload["remote_ip"] || payload[:remote_ip]
+
     remote_port =
       first_present([
         payload["remote_port"],
@@ -1101,106 +1201,125 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       agent_id: event.agent_id,
       timestamp: format_timestamp(event.timestamp),
       severity: dns_event_severity(event.severity, classification),
-      domain: first_present([
-        payload["query"],
-        payload[:query],
-        payload["query_name"],
-        payload[:query_name],
-        payload["domain"],
-        payload[:domain],
-        payload["dns_query"],
-        payload[:dns_query],
-        payload["dns.domain"],
-        payload[:"dns.domain"],
-        payload["host"],
-        payload[:host],
-        payload["hostname"],
-        payload[:hostname],
-        dns_payload["query"],
-        dns_payload[:query],
-        dns_payload["query_name"],
-        dns_payload[:query_name],
-        dns_payload["domain"],
-        dns_payload[:domain],
-        payload["sni"],
-        payload[:sni],
-        payload["tls_sni"],
-        payload[:tls_sni],
-        transport_target
-      ]),
-      query_type: first_present([
-        dns_classification_query_type(classification),
-        payload["query_type"],
-        payload[:query_type],
-        payload["record_type"],
-        payload[:record_type],
-        payload["type"],
-        payload[:type],
-        payload["dns.query_type"],
-        payload[:"dns.query_type"],
-        payload["dns.record_type"],
-        payload[:"dns.record_type"],
-        dns_payload["query_type"],
-        dns_payload[:query_type],
-        dns_payload["record_type"],
-        dns_payload[:record_type]
-      ], "A"),
-      response: first_present([
-        payload["response"],
-        payload[:response],
-        payload["resolved_ip"],
-        payload[:resolved_ip],
-        payload["answer"],
-        payload[:answer],
-        payload["response_data"],
-        payload[:response_data],
-        payload["dns_response"],
-        payload[:dns_response],
-        payload["dns.response"],
-        payload[:"dns.response"],
-        dns_payload["response"],
-        dns_payload[:response],
-        dns_payload["response_data"],
-        dns_payload[:response_data],
-        format_responses(payload["responses"] || payload[:responses]),
-        format_responses(dns_payload["responses"] || dns_payload[:responses]),
-        format_responses(payload["resolved_ips"] || payload[:resolved_ips]),
-        format_responses(dns_payload["resolved_ips"] || dns_payload[:resolved_ips])
-      ], ""),
-      response_code: first_present([
-        payload["response_code"],
-        payload[:response_code],
-        payload["rcode"],
-        payload[:rcode],
-        dns_payload["response_code"],
-        dns_payload[:response_code],
-        dns_payload["rcode"],
-        dns_payload[:rcode]
-      ]),
-      pid: safe_int(first_present([
-        payload["pid"],
-        payload[:pid],
-        process_payload["pid"],
-        process_payload[:pid]
-      ]), 0),
-      process_name: first_present([
-        payload["process_name"],
-        payload[:process_name],
-        payload["name"],
-        payload[:name],
-        process_payload["name"],
-        process_payload[:name]
-      ], "Unknown"),
-      process_path: first_present([
-        payload["process_path"],
-        payload[:process_path],
-        payload["path"],
-        payload[:path],
-        process_payload["path"],
-        process_payload[:path],
-        process_payload["process_path"],
-        process_payload[:process_path]
-      ]),
+      domain:
+        first_present([
+          payload["query"],
+          payload[:query],
+          payload["query_name"],
+          payload[:query_name],
+          payload["domain"],
+          payload[:domain],
+          payload["dns_query"],
+          payload[:dns_query],
+          payload["dns.domain"],
+          payload[:"dns.domain"],
+          payload["host"],
+          payload[:host],
+          payload["hostname"],
+          payload[:hostname],
+          dns_payload["query"],
+          dns_payload[:query],
+          dns_payload["query_name"],
+          dns_payload[:query_name],
+          dns_payload["domain"],
+          dns_payload[:domain],
+          payload["sni"],
+          payload[:sni],
+          payload["tls_sni"],
+          payload[:tls_sni],
+          transport_target
+        ]),
+      query_type:
+        first_present(
+          [
+            dns_classification_query_type(classification),
+            payload["query_type"],
+            payload[:query_type],
+            payload["record_type"],
+            payload[:record_type],
+            payload["type"],
+            payload[:type],
+            payload["dns.query_type"],
+            payload[:"dns.query_type"],
+            payload["dns.record_type"],
+            payload[:"dns.record_type"],
+            dns_payload["query_type"],
+            dns_payload[:query_type],
+            dns_payload["record_type"],
+            dns_payload[:record_type]
+          ],
+          "A"
+        ),
+      response:
+        first_present(
+          [
+            payload["response"],
+            payload[:response],
+            payload["resolved_ip"],
+            payload[:resolved_ip],
+            payload["answer"],
+            payload[:answer],
+            payload["response_data"],
+            payload[:response_data],
+            payload["dns_response"],
+            payload[:dns_response],
+            payload["dns.response"],
+            payload[:"dns.response"],
+            dns_payload["response"],
+            dns_payload[:response],
+            dns_payload["response_data"],
+            dns_payload[:response_data],
+            format_responses(payload["responses"] || payload[:responses]),
+            format_responses(dns_payload["responses"] || dns_payload[:responses]),
+            format_responses(payload["resolved_ips"] || payload[:resolved_ips]),
+            format_responses(dns_payload["resolved_ips"] || dns_payload[:resolved_ips])
+          ],
+          ""
+        ),
+      response_code:
+        first_present([
+          payload["response_code"],
+          payload[:response_code],
+          payload["rcode"],
+          payload[:rcode],
+          dns_payload["response_code"],
+          dns_payload[:response_code],
+          dns_payload["rcode"],
+          dns_payload[:rcode]
+        ]),
+      pid:
+        safe_int(
+          first_present([
+            payload["pid"],
+            payload[:pid],
+            process_payload["pid"],
+            process_payload[:pid]
+          ]),
+          0
+        ),
+      process_name:
+        first_present(
+          [
+            payload["process_name"],
+            payload[:process_name],
+            payload["name"],
+            payload[:name],
+            process_payload["name"],
+            process_payload[:name]
+          ],
+          "Unknown"
+        ),
+      process_path:
+        first_present([
+          payload["process_path"],
+          payload[:process_path],
+          payload["path"],
+          payload[:path],
+          process_payload["path"],
+          process_payload[:path],
+          process_payload["process_path"],
+          process_payload[:process_path]
+        ]),
       blocked: payload["blocked"] || payload[:blocked] || false,
       status: dns_event_status(payload, classification),
       transport: classification,
@@ -1326,12 +1445,14 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
 
   defp safe_int(nil, default), do: default
   defp safe_int(value, _default) when is_integer(value), do: value
+
   defp safe_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp safe_int(_, default), do: default
 
   defp serialize_dns_alert(alert) do
@@ -1453,7 +1574,10 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
       String.contains?(detection_text, "dot") or
       String.contains?(detection_text, "tunnel") or
       String.contains?(detection_text, "exfil") or
-      Regex.match?(~r/\b(dns|dga|doh|dot|dns-over-https|dns-over-tls|tunnel(?:ing)?|exfil(?:tration)?)\b/i, display_text)
+      Regex.match?(
+        ~r/\b(dns|dga|doh|dot|dns-over-https|dns-over-tls|tunnel(?:ing)?|exfil(?:tration)?)\b/i,
+        display_text
+      )
   end
 
   defp c2_or_ioc_marker?(detection_type, title, description) do
@@ -1677,58 +1801,29 @@ defmodule TamanduaServerWeb.API.V1.DNSController do
     |> json(%{error: "Missing organization context"})
   end
 
-  defp broadcast_dns_command(action, domains, reason, organization_id) do
-    command_type =
-      case action do
-        :block -> "block_domain"
-        :unblock -> "unblock_domain"
+  defp dispatch_dns_command(action, domains, reason, organization_id, conn) do
+    opts =
+      case get_req_header(conn, "idempotency-key") do
+        [key | _] when byte_size(key) > 0 and byte_size(key) <= 128 -> [idempotency_key: key]
+        _other -> []
       end
 
-    Phoenix.PubSub.broadcast(
-      TamanduaServer.PubSub,
-      "agents:commands:#{organization_id}",
-      {:broadcast_command,
-       %{type: command_type, domains: domains, reason: reason, organization_id: organization_id}}
-    )
-
-    # Also broadcast to each connected agent's channel
-    case TamanduaServer.Agents.Registry.list() do
-      agents when is_list(agents) ->
-        Enum.each(agents, fn agent ->
-          agent_id = if is_map(agent), do: agent.id || agent[:agent_id], else: agent
-
-          if agent_id && agent_belongs_to_org?(agent_id, organization_id) do
-            Enum.each(domains, fn domain ->
-              Phoenix.PubSub.broadcast(
-                TamanduaServer.PubSub,
-                "agent:#{agent_id}",
-                {:send_command,
-                 %{
-                   command_id: Ecto.UUID.generate(),
-                   command_type: command_type,
-                   timestamp: System.system_time(:millisecond),
-                   payload: %{
-                     domain: domain,
-                     reason: reason
-                   }
-                 }}
-              )
-            end)
-          end
-        end)
-
-      _ ->
-        :ok
-    end
-  rescue
-    e ->
-      Logger.warning("Failed to broadcast DNS command: #{inspect(e)}")
-      :ok
+    DNSCommandDispatch.dispatch(action, domains, organization_id, reason, opts)
   end
 
-  defp agent_belongs_to_org?(agent_id, organization_id) do
-    TamanduaServer.Agents.OrgLookup.get_org_id(agent_id) == organization_id
-  rescue
-    _ -> false
+  defp dispatch_summary({_outcome, summary}), do: summary
+
+  defp dispatch_http_status({:ok, _summary}, success_status), do: success_status
+  defp dispatch_http_status({:error, _summary}, _success_status), do: :multi_status
+
+  defp mutation_outcome_unknown_response(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      error: "dns_blocklist_mutation_outcome_unknown",
+      durable_applied: "unknown",
+      reconciliation_requested: true,
+      retryable: true
+    })
   end
 end

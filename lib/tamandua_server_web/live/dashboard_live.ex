@@ -130,7 +130,7 @@ defmodule TamanduaServerWeb.DashboardLive do
   end
 
   # Handle new Kubernetes alert from PubSub
-  def handle_info({:k8s_alert, alert}, socket) do
+  def handle_info({:k8s_alert, _alert}, socket) do
     # Update K8s security data with new alert
     socket = assign_kubernetes_security(socket)
     {:noreply, socket}

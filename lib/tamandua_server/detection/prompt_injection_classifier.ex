@@ -34,7 +34,8 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
   # Compiled Regex Patterns (loaded at compile time for performance)
   # ============================================================================
 
-  @direct_injection_patterns [
+  defp direct_injection_patterns do
+    [
     # Instruction override
     ~r/ignore\s+(all\s+)?previous\s+instructions/i,
     ~r/disregard\s+(all\s+)?prior\s+(instructions|context)/i,
@@ -61,9 +62,11 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
     ~r/i\s+command\s+you\s+to/i,
     ~r/you\s+must\s+obey/i,
     ~r/this\s+overrides\s+everything/i
-  ]
+    ]
+  end
 
-  @indirect_injection_patterns [
+  defp indirect_injection_patterns do
+    [
     # Data injection markers
     ~r/\[INJECTION\]/i,
     ~r/<!--\s*ignore/i,
@@ -84,9 +87,11 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
     ~r/fetch\s+instructions\s+from/i,
     ~r/load\s+prompt\s+from/i,
     ~r/execute\s+commands?\s+from/i
-  ]
+    ]
+  end
 
-  @jailbreak_patterns [
+  defp jailbreak_patterns do
+    [
     # DAN and variants
     ~r/\bDAN\b/,
     ~r/do\s+anything\s+now/i,
@@ -120,9 +125,11 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
     ~r/<\|assistant\|>/i,
     ~r/<\|user\|>/i,
     ~r/<\|end\|>/i
-  ]
+    ]
+  end
 
-  @encoded_injection_patterns [
+  defp encoded_injection_patterns do
+    [
     # Base64 with decode keywords
     ~r/base64.*decode.*execute/i,
     ~r/decode\s+and\s+(run|execute|follow)/i,
@@ -142,7 +149,8 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
 
     # Hex encoding
     ~r/\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}/
-  ]
+    ]
+  end
 
   # ============================================================================
   # Type Definitions
@@ -261,10 +269,10 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
   @spec get_patterns() :: map()
   def get_patterns do
     %{
-      direct: @direct_injection_patterns,
-      indirect: @indirect_injection_patterns,
-      jailbreak: @jailbreak_patterns,
-      encoded: @encoded_injection_patterns
+      direct: direct_injection_patterns(),
+      indirect: indirect_injection_patterns(),
+      jailbreak: jailbreak_patterns(),
+      encoded: encoded_injection_patterns()
     }
   end
 
@@ -281,10 +289,10 @@ defmodule TamanduaServer.Detection.PromptInjectionClassifier do
   @doc false
   defp match_regex_patterns(prompt) do
     # Check all pattern categories and aggregate matches
-    direct_matches = match_pattern_list(prompt, @direct_injection_patterns, :direct)
-    indirect_matches = match_pattern_list(prompt, @indirect_injection_patterns, :indirect)
-    jailbreak_matches = match_pattern_list(prompt, @jailbreak_patterns, :jailbreak)
-    encoded_matches = match_pattern_list(prompt, @encoded_injection_patterns, :encoded)
+    direct_matches = match_pattern_list(prompt, direct_injection_patterns(), :direct)
+    indirect_matches = match_pattern_list(prompt, indirect_injection_patterns(), :indirect)
+    jailbreak_matches = match_pattern_list(prompt, jailbreak_patterns(), :jailbreak)
+    encoded_matches = match_pattern_list(prompt, encoded_injection_patterns(), :encoded)
 
     all_matches = direct_matches ++ indirect_matches ++ jailbreak_matches ++ encoded_matches
 

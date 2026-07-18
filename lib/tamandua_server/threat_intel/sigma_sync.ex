@@ -100,8 +100,7 @@ defmodule TamanduaServer.ThreatIntel.SigmaSync do
   require Logger
 
   alias TamanduaServer.OSCommand
-  alias TamanduaServer.Detection.{SigmaRule, RuleLoader}
-  alias TamanduaServer.Detection.Rules.Sigma, as: SigmaParser
+  alias TamanduaServer.Detection.{SigmaRule}
   alias TamanduaServer.Repo
 
   import Ecto.Query
@@ -529,12 +528,15 @@ defmodule TamanduaServer.ThreatIntel.SigmaSync do
         Logger.info("[SigmaSync] Repository cloned successfully")
         :ok
 
+      # OSCommand.run/3 returns {output, exit_code} | {:error, reason};
+      # {:error, reason} must precede the generic 2-tuple clause or timeouts
+      # and validation failures get mislabeled as command output.
+      {:error, reason} ->
+        {:error, {:clone_failed, reason}}
+
       {output, _code} ->
         Logger.error("[SigmaSync] Failed to clone repository: #{output}")
         {:error, {:clone_failed, output}}
-
-      {:error, reason} ->
-        {:error, {:clone_failed, reason}}
     end
   rescue
     e ->
@@ -548,15 +550,17 @@ defmodule TamanduaServer.ThreatIntel.SigmaSync do
         Logger.info("[SigmaSync] Repository updated successfully")
         :ok
 
+      # {:error, reason} must precede the generic {output, _code} clause;
+      # see clone_repo/1.
+      {:error, reason} ->
+        {:error, {:pull_failed, reason}}
+
       {output, _code} ->
         # Try to recover by resetting and pulling
         Logger.warning("[SigmaSync] Pull failed, attempting reset: #{output}")
         OSCommand.run("git", ["reset", "--hard", "origin/master"], cd: repo_path)
         OSCommand.run("git", ["pull"], cd: repo_path)
         :ok
-
-      {:error, reason} ->
-        {:error, {:pull_failed, reason}}
     end
   rescue
     e ->
@@ -566,9 +570,11 @@ defmodule TamanduaServer.ThreatIntel.SigmaSync do
 
   defp get_current_commit(repo_path) do
     case OSCommand.run("git", ["rev-parse", "HEAD"], cd: repo_path, stderr_to_stdout: true) do
+      # {:error, reason} must precede the generic {output, _} clause;
+      # see clone_repo/1.
       {commit, 0} -> {:ok, String.trim(commit)}
-      {output, _} -> {:error, {:git_error, output}}
       {:error, reason} -> {:error, {:git_error, reason}}
+      {output, _} -> {:error, {:git_error, output}}
     end
   rescue
     e -> {:error, {:git_error, e}}

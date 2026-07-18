@@ -35,7 +35,6 @@ defmodule TamanduaServer.Detection.ThreatIntel.VirusTotal do
   require Logger
 
   @api_base "https://www.virustotal.com/api/v3"
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   # Rate limiting: 4 requests per minute for free tier

@@ -44,8 +44,6 @@ defmodule TamanduaServer.Integrations.SOAR.FortiSOAR do
   @incidents_endpoint "/api/3/incidents"
   @indicators_endpoint "/api/3/indicators"
   @playbooks_endpoint "/api/3/playbooks"
-  @workflow_endpoint "/api/3/workflows"
-  @module_endpoint "/api/3"
   @execute_endpoint "/api/3/manual_trigger"
 
   defstruct [

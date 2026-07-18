@@ -29,7 +29,6 @@ defmodule TamanduaServer.Kubernetes.AdmissionPolicy do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias TamanduaServer.Repo
 
   @type t :: %__MODULE__{}
 

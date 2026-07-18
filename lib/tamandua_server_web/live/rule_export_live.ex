@@ -1,7 +1,6 @@
 defmodule TamanduaServerWeb.RuleExportLive do
   use TamanduaServerWeb, :live_view
 
-  alias TamanduaServer.Detection
   alias TamanduaServer.Detection.{RuleExporter, YaraRule, SigmaRule, IOC}
   alias TamanduaServer.Repo
 

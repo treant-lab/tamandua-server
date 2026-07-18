@@ -75,6 +75,59 @@ defmodule TamanduaServer.NDR.EventNormalizerTest do
   end
 
   describe "network_context/1" do
+    test "normalizes visibility and source attribution fields when present" do
+      event =
+        EventNormalizer.normalize_event(%{
+          event_type: "network_connect",
+          payload: %{
+            remote_ip: "203.0.113.10",
+            visibility_level: "Degraded",
+            visibility_gaps: ["dns_rows", :packet_dpi],
+            domain_source: "TLS_SNI",
+            bytes_source: "FLOW_COUNTERS",
+            tls_metadata_source: "ClientHello",
+            process_attribution_source: "Endpoint_PID"
+          }
+        })
+
+      assert event.payload.visibility_level == "degraded"
+      assert event.payload.visibility_gaps == ["dns_rows", "packet_dpi"]
+      assert event.payload.domain_source == "tls_sni"
+      assert event.payload.bytes_source == "flow_counters"
+      assert event.payload.tls_metadata_source == "clienthello"
+      assert event.payload.process_attribution_source == "endpoint_pid"
+    end
+
+    test "promotes socket-table enrichment and event metadata into visibility fields" do
+      event =
+        EventNormalizer.normalize_event(%{
+          event_type: "network_connect",
+          metadata: %{
+            "network_domain_source" => "recent_dns_cache",
+            "network_bytes_source" => "not_available_socket_table",
+            "network_tls_source" => "not_available_socket_table"
+          },
+          payload: %{
+            remote_ip: "203.0.113.77",
+            domain_candidates: ["endpoint-enrichment.example"],
+            enrichment: %{
+              visibility: %{
+                bytes: %{degraded: true},
+                tls: %{degraded: true},
+                sni: %{degraded: true}
+              }
+            }
+          }
+        })
+
+      assert event.payload.domain_source == "recent_dns_cache"
+      assert event.payload.bytes_source == "not_available_socket_table"
+      assert event.payload.tls_metadata_source == "not_available_socket_table"
+      assert "bytes_not_available" in event.payload.visibility_gaps
+      assert "tls_metadata_not_available" in event.payload.visibility_gaps
+      assert "sni_not_available" in event.payload.visibility_gaps
+    end
+
     test "includes encrypted traffic fields used by alert evidence" do
       context =
         EventNormalizer.network_context(%{
@@ -92,6 +145,28 @@ defmodule TamanduaServer.NDR.EventNormalizerTest do
       assert context.quic_version == "1"
       assert context.encrypted_dns_transport == "doh"
       assert context.is_quic == true
+    end
+
+    test "includes visibility and source attribution fields used by alert evidence" do
+      context =
+        EventNormalizer.network_context(%{
+          payload: %{
+            remote_ip: "203.0.113.10",
+            visibility_level: "live_only",
+            visibility_gaps: ["no_persisted_flow_rows"],
+            domain_source: "tls_sni",
+            bytes_source: "flow_counters",
+            tls_metadata_source: "clienthello",
+            process_attribution_source: "endpoint_pid"
+          }
+        })
+
+      assert context.visibility_level == "live_only"
+      assert context.visibility_gaps == ["no_persisted_flow_rows"]
+      assert context.domain_source == "tls_sni"
+      assert context.bytes_source == "flow_counters"
+      assert context.tls_metadata_source == "clienthello"
+      assert context.process_attribution_source == "endpoint_pid"
     end
   end
 end

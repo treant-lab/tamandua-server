@@ -8,7 +8,6 @@ defmodule TamanduaServer.Dashboards.Manager do
   alias TamanduaServer.Dashboards.{Layout, Widget, WidgetDataCache}
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Detection.Engine
 
   require Logger
 

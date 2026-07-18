@@ -86,41 +86,42 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   @doc """
   Get playbook version information.
   """
-  @spec get_version_info(String.t()) :: {:ok, map()} | {:error, term()}
-  def get_version_info(playbook_id) do
-    GenServer.call(__MODULE__, {:get_version_info, playbook_id})
+  @spec get_version_info(String.t(), term()) :: {:ok, map()} | {:error, term()}
+  def get_version_info(playbook_id, scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_version_info, playbook_id, scope})
   end
 
   @doc """
   Compare playbook versions between Tamandua and SOAR.
   """
-  @spec compare_versions(String.t(), atom()) :: {:ok, map()} | {:error, term()}
-  def compare_versions(playbook_id, platform) do
-    GenServer.call(__MODULE__, {:compare_versions, playbook_id, platform}, 30_000)
+  @spec compare_versions(String.t(), atom(), term()) :: {:ok, map()} | {:error, term()}
+  def compare_versions(playbook_id, platform, scope \\ nil) do
+    GenServer.call(__MODULE__, {:compare_versions, playbook_id, platform, scope}, 30_000)
   end
 
   @doc """
   Resolve a sync conflict.
   """
-  @spec resolve_conflict(String.t(), :keep_local | :keep_remote | :merge) :: :ok | {:error, term()}
-  def resolve_conflict(conflict_id, resolution) do
-    GenServer.call(__MODULE__, {:resolve_conflict, conflict_id, resolution})
+  @spec resolve_conflict(String.t(), :keep_local | :keep_remote | :merge, term()) ::
+          :ok | {:error, term()}
+  def resolve_conflict(conflict_id, resolution, scope \\ nil) do
+    GenServer.call(__MODULE__, {:resolve_conflict, conflict_id, resolution, scope})
   end
 
   @doc """
   Get pending conflicts.
   """
-  @spec get_conflicts() :: {:ok, [map()]}
-  def get_conflicts do
-    GenServer.call(__MODULE__, :get_conflicts)
+  @spec get_conflicts(term()) :: {:ok, [map()]} | {:error, term()}
+  def get_conflicts(scope \\ nil) do
+    GenServer.call(__MODULE__, {:get_conflicts, scope})
   end
 
   @doc """
   Validate a playbook for export to a specific platform.
   """
-  @spec validate_for_export(String.t(), atom()) :: {:ok, []} | {:error, [String.t()]}
-  def validate_for_export(playbook_id, platform) do
-    GenServer.call(__MODULE__, {:validate_for_export, playbook_id, platform})
+  @spec validate_for_export(String.t(), atom(), term()) :: {:ok, []} | {:error, term()}
+  def validate_for_export(playbook_id, platform, scope \\ nil) do
+    GenServer.call(__MODULE__, {:validate_for_export, playbook_id, platform, scope})
   end
 
   @doc """
@@ -163,7 +164,7 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   @impl true
   def handle_call({:export_playbook, playbook_id, platform, opts}, _from, state) do
-    case TamanduaPlaybook.get(playbook_id) do
+    case engine_get_playbook(playbook_id, opts[:scope]) do
       {:ok, playbook} ->
         case convert_to_soar_format(playbook, platform, opts) do
           {:ok, soar_playbook} ->
@@ -189,7 +190,7 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   @impl true
   def handle_call({:export_playbooks, playbook_ids, platform, opts}, _from, state) do
     results = Enum.map(playbook_ids, fn id ->
-      case TamanduaPlaybook.get(id) do
+      case engine_get_playbook(id, opts[:scope]) do
         {:ok, playbook} ->
           case convert_to_soar_format(playbook, platform, opts) do
             {:ok, soar_playbook} -> {:ok, {id, soar_playbook}}
@@ -217,19 +218,19 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     case convert_from_soar_format(soar_playbook, platform, opts) do
       {:ok, tamandua_playbook} ->
         # Check for conflicts
-        case check_import_conflict(tamandua_playbook, state) do
+        case check_import_conflict(tamandua_playbook, state, opts[:scope]) do
           {:conflict, existing} ->
-            conflict = create_conflict(tamandua_playbook, existing, platform)
+            conflict = create_conflict(tamandua_playbook, existing, platform, opts[:scope])
             new_state = %{state | conflict_log: [conflict | state.conflict_log]}
 
             if opts[:force] do
-              save_playbook(tamandua_playbook, new_state)
+              save_playbook(tamandua_playbook, new_state, opts[:scope])
             else
               {:reply, {:error, {:conflict, conflict.id}}, new_state}
             end
 
           :no_conflict ->
-            save_playbook(tamandua_playbook, state)
+            save_playbook(tamandua_playbook, state, opts[:scope])
         end
 
       error ->
@@ -240,35 +241,40 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   @impl true
   def handle_call({:sync_playbooks, platform, opts}, _from, state) do
     # Get local playbooks
-    {:ok, local_playbooks} = TamanduaPlaybook.list()
+    case engine_list_playbooks(opts[:scope]) do
+      {:ok, local_playbooks} ->
+        # Get remote playbooks
+        remote_playbooks = fetch_remote_playbooks(platform)
 
-    # Get remote playbooks
-    remote_playbooks = fetch_remote_playbooks(platform)
+        # Compare and sync
+        sync_result = perform_sync(local_playbooks, remote_playbooks, platform, opts, state)
 
-    # Compare and sync
-    sync_result = perform_sync(local_playbooks, remote_playbooks, platform, opts, state)
+        new_stats = state.stats
+        |> update_stat(:syncs)
+        |> Map.put(:last_sync, DateTime.utc_now())
 
-    new_stats = state.stats
-    |> update_stat(:syncs)
-    |> Map.put(:last_sync, DateTime.utc_now())
+        {:reply, sync_result, %{state | stats: new_stats}}
 
-    {:reply, sync_result, %{state | stats: new_stats}}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
-  def handle_call({:get_version_info, playbook_id}, _from, state) do
-    version_info = Map.get(state.version_map, playbook_id, %{
+  def handle_call({:get_version_info, playbook_id, scope}, _from, state) do
+    version_info = Map.get(state.version_map, {scope, playbook_id}, %{
       local_version: nil,
       remote_versions: %{},
       last_sync: nil
     })
 
-    {:reply, {:ok, version_info}, state}
+    reply = if valid_scope?(scope), do: {:ok, version_info}, else: {:error, :tenant_required}
+    {:reply, reply, state}
   end
 
   @impl true
-  def handle_call({:compare_versions, playbook_id, platform}, _from, state) do
-    case TamanduaPlaybook.get(playbook_id) do
+  def handle_call({:compare_versions, playbook_id, platform, scope}, _from, state) do
+    case engine_get_playbook(playbook_id, scope) do
       {:ok, local} ->
         case fetch_remote_playbook(playbook_id, platform) do
           {:ok, remote} ->
@@ -285,32 +291,43 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   end
 
   @impl true
-  def handle_call({:resolve_conflict, conflict_id, resolution}, _from, state) do
-    case Enum.find(state.conflict_log, &(&1.id == conflict_id)) do
-      nil ->
-        {:reply, {:error, :conflict_not_found}, state}
+  def handle_call({:resolve_conflict, conflict_id, resolution, scope}, _from, state) do
+    if valid_scope?(scope) do
+      case Enum.find(state.conflict_log, &(&1.id == conflict_id and &1.scope == scope)) do
+        nil ->
+          {:reply, {:error, :conflict_not_found}, state}
 
-      conflict ->
-        case apply_resolution(conflict, resolution) do
-          :ok ->
-            new_log = Enum.reject(state.conflict_log, &(&1.id == conflict_id))
-            new_stats = update_stat(state.stats, :conflicts_resolved)
-            {:reply, :ok, %{state | conflict_log: new_log, stats: new_stats}}
+        conflict ->
+          case apply_resolution(conflict, resolution) do
+            :ok ->
+              new_log =
+                Enum.reject(state.conflict_log, &(&1.id == conflict_id and &1.scope == scope))
 
-          error ->
-            {:reply, error, state}
+              new_stats = update_stat(state.stats, :conflicts_resolved)
+              {:reply, :ok, %{state | conflict_log: new_log, stats: new_stats}}
+
+            error ->
+              {:reply, error, state}
+          end
         end
+    else
+      {:reply, {:error, :tenant_required}, state}
     end
   end
 
   @impl true
-  def handle_call(:get_conflicts, _from, state) do
-    {:reply, {:ok, state.conflict_log}, state}
+  def handle_call({:get_conflicts, scope}, _from, state) do
+    if valid_scope?(scope) do
+      conflicts = Enum.filter(state.conflict_log, &(&1.scope == scope))
+      {:reply, {:ok, conflicts}, state}
+    else
+      {:reply, {:error, :tenant_required}, state}
+    end
   end
 
   @impl true
-  def handle_call({:validate_for_export, playbook_id, platform}, _from, state) do
-    case TamanduaPlaybook.get(playbook_id) do
+  def handle_call({:validate_for_export, playbook_id, platform, scope}, _from, state) do
+    case engine_get_playbook(playbook_id, scope) do
       {:ok, playbook} ->
         errors = validate_playbook(playbook, platform)
         if length(errors) == 0 do
@@ -372,18 +389,29 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   end
 
   # XSOAR Conversion
+  #
+  # NOTE: Response.Playbook.Schema has NO playbook-level `inputs`, `outputs`
+  # or `version` fields (see playbook.ex Schema), and persisted steps are
+  # string-keyed maps. The old dot access (playbook.inputs, playbook.version,
+  # step.name, ...) raised KeyError at runtime for every persisted playbook —
+  # masked by the blanket rescue in convert_to_soar_format/3, so exports
+  # always failed. field_value/3 reads what actually exists (and passes
+  # through :inputs/:outputs/:version when the value is a plain map, e.g. a
+  # SOAR payload being round-tripped) instead of inventing schema fields.
   defp convert_to_xsoar(playbook, _opts) do
+    steps = field_value(playbook, :steps, [])
+
     %{
-      id: playbook.id,
-      name: playbook.name,
-      description: playbook.description,
-      version: playbook.version || 1,
+      id: field_value(playbook, :id),
+      name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
+      version: field_value(playbook, :version) || 1,
       fromVersion: "6.0.0",
-      tasks: convert_steps_to_xsoar_tasks(playbook.steps),
-      inputs: convert_inputs_to_xsoar(playbook.inputs),
-      outputs: convert_outputs_to_xsoar(playbook.outputs),
+      tasks: convert_steps_to_xsoar_tasks(steps),
+      inputs: convert_inputs_to_xsoar(field_value(playbook, :inputs)),
+      outputs: convert_outputs_to_xsoar(field_value(playbook, :outputs)),
       starttaskid: "0",
-      view: build_xsoar_view(playbook.steps),
+      view: build_xsoar_view(steps),
       system: false,
       hidden: false
     }
@@ -405,13 +433,14 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   # Splunk SOAR Conversion
   defp convert_to_splunk_soar(playbook, _opts) do
     %{
-      name: playbook.name,
-      description: playbook.description,
+      name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
       playbook_type: "automation",
       python_version: "3",
-      blocks: convert_steps_to_phantom_blocks(playbook.steps),
-      inputs: playbook.inputs || [],
-      outputs: playbook.outputs || [],
+      blocks: convert_steps_to_phantom_blocks(field_value(playbook, :steps, [])),
+      # Schema has no inputs/outputs fields; only plain-map payloads carry them.
+      inputs: field_value(playbook, :inputs, []),
+      outputs: field_value(playbook, :outputs, []),
       coa: build_phantom_coa(playbook)
     }
   end
@@ -430,15 +459,17 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   # IBM SOAR Conversion
   defp convert_to_ibm_soar(playbook, _opts) do
+    steps = field_value(playbook, :steps, [])
+
     %{
-      name: playbook.name,
-      display_name: playbook.name,
-      description: %{format: "text", content: playbook.description || ""},
+      name: field_value(playbook, :name),
+      display_name: field_value(playbook, :name),
+      description: %{format: "text", content: field_value(playbook, :description, "")},
       workflow: %{
         workflow_id: generate_workflow_id(),
         content: %{
-          nodes: convert_steps_to_resilient_nodes(playbook.steps),
-          edges: build_resilient_edges(playbook.steps)
+          nodes: convert_steps_to_resilient_nodes(steps),
+          edges: build_resilient_edges(steps)
         }
       },
       local_scripts: [],
@@ -460,14 +491,15 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   # FortiSOAR Conversion
   defp convert_to_fortisoar(playbook, _opts) do
     %{
-      name: playbook.name,
-      description: playbook.description,
+      name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
       isActive: true,
       triggerType: "manual",
       priority: 5,
-      steps: convert_steps_to_fortisoar_steps(playbook.steps),
-      parameters: playbook.inputs || [],
-      outputs: playbook.outputs || []
+      steps: convert_steps_to_fortisoar_steps(field_value(playbook, :steps, [])),
+      # Schema has no inputs/outputs fields; only plain-map payloads carry them.
+      parameters: field_value(playbook, :inputs, []),
+      outputs: field_value(playbook, :outputs, [])
     }
   end
 
@@ -486,13 +518,14 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   # Chronicle SOAR Conversion
   defp convert_to_chronicle(playbook, _opts) do
     %{
-      name: playbook.name,
-      display_name: playbook.name,
-      description: playbook.description,
+      name: field_value(playbook, :name),
+      display_name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
       trigger_type: "MANUAL",
       is_enabled: true,
-      blocks: convert_steps_to_chronicle_blocks(playbook.steps),
-      parameters: playbook.inputs || []
+      blocks: convert_steps_to_chronicle_blocks(field_value(playbook, :steps, [])),
+      # Schema has no inputs field; only plain-map payloads carry it.
+      parameters: field_value(playbook, :inputs, [])
     }
   end
 
@@ -510,12 +543,13 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   # Swimlane Conversion
   defp convert_to_swimlane(playbook, _opts) do
     %{
-      name: playbook.name,
-      description: playbook.description,
+      name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
       enabled: true,
-      actions: convert_steps_to_swimlane_actions(playbook.steps),
+      actions: convert_steps_to_swimlane_actions(field_value(playbook, :steps, [])),
       triggers: [%{type: "manual"}],
-      inputs: playbook.inputs || []
+      # Schema has no inputs field; only plain-map payloads carry it.
+      inputs: field_value(playbook, :inputs, [])
     }
   end
 
@@ -532,11 +566,13 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   # Tines Conversion
   defp convert_to_tines(playbook, _opts) do
+    steps = field_value(playbook, :steps, [])
+
     %{
-      name: playbook.name,
-      description: playbook.description,
-      agents: convert_steps_to_tines_agents(playbook.steps),
-      links: build_tines_links(playbook.steps)
+      name: field_value(playbook, :name),
+      description: field_value(playbook, :description),
+      agents: convert_steps_to_tines_agents(steps),
+      links: build_tines_links(steps)
     }
   end
 
@@ -554,6 +590,10 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   # Step/Action Conversion Helpers
   # ============================================================================
 
+  # Persisted playbook steps are string-keyed maps (Schema normalize_steps/1
+  # coerces every key to a string); fresh SOAR conversions are atom-keyed.
+  # Dot access (step.name, step.action, ...) raised KeyError on the persisted
+  # shape, so field_value/3 is used throughout the step converters.
   defp convert_steps_to_xsoar_tasks(steps) when is_list(steps) do
     steps
     |> Enum.with_index()
@@ -561,13 +601,13 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
       {to_string(index), %{
         id: to_string(index),
         taskid: generate_task_id(),
-        type: map_action_to_xsoar_type(step.action),
+        type: map_action_to_xsoar_type(field_value(step, :action)),
         task: %{
           id: generate_task_id(),
-          name: step.name || step.action,
-          description: step.description || "",
-          script: step.script,
-          scriptarguments: step.parameters || %{}
+          name: field_value(step, :name) || field_value(step, :action),
+          description: field_value(step, :description, ""),
+          script: field_value(step, :script),
+          scriptarguments: field_value(step, :parameters, %{})
         },
         nexttasks: build_next_tasks(steps, index),
         separatecontext: false,
@@ -600,10 +640,10 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         id: index,
-        name: step.name || step.action,
-        type: map_action_to_phantom_type(step.action),
-        action: step.action,
-        parameters: step.parameters || %{},
+        name: field_value(step, :name) || field_value(step, :action),
+        type: map_action_to_phantom_type(field_value(step, :action)),
+        action: field_value(step, :action),
+        parameters: field_value(step, :parameters, %{}),
         next: if(index < length(steps) - 1, do: [index + 1], else: [])
       }
     end)
@@ -628,9 +668,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         id: "node_#{index}",
-        type: map_action_to_resilient_type(step.action),
-        name: step.name || step.action,
-        properties: step.parameters || %{}
+        type: map_action_to_resilient_type(field_value(step, :action)),
+        name: field_value(step, :name) || field_value(step, :action),
+        properties: field_value(step, :parameters, %{})
       }
     end)
   end
@@ -654,9 +694,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         "@id": "step_#{index}",
-        name: step.name || step.action,
-        stepType: map_action_to_fortisoar_type(step.action),
-        arguments: step.parameters || %{}
+        name: field_value(step, :name) || field_value(step, :action),
+        stepType: map_action_to_fortisoar_type(field_value(step, :action)),
+        arguments: field_value(step, :parameters, %{})
       }
     end)
   end
@@ -680,9 +720,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         identifier: "block_#{index}",
-        name: step.name || step.action,
-        type: map_action_to_chronicle_type(step.action),
-        parameters: step.parameters || %{}
+        name: field_value(step, :name) || field_value(step, :action),
+        type: map_action_to_chronicle_type(field_value(step, :action)),
+        parameters: field_value(step, :parameters, %{})
       }
     end)
   end
@@ -706,9 +746,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         id: "action_#{index}",
-        name: step.name || step.action,
-        actionType: map_action_to_swimlane_type(step.action),
-        inputs: step.parameters || %{}
+        name: field_value(step, :name) || field_value(step, :action),
+        actionType: map_action_to_swimlane_type(field_value(step, :action)),
+        inputs: field_value(step, :parameters, %{})
       }
     end)
   end
@@ -732,9 +772,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     |> Enum.map(fn {step, index} ->
       %{
         id: index,
-        name: step.name || step.action,
-        type: map_action_to_tines_type(step.action),
-        options: step.parameters || %{}
+        name: field_value(step, :name) || field_value(step, :action),
+        type: map_action_to_tines_type(field_value(step, :action)),
+        options: field_value(step, :parameters, %{})
       }
     end)
   end
@@ -954,9 +994,10 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   defp build_phantom_coa(playbook) do
     %{
-      title: playbook.name,
-      description: playbook.description,
-      version: playbook.version || 1
+      title: field_value(playbook, :name),
+      description: field_value(playbook, :description),
+      # Schema has no version field; only plain-map payloads carry one.
+      version: field_value(playbook, :version) || 1
     }
   end
 
@@ -1076,7 +1117,7 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
         remote_playbook = remote_map[name]
         case convert_from_soar_format(remote_playbook, platform, opts) do
           {:ok, tamandua_playbook} ->
-            case TamanduaPlaybook.create(tamandua_playbook) do
+            case engine_create_playbook(tamandua_playbook, opts[:scope]) do
               {:ok, _} -> true
               _ -> false
             end
@@ -1106,11 +1147,14 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     {:ok, generate_task_id()}
   end
 
-  defp check_import_conflict(playbook, state) do
-    case TamanduaPlaybook.get_by_name(playbook.name) do
+  defp check_import_conflict(playbook, state, scope) do
+    case engine_get_playbook_by_name(field_value(playbook, :name), scope) do
       {:ok, existing} ->
-        version_info = Map.get(state.version_map, existing.id, %{})
-        if version_info[:remote_version] != playbook.version do
+        version_info = Map.get(state.version_map, {scope, existing.id}, %{})
+
+        # Some convert_from_* results carry no :version key (IBM/Tines), and
+        # dot access raised KeyError there; nil is an honest "unknown version".
+        if version_info[:remote_version] != field_value(playbook, :version) do
           {:conflict, existing}
         else
           :no_conflict
@@ -1121,13 +1165,16 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
     end
   end
 
-  defp create_conflict(new_playbook, existing, platform) do
+  defp create_conflict(new_playbook, existing, platform, scope) do
     %{
       id: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower),
-      playbook_name: new_playbook.name,
-      local_version: existing.version,
-      remote_version: new_playbook.version,
+      playbook_name: field_value(new_playbook, :name),
+      # Schema has no version field, so the local version is honestly nil;
+      # remote version comes from the SOAR payload when present.
+      local_version: field_value(existing, :version),
+      remote_version: field_value(new_playbook, :version),
       platform: platform,
+      scope: scope,
       local_playbook: existing,
       remote_playbook: new_playbook,
       created_at: DateTime.utc_now()
@@ -1142,32 +1189,39 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
       :keep_remote ->
         # Replace local with remote
-        TamanduaPlaybook.update(conflict.local_playbook.id, conflict.remote_playbook)
+        engine_update_playbook(conflict.local_playbook.id, conflict.remote_playbook, conflict.scope)
 
       :merge ->
         # Merge logic - combine steps from both
         merged = merge_playbooks(conflict.local_playbook, conflict.remote_playbook)
-        TamanduaPlaybook.update(conflict.local_playbook.id, merged)
+        engine_update_playbook(conflict.local_playbook.id, merged, conflict.scope)
     end
   end
 
   defp merge_playbooks(local, remote) do
-    # Simple merge: use local metadata, combine unique steps
-    local_steps = local.steps || []
-    remote_steps = remote.steps || []
+    # Simple merge: use local metadata, combine unique steps.
+    local_steps = field_value(local, :steps, [])
+    remote_steps = field_value(remote, :steps, [])
 
-    # Get unique steps by name
-    local_names = MapSet.new(Enum.map(local_steps, & &1.name))
-    new_steps = Enum.reject(remote_steps, &MapSet.member?(local_names, &1.name))
+    # Steps may be string-keyed (persisted JSONB) or atom-keyed (fresh SOAR
+    # conversions); compare identity by name across both shapes.
+    local_names =
+      local_steps
+      |> Enum.map(&field_value(&1, :name))
+      |> MapSet.new()
+    new_steps = Enum.reject(remote_steps, &MapSet.member?(local_names, field_value(&1, :name)))
 
-    %{local |
-      steps: local_steps ++ new_steps,
-      version: (local.version || 0) + 1
-    }
+    # `local` is a Playbook.Schema struct with no :version field, so the old
+    # `%{local | version: ...}` raised KeyError. There is no local version
+    # tracking on the schema to bump; return plain map attrs (the engine
+    # changeset requires plain maps anyway) with only the merged steps.
+    local
+    |> sanitize_playbook_attrs()
+    |> Map.put(:steps, local_steps ++ new_steps)
   end
 
-  defp save_playbook(playbook, state) do
-    case TamanduaPlaybook.create(playbook) do
+  defp save_playbook(playbook, state, scope) do
+    case engine_create_playbook(playbook, scope) do
       {:ok, saved} ->
         new_stats = update_stat(state.stats, :imports)
         {:reply, {:ok, saved.id}, %{state | stats: new_stats}}
@@ -1178,37 +1232,43 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   end
 
   defp compare_playbooks(local, remote) do
+    local_steps = field_value(local, :steps, [])
+    remote_steps = field_value(remote, :steps, [])
+    local_version = field_value(local, :version)
+    remote_version = field_value(remote, :version)
+
     %{
-      local_version: local.version,
-      remote_version: remote.version,
+      local_version: local_version,
+      remote_version: remote_version,
       steps_diff: %{
-        local_count: length(local.steps || []),
-        remote_count: length(remote.steps || []),
-        added: length((remote.steps || []) -- (local.steps || [])),
-        removed: length((local.steps || []) -- (remote.steps || []))
+        local_count: length(local_steps),
+        remote_count: length(remote_steps),
+        added: length(remote_steps -- local_steps),
+        removed: length(local_steps -- remote_steps)
       },
-      needs_sync: local.version != remote.version
+      needs_sync: local_version != remote_version
     }
   end
 
   defp validate_playbook(playbook, platform) do
     errors = []
+    name = field_value(playbook, :name)
+    steps = field_value(playbook, :steps, [])
 
-    # Check required fields
-    errors = if playbook.name == nil or playbook.name == "" do
-      ["Playbook name is required" | errors]
-    else
-      errors
-    end
+    errors =
+      if is_nil(name) or name == "" do
+        ["Playbook name is required" | errors]
+      else
+        errors
+      end
 
-    # Check steps
-    errors = if playbook.steps == nil or length(playbook.steps) == 0 do
-      ["Playbook must have at least one step" | errors]
-    else
-      errors
-    end
+    errors =
+      if length(steps) == 0 do
+        ["Playbook must have at least one step" | errors]
+      else
+        errors
+      end
 
-    # Platform-specific validation
     errors = case platform do
       :xsoar -> validate_for_xsoar(playbook, errors)
       :splunk_soar -> validate_for_splunk_soar(playbook, errors)
@@ -1220,7 +1280,7 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   defp validate_for_xsoar(playbook, errors) do
     # XSOAR-specific validation
-    if String.length(playbook.name || "") > 255 do
+    if String.length(field_value(playbook, :name, "") || "") > 255 do
       ["Playbook name too long for XSOAR (max 255 chars)" | errors]
     else
       errors
@@ -1229,7 +1289,9 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
 
   defp validate_for_splunk_soar(playbook, errors) do
     # Splunk SOAR-specific validation
-    if playbook.steps && Enum.any?(playbook.steps, &(&1.action == nil)) do
+    steps = field_value(playbook, :steps, [])
+
+    if Enum.any?(steps, &(field_value(&1, :action) == nil)) do
       ["All steps must have an action defined for Splunk SOAR" | errors]
     else
       errors
@@ -1239,4 +1301,80 @@ defmodule TamanduaServer.Integrations.SOAR.PlaybookSync do
   defp update_stat(stats, key) do
     Map.update(stats, key, 1, &(&1 + 1))
   end
+
+  # ============================================================================
+  # Playbook Engine Bridge
+  # ============================================================================
+  # The real local playbook API is TamanduaServer.Response.Playbook. Scope is
+  # always explicit so imports, exports, versions and conflicts stay tenant-bound.
+  # The engine is a GenServer, so a stopped/crashed engine surfaces as an EXIT
+  # from GenServer.call, not an exception — catch :exit and degrade honestly.
+
+  defp engine_get_playbook(id, scope) do
+    TamanduaPlaybook.get_playbook(id, scope)
+  catch
+    :exit, _ -> {:error, :playbook_engine_unavailable}
+  end
+
+  defp engine_list_playbooks(scope) do
+    TamanduaPlaybook.list_playbooks(%{}, scope)
+  catch
+    :exit, _ -> {:error, :playbook_engine_unavailable}
+  end
+
+  defp engine_create_playbook(attrs, scope) do
+    TamanduaPlaybook.create_playbook(sanitize_playbook_attrs(attrs), scope)
+  catch
+    :exit, _ -> {:error, :playbook_engine_unavailable}
+  end
+
+  defp engine_update_playbook(id, attrs, scope) do
+    TamanduaPlaybook.update_playbook(id, sanitize_playbook_attrs(attrs), scope)
+  catch
+    :exit, _ -> {:error, :playbook_engine_unavailable}
+  end
+
+  # The engine exposes no name-based lookup; resolve via list_playbooks/0.
+  defp engine_get_playbook_by_name(name, scope) do
+    case engine_list_playbooks(scope) do
+      {:ok, playbooks} ->
+        case Enum.find(playbooks, &(field_value(&1, :name) == name)) do
+          nil -> {:error, :not_found}
+          playbook -> {:ok, playbook}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  # Converted SOAR payloads are plain maps, but merge results
+  # (merge_playbooks/2) are Playbook schema structs; the engine's
+  # Schema.changeset/2 requires plain map params.
+  defp sanitize_playbook_attrs(%_{} = struct) do
+    struct |> Map.from_struct() |> Map.delete(:__meta__)
+  end
+
+  defp sanitize_playbook_attrs(attrs) when is_map(attrs), do: attrs
+
+  defp valid_scope?(:system), do: true
+
+  defp valid_scope?({:organization, organization_id}),
+    do: is_binary(organization_id) and organization_id != ""
+
+  defp valid_scope?(_scope), do: false
+
+  defp field_value(value, key, default \\ nil)
+
+  defp field_value(%_{} = struct, key, default) when is_atom(key) do
+    struct
+    |> Map.from_struct()
+    |> Map.get(key, default)
+  end
+
+  defp field_value(map, key, default) when is_map(map) and is_atom(key) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  end
+
+  defp field_value(_value, _key, default), do: default
 end

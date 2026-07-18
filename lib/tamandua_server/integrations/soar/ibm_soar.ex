@@ -39,12 +39,6 @@ defmodule TamanduaServer.Integrations.SOAR.IBMSOAR do
   @default_poll_interval_ms 30_000
 
   # IBM SOAR API endpoints
-  @incidents_endpoint "/rest/orgs/{org_id}/incidents"
-  @artifacts_endpoint "/rest/orgs/{org_id}/incidents/{incident_id}/artifacts"
-  @tasks_endpoint "/rest/orgs/{org_id}/incidents/{incident_id}/tasks"
-  @playbooks_endpoint "/rest/orgs/{org_id}/playbooks"
-  @actions_endpoint "/rest/orgs/{org_id}/actions"
-  @workflows_endpoint "/rest/orgs/{org_id}/workflows"
 
   defstruct [
     :config,

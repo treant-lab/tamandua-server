@@ -70,7 +70,8 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
   # Known vulnerable versions database
   # ============================================================================
 
-  @ssh_vulns [
+  defp ssh_vulns do
+    [
     %{pattern: ~r/OpenSSH[_ ]([1-6]\.\d|7\.[0-3])/i, cve: "CVE-2016-10012", severity: "high",
       description: "OpenSSH < 7.4 - privilege escalation via shared memory manager"},
     %{pattern: ~r/OpenSSH[_ ]([1-6]\.\d|7\.[0-6])/i, cve: "CVE-2018-15473", severity: "medium",
@@ -81,9 +82,11 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
       description: "OpenSSH < 9.8 - regreSSHion race condition RCE (glibc-based Linux)"},
     %{pattern: ~r/dropbear[_ ]20(1[0-9]|20\.[0-8])/i, cve: "CVE-2021-36369", severity: "medium",
       description: "Dropbear SSH < 2020.79 - trivial authentication bypass"},
-  ]
+    ]
+  end
 
-  @http_server_vulns [
+  defp http_server_vulns do
+    [
     %{pattern: ~r/Apache\/2\.4\.(49|50)/i, cve: "CVE-2021-41773", severity: "critical",
       description: "Apache 2.4.49-50 - path traversal and remote code execution"},
     %{pattern: ~r/Apache\/2\.4\.([0-3]\d|4[0-8])/i, cve: "CVE-2021-40438", severity: "high",
@@ -98,7 +101,8 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
       description: "mini_httpd - directory traversal and information disclosure"},
     %{pattern: ~r/GoAhead/i, cve: "CVE-2017-17562", severity: "critical",
       description: "GoAhead embedded web server - environment variable injection RCE"},
-  ]
+    ]
+  end
 
   @snmp_default_communities ["public", "private", "community", "admin", "snmp",
     "default", "manager", "monitor", "secret", "cisco", "switch",
@@ -501,7 +505,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
     community = Map.get(extra, "snmp_community") || Map.get(extra, :snmp_community)
 
     if community && community in @snmp_default_communities do
-      findings = [%VulnFinding{
+      _findings = [%VulnFinding{
         id: Ecto.UUID.generate(),
         device_id: device.id,
         device_ip: ip,
@@ -529,7 +533,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
 
     # SNMP v1/v2c without encryption is inherently insecure
     if snmp_service do
-      findings = [%VulnFinding{
+      _findings = [%VulnFinding{
         id: Ecto.UUID.generate(),
         device_id: device.id,
         device_ip: ip,
@@ -566,7 +570,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
     full_version = "#{banner} #{version}"
 
     # Check against known SSH vulnerabilities
-    Enum.reduce(@ssh_vulns, findings, fn vuln, acc ->
+    Enum.reduce(ssh_vulns(), findings, fn vuln, acc ->
       if Regex.match?(vuln.pattern, full_version) do
         [%VulnFinding{
           id: Ecto.UUID.generate(),
@@ -616,7 +620,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
     full_server = "#{server_header} #{banner}"
 
     # Check for known vulnerable HTTP servers
-    findings = Enum.reduce(@http_server_vulns, findings, fn vuln, acc ->
+    findings = Enum.reduce(http_server_vulns(), findings, fn vuln, acc ->
       if Regex.match?(vuln.pattern, full_server) do
         [%VulnFinding{
           id: Ecto.UUID.generate(),
@@ -646,7 +650,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
 
     # Detect embedded web management interfaces (often have default creds)
     if String.contains?(String.downcase(full_server), ["goahead", "mini_httpd", "boa/", "thttpd", "micro_httpd"]) do
-      findings = [%VulnFinding{
+      _findings = [%VulnFinding{
         id: Ecto.UUID.generate(),
         device_id: device.id,
         device_ip: ip,
@@ -702,7 +706,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
 
     # Check for weak TLS versions
     if tls_version && tls_version in @weak_tls_versions do
-      findings = [%VulnFinding{
+      _findings = [%VulnFinding{
         id: Ecto.UUID.generate(),
         device_id: device.id,
         device_ip: ip,
@@ -736,7 +740,7 @@ defmodule TamanduaServer.NetworkDiscovery.DeviceVulnScanner do
       end)
 
       if weak do
-        findings = [%VulnFinding{
+        _findings = [%VulnFinding{
           id: Ecto.UUID.generate(),
           device_id: device.id,
           device_ip: ip,

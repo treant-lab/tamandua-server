@@ -18,6 +18,273 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
     end)
   end
 
+  test "authorized runtime integrity v2 is routed to persistence as observe-only" do
+    fixture_path =
+      Path.expand(
+        "../../../../../tools/detection_validation/fixtures/runtime_rx_page_content_preview_v1.json",
+        __DIR__
+      )
+
+    evidence =
+      fixture_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> get_in(["scenarios", Access.at(3), "evidence"])
+
+    event_id = Ecto.UUID.generate()
+
+    event = %{
+      "event_id" => event_id,
+      "event_type" => "defense_evasion",
+      "agent_id" => Ecto.UUID.generate(),
+      "timestamp" => "2026-07-17T12:00:00Z",
+      "severity" => "medium",
+      "detections" => [],
+      "metadata" => %{
+        "collector" => "runtime_integrity",
+        "collector_id" => "runtime_integrity",
+        "source" => "runtime_integrity",
+        "provenance" => "platform_collector",
+        "provenance_state" => "platform_observed",
+        "runtime_integrity_transition" => "finding_detected",
+        "platform" => "linux",
+        "collected_at" => "2026-07-17T12:00:00Z",
+        "transport_batch_sequence" => "1",
+        "sequence_scope" => "process",
+        "transport_nonce" => event_id,
+        "nonce_scope" => "event",
+        "freshness_state" => "process_scoped_unverified"
+      },
+      "payload" => evidence
+    }
+
+    message = %Message{data: event, acknowledger: {Broadway.NoopAcknowledger, nil, nil}}
+
+    assert %Message{data: routed, batcher: :default} =
+             Ingestor.handle_message(:default, message, %{})
+
+    assert routed.payload.schema == "tamandua.runtime_integrity_preview/v1"
+    assert routed.payload.status == "mismatch"
+    assert routed.event_type == "runtime_integrity_preview"
+    assert routed.severity == "medium"
+    assert routed.detections == []
+
+    assert routed.metadata["server_projection_authority"] ==
+             "tamandua_server/runtime_integrity_preview/v1"
+
+    refute inspect(routed) =~ "protected_config_sha256"
+    refute inspect(routed) =~ "startup baseline"
+
+    unauthorized = put_in(event, ["metadata", "collector_id"], "unknown")
+    refute TamanduaServer.Agents.RuntimeIntegrityPreview.authorized_event?(unauthorized)
+
+    nested_authority =
+      Enum.reduce(1..13, %{"server_projection_authority" => nil}, fn _index, nested ->
+        [nested]
+      end)
+
+    for forged <- [
+          routed,
+          routed.payload,
+          %{event_type: :runtime_integrity_preview, payload: %{}},
+          %{
+            "event_type" => "process_start",
+            "metadata" => %{"server_projection_authority" => "forged"},
+            "payload" => %{}
+          },
+          %{
+            event_type: "process_start",
+            server_projection_authority: "forged",
+            payload: %{}
+          },
+          %{"event_type" => "process_start", "payload" => routed.payload},
+          %{"event_type" => "process_start", "payload" => nested_authority}
+        ] do
+      forged_message = %Message{
+        data: forged,
+        acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+      }
+
+      assert %Message{data: %{_skip_persist: true}, batcher: :default} =
+               skipped =
+               Ingestor.handle_message(:default, forged_message, %{})
+
+      assert [skipped] == Ingestor.handle_batch(:default, [skipped], %{}, %{})
+    end
+  end
+
+  test "authorized runtime integrity v3 is immediately reduced to the closed v2 projection" do
+    fixture_path =
+      Path.expand(
+        "../../../../../tools/detection_validation/fixtures/runtime_rx_page_content_preview_v2.json",
+        __DIR__
+      )
+
+    evidence =
+      fixture_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> get_in(["scenarios", Access.at(5), "evidence"])
+
+    event_id = Ecto.UUID.generate()
+    timestamp = "2026-07-17T13:00:00Z"
+
+    event = %{
+      "event_id" => event_id,
+      "event_type" => "defense_evasion",
+      "agent_id" => Ecto.UUID.generate(),
+      "timestamp" => timestamp,
+      "severity" => "medium",
+      "detections" => [],
+      "metadata" => %{
+        "collector" => "runtime_integrity",
+        "collector_id" => "runtime_integrity",
+        "source" => "runtime_integrity",
+        "provenance" => "platform_collector",
+        "provenance_state" => "platform_observed",
+        "runtime_integrity_transition" => "finding_detected",
+        "platform" => "linux",
+        "collected_at" => timestamp,
+        "transport_batch_sequence" => "2",
+        "sequence_scope" => "process",
+        "transport_nonce" => event_id,
+        "nonce_scope" => "event",
+        "freshness_state" => "process_scoped_unverified"
+      },
+      "payload" => evidence
+    }
+
+    message = %Message{data: event, acknowledger: {Broadway.NoopAcknowledger, nil, nil}}
+
+    assert %Message{data: routed, batcher: :default} =
+             Ingestor.handle_message(:default, message, %{})
+
+    assert routed.event_type == "runtime_integrity_preview"
+    assert routed.payload.schema == "tamandua.runtime_integrity_preview/v2"
+    assert routed.payload.status == "mismatch"
+    assert routed.payload.coverage.sweep_pages_compared == 2_488
+    assert routed.detections == []
+
+    assert routed.metadata["server_projection_authority"] ==
+             "tamandua_server/runtime_integrity_preview/v2"
+
+    refute inspect(routed) =~ "baseline_source"
+    refute inspect(routed) =~ "protected_config_sha256_startup_fd"
+
+    forged = %{"event_type" => "process_start", "payload" => routed.payload}
+    forged_message = %{message | data: forged}
+
+    assert %Message{data: %{_skip_persist: true}, batcher: :default} =
+             skipped =
+             Ingestor.handle_message(:default, forged_message, %{})
+
+    assert [skipped] == Ingestor.handle_batch(:default, [skipped], %{}, %{})
+  end
+
+  test "malformed raw runtime integrity v2 and v3 fail closed before generic downstream" do
+    fixtures = [
+      "../../../../../tools/detection_validation/fixtures/runtime_rx_page_content_preview_v1.json",
+      "../../../../../tools/detection_validation/fixtures/runtime_rx_page_content_preview_v2.json"
+    ]
+
+    for fixture <- fixtures do
+      evidence =
+        fixture
+        |> Path.expand(__DIR__)
+        |> File.read!()
+        |> Jason.decode!()
+        |> get_in(["scenarios", Access.at(0), "evidence"])
+        |> Map.put("unknown", "malformed")
+
+      malformed = %{
+        "event_type" => "process_start",
+        "metadata" => %{"collector_id" => "runtime_integrity"},
+        "payload" => evidence
+      }
+
+      schema_only = Map.delete(malformed, "metadata")
+
+      collector_and_preview_marker =
+        put_in(malformed, ["payload"], Map.delete(evidence, "schema"))
+
+      for rejected <- [malformed, schema_only, collector_and_preview_marker] do
+        message = %Message{
+          data: rejected,
+          acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+        }
+
+        refute TamanduaServer.Agents.RuntimeIntegrityPreview.authorized_envelope?(rejected)
+
+        assert TamanduaServer.Agents.RuntimeIntegrityPreview.raw_runtime_integrity_envelope?(
+                 rejected
+               )
+
+        assert %Message{data: %{_skip_persist: true}, batcher: :default} =
+                 skipped =
+                 Ingestor.handle_message(:default, message, %{})
+
+        assert [skipped] == Ingestor.handle_batch(:default, [skipped], %{}, %{})
+        refute inspect(skipped.data) =~ "malformed"
+        refute inspect(skipped.data) =~ "page_content"
+      end
+    end
+
+    legacy = %{
+      "event_type" => "legacy_runtime_integrity",
+      "metadata" => %{"collector_id" => "runtime_integrity"},
+      "payload" => %{"schema" => "tamandua.runtime_integrity/v1"}
+    }
+
+    refute TamanduaServer.Agents.RuntimeIntegrityPreview.raw_runtime_integrity_envelope?(legacy)
+
+    legacy_message = %Message{
+      data: legacy,
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+    }
+
+    assert %Message{data: legacy_routed} =
+             Ingestor.handle_message(:default, legacy_message, %{})
+
+    refute legacy_routed[:_skip_persist] == true
+  end
+
+  test "push_batch replaces untrusted agent identity and drops every organization identity" do
+    trusted_agent_id = Ecto.UUID.generate()
+    attacker_agent_id = Ecto.UUID.generate()
+    attacker_org_id = Ecto.UUID.generate()
+    parent = self()
+
+    event = %{
+      "event_type" => "process_create",
+      "agent_id" => attacker_agent_id,
+      :agent_id => attacker_agent_id,
+      "organization_id" => attacker_org_id,
+      :organization_id => attacker_org_id
+    }
+
+    push = fn events ->
+      send(parent, {:pushed, events})
+      :ok
+    end
+
+    assert :ok =
+             Ingestor.push_batch(
+               %{
+                 "agent_id" => trusted_agent_id,
+                 "events" => [event]
+               },
+               push: push
+             )
+
+    assert_received {:pushed, [normalized]}
+    assert normalized[:agent_id] == trusted_agent_id
+    refute Map.has_key?(normalized, "agent_id")
+    refute Map.has_key?(normalized, :organization_id)
+    refute Map.has_key?(normalized, "organization_id")
+    refute inspect(normalized) =~ attacker_agent_id
+    refute inspect(normalized) =~ attacker_org_id
+  end
+
   describe "timeline severity normalization for contextless ETW tamper detections" do
     test "downgrades high ETW tamper without actionable context and records adjustment reason" do
       event =
@@ -35,6 +302,7 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
       assert enrichment(normalized)["timeline_severity_adjusted"] == true
       assert enrichment(normalized)["original_severity"] == "high"
       assert enrichment(normalized)["adjusted_severity"] == "medium"
+
       assert enrichment(normalized)["timeline_adjustment_reason"] ==
                "etw_tamper_missing_actionable_context"
     end
@@ -138,6 +406,7 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
       assert enrichment(normalized)["timeline_severity_adjusted"] == true
       assert enrichment(normalized)["original_severity"] == "high"
       assert enrichment(normalized)["adjusted_severity"] == "medium"
+
       assert enrichment(normalized)["timeline_adjustment_reason"] ==
                "ntdll_write_missing_target_context"
     end
@@ -195,6 +464,7 @@ defmodule TamanduaServer.Telemetry.IngestorTest do
       assert enrichment(normalized)["timeline_severity_adjusted"] == true
       assert enrichment(normalized)["original_severity"] == "high"
       assert enrichment(normalized)["adjusted_severity"] == "medium"
+
       assert enrichment(normalized)["timeline_adjustment_reason"] ==
                "ntdll_self_write_no_permission_transition"
     end

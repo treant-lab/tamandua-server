@@ -399,7 +399,7 @@ defmodule TamanduaServer.Remediation.KillSwitchPolicy do
     with {:ok, workflow} <- Workflow.get_workflow(workflow_id),
          :ok <- validate_pending_approval(workflow) do
       case Workflow.reject_workflow(workflow_id, rejector, reason) do
-        {:ok, updated_workflow} ->
+        {:ok, _updated_workflow} ->
           Logger.info("[KillSwitchPolicy] Workflow #{workflow_id} rejected by #{rejector}: #{reason}")
           {:ok, %{workflow_id: workflow_id, status: :rejected}}
 

@@ -1,0 +1,483 @@
+{
+  "fixture_id": "runtime-integrity-preview-ui-contract-v2",
+  "evidence_class": "synthetic_smoke",
+  "external_claim_allowed": false,
+  "scenarios": [
+    {
+      "id": "v1-compatibility-clean",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "clean",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:00:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 8,
+          "compared_pages": 8,
+          "excluded_relocation_pages": 1,
+          "unstable_pages": 0,
+          "bytes_read": 32768,
+          "elapsed_us": 3600,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": true,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v1-compatibility-disabled",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": false,
+        "status": "disabled",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:00:01Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_disabled"],
+        "coverage": {
+          "eligible_pages": 0,
+          "compared_pages": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages": 0,
+          "bytes_read": 0,
+          "elapsed_us": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v1-compatibility-partial",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "partial",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:00:02Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 32,
+          "compared_pages": 16,
+          "excluded_relocation_pages": 2,
+          "unstable_pages": 0,
+          "bytes_read": 65536,
+          "elapsed_us": 4200,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v1-compatibility-mismatch",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "mismatch",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:00:03Z",
+        "finding_kinds": ["file_backed_executable_page_drift"],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 8,
+          "compared_pages": 8,
+          "excluded_relocation_pages": 1,
+          "unstable_pages": 0,
+          "bytes_read": 32768,
+          "elapsed_us": 3900,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": true,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v1-compatibility-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:00:04Z",
+        "finding_kinds": [],
+        "limitations": [
+          "rx_page_content_anonymous_jit_out_of_scope",
+          "rx_page_content_budget_exceeded"
+        ],
+        "coverage": {
+          "eligible_pages": 32,
+          "compared_pages": 16,
+          "excluded_relocation_pages": 2,
+          "unstable_pages": 0,
+          "bytes_read": 65536,
+          "elapsed_us": 12001,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "exceeded"
+        }
+      }
+    },
+    {
+      "id": "v1-compatibility-unsupported",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v1",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v1",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "unsupported",
+        "runtime_state": "degraded",
+        "observed_at": null,
+        "finding_kinds": [],
+        "limitations": [
+          "rx_page_content_anonymous_jit_out_of_scope",
+          "rx_page_content_elf_unsupported"
+        ],
+        "coverage": {
+          "eligible_pages": 0,
+          "compared_pages": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages": 0,
+          "bytes_read": 0,
+          "elapsed_us": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-default-off-disabled",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": false,
+        "status": "disabled",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:01:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_disabled"],
+        "coverage": {
+          "eligible_pages": 0,
+          "pages_compared_this_tick": 0,
+          "sweep_pages_compared": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 0,
+          "elapsed_us_this_tick": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-release-4964-partial",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "partial",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:02:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 4964,
+          "pages_compared_this_tick": 8,
+          "sweep_pages_compared": 2480,
+          "excluded_relocation_pages": 91,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 65536,
+          "elapsed_us_this_tick": 7600,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-release-4964-mismatch",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "mismatch",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:03:00Z",
+        "finding_kinds": ["file_backed_executable_page_drift"],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 4964,
+          "pages_compared_this_tick": 8,
+          "sweep_pages_compared": 2488,
+          "excluded_relocation_pages": 91,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 65536,
+          "elapsed_us_this_tick": 7800,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-release-4964-full-clean",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "clean",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:04:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 4964,
+          "pages_compared_this_tick": 4,
+          "sweep_pages_compared": 4964,
+          "excluded_relocation_pages": 91,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 32768,
+          "elapsed_us_this_tick": 4300,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": true,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-unstable-identity-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:04:01Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_identity_race"],
+        "coverage": {
+          "eligible_pages": 17,
+          "pages_compared_this_tick": 1,
+          "sweep_pages_compared": 8,
+          "excluded_relocation_pages": 3,
+          "unstable_pages_this_tick": 1,
+          "memory_bytes_read_this_tick": 8192,
+          "elapsed_us_this_tick": 2600,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-partial-first-read-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:04:02Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_memory_read_unavailable"],
+        "coverage": {
+          "eligible_pages": 17,
+          "pages_compared_this_tick": 0,
+          "sweep_pages_compared": 8,
+          "excluded_relocation_pages": 3,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 4096,
+          "elapsed_us_this_tick": 2400,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-eligible-8192-full-clean",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "clean",
+        "runtime_state": "supported",
+        "observed_at": "2026-07-17T12:04:03+00:00",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_anonymous_jit_out_of_scope"],
+        "coverage": {
+          "eligible_pages": 8192,
+          "pages_compared_this_tick": 8,
+          "sweep_pages_compared": 8192,
+          "excluded_relocation_pages": 128,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 65536,
+          "elapsed_us_this_tick": 8200,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": true,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-full-progress-tick-budget-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:05:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_budget_exceeded"],
+        "coverage": {
+          "eligible_pages": 17,
+          "pages_compared_this_tick": 1,
+          "sweep_pages_compared": 17,
+          "excluded_relocation_pages": 3,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 8192,
+          "elapsed_us_this_tick": 10001,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": true,
+          "budget_state": "exceeded"
+        }
+      }
+    },
+    {
+      "id": "v2-capacity-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:06:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_coverage_limit_exceeded"],
+        "coverage": {
+          "eligible_pages": 0,
+          "pages_compared_this_tick": 0,
+          "sweep_pages_compared": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 0,
+          "elapsed_us_this_tick": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-bootstrap-budget-degraded",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "degraded",
+        "runtime_state": "degraded",
+        "observed_at": "2026-07-17T12:07:00Z",
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_bootstrap_budget_exceeded"],
+        "coverage": {
+          "eligible_pages": 0,
+          "pages_compared_this_tick": 0,
+          "sweep_pages_compared": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 0,
+          "elapsed_us_this_tick": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    },
+    {
+      "id": "v2-unsupported",
+      "projection": {
+        "schema": "tamandua.runtime_integrity_preview/v2",
+        "external_claim_allowed": false,
+        "capability_id": "linux_self_file_backed_elf_rx_page_content_preview_v2",
+        "maturity": "preview",
+        "mode": "observe_only",
+        "enabled": true,
+        "status": "unsupported",
+        "runtime_state": "degraded",
+        "observed_at": null,
+        "finding_kinds": [],
+        "limitations": ["rx_page_content_elf_unsupported"],
+        "coverage": {
+          "eligible_pages": 0,
+          "pages_compared_this_tick": 0,
+          "sweep_pages_compared": 0,
+          "excluded_relocation_pages": 0,
+          "unstable_pages_this_tick": 0,
+          "memory_bytes_read_this_tick": 0,
+          "elapsed_us_this_tick": 0,
+          "budget_limit_us": 10000,
+          "full_sweep_completed": false,
+          "budget_state": "within_budget"
+        }
+      }
+    }
+  ]
+}

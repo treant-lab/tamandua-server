@@ -148,7 +148,7 @@ defmodule TamanduaServer.Agents.HealthScorer do
 
   Calculates uptime percentage based on agent online/offline status.
   """
-  def score_uptime(agent, metrics, window_minutes) do
+  def score_uptime(_agent, metrics, window_minutes) do
     # Calculate uptime from heartbeat data
     total_minutes = window_minutes
     offline_minutes = count_offline_minutes(metrics, window_minutes)
@@ -215,7 +215,7 @@ defmodule TamanduaServer.Agents.HealthScorer do
 
   Calculates error rate as errors / total events processed.
   """
-  def score_error_rate(latest_metrics, all_metrics) do
+  def score_error_rate(_latest_metrics, all_metrics) do
     # Calculate error rate from recent metrics
     total_events = Enum.sum(Enum.map(all_metrics, &(&1.events_processed || 0)))
     total_errors = Enum.sum(Enum.map(all_metrics, &(&1.error_count || 0)))

@@ -30,7 +30,6 @@ defmodule TamanduaServer.Alerts.Workflow do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Alerts.{Alert, StateTransition}
-  alias TamanduaServer.Accounts.User
 
   # Valid workflow states
   @states ~w(new assigned investigating pending_info resolved false_positive escalated closed)
@@ -312,7 +311,7 @@ defmodule TamanduaServer.Alerts.Workflow do
     case new_state do
       "escalated" ->
         # Notify escalation targets
-        TamanduaServer.Alerts.Notifier.send_escalation_notification(alert)
+        notify_escalation_targets(alert)
 
       "resolved" ->
         # Update SLA metrics
@@ -324,6 +323,20 @@ defmodule TamanduaServer.Alerts.Workflow do
 
       _ ->
         :ok
+    end
+  end
+
+  # Notifier.send_escalation/2 requires an escalation rule (for contact
+  # resolution); notify via every rule matching this alert.
+  defp notify_escalation_targets(alert) do
+    case TamanduaServer.Alerts.EscalationRules.get_matching_rules(alert) do
+      [] ->
+        :ok
+
+      rules ->
+        Enum.each(rules, fn rule ->
+          TamanduaServer.Alerts.Notifier.send_escalation(alert, rule)
+        end)
     end
   end
 

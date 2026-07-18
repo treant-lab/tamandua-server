@@ -24,6 +24,9 @@ defmodule TamanduaServer.Agents.Registry do
   @lock_acquire_timeout 15_000
   @lock_spin_interval 25
   @lock_stale_after 30_000
+  @policy_hash_algorithm "screen_capture_policy_hash_sha256_lexical_v2"
+  @policy_hash_prefix "screen_capture_policy_hash_"
+  @max_runtime_capabilities 64
   # Keep 24 data points of history (24 minutes at 60s intervals, or 24 hours at 1h intervals)
   @max_health_history 24
 
@@ -41,7 +44,7 @@ defmodule TamanduaServer.Agents.Registry do
   worker swap here prevents both sockets from seeing an empty registry and
   starting competing workers.
   """
-  @spec with_agent_lock(String.t(), (() -> term())) :: term()
+  @spec with_agent_lock(String.t(), (-> term())) :: term()
   def with_agent_lock(agent_id, fun) when is_binary(agent_id) and is_function(fun, 0) do
     ensure_table(@lock_table)
     acquire_agent_lock(agent_id)
@@ -105,10 +108,38 @@ defmodule TamanduaServer.Agents.Registry do
   @doc """
   Register an agent in the registry.
   """
-  @spec register(String.t(), map()) :: :ok
-  def register(agent_id, agent_info) do
+  @spec register(String.t(), map()) :: :ok | {:error, :invalid_organization_id}
+  def register(agent_id, agent_info) when is_map(agent_info) do
+    if canonical_organization_id?(agent_info[:organization_id]) do
+      do_register(agent_id, agent_info)
+    else
+      {:error, :invalid_organization_id}
+    end
+  end
+
+  def register(_agent_id, _agent_info), do: {:error, :invalid_organization_id}
+
+  defp do_register(agent_id, agent_info) do
     ensure_tables()
     now = System.system_time(:millisecond)
+    monotonic_now = System.monotonic_time(:millisecond)
+    capabilities = normalize_registered_capabilities(agent_info[:capabilities])
+    socket_pid = agent_info[:socket_pid]
+    connection_epoch = agent_info[:connection_epoch]
+
+    runtime_snapshot =
+      if is_pid(socket_pid) and is_binary(connection_epoch) do
+        %{
+          organization_id: agent_info[:organization_id],
+          socket_pid: socket_pid,
+          worker_pid: agent_info[:worker_pid],
+          connection_epoch: connection_epoch,
+          generation: 0,
+          capabilities: capabilities,
+          screen_session_broker: nil,
+          server_received_monotonic_ms: monotonic_now
+        }
+      end
 
     entry = %{
       agent_id: agent_id,
@@ -121,23 +152,166 @@ defmodule TamanduaServer.Agents.Registry do
       organization_id: agent_info[:organization_id],
       status: :online,
       worker_pid: agent_info[:worker_pid],
+      socket_pid: socket_pid,
+      connection_epoch: connection_epoch,
       connected_at: now,
       last_seen_at: now,
       config: agent_info[:config] || %{},
-      capabilities: agent_info[:capabilities] || []
+      capabilities: capabilities,
+      runtime_snapshot: runtime_snapshot
     }
 
     :ets.insert(@table_name, {agent_id, entry})
     broadcast_status_change(agent_id, :online)
     Logger.info("Agent registered: #{agent_id} (#{entry.hostname})")
 
-    # Process any pending actions queued while agent was offline
+    # Legacy Response.Action drain: AgentCommand redelivery is handled by
+    # Worker on start/reconnect. Keep this path until Response.Action producers
+    # are migrated, otherwise old pending remediation rows would be stranded.
     spawn(fn ->
-      Process.sleep(1000) # Small delay to ensure agent is fully connected
+      # Small delay to ensure agent is fully connected
+      Process.sleep(1000)
       TamanduaServer.Response.Executor.process_pending_actions(agent_id)
     end)
 
     :ok
+  end
+
+  @doc "The exact negotiated policy hash algorithm understood by current runtimes."
+  def policy_hash_algorithm, do: @policy_hash_algorithm
+
+  @doc "Whether a tenant identity is already in canonical UUID wire form."
+  @spec canonical_organization_id?(term()) :: boolean()
+  def canonical_organization_id?(organization_id) when is_binary(organization_id) do
+    case Ecto.UUID.cast(organization_id) do
+      {:ok, canonical} -> canonical === organization_id
+      :error -> false
+    end
+  end
+
+  def canonical_organization_id?(_organization_id), do: false
+
+  @doc "Whether two tenant identities are the same canonical UUID wire value."
+  @spec same_canonical_organization_id?(term(), term()) :: boolean()
+  def same_canonical_organization_id?(left, right) do
+    canonical_organization_id?(left) and canonical_organization_id?(right) and left === right
+  end
+
+  @doc "Strictly normalize capabilities supplied by an authenticated agent socket."
+  @spec normalize_runtime_capabilities(term()) :: {:ok, [String.t()]} | {:error, atom()}
+  def normalize_runtime_capabilities(capabilities)
+      when is_list(capabilities) and length(capabilities) <= @max_runtime_capabilities do
+    capabilities
+    |> Enum.reduce_while({:ok, []}, fn capability, {:ok, acc} ->
+      case normalize_runtime_capability(capability) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        :error -> {:halt, {:error, :invalid_runtime_capabilities}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, normalized |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  def normalize_runtime_capabilities(_), do: {:error, :invalid_runtime_capabilities}
+
+  @doc "Strictly validate the broker's advertised policy hash algorithms."
+  @spec normalize_policy_hash_algorithms(term()) :: {:ok, [String.t()]} | {:error, atom()}
+  def normalize_policy_hash_algorithms(nil), do: {:ok, []}
+
+  def normalize_policy_hash_algorithms(algorithms)
+      when is_list(algorithms) and length(algorithms) <= 4 do
+    if Enum.all?(algorithms, &(&1 == @policy_hash_algorithm)) do
+      {:ok, Enum.uniq(algorithms)}
+    else
+      {:error, :invalid_policy_hash_algorithm}
+    end
+  end
+
+  def normalize_policy_hash_algorithms(_), do: {:error, :invalid_policy_hash_algorithm}
+
+  @doc """
+  Atomically publish live response evidence for the currently registered socket.
+
+  The caller must present the exact tenant, socket process, worker process and
+  opaque connection epoch installed by `register/2`. A prior connection cannot
+  overwrite the current runtime snapshot after a reconnect.
+  """
+  @spec update_runtime_snapshot(String.t(), String.t(), pid(), pid(), String.t(), map()) ::
+          :ok | {:error, atom()}
+  def update_runtime_snapshot(
+        agent_id,
+        organization_id,
+        socket_pid,
+        worker_pid,
+        connection_epoch,
+        runtime
+      )
+      when is_binary(agent_id) and is_binary(organization_id) and is_pid(socket_pid) and
+             is_pid(worker_pid) and
+             is_binary(connection_epoch) and is_map(runtime) do
+    with true <- canonical_organization_id?(organization_id),
+         {:ok, capabilities} <-
+           normalize_runtime_capabilities(Map.get(runtime, :capabilities, [])),
+         {:ok, broker} <- normalize_runtime_broker(Map.get(runtime, :screen_session_broker)) do
+      with_agent_lock(agent_id, fn ->
+        ensure_tables()
+
+        case :ets.lookup(@table_name, agent_id) do
+          [{^agent_id, entry}] ->
+            cond do
+              not same_canonical_organization_id?(entry.organization_id, organization_id) ->
+                {:error, :runtime_tenant_mismatch}
+
+              entry.socket_pid != socket_pid or entry.worker_pid != worker_pid or
+                  entry.connection_epoch != connection_epoch ->
+                {:error, :stale_runtime_connection}
+
+              true ->
+                previous = entry.runtime_snapshot || %{}
+
+                snapshot = %{
+                  organization_id: entry.organization_id,
+                  socket_pid: socket_pid,
+                  worker_pid: worker_pid,
+                  connection_epoch: connection_epoch,
+                  generation: Map.get(previous, :generation, 0) + 1,
+                  capabilities: capabilities,
+                  screen_session_broker: broker,
+                  server_received_monotonic_ms: System.monotonic_time(:millisecond)
+                }
+
+                updated = %{
+                  entry
+                  | capabilities: capabilities,
+                    runtime_snapshot: snapshot,
+                    last_seen_at: System.system_time(:millisecond),
+                    status: :online
+                }
+
+                :ets.insert(@table_name, {agent_id, updated})
+                :ok
+            end
+
+          [] ->
+            {:error, :not_found}
+        end
+      end)
+    else
+      false -> {:error, :invalid_runtime_snapshot}
+      error -> error
+    end
+  end
+
+  def update_runtime_snapshot(_, _, _, _, _, _), do: {:error, :invalid_runtime_snapshot}
+
+  @spec get_runtime_snapshot(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_runtime_snapshot(agent_id) do
+    case get(agent_id) do
+      {:ok, %{runtime_snapshot: snapshot}} when is_map(snapshot) -> {:ok, snapshot}
+      _ -> {:error, :not_found}
+    end
   end
 
   @doc """
@@ -177,6 +351,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec get(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get(agent_id) do
     ensure_tables()
+
     case :ets.lookup(@table_name, agent_id) do
       [{^agent_id, entry}] -> {:ok, entry}
       [] -> {:error, :not_found}
@@ -189,6 +364,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec list_all() :: [map()]
   def list_all do
     ensure_tables()
+
     :ets.tab2list(@table_name)
     |> Enum.map(fn {_id, entry} -> normalize_entry_presence(entry) end)
   end
@@ -199,6 +375,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec list_by_status(atom()) :: [map()]
   def list_by_status(status) do
     ensure_tables()
+
     :ets.tab2list(@table_name)
     |> Enum.map(fn {_id, entry} -> normalize_entry_presence(entry) end)
     |> Enum.filter(&(&1.status == status))
@@ -210,6 +387,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec list_for_org(String.t()) :: [map()]
   def list_for_org(organization_id) do
     ensure_tables()
+
     :ets.tab2list(@table_name)
     |> Enum.map(fn {_id, entry} -> normalize_entry_presence(entry) end)
     |> Enum.filter(&(&1.organization_id == organization_id))
@@ -251,7 +429,8 @@ defmodule TamanduaServer.Agents.Registry do
       {:ok, %{worker_pid: pid}} when is_pid(pid) ->
         if Process.alive?(pid), do: {:ok, pid}, else: {:error, :not_found}
 
-      _ -> {:error, :not_found}
+      _ ->
+        {:error, :not_found}
     end
   end
 
@@ -278,6 +457,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec update_config(String.t(), map()) :: :ok | {:error, :not_found}
   def update_config(agent_id, new_config) do
     ensure_tables()
+
     case :ets.lookup(@table_name, agent_id) do
       [{^agent_id, entry}] ->
         updated = %{entry | config: Map.merge(entry.config, new_config)}
@@ -295,6 +475,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec set_isolated(String.t(), boolean()) :: :ok | {:error, :not_found}
   def set_isolated(agent_id, isolated) do
     ensure_tables()
+
     case :ets.lookup(@table_name, agent_id) do
       [{^agent_id, entry}] ->
         status = if isolated, do: :isolated, else: :online
@@ -326,12 +507,14 @@ defmodule TamanduaServer.Agents.Registry do
           |> Enum.take(-@max_health_history)
 
         memory_history =
-          (existing.memory_history ++ [health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0])
+          (existing.memory_history ++
+             [health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0])
           |> Enum.take(-@max_health_history)
 
         entry = %{
           cpu_usage: health_data[:cpu_usage] || health_data["cpu_usage"] || 0,
-          memory_usage: health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0,
+          memory_usage:
+            health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0,
           disk_usage: health_data[:disk_usage_percent] || health_data["disk_usage_percent"] || 0,
           memory_total: health_data[:memory_total] || health_data["memory_total"] || 0,
           memory_used: health_data[:memory_used] || health_data["memory_used"] || 0,
@@ -340,6 +523,8 @@ defmodule TamanduaServer.Agents.Registry do
           uptime_seconds: health_data[:uptime_seconds] || health_data["uptime_seconds"] || 0,
           collector_status: health_data[:collector_status] || health_data["collector_status"],
           platform_status: health_data[:platform_status] || health_data["platform_status"] || [],
+          platform_visibility:
+            health_data[:platform_visibility] || health_data["platform_visibility"],
           driver_status: health_data[:driver_status] || health_data["driver_status"],
           event_drop_rate: health_data[:event_drop_rate] || health_data["event_drop_rate"],
           cpu_history: cpu_history,
@@ -364,6 +549,8 @@ defmodule TamanduaServer.Agents.Registry do
           uptime_seconds: health_data[:uptime_seconds] || health_data["uptime_seconds"] || 0,
           collector_status: health_data[:collector_status] || health_data["collector_status"],
           platform_status: health_data[:platform_status] || health_data["platform_status"] || [],
+          platform_visibility:
+            health_data[:platform_visibility] || health_data["platform_visibility"],
           driver_status: health_data[:driver_status] || health_data["driver_status"],
           event_drop_rate: health_data[:event_drop_rate] || health_data["event_drop_rate"],
           cpu_history: [cpu_val],
@@ -379,16 +566,35 @@ defmodule TamanduaServer.Agents.Registry do
     # Also update the agent registry entry with current metrics
     case :ets.lookup(@table_name, agent_id) do
       [{^agent_id, agent_entry}] ->
-        updated = agent_entry
+        updated =
+          agent_entry
           |> Map.put(:cpu_usage, health_data[:cpu_usage] || health_data["cpu_usage"] || 0)
-          |> Map.put(:memory_usage, health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0)
-          |> Map.put(:disk_usage, health_data[:disk_usage_percent] || health_data["disk_usage_percent"] || 0)
-          |> Map.put(:collector_status, health_data[:collector_status] || health_data["collector_status"])
-          |> Map.put(:platform_status, health_data[:platform_status] || health_data["platform_status"] || [])
+          |> Map.put(
+            :memory_usage,
+            health_data[:memory_usage_percent] || health_data["memory_usage_percent"] || 0
+          )
+          |> Map.put(
+            :disk_usage,
+            health_data[:disk_usage_percent] || health_data["disk_usage_percent"] || 0
+          )
+          |> Map.put(
+            :collector_status,
+            health_data[:collector_status] || health_data["collector_status"]
+          )
+          |> Map.put(
+            :platform_status,
+            health_data[:platform_status] || health_data["platform_status"] || []
+          )
+          |> Map.put(
+            :platform_visibility,
+            health_data[:platform_visibility] || health_data["platform_visibility"]
+          )
           |> Map.put(:driver_status, health_data[:driver_status] || health_data["driver_status"])
 
         :ets.insert(@table_name, {agent_id, updated})
-      [] -> :ok
+
+      [] ->
+        :ok
     end
 
     :ok
@@ -401,6 +607,7 @@ defmodule TamanduaServer.Agents.Registry do
   @spec get_health(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_health(agent_id) do
     ensure_tables()
+
     case :ets.lookup(@health_table, agent_id) do
       [{^agent_id, entry}] -> {:ok, entry}
       [] -> {:error, :not_found}
@@ -433,15 +640,17 @@ defmodule TamanduaServer.Agents.Registry do
     ensure_tables()
     now = System.system_time(:millisecond)
 
-    agent_entry = case :ets.lookup(@table_name, agent_id) do
-      [{^agent_id, entry}] -> entry
-      [] -> nil
-    end
+    agent_entry =
+      case :ets.lookup(@table_name, agent_id) do
+        [{^agent_id, entry}] -> entry
+        [] -> nil
+      end
 
-    health_entry = case :ets.lookup(@health_table, agent_id) do
-      [{^agent_id, entry}] -> entry
-      [] -> nil
-    end
+    health_entry =
+      case :ets.lookup(@health_table, agent_id) do
+        [{^agent_id, entry}] -> entry
+        [] -> nil
+      end
 
     if is_nil(agent_entry) do
       :unknown
@@ -485,7 +694,8 @@ defmodule TamanduaServer.Agents.Registry do
     end
   end
 
-  def get_agent_health_status_detail(_), do: %{status: :unknown, reasons: [:invalid_agent_id], metrics: %{}}
+  def get_agent_health_status_detail(_),
+    do: %{status: :unknown, reasons: [:invalid_agent_id], metrics: %{}}
 
   # Evaluate health status based on agent registry and health data.
   # Returns :healthy | :degraded | :critical | :unknown
@@ -535,7 +745,10 @@ defmodule TamanduaServer.Agents.Registry do
       end
 
     # 4. Check event drop rate (from delivery stats if stored in health data)
-    drop_rate = if health_entry, do: health_entry[:event_drop_rate] || health_entry["event_drop_rate"], else: nil
+    drop_rate =
+      if health_entry,
+        do: health_entry[:event_drop_rate] || health_entry["event_drop_rate"],
+        else: nil
 
     degraded_conditions =
       if drop_rate && drop_rate > 10.0 do
@@ -545,7 +758,9 @@ defmodule TamanduaServer.Agents.Registry do
       end
 
     platform_status =
-      if health_entry, do: health_entry[:platform_status] || health_entry["platform_status"] || [], else: []
+      if health_entry,
+        do: health_entry[:platform_status] || health_entry["platform_status"] || [],
+        else: []
 
     degraded_platform_sensors = degraded_platform_sensors(platform_status)
 
@@ -556,7 +771,10 @@ defmodule TamanduaServer.Agents.Registry do
         [:platform_sensor_degraded | degraded_conditions]
       end
 
-    driver_status = if health_entry, do: health_entry[:driver_status] || health_entry["driver_status"], else: nil
+    driver_status =
+      if health_entry,
+        do: health_entry[:driver_status] || health_entry["driver_status"],
+        else: nil
 
     degraded_conditions =
       if driver_degraded?(driver_status) do
@@ -589,7 +807,11 @@ defmodule TamanduaServer.Agents.Registry do
         cpu_usage: cpu,
         memory_usage: memory,
         event_drop_rate: drop_rate,
-        platform_coverage: platform_coverage_score(%{platform_status: platform_status, driver_status: driver_status}),
+        platform_coverage:
+          platform_coverage_score(%{
+            platform_status: platform_status,
+            driver_status: driver_status
+          }),
         degraded_platform_sensors: degraded_platform_sensors,
         driver_state: map_get_any(driver_status, [:state, "state"]),
         driver_last_error: map_get_any(driver_status, [:last_error, "last_error"]),
@@ -619,7 +841,10 @@ defmodule TamanduaServer.Agents.Registry do
     memory_score = inverse_score(memory, 95.0)
     throughput_score = inverse_score(drop_rate, 10.0)
     coverage_score = platform_coverage_score(health_data)
-    uptime_score = if numeric_health_value(health_data, :uptime_seconds, 0.0) > 0, do: 100, else: 50
+
+    uptime_score =
+      if numeric_health_value(health_data, :uptime_seconds, 0.0) > 0, do: 100, else: 50
+
     compliance_score = 100
     error_rate_score = throughput_score
 
@@ -674,13 +899,19 @@ defmodule TamanduaServer.Agents.Registry do
     end
   rescue
     e ->
-      Logger.debug("Failed to persist agent health snapshot for #{agent_id}: #{Exception.message(e)}")
+      Logger.debug(
+        "Failed to persist agent health snapshot for #{agent_id}: #{Exception.message(e)}"
+      )
   end
 
   defp numeric_health_value(data, key, default) do
     case data[key] || data[Atom.to_string(key)] do
-      value when is_integer(value) -> value * 1.0
-      value when is_float(value) -> value
+      value when is_integer(value) ->
+        value * 1.0
+
+      value when is_float(value) ->
+        value
+
       value when is_binary(value) ->
         case Float.parse(value) do
           {parsed, _} -> parsed
@@ -707,8 +938,8 @@ defmodule TamanduaServer.Agents.Registry do
 
     case status do
       [_ | _] ->
-        running = Enum.count(status, &(truthy?(&1[:running] || &1["running"])))
-        configured = Enum.count(status, &(truthy?(&1[:configured] || &1["configured"])))
+        running = Enum.count(status, &truthy?(&1[:running] || &1["running"]))
+        configured = Enum.count(status, &truthy?(&1[:configured] || &1["configured"]))
         denominator = max(configured, 1)
         min(100, round(running / denominator * 100))
 
@@ -741,7 +972,8 @@ defmodule TamanduaServer.Agents.Registry do
     running? = truthy?(map_get_any(sensor, [:running, "running"]))
     state = sensor |> map_get_any([:state, "state"]) |> to_string() |> String.downcase()
 
-    configured? and compiled? and not running? and state not in ["disabled", "unsupported", "not_compiled"]
+    configured? and compiled? and not running? and
+      state not in ["disabled", "unsupported", "not_compiled"]
   end
 
   defp driver_degraded?(nil), do: false
@@ -771,8 +1003,16 @@ defmodule TamanduaServer.Agents.Registry do
     |> maybe_issue(memory > 95.0, :high_memory, memory)
     |> maybe_issue(disk > 95.0, :high_disk, disk)
     |> maybe_issue(drop_rate > 10.0, :high_drop_rate, drop_rate)
-    |> maybe_issue(degraded_platform_sensors(platform_status) != [], :platform_sensor_degraded, degraded_platform_sensors(platform_status))
-    |> maybe_issue(driver_degraded?(driver_status), :driver_or_endpoint_sensor_degraded, map_get_any(driver_status, [:state, "state"]))
+    |> maybe_issue(
+      degraded_platform_sensors(platform_status) != [],
+      :platform_sensor_degraded,
+      degraded_platform_sensors(platform_status)
+    )
+    |> maybe_issue(
+      driver_degraded?(driver_status),
+      :driver_or_endpoint_sensor_degraded,
+      map_get_any(driver_status, [:state, "state"])
+    )
   end
 
   defp maybe_issue(issues, true, key, value), do: [{key, value} | issues]
@@ -842,7 +1082,8 @@ defmodule TamanduaServer.Agents.Registry do
       @table_name
       |> :ets.tab2list()
       |> Enum.filter(fn {_agent_id, entry} ->
-        entry.status == :online and is_pid(entry[:worker_pid]) and Process.alive?(entry[:worker_pid])
+        entry.status == :online and is_pid(entry[:worker_pid]) and
+          Process.alive?(entry[:worker_pid])
       end)
       |> Enum.map(fn {agent_id, _entry} -> agent_id end)
 
@@ -862,6 +1103,44 @@ defmodule TamanduaServer.Agents.Registry do
       {:agent_status_changed, agent_id, status}
     )
   end
+
+  defp normalize_registered_capabilities(capabilities) do
+    case normalize_runtime_capabilities(capabilities || []) do
+      {:ok, normalized} -> normalized
+      {:error, _reason} -> []
+    end
+  end
+
+  defp normalize_runtime_capability(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      trimmed == @policy_hash_algorithm ->
+        {:ok, trimmed}
+
+      String.starts_with?(String.downcase(trimmed), @policy_hash_prefix) ->
+        :error
+
+      byte_size(trimmed) in 1..64 and Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/, trimmed) ->
+        {:ok, trimmed |> String.downcase() |> String.replace("-", "_")}
+
+      true ->
+        :error
+    end
+  end
+
+  defp normalize_runtime_capability(_), do: :error
+
+  defp normalize_runtime_broker(nil), do: {:ok, nil}
+
+  defp normalize_runtime_broker(broker) when is_map(broker) do
+    with {:ok, algorithms} <-
+           normalize_policy_hash_algorithms(Map.get(broker, "policy_hash_algorithms", [])) do
+      {:ok, Map.put(broker, "policy_hash_algorithms", algorithms)}
+    end
+  end
+
+  defp normalize_runtime_broker(_), do: {:error, :invalid_screen_session_broker}
 
   defp ensure_tables do
     ensure_table(@table_name)

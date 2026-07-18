@@ -13,7 +13,7 @@ defmodule TamanduaServer.Hunting.QueryExecutor do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.Hunting.{QueryCompiler, QueryLanguage}
+  alias TamanduaServer.Hunting.{QueryCompiler}
   alias TamanduaServer.Agents
 
   @default_timeout 30_000
@@ -340,7 +340,7 @@ defmodule TamanduaServer.Hunting.QueryExecutor do
     )
   end
 
-  defp build_grouped_aggregation(query, aggregations, group_by, source_name) do
+  defp build_grouped_aggregation(query, _aggregations, _group_by, _source_name) do
     import Ecto.Query
 
     # This is complex because we need to handle both column and payload fields

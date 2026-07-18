@@ -183,7 +183,7 @@ defmodule TamanduaServer.Integrations.Router do
   @impl true
   def handle_call({:route_alerts, alerts}, _from, state) do
     results = Enum.map(alerts, fn alert ->
-      {destinations, matched_rules} = evaluate_rules(alert, state.rules)
+      {destinations, _matched_rules} = evaluate_rules(alert, state.rules)
 
       if length(destinations) > 0 do
         send_results = send_to_destinations(alert, destinations, state)

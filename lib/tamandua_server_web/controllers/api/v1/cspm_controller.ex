@@ -459,7 +459,7 @@ defmodule TamanduaServerWeb.API.V1.CSPMController do
   @doc """
   Get compliance overview across all accounts.
   """
-  def compliance_overview(conn, params) do
+  def compliance_overview(conn, _params) do
     accounts = CloudAccount.list(%{organization_id: conn.assigns[:organization_id]})
 
     compliance_data =
@@ -698,7 +698,7 @@ defmodule TamanduaServerWeb.API.V1.CSPMController do
   """
   def risk_heatmap(conn, params) do
     provider = params["provider"]
-    accounts = CloudAccount.list(%{organization_id: conn.assigns[:organization_id]})
+    _accounts = CloudAccount.list(%{organization_id: conn.assigns[:organization_id]})
     findings = Finding.list_findings(%{status: "open", organization_id: conn.assigns[:organization_id], limit: 10000})
 
     # Group findings by region and resource type

@@ -21,6 +21,9 @@ import {
   Zap,
   AlertCircle,
   CheckCircle,
+  Cpu,
+  Globe,
+  Server,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
@@ -59,6 +62,7 @@ function normalizeQueryResults(rawResults: unknown): QueryResult[] {
 
     return {
       id: String(row.id || row.event_id || `result-${index}`),
+      agent_id: String(row.agent_id || row.agentId || details.agent_id || ''),
       timestamp: String(row.timestamp || row.inserted_at || new Date().toISOString()),
       hostname: String(row.hostname || row.agent_hostname || row.host || 'unknown-host'),
       event_type: String(row.event_type || row.type || row.category || 'event'),
@@ -70,11 +74,54 @@ function normalizeQueryResults(rawResults: unknown): QueryResult[] {
 
 interface QueryResult {
   id: string
+  agent_id?: string
   timestamp: string
   hostname: string
   event_type: string
   severity: string
   details: Record<string, unknown>
+}
+
+interface ProcessContextNode {
+  pid: number
+  ppid?: number
+  name?: string
+  path?: string
+  cmdline?: string
+  user?: string
+  sha256?: string
+  signer?: string
+}
+
+interface ProcessContextResponse {
+  process?: ProcessContextNode
+  ancestors?: ProcessContextNode[]
+  chain?: ProcessContextNode[]
+}
+
+interface ResultContext {
+  payload: Record<string, unknown>
+  pid?: number
+  processName?: string
+  processPath?: string
+  commandLine?: string
+  parentPid?: number
+  parentName?: string
+  user?: string
+  sha256?: string
+  remoteIp?: string
+  remotePort?: number
+  localIp?: string
+  localPort?: number
+  protocol?: string
+  direction?: string
+  domain?: string
+  sni?: string
+  resolverLabel?: string
+  classification?: string
+  confidence?: 'confirmed' | 'candidate'
+  evidence: string[]
+  gaps: string[]
 }
 
 interface SavedQuery {
@@ -125,6 +172,7 @@ export default function NLHunt({
   const [showSavedQueries, setShowSavedQueries] = useState(true)
   const [translationSource, setTranslationSource] = useState<'llm' | 'pattern' | null>(null)
   const [translationError, setTranslationError] = useState<string | null>(null)
+  const [processContexts, setProcessContexts] = useState<Record<string, ProcessContextResponse>>({})
 
   const handleTranslate = useCallback(async () => {
     if (!naturalQuery.trim()) return
@@ -286,6 +334,125 @@ export default function NLHunt({
     }
   }
 
+  const detailPayload = (details: Record<string, unknown>): Record<string, unknown> => {
+    const nested = details.payload
+    return nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? nested as Record<string, unknown>
+      : details
+  }
+
+  const valueFrom = (source: Record<string, unknown>, keys: string[]) => {
+    for (const key of keys) {
+      const value = source[key]
+      if (value !== undefined && value !== null && value !== '') return value
+    }
+    return undefined
+  }
+
+  const asText = (value: unknown): string | undefined => {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    return undefined
+  }
+
+  const asNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    return undefined
+  }
+
+  const isPidOnlyProcess = (value?: string) => !value || /^pid:\d+$/i.test(value)
+
+  const resolverName = (ip?: string) => {
+    const resolvers: Record<string, string> = {
+      '8.8.8.8': 'Google Public DNS',
+      '8.8.4.4': 'Google Public DNS',
+      '1.1.1.1': 'Cloudflare DNS',
+      '1.0.0.1': 'Cloudflare DNS',
+      '9.9.9.9': 'Quad9 DNS',
+      '149.112.112.112': 'Quad9 DNS',
+      '208.67.222.222': 'OpenDNS',
+      '208.67.220.220': 'OpenDNS',
+    }
+    return ip ? resolvers[ip] : undefined
+  }
+
+  const resultContext = (result: QueryResult): ResultContext => {
+    const details = result.details || {}
+    const payload = detailPayload(details)
+    const pid = asNumber(valueFrom(payload, ['pid', 'process_pid', 'process_id']) ?? valueFrom(details, ['pid', 'process_id']))
+    const correlated = processContexts[result.id]?.process
+    const correlatedParent = processContexts[result.id]?.ancestors?.[0]
+    const rawProcessName = asText(valueFrom(payload, ['process_name', 'name', 'image', 'exe_name']) ?? valueFrom(details, ['process_name', 'name']))
+    const processName = (isPidOnlyProcess(rawProcessName) ? undefined : rawProcessName) || correlated?.name
+    const processPath = asText(valueFrom(payload, ['process_path', 'path', 'image_path', 'exe_path', 'executable_path'])) || correlated?.path
+    const commandLine = asText(valueFrom(payload, ['command_line', 'cmdline', 'command'])) || correlated?.cmdline
+    const parentPid = asNumber(valueFrom(payload, ['ppid', 'parent_pid', 'parent_process_id'])) || correlatedParent?.pid || correlated?.ppid
+    const parentName = asText(valueFrom(payload, ['parent_name', 'parent_process_name', 'parent_image'])) || correlatedParent?.name
+    const user = asText(valueFrom(payload, ['user', 'username', 'user_name', 'account_name'])) || correlated?.user
+    const sha256 = asText(valueFrom(payload, ['sha256', 'process_sha256', 'file_sha256', 'hash_sha256'])) || correlated?.sha256
+    const remoteIp = asText(valueFrom(payload, ['remote_ip', 'dst_ip', 'destination_ip']) ?? valueFrom(details, ['remote_ip']))
+    const remotePort = asNumber(valueFrom(payload, ['remote_port', 'dst_port', 'destination_port']) ?? valueFrom(details, ['remote_port']))
+    const localIp = asText(valueFrom(payload, ['local_ip', 'src_ip', 'source_ip']))
+    const localPort = asNumber(valueFrom(payload, ['local_port', 'src_port', 'source_port']))
+    const protocol = asText(valueFrom(payload, ['protocol', 'transport']))
+    const direction = asText(valueFrom(payload, ['direction']))
+    const domain = asText(valueFrom(payload, ['domain', 'query', 'query_name', 'remote_domain', 'host', 'hostname']))
+    const sni = asText(valueFrom(payload, ['sni', 'tls_sni', 'server_name']))
+    const resolverLabel = resolverName(remoteIp)
+    const isNetwork = result.event_type.includes('network')
+    const isEncrypted = valueFrom(payload, ['is_encrypted']) === true || remotePort === 443
+    const isDohCandidate = isNetwork && remotePort === 443 && Boolean(resolverLabel || /dns|doh/i.test(domain || sni || ''))
+
+    const evidence: string[] = []
+    const gaps: string[] = []
+    if (remoteIp) evidence.push(`remote_ip=${remoteIp}`)
+    if (remotePort) evidence.push(`remote_port=${remotePort}`)
+    if (protocol) evidence.push(`protocol=${protocol}`)
+    if (isEncrypted) evidence.push('encrypted transport observed')
+    if (resolverLabel) evidence.push(`known resolver: ${resolverLabel}`)
+    if (domain) evidence.push(`domain=${domain}`)
+    if (sni) evidence.push(`sni=${sni}`)
+    if (processName) evidence.push(`process=${processName}`)
+    if (processPath) evidence.push(correlated?.path === processPath ? 'binary path correlated from process tree' : 'binary path present')
+    if (sha256) evidence.push(correlated?.sha256 === sha256 ? 'hash correlated from process tree' : 'hash present')
+
+    if (isNetwork && !domain && !sni) gaps.push('no domain/SNI captured')
+    if (isNetwork && !processName) gaps.push(rawProcessName ? 'process name is PID-only' : 'process name missing')
+    if (isNetwork && !processPath) gaps.push('binary path missing')
+    if (isNetwork && !sha256) gaps.push('binary hash missing')
+    if (isNetwork && !parentPid && !parentName) gaps.push('parent process missing')
+    if (isDohCandidate && !domain && !sni) gaps.push('DoH inferred from resolver IP/port')
+
+    return {
+      payload,
+      pid,
+      processName,
+      processPath,
+      commandLine,
+      parentPid,
+      parentName,
+      user,
+      sha256,
+      remoteIp,
+      remotePort,
+      localIp,
+      localPort,
+      protocol,
+      direction,
+      domain,
+      sni,
+      resolverLabel,
+      classification: isDohCandidate ? 'DoH candidate' : undefined,
+      confidence: isDohCandidate ? (domain || sni ? 'confirmed' : 'candidate') : undefined,
+      evidence,
+      gaps,
+    }
+  }
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
     toast.success('Copied to clipboard', {
@@ -293,6 +460,65 @@ export default function NLHunt({
       duration: 2000,
     })
   }
+
+  const translationWarnings = () => {
+    const warnings: string[] = []
+    const natural = naturalQuery.toLowerCase()
+    const translated = translatedQuery.toLowerCase()
+
+    if ((natural.includes('doh') || natural.includes('dns over https')) && /xyz|top|tk|ml/.test(translated)) {
+      warnings.push('DoH request translated with suspicious-TLD DNS regex; verify this was intended.')
+    }
+
+    if (translatedQuery && translationSource === 'pattern') {
+      warnings.push('Pattern translation is heuristic; treat returned matches as candidate evidence.')
+    }
+
+    return warnings
+  }
+
+  useEffect(() => {
+    const candidates = results
+      .map(result => {
+        const details = result.details || {}
+        const payload = detailPayload(details)
+        const agentId = result.agent_id || asText(details.agent_id) || asText(details.agentId)
+        const pid = asNumber(valueFrom(payload, ['pid', 'process_pid', 'process_id']) ?? valueFrom(details, ['pid', 'process_id']))
+        return { result, agentId: agentId && agentId !== 'undefined' ? agentId : undefined, pid }
+      })
+      .filter(item => item.agentId && item.pid && !processContexts[item.result.id])
+
+    if (candidates.length === 0) return
+
+    let cancelled = false
+
+    const loadContexts = async () => {
+      const loaded: Record<string, ProcessContextResponse> = {}
+
+      await Promise.all(candidates.slice(0, 20).map(async ({ result, agentId, pid }) => {
+        try {
+          const response = await fetch(`/api/v1/agents/${encodeURIComponent(agentId!)}/processes/${pid}/context`, {
+            credentials: 'same-origin',
+          })
+          if (!response.ok) return
+          const data = await readJsonResponse(response)
+          if (data?.data) loaded[result.id] = data.data
+        } catch (error) {
+          logger.log('Process context unavailable for hunt result:', error)
+        }
+      }))
+
+      if (!cancelled && Object.keys(loaded).length > 0) {
+        setProcessContexts(prev => ({ ...prev, ...loaded }))
+      }
+    }
+
+    loadContexts()
+
+    return () => {
+      cancelled = true
+    }
+  }, [results, processContexts])
 
   // Keyboard shortcut: Ctrl+Enter to translate
   useEffect(() => {
@@ -576,6 +802,18 @@ export default function NLHunt({
                     >
                       {translatedQuery}
                     </pre>
+                    {translationWarnings().length > 0 && (
+                      <div className="rounded-lg p-3" style={{ background: 'rgba(245, 158, 11, 0.10)', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="h-4 w-4 mt-0.5 text-yellow-400" />
+                          <div className="space-y-1">
+                            {translationWarnings().map(warning => (
+                              <p key={warning} className="text-xs text-yellow-300">{warning}</p>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <button
                       onClick={handleStartEditing}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors hover:opacity-80"
@@ -645,32 +883,146 @@ export default function NLHunt({
                   </div>
                 </div>
 
-                <div className="divide-y max-h-[500px] overflow-y-auto" style={{ borderColor: 'var(--border)' }}>
-                  {results.map((result) => (
-                    <div key={result.id} className="p-4 hover:opacity-90 transition-colors">
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className={cn('px-2 py-0.5 rounded text-xs font-medium', getSeverityColor(result.severity))}>
-                            {result.severity}
+                <div className="divide-y max-h-[640px] overflow-y-auto" style={{ borderColor: 'var(--border)' }}>
+                  {results.map((result) => {
+                    const context = resultContext(result)
+                    const processContext = processContexts[result.id]
+                    const destination = context.remoteIp
+                      ? `${context.remoteIp}${context.remotePort ? `:${context.remotePort}` : ''}`
+                      : context.domain || context.sni
+                    const processLabel = context.processName || (context.pid ? `PID ${context.pid}` : undefined)
+                    const chainLabel = processContext?.chain
+                      ?.map(node => node.name || `PID ${node.pid}`)
+                      .filter(Boolean)
+                      .join(' -> ')
+
+                    return (
+                      <div key={result.id} className="p-4 hover:opacity-90 transition-colors">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={cn('px-2 py-0.5 rounded text-xs font-medium', getSeverityColor(result.severity))}>
+                              {result.severity}
+                            </span>
+                            <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{result.event_type}</span>
+                            <span className="text-sm" style={{ color: 'var(--muted)' }}>{result.hostname}</span>
+                            {context.classification && (
+                              <span
+                                className="px-2 py-0.5 rounded text-xs font-medium"
+                                style={{ background: 'var(--med-bg)', color: 'var(--med)' }}
+                              >
+                                {context.classification}
+                              </span>
+                            )}
+                            {context.confidence && (
+                              <span className="text-xs capitalize" style={{ color: 'var(--muted)' }}>
+                                {context.confidence} confidence
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                            {new Date(result.timestamp).toLocaleString()}
                           </span>
-                          <span className="text-sm font-medium" style={{ color: 'var(--fg)' }}>{result.event_type}</span>
-                          <span className="text-sm" style={{ color: 'var(--muted)' }}>{result.hostname}</span>
                         </div>
-                        <span className="text-xs" style={{ color: 'var(--muted)' }}>
-                          {new Date(result.timestamp).toLocaleString()}
-                        </span>
+
+                        <div className="rounded-lg p-3 mb-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                              <div className="flex items-center gap-1 text-xs uppercase font-semibold mb-1" style={{ color: 'var(--muted)' }}>
+                                <Globe className="h-3 w-3" />
+                                Flow
+                              </div>
+                              <div className="text-sm font-medium" style={{ color: 'var(--fg)' }}>
+                                {destination || 'No network destination'}
+                              </div>
+                              <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                {[context.direction, context.protocol, context.localIp && context.localPort ? `${context.localIp}:${context.localPort}` : context.localIp].filter(Boolean).join(' / ') || 'network metadata unavailable'}
+                              </div>
+                              {context.resolverLabel && (
+                                <div className="text-xs mt-1" style={{ color: 'var(--emerald-400)' }}>
+                                  {context.resolverLabel}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1 text-xs uppercase font-semibold mb-1" style={{ color: 'var(--muted)' }}>
+                                <Cpu className="h-3 w-3" />
+                                Process / Binary
+                              </div>
+                              <div className="text-sm font-medium truncate" style={{ color: processLabel ? 'var(--fg)' : 'var(--muted)' }}>
+                                {processLabel || 'Process identity missing'}
+                              </div>
+                              <div className="text-xs mt-1 truncate font-mono" style={{ color: context.processPath ? 'var(--fg-2)' : 'var(--muted)' }} title={context.processPath}>
+                                {context.processPath || 'binary path not captured'}
+                              </div>
+                              {context.commandLine && (
+                                <div className="text-xs mt-1 truncate font-mono" style={{ color: 'var(--muted)' }} title={context.commandLine}>
+                                  {context.commandLine}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1 text-xs uppercase font-semibold mb-1" style={{ color: 'var(--muted)' }}>
+                                <Server className="h-3 w-3" />
+                                Lineage
+                              </div>
+                              <div className="text-sm" style={{ color: context.parentName || context.parentPid ? 'var(--fg)' : 'var(--muted)' }}>
+                                {context.parentName || context.parentPid ? `${context.parentName || 'parent'}${context.parentPid ? ` (${context.parentPid})` : ''}` : 'Parent process missing'}
+                              </div>
+                              <div className="text-xs mt-1" style={{ color: 'var(--muted)' }}>
+                                {context.user ? `user=${context.user}` : 'user context not captured'}
+                              </div>
+                              {chainLabel && (
+                                <div className="text-xs mt-1 truncate" style={{ color: 'var(--fg-2)' }} title={chainLabel}>
+                                  {chainLabel}
+                                </div>
+                              )}
+                              {context.sha256 && (
+                                <div className="text-xs mt-1 font-mono truncate" style={{ color: 'var(--high)' }} title={context.sha256}>
+                                  sha256={context.sha256}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {context.evidence.slice(0, 8).map(item => (
+                              <span
+                                key={item}
+                                className="px-2 py-1 rounded text-xs"
+                                style={{ background: 'var(--surface)', color: 'var(--fg-2)' }}
+                              >
+                                {item}
+                              </span>
+                            ))}
+                            {context.gaps.slice(0, 6).map(item => (
+                              <span
+                                key={item}
+                                className="px-2 py-1 rounded text-xs"
+                                style={{ background: 'rgba(239, 68, 68, 0.1)', color: 'rgb(248 113 113)' }}
+                              >
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <details>
+                          <summary className="text-xs cursor-pointer hover:opacity-80" style={{ color: 'var(--muted)' }}>
+                            Show raw event
+                          </summary>
+                          <pre
+                            className="text-xs rounded p-3 overflow-x-auto mt-2"
+                            style={{
+                              backgroundColor: 'var(--bg)',
+                              color: 'var(--muted)'
+                            }}
+                          >
+                            {JSON.stringify(result.details, null, 2)}
+                          </pre>
+                        </details>
                       </div>
-                      <pre
-                        className="text-xs rounded p-3 overflow-x-auto"
-                        style={{
-                          backgroundColor: 'var(--bg)',
-                          color: 'var(--muted)'
-                        }}
-                      >
-                        {JSON.stringify(result.details, null, 2)}
-                      </pre>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             ) : (

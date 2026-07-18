@@ -16,10 +16,8 @@ defmodule TamanduaServer.Validation.EDRTester do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Agents
   alias TamanduaServer.Alerts
-  alias TamanduaServer.Detection.MITRE
 
   @test_timeout_ms 60_000
   @detection_window_ms 30_000
@@ -624,12 +622,15 @@ defmodule TamanduaServer.Validation.EDRTester do
       }
     else
       # Real execution - send command to agent and wait for detection
-      case Agents.send_command(agent_id, :execute_test, %{
-        technique_id: technique_id,
-        command: test.command,
-        timeout_ms: @test_timeout_ms
+      case Agents.send_command(agent_id, %{
+        command_type: "execute_test",
+        payload: %{
+          technique_id: technique_id,
+          command: test.command,
+          timeout_ms: @test_timeout_ms
+        }
       }) do
-        :ok ->
+        {:ok, :sent} ->
           # Wait for detection
           Process.sleep(@detection_window_ms)
           detected = check_detection_within_window(agent_id, technique_id, start_time)

@@ -12,7 +12,6 @@ defmodule TamanduaServerWeb.ApprovalQueueLive do
   alias TamanduaServer.Repo
   alias Phoenix.PubSub
 
-  import Ecto.Query
 
   @pubsub TamanduaServer.PubSub
 

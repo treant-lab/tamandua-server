@@ -251,7 +251,7 @@ defmodule TamanduaServer.Integrations.Sentinel do
       {:ok, new_state} ->
         result = create_sentinel_incident(incident_data, new_state)
         case result do
-          {:ok, incident_id} ->
+          {:ok, _incident_id} ->
             new_stats = update_stats(new_state.stats, :incidents_created, 1)
             {:reply, result, %{new_state | stats: new_stats}}
           error ->

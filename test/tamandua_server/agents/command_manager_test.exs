@@ -1,6 +1,8 @@
 defmodule TamanduaServer.Agents.CommandManagerTest do
   use TamanduaServer.DataCase, async: true
 
+  @organization_id "11111111-1111-4111-8111-111111111111"
+
   alias TamanduaServer.Agents.{CommandManager, AgentCommand}
   alias TamanduaServer.Repo
 
@@ -8,11 +10,15 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
     test "creates a pending command for an online agent" do
       # Setup: Register a mock agent
       agent_id = "test-agent-#{:rand.uniform(10000)}"
+
       TamanduaServer.Agents.Registry.register(agent_id, %{
         hostname: "test-host",
         os_type: "linux",
+        organization_id: @organization_id,
         worker_pid: self()
       })
+
+      on_exit(fn -> TamanduaServer.Agents.Registry.unregister(agent_id) end)
 
       # Queue a command
       {:ok, command} =
@@ -20,7 +26,7 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
 
       assert command.agent_id == agent_id
       assert command.command_type == "kill_process"
-      assert command.command_params == %{pid: 1234}
+      assert command.command_params == %{"pid" => 1234}
       assert command.status == "pending"
       assert command.priority == 5
       assert command.expires_at != nil
@@ -35,6 +41,7 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       TamanduaServer.Agents.Registry.register(agent_id, %{
         hostname: "test-host",
         os_type: "linux",
+        organization_id: @organization_id,
         worker_pid: self()
       })
 
@@ -50,7 +57,7 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       for {command_type, params} <- cases do
         assert {:ok, command} = CommandManager.queue_command(agent_id, command_type, params)
         assert command.command_type == to_string(command_type)
-        assert command.command_params == params
+        assert command.command_params == stringify_keys(params)
       end
     end
 
@@ -61,13 +68,16 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
 
     test "sets default priority and timeout" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
+
       TamanduaServer.Agents.Registry.register(agent_id, %{
         hostname: "test-host",
         os_type: "windows",
+        organization_id: @organization_id,
         worker_pid: self()
       })
 
-      {:ok, command} = CommandManager.queue_command(agent_id, :quarantine_file, %{path: "C:\\bad.exe"})
+      {:ok, command} =
+        CommandManager.queue_command(agent_id, :quarantine_file, %{path: "C:\\bad.exe"})
 
       assert command.priority == 0
       assert command.expires_at != nil
@@ -76,12 +86,136 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       diff = DateTime.diff(command.expires_at, DateTime.utc_now(), :second)
       assert diff >= 3590 and diff <= 3610
     end
+
+    test "returns the existing command for a repeated idempotency key" do
+      agent_id = "test-agent-#{System.unique_integer([:positive])}"
+      key = "decision-test-#{System.unique_integer([:positive])}"
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        hostname: "test-host",
+        os_type: "linux",
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
+
+      on_exit(fn -> TamanduaServer.Agents.Registry.unregister(agent_id) end)
+
+      assert {:ok, first} =
+               CommandManager.queue_command(
+                 agent_id,
+                 :kill_process,
+                 %{pid: 1234},
+                 idempotency_key: key
+               )
+
+      assert {:ok, replay} =
+               CommandManager.queue_command(
+                 agent_id,
+                 :kill_process,
+                 %{pid: 1234},
+                 idempotency_key: key
+               )
+
+      assert replay.id == first.id
+      assert replay.idempotency_key == key
+
+      assert Repo.aggregate(
+               from(c in AgentCommand,
+                 where: c.agent_id == ^agent_id and c.idempotency_key == ^key
+               ),
+               :count,
+               :id
+             ) == 1
+    end
+  end
+
+  describe "queue_fleet_osquery/3" do
+    test "queues osquery command only for live agents that reported the capability" do
+      org_id = @organization_id
+      capable_agent = "test-agent-#{:rand.uniform(10000)}"
+      remote_query_agent = "test-agent-#{:rand.uniform(10000)}"
+      unsupported_agent = "test-agent-#{:rand.uniform(10000)}"
+
+      TamanduaServer.Agents.Registry.register(capable_agent, %{
+        hostname: "capable-host",
+        os_type: "linux",
+        organization_id: org_id,
+        worker_pid: self(),
+        capabilities: ["live_response", "osquery_query"]
+      })
+
+      TamanduaServer.Agents.Registry.register(remote_query_agent, %{
+        hostname: "remote-query-host",
+        os_type: "windows",
+        organization_id: org_id,
+        worker_pid: self(),
+        capabilities: ["remote_query"]
+      })
+
+      TamanduaServer.Agents.Registry.register(unsupported_agent, %{
+        hostname: "unsupported-host",
+        os_type: "linux",
+        organization_id: org_id,
+        worker_pid: self(),
+        capabilities: ["live_response"]
+      })
+
+      result =
+        CommandManager.queue_fleet_osquery(
+          org_id,
+          "select pid, name from processes limit 5;",
+          max_rows: 5,
+          max_output_bytes: 8192,
+          priority: 2,
+          timeout: 120
+        )
+
+      assert result.total_targets == 3
+      assert Enum.map(result.queued, & &1.agent_id) == [capable_agent, remote_query_agent]
+      assert Enum.map(result.queued, & &1.command_type) == ["osquery_query", "osquery_query"]
+      assert Enum.all?(result.queued, &(&1.command_params["max_rows"] == 5))
+
+      assert result.skipped == [
+               %{agent_id: unsupported_agent, reason: :missing_osquery_capability}
+             ]
+    end
+
+    test "honors explicit agent allowlist for fleet osquery" do
+      org_id = @organization_id
+      agent_a = "test-agent-#{:rand.uniform(10000)}"
+      agent_b = "test-agent-#{:rand.uniform(10000)}"
+
+      for agent_id <- [agent_a, agent_b] do
+        TamanduaServer.Agents.Registry.register(agent_id, %{
+          hostname: agent_id,
+          os_type: "linux",
+          organization_id: org_id,
+          worker_pid: self(),
+          capabilities: ["osquery_query"]
+        })
+      end
+
+      result =
+        CommandManager.queue_fleet_osquery(
+          org_id,
+          "select * from os_version;",
+          agent_ids: [agent_b]
+        )
+
+      assert result.total_targets == 1
+      assert Enum.map(result.queued, & &1.agent_id) == [agent_b]
+      assert result.skipped == []
+    end
   end
 
   describe "get_command/1" do
     test "retrieves a command by ID" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       {:ok, created} = CommandManager.queue_command(agent_id, :isolate_network, %{})
 
@@ -99,7 +233,11 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
   describe "pending_commands/1" do
     test "returns deliverable (pending + sent) commands ordered by priority and age" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       # Create commands with different priorities
       {:ok, cmd1} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 1}, priority: 0)
@@ -122,7 +260,11 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
   describe "cancel_command/1" do
     test "cancels a pending command" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       {:ok, command} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 9999})
 
@@ -136,7 +278,11 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
 
     test "returns error when cancelling already-sent command" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       {:ok, command} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 9999})
 
@@ -151,7 +297,11 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
   describe "command_stats/1" do
     test "returns statistics for an agent's commands" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       # Create various commands
       {:ok, cmd1} = CommandManager.queue_command(agent_id, :kill_process, %{pid: 1})
@@ -168,16 +318,23 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       assert stats.by_status["pending"] == 1
       assert stats.by_status["sent"] == 1
       assert stats.by_status["completed"] == 1
+      assert is_number(stats.avg_completion_seconds)
     end
   end
 
   describe "retry_command/1" do
     test "creates a new command with same parameters" do
       agent_id = "test-agent-#{:rand.uniform(10000)}"
-      TamanduaServer.Agents.Registry.register(agent_id, %{worker_pid: self()})
+
+      TamanduaServer.Agents.Registry.register(agent_id, %{
+        organization_id: @organization_id,
+        worker_pid: self()
+      })
 
       {:ok, original} =
-        CommandManager.queue_command(agent_id, :quarantine_file, %{path: "/tmp/malware"}, priority: 8)
+        CommandManager.queue_command(agent_id, :quarantine_file, %{path: "/tmp/malware"},
+          priority: 8
+        )
 
       # Mark as failed
       Repo.update!(AgentCommand.mark_failed(original, "Timeout"))
@@ -192,5 +349,29 @@ defmodule TamanduaServer.Agents.CommandManagerTest do
       assert retried.priority == original.priority
       assert retried.status == "pending"
     end
+
+    test "rejects screen capture retries that would reuse one-time credentials" do
+      agent_id = "test-agent-#{:rand.uniform(10000)}"
+
+      {:ok, original} =
+        AgentCommand.insert_new(%{
+          agent_id: agent_id,
+          command_type: "screen_capture",
+          command_params: %{
+            "artifact_id" => Ecto.UUID.generate(),
+            "upload" => %{"credential_status" => "consumed_or_expired"}
+          }
+        })
+
+      assert {:error, :non_retryable_command} = CommandManager.retry_command(original.id)
+      assert Repo.aggregate(AgentCommand, :count) == 1
+    end
   end
+
+  defp stringify_keys(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {to_string(key), stringify_keys(nested_value)} end)
+  end
+
+  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
+  defp stringify_keys(value), do: value
 end

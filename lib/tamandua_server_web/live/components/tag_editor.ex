@@ -76,7 +76,7 @@ defmodule TamanduaServerWeb.Components.TagEditor do
   @impl true
   def handle_event("remove_tag", %{"tag_id" => tag_id}, socket) do
     alert_ids = socket.assigns.alert_ids
-    organization_id = socket.assigns.organization_id
+    _organization_id = socket.assigns.organization_id
 
     case TagManager.bulk_unassign_tag_ids(alert_ids, [tag_id]) do
       {:ok, _count} ->

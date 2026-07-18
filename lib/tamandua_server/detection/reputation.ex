@@ -24,7 +24,6 @@ defmodule TamanduaServer.Detection.Reputation do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Detection.Config
 
   # ETS tables for caching
   @file_cache_table :reputation_file_cache

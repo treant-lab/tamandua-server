@@ -2,7 +2,7 @@ defmodule TamanduaServer.Solana.Bounty do
   @moduledoc """
   Detection bounty system for Tamanduá Sentinel.
 
-  Rule authors can earn SOL rewards when their detection rules
+  Rule authors can become eligible for gated rewards only when their detection rules
   successfully identify security incidents.
 
   ## How It Works

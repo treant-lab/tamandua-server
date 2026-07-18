@@ -170,11 +170,14 @@ defmodule TamanduaServer.ContainerSecurity.Trivy do
           _ -> {:ok, String.trim(output)}
         end
 
-      {error, _} ->
-        {:error, error}
-
+      # OSCommand.run/3 returns {:error, reason} for validation failures and
+      # timeouts; match it before the generic 2-tuple, which would otherwise
+      # swallow it (previously this clause was unreachable).
       {:error, reason} ->
         {:error, reason}
+
+      {error, _} ->
+        {:error, error}
     end
   rescue
     e -> {:error, Exception.message(e)}
@@ -200,12 +203,16 @@ defmodule TamanduaServer.ContainerSecurity.Trivy do
       {output, 0} ->
         parse_trivy_output(output, image, tag)
 
+      # OSCommand.run/3 returns {:error, reason} for validation failures and
+      # timeouts; match it before the generic {output, exit_code} 2-tuple,
+      # which would otherwise swallow it (previously this clause was
+      # unreachable and String.slice/3 on the :error atom raised).
+      {:error, reason} ->
+        {:error, reason}
+
       {output, exit_code} ->
         Logger.error("Trivy scan failed (exit #{exit_code}): #{String.slice(output, 0, 500)}")
         {:error, {:trivy_failed, exit_code, output}}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   rescue
     e in ErlangError ->
@@ -252,12 +259,16 @@ defmodule TamanduaServer.ContainerSecurity.Trivy do
       {output, 0} ->
         parse_trivy_fs_output(output, path)
 
+      # OSCommand.run/3 returns {:error, reason} for validation failures and
+      # timeouts; match it before the generic {output, exit_code} 2-tuple,
+      # which would otherwise swallow it (previously this clause was
+      # unreachable and String.slice/3 on the :error atom raised).
+      {:error, reason} ->
+        {:error, reason}
+
       {output, exit_code} ->
         Logger.error("Trivy fs scan failed (exit #{exit_code}): #{String.slice(output, 0, 500)}")
         {:error, {:trivy_failed, exit_code, output}}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   rescue
     e in ErlangError ->

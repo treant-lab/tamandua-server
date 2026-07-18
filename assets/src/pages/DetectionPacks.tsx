@@ -656,14 +656,14 @@ export default function DetectionPacks({
 
   return (
     <MainLayout>
-      <Head title="Detection Marketplace" />
+      <Head title="Rule Pack Catalog" />
 
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--fg)' }}>
-              Detection marketplace
+              Rule pack catalog
             </h1>
             <p className="text-base" style={{ color: 'var(--muted)' }}>
               Curated Sigma, YARA and config packs. Reviewed for false-positive risk before install.

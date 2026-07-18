@@ -28,7 +28,12 @@ defmodule TamanduaServer.Attribution.Attribution do
 
     belongs_to :alert, TamanduaServer.Alerts.Alert
     belongs_to :event, TamanduaServer.Telemetry.Event
-    belongs_to :tenant, TamanduaServer.Tenants.Tenant
+
+    # There is no `tenants` table nor a `TamanduaServer.Tenants.Tenant` schema
+    # in this codebase (the CreateAttributions migration notes: "`tenants` has
+    # no backing table — the association is resolved logically"). Keep the raw
+    # column as a plain field instead of a belongs_to to a phantom module.
+    field :tenant_id, :binary_id
 
     timestamps()
   end

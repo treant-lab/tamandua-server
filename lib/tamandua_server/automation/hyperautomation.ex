@@ -54,7 +54,6 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Response.Executor
-  alias TamanduaServer.Integrations
   alias __MODULE__.{Workflow, WorkflowExecution, ActionLibrary, AuditLog}
 
   # ============================================================================
@@ -91,45 +90,45 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     @primary_key {:id, :binary_id, autogenerate: true}
     @foreign_key_type :binary_id
     schema "automation_workflows" do
-      field :name, :string
-      field :description, :string
-      field :version, :integer, default: 1
-      field :enabled, :boolean, default: true
-      field :category, :string
-      field :tags, {:array, :string}, default: []
+      field(:name, :string)
+      field(:description, :string)
+      field(:version, :integer, default: 1)
+      field(:enabled, :boolean, default: true)
+      field(:category, :string)
+      field(:tags, {:array, :string}, default: [])
 
       # Trigger configuration
-      field :trigger_type, :string
-      field :trigger_config, :map, default: %{}
+      field(:trigger_type, :string)
+      field(:trigger_config, :map, default: %{})
 
       # Workflow definition (compiled DSL)
-      field :steps, {:array, :map}, default: []
-      field :variables, :map, default: %{}
-      field :error_handlers, {:array, :map}, default: []
+      field(:steps, {:array, :map}, default: [])
+      field(:variables, :map, default: %{})
+      field(:error_handlers, {:array, :map}, default: [])
 
       # Execution settings
-      field :timeout_seconds, :integer, default: 3600
-      field :max_retries, :integer, default: 3
-      field :retry_delay_seconds, :integer, default: 30
-      field :concurrency_limit, :integer, default: 10
-      field :require_approval, :boolean, default: false
-      field :approval_roles, {:array, :string}, default: []
-      field :approval_timeout_minutes, :integer, default: 60
+      field(:timeout_seconds, :integer, default: 3600)
+      field(:max_retries, :integer, default: 3)
+      field(:retry_delay_seconds, :integer, default: 30)
+      field(:concurrency_limit, :integer, default: 10)
+      field(:require_approval, :boolean, default: false)
+      field(:approval_roles, {:array, :string}, default: [])
+      field(:approval_timeout_minutes, :integer, default: 60)
 
       # AI assistance metadata
-      field :ai_generated, :boolean, default: false
-      field :ai_suggestions, {:array, :map}, default: []
-      field :confidence_score, :float
+      field(:ai_generated, :boolean, default: false)
+      field(:ai_suggestions, {:array, :map}, default: [])
+      field(:confidence_score, :float)
 
       # Statistics
-      field :execution_count, :integer, default: 0
-      field :success_count, :integer, default: 0
-      field :avg_duration_seconds, :float
-      field :last_executed_at, :utc_datetime
+      field(:execution_count, :integer, default: 0)
+      field(:success_count, :integer, default: 0)
+      field(:avg_duration_seconds, :float)
+      field(:last_executed_at, :utc_datetime)
 
       # Ownership
-      field :created_by, :binary_id
-      field :organization_id, :binary_id
+      field(:created_by, :binary_id)
+      field(:organization_id, :binary_id)
 
       timestamps()
     end
@@ -197,7 +196,9 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
     defp valid_workflow_steps?(_), do: false
 
-    defp valid_step?(%{"id" => id, "type" => type}) when is_binary(id) and is_binary(type), do: true
+    defp valid_step?(%{"id" => id, "type" => type}) when is_binary(id) and is_binary(type),
+      do: true
+
     defp valid_step?(_), do: false
   end
 
@@ -213,43 +214,43 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     @primary_key {:id, :binary_id, autogenerate: true}
     @foreign_key_type :binary_id
     schema "automation_executions" do
-      field :workflow_id, :binary_id
-      field :workflow_version, :integer
-      field :status, :string, default: "pending"
-      field :priority, :integer, default: 5
+      field(:workflow_id, :binary_id)
+      field(:workflow_version, :integer)
+      field(:status, :string, default: "pending")
+      field(:priority, :integer, default: 5)
 
       # Trigger context
-      field :trigger_event, :map, default: %{}
-      field :input_variables, :map, default: %{}
+      field(:trigger_event, :map, default: %{})
+      field(:input_variables, :map, default: %{})
 
       # Execution state
-      field :current_step_id, :string
-      field :completed_steps, {:array, :map}, default: []
-      field :pending_steps, {:array, :string}, default: []
-      field :step_results, :map, default: %{}
-      field :workflow_variables, :map, default: %{}
+      field(:current_step_id, :string)
+      field(:completed_steps, {:array, :map}, default: [])
+      field(:pending_steps, {:array, :string}, default: [])
+      field(:step_results, :map, default: %{})
+      field(:workflow_variables, :map, default: %{})
 
       # Error handling
-      field :error_message, :string
-      field :error_step_id, :string
-      field :retry_count, :integer, default: 0
-      field :last_error_at, :utc_datetime
+      field(:error_message, :string)
+      field(:error_step_id, :string)
+      field(:retry_count, :integer, default: 0)
+      field(:last_error_at, :utc_datetime)
 
       # Approval tracking
-      field :approval_requested_at, :utc_datetime
-      field :approved_by, :binary_id
-      field :approved_at, :utc_datetime
-      field :approval_notes, :string
+      field(:approval_requested_at, :utc_datetime)
+      field(:approved_by, :binary_id)
+      field(:approved_at, :utc_datetime)
+      field(:approval_notes, :string)
 
       # Timing
-      field :started_at, :utc_datetime
-      field :completed_at, :utc_datetime
-      field :duration_seconds, :float
+      field(:started_at, :utc_datetime)
+      field(:completed_at, :utc_datetime)
+      field(:duration_seconds, :float)
 
       # Metadata
-      field :initiated_by, :binary_id
-      field :correlation_id, :string
-      field :parent_execution_id, :binary_id
+      field(:initiated_by, :binary_id)
+      field(:correlation_id, :string)
+      field(:parent_execution_id, :binary_id)
 
       timestamps()
     end
@@ -309,20 +310,20 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     @primary_key {:id, :binary_id, autogenerate: true}
     @foreign_key_type :binary_id
     schema "automation_audit_logs" do
-      field :execution_id, :binary_id
-      field :workflow_id, :binary_id
-      field :event_type, :string
-      field :step_id, :string
-      field :action_type, :string
-      field :actor_id, :binary_id
-      field :actor_type, :string
-      field :target_type, :string
-      field :target_id, :string
-      field :details, :map, default: %{}
-      field :outcome, :string
-      field :duration_ms, :integer
-      field :ip_address, :string
-      field :user_agent, :string
+      field(:execution_id, :binary_id)
+      field(:workflow_id, :binary_id)
+      field(:event_type, :string)
+      field(:step_id, :string)
+      field(:action_type, :string)
+      field(:actor_id, :binary_id)
+      field(:actor_type, :string)
+      field(:target_type, :string)
+      field(:target_id, :string)
+      field(:details, :map, default: %{})
+      field(:outcome, :string)
+      field(:duration_ms, :integer)
+      field(:ip_address, :string)
+      field(:user_agent, :string)
 
       timestamps(updated_at: false)
     end
@@ -940,33 +941,39 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   @impl true
   def handle_call({:get_workflow, id}, _from, state) do
-    case Map.get(state.workflows, id) do
+    workflows_by_id = ensure_workflows_loaded(state.workflows)
+
+    case Map.get(workflows_by_id, id) do
       nil -> {:reply, {:error, :not_found}, state}
-      workflow -> {:reply, {:ok, workflow}, state}
+      workflow -> {:reply, {:ok, workflow}, %{state | workflows: workflows_by_id}}
     end
   end
 
   @impl true
   def handle_call({:list_workflows, filters}, _from, state) do
+    workflows_by_id = load_workflows()
+
     workflows =
-      state.workflows
+      workflows_by_id
       |> Map.values()
       |> filter_workflows(filters)
       |> Enum.sort_by(& &1.name)
 
-    {:reply, {:ok, workflows}, state}
+    {:reply, {:ok, workflows}, %{state | workflows: workflows_by_id}}
   end
 
   @impl true
   def handle_call({:update_workflow, id, attrs}, _from, state) do
-    case Map.get(state.workflows, id) do
+    workflows_by_id = ensure_workflows_loaded(state.workflows)
+
+    case Map.get(workflows_by_id, id) do
       nil ->
-        {:reply, {:error, :not_found}, state}
+        {:reply, {:error, :not_found}, %{state | workflows: workflows_by_id}}
 
       workflow ->
         case update_workflow_record(workflow, attrs) do
           {:ok, updated} ->
-            new_workflows = Map.put(state.workflows, id, updated)
+            new_workflows = Map.put(workflows_by_id, id, updated)
             audit_log_event(nil, id, "workflow_updated", %{changes: attrs})
             {:reply, {:ok, updated}, %{state | workflows: new_workflows}}
 
@@ -978,14 +985,16 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   @impl true
   def handle_call({:delete_workflow, id}, _from, state) do
-    case Map.get(state.workflows, id) do
+    workflows_by_id = ensure_workflows_loaded(state.workflows)
+
+    case Map.get(workflows_by_id, id) do
       nil ->
-        {:reply, {:error, :not_found}, state}
+        {:reply, {:error, :not_found}, %{state | workflows: workflows_by_id}}
 
       workflow ->
         case delete_workflow_record(workflow) do
           {:ok, _} ->
-            new_workflows = Map.delete(state.workflows, id)
+            new_workflows = Map.delete(workflows_by_id, id)
             audit_log_event(nil, id, "workflow_deleted", %{name: workflow.name})
             {:reply, :ok, %{state | workflows: new_workflows}}
 
@@ -997,7 +1006,10 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   @impl true
   def handle_call({:execute_workflow, workflow_id, context, opts}, _from, state) do
-    case Map.get(state.workflows, workflow_id) do
+    workflows_by_id = ensure_workflows_loaded(state.workflows)
+    state = %{state | workflows: workflows_by_id}
+
+    case Map.get(workflows_by_id, workflow_id) do
       nil ->
         {:reply, {:error, :workflow_not_found}, state}
 
@@ -1038,7 +1050,9 @@ defmodule TamanduaServer.Automation.Hyperautomation do
         save_execution(approved_execution)
 
         new_pending = Map.delete(state.pending_approvals, execution_id)
-        new_state = start_execution(%{state | pending_approvals: new_pending}, approved_execution, workflow)
+
+        new_state =
+          start_execution(%{state | pending_approvals: new_pending}, approved_execution, workflow)
 
         audit_log_event(execution_id, execution.workflow_id, "execution_approved", %{
           approver_id: approver_id,
@@ -1051,7 +1065,8 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
   @impl true
   def handle_call({:reject_execution, execution_id, rejector_id, reason}, _from, state) do
-    case Map.get(state.pending_approvals, execution_id) || Map.get(state.active_executions, execution_id) do
+    case Map.get(state.pending_approvals, execution_id) ||
+           Map.get(state.active_executions, execution_id) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
@@ -1073,7 +1088,8 @@ defmodule TamanduaServer.Automation.Hyperautomation do
           reason: reason
         })
 
-        {:reply, {:ok, cancelled_execution}, %{state | pending_approvals: new_pending, active_executions: new_active}}
+        {:reply, {:ok, cancelled_execution},
+         %{state | pending_approvals: new_pending, active_executions: new_active}}
     end
   end
 
@@ -1321,7 +1337,7 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     %{state | active_executions: new_active}
   end
 
-  defp continue_execution(state, execution, workflow) do
+  defp continue_execution(state, execution, _workflow) do
     # Resume from current step
     if execution.current_step_id do
       send(self(), {:execute_step, execution.id, execution.current_step_id})
@@ -1426,7 +1442,8 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       {:wait, duration_ms_wait} ->
         Process.send_after(
           self(),
-          {:execute_step, execution.id, step["on_success"] || get_next_step(workflow.steps, step["id"])},
+          {:execute_step, execution.id,
+           step["on_success"] || get_next_step(workflow.steps, step["id"])},
           duration_ms_wait
         )
 
@@ -1694,7 +1711,11 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
     results =
       Enum.map(items, fn item ->
-        item_execution = %{execution | workflow_variables: Map.put(execution.workflow_variables, "item", item)}
+        item_execution = %{
+          execution
+          | workflow_variables: Map.put(execution.workflow_variables, "item", item)
+        }
+
         execute_step_action(step, item_execution, nil)
       end)
 
@@ -1763,7 +1784,8 @@ defmodule TamanduaServer.Automation.Hyperautomation do
         {:ok, child_execution} ->
           if wait do
             # In real implementation, would wait for completion
-            {:ok, %{"child_execution_id" => child_execution.id, "status" => child_execution.status}}
+            {:ok,
+             %{"child_execution_id" => child_execution.id, "status" => child_execution.status}}
           else
             {:ok, %{"child_execution_id" => child_execution.id, "async" => true}}
           end
@@ -1786,8 +1808,21 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       |> Enum.map(fn wf -> {wf.id, wf} end)
       |> Map.new()
     rescue
-      _ -> %{}
+      exception ->
+        Logger.warning("Hyperautomation workflow load failed: #{Exception.message(exception)}")
+        %{}
+    catch
+      kind, reason ->
+        Logger.warning(
+          "Hyperautomation workflow load failed with #{inspect(kind)}: #{inspect(reason)}"
+        )
+
+        %{}
     end
+  end
+
+  defp ensure_workflows_loaded(workflows) when is_map(workflows) do
+    if map_size(workflows) == 0, do: load_workflows(), else: workflows
   end
 
   defp create_workflow_record(attrs) do
@@ -1841,15 +1876,59 @@ defmodule TamanduaServer.Automation.Hyperautomation do
   end
 
   defp filter_workflows(workflows, filters) do
+    normalized_filters =
+      filters
+      |> normalize_workflow_filters()
+      |> Enum.reject(fn
+        {_key, nil} -> true
+        {_key, ""} -> true
+        {_key, "all"} -> true
+        _ -> false
+      end)
+
     Enum.filter(workflows, fn wf ->
-      Enum.all?(filters, fn
+      Enum.all?(normalized_filters, fn
         {:enabled, value} -> wf.enabled == value
+        {:status, "enabled"} -> wf.enabled == true
+        {:status, "disabled"} -> wf.enabled == false
         {:category, value} -> wf.category == value
         {:trigger_type, value} -> wf.trigger_type == value
+        {:organization_id, value} -> tenant_workflow_visible?(wf.organization_id, value)
+        {:search, value} -> workflow_search_match?(wf, value)
         {:tag, value} -> value in (wf.tags || [])
         _ -> true
       end)
     end)
+  end
+
+  defp normalize_workflow_filters(nil), do: []
+
+  defp normalize_workflow_filters(filters) when is_map(filters) do
+    Enum.map(filters, fn
+      {key, value} when is_binary(key) -> {String.to_existing_atom(key), value}
+      pair -> pair
+    end)
+  rescue
+    ArgumentError -> Enum.to_list(filters)
+  end
+
+  defp normalize_workflow_filters(filters) when is_list(filters), do: filters
+  defp normalize_workflow_filters(_filters), do: []
+
+  defp tenant_workflow_visible?(nil, _organization_id), do: true
+
+  defp tenant_workflow_visible?(workflow_org_id, organization_id),
+    do: to_string(workflow_org_id) == to_string(organization_id)
+
+  defp workflow_search_match?(_wf, nil), do: true
+  defp workflow_search_match?(_wf, ""), do: true
+
+  defp workflow_search_match?(wf, value) do
+    needle = value |> to_string() |> String.downcase()
+
+    ([wf.name, wf.description, wf.category] ++ (wf.tags || []))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.any?(fn text -> String.contains?(String.downcase(to_string(text)), needle) end)
   end
 
   defp matches_trigger_config?(nil, _event_data), do: true
@@ -1976,7 +2055,7 @@ defmodule TamanduaServer.Automation.Hyperautomation do
   defp status_to_string(status) when is_atom(status), do: Atom.to_string(status)
   defp status_to_string(status), do: status
 
-  defp update_workflow_stats(workflow_id, status, duration) do
+  defp update_workflow_stats(workflow_id, status, _duration) do
     success_inc = if status == :success, do: 1, else: 0
 
     try do
@@ -2131,9 +2210,26 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       trigger_config: %{"detection_type" => "ransomware"},
       steps: [
         %{"id" => "isolate", "type" => "isolate_host", "params" => %{}, "on_success" => "kill"},
-        %{"id" => "kill", "type" => "kill_process", "params" => %{}, "on_success" => "quarantine"},
-        %{"id" => "quarantine", "type" => "quarantine_file", "params" => %{}, "on_success" => "notify"},
-        %{"id" => "notify", "type" => "send_slack", "params" => %{"channel" => "#security-ops", "message" => "Ransomware contained on {{agent_id}}"}}
+        %{
+          "id" => "kill",
+          "type" => "kill_process",
+          "params" => %{},
+          "on_success" => "quarantine"
+        },
+        %{
+          "id" => "quarantine",
+          "type" => "quarantine_file",
+          "params" => %{},
+          "on_success" => "notify"
+        },
+        %{
+          "id" => "notify",
+          "type" => "send_slack",
+          "params" => %{
+            "channel" => "#security-ops",
+            "message" => "Ransomware contained on {{agent_id}}"
+          }
+        }
       ],
       tags: ["ransomware", "critical", "automated"]
     }
@@ -2148,7 +2244,11 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       steps: [
         %{"id" => "enrich", "type" => "enrich_hash", "params" => %{}, "on_success" => "block"},
         %{"id" => "block", "type" => "block_domain", "params" => %{}, "on_success" => "ticket"},
-        %{"id" => "ticket", "type" => "create_ticket", "params" => %{"title" => "Phishing Investigation", "priority" => "high"}}
+        %{
+          "id" => "ticket",
+          "type" => "create_ticket",
+          "params" => %{"title" => "Phishing Investigation", "priority" => "high"}
+        }
       ],
       tags: ["phishing", "email", "manual"]
     }
@@ -2163,10 +2263,27 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       trigger_config: %{"mitre_tactic" => "lateral-movement"},
       require_approval: true,
       steps: [
-        %{"id" => "collect", "type" => "http_request", "params" => %{"url" => "{{forensics_url}}", "method" => "POST"}, "on_success" => "analyze"},
-        %{"id" => "analyze", "type" => "conditional", "params" => %{"condition" => %{"field" => "severity", "operator" => "equals", "value" => "critical"}, "then_step" => "isolate", "else_step" => "ticket"}},
+        %{
+          "id" => "collect",
+          "type" => "http_request",
+          "params" => %{"url" => "{{forensics_url}}", "method" => "POST"},
+          "on_success" => "analyze"
+        },
+        %{
+          "id" => "analyze",
+          "type" => "conditional",
+          "params" => %{
+            "condition" => %{"field" => "severity", "operator" => "equals", "value" => "critical"},
+            "then_step" => "isolate",
+            "else_step" => "ticket"
+          }
+        },
         %{"id" => "isolate", "type" => "isolate_host", "params" => %{}, "on_success" => "ticket"},
-        %{"id" => "ticket", "type" => "create_ticket", "params" => %{"title" => "Lateral Movement Alert"}}
+        %{
+          "id" => "ticket",
+          "type" => "create_ticket",
+          "params" => %{"title" => "Lateral Movement Alert"}
+        }
       ],
       tags: ["lateral-movement", "high-priority"]
     }
@@ -2182,7 +2299,11 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       steps: [
         %{"id" => "block_ip", "type" => "block_ip", "params" => %{}, "on_success" => "isolate"},
         %{"id" => "isolate", "type" => "isolate_host", "params" => %{}, "on_success" => "page"},
-        %{"id" => "page", "type" => "create_ticket", "params" => %{"title" => "Data Exfiltration Alert", "priority" => "critical"}}
+        %{
+          "id" => "page",
+          "type" => "create_ticket",
+          "params" => %{"title" => "Data Exfiltration Alert", "priority" => "critical"}
+        }
       ],
       tags: ["exfiltration", "dlp", "critical"]
     }
@@ -2198,8 +2319,20 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       require_approval: true,
       steps: [
         %{"id" => "kill", "type" => "kill_process", "params" => %{}, "on_success" => "collect"},
-        %{"id" => "collect", "type" => "http_request", "params" => %{"url" => "{{memory_dump_url}}", "method" => "POST"}, "on_success" => "notify"},
-        %{"id" => "notify", "type" => "send_slack", "params" => %{"channel" => "#security-ops", "message" => "Credential theft attempt detected"}}
+        %{
+          "id" => "collect",
+          "type" => "http_request",
+          "params" => %{"url" => "{{memory_dump_url}}", "method" => "POST"},
+          "on_success" => "notify"
+        },
+        %{
+          "id" => "notify",
+          "type" => "send_slack",
+          "params" => %{
+            "channel" => "#security-ops",
+            "message" => "Credential theft attempt detected"
+          }
+        }
       ],
       tags: ["credential-theft", "lsass", "mimikatz"]
     }
@@ -2212,12 +2345,39 @@ defmodule TamanduaServer.Automation.Hyperautomation do
       category: "investigation",
       trigger_type: "manual",
       steps: [
-        %{"id" => "enrich_hash", "type" => "enrich_hash", "params" => %{}, "on_success" => "check_known"},
-        %{"id" => "check_known", "type" => "conditional", "params" => %{"condition" => %{"field" => "known_malware", "operator" => "equals", "value" => true}, "then_step" => "block", "else_step" => "sandbox"}},
-        %{"id" => "sandbox", "type" => "http_request", "params" => %{"url" => "{{sandbox_url}}", "method" => "POST"}, "on_success" => "analyze"},
-        %{"id" => "analyze", "type" => "wait", "params" => %{"duration_seconds" => 300}, "on_success" => "report"},
+        %{
+          "id" => "enrich_hash",
+          "type" => "enrich_hash",
+          "params" => %{},
+          "on_success" => "check_known"
+        },
+        %{
+          "id" => "check_known",
+          "type" => "conditional",
+          "params" => %{
+            "condition" => %{"field" => "known_malware", "operator" => "equals", "value" => true},
+            "then_step" => "block",
+            "else_step" => "sandbox"
+          }
+        },
+        %{
+          "id" => "sandbox",
+          "type" => "http_request",
+          "params" => %{"url" => "{{sandbox_url}}", "method" => "POST"},
+          "on_success" => "analyze"
+        },
+        %{
+          "id" => "analyze",
+          "type" => "wait",
+          "params" => %{"duration_seconds" => 300},
+          "on_success" => "report"
+        },
         %{"id" => "block", "type" => "block_ip", "params" => %{}, "on_success" => "report"},
-        %{"id" => "report", "type" => "create_ticket", "params" => %{"title" => "Malware Analysis Complete"}}
+        %{
+          "id" => "report",
+          "type" => "create_ticket",
+          "params" => %{"title" => "Malware Analysis Complete"}
+        }
       ],
       tags: ["malware", "analysis", "sandbox"]
     }
@@ -2253,7 +2413,11 @@ defmodule TamanduaServer.Automation.Hyperautomation do
           description: description,
           trigger_type: "manual",
           steps: [
-            %{"id" => "start", "type" => "set_variable", "params" => %{"name" => "started", "value" => true}}
+            %{
+              "id" => "start",
+              "type" => "set_variable",
+              "params" => %{"name" => "started", "value" => true}
+            }
           ],
           tags: ["custom", "ai-generated"],
           ai_generated: true
@@ -2267,17 +2431,26 @@ defmodule TamanduaServer.Automation.Hyperautomation do
     # Check for missing error handlers
     suggestions =
       if Enum.empty?(workflow.error_handlers || []) do
-        [%{type: "add_error_handler", message: "Consider adding error handlers for resilience"} | suggestions]
+        [
+          %{type: "add_error_handler", message: "Consider adding error handlers for resilience"}
+          | suggestions
+        ]
       else
         suggestions
       end
 
     # Check for missing notifications
-    has_notify = Enum.any?(workflow.steps || [], fn s -> s["type"] in ["send_slack", "send_email", "create_ticket"] end)
+    has_notify =
+      Enum.any?(workflow.steps || [], fn s ->
+        s["type"] in ["send_slack", "send_email", "create_ticket"]
+      end)
 
     suggestions =
       if not has_notify do
-        [%{type: "add_notification", message: "Consider adding notifications for visibility"} | suggestions]
+        [
+          %{type: "add_notification", message: "Consider adding notifications for visibility"}
+          | suggestions
+        ]
       else
         suggestions
       end
@@ -2287,7 +2460,10 @@ defmodule TamanduaServer.Automation.Hyperautomation do
 
     suggestions =
       if has_isolate and not workflow.require_approval do
-        [%{type: "require_approval", message: "Consider requiring approval for host isolation"} | suggestions]
+        [
+          %{type: "require_approval", message: "Consider requiring approval for host isolation"}
+          | suggestions
+        ]
       else
         suggestions
       end

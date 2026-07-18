@@ -6,7 +6,6 @@ defmodule TamanduaServer.Auth.MFA do
 
   import Ecto.Query
   alias TamanduaServer.Repo
-  alias TamanduaServer.Accounts.User
   alias TamanduaServer.Auth.MFA.{Credential, BackupCode, TrustedDevice, Policy, TOTP, SMS, Email, WebAuthn}
 
   require Logger

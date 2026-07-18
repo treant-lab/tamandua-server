@@ -85,7 +85,38 @@ defmodule TamanduaServerWeb.Telemetry do
       counter("tamandua.telemetry.events.count"),
       counter("tamandua.alerts.created.count"),
       summary("tamandua.detection.duration", unit: {:native, :millisecond}),
-      summary("tamandua.ml.inference.duration", unit: {:native, :millisecond})
+      summary("tamandua.ml.inference.duration", unit: {:native, :millisecond}),
+      counter("tamandua.evidence_session.created.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.created.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      ),
+      counter("tamandua.evidence_session.frame.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.frame.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      ),
+      counter("tamandua.evidence_session.completed.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.completed.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      ),
+      last_value("tamandua.evidence_session.completed.coverage", tags: [:platform, :status]),
+      counter("tamandua.evidence_session.failed.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.failed.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      ),
+      counter("tamandua.evidence_session.export.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.export.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      ),
+      counter("tamandua.evidence_session.diff.count", tags: [:platform, :status]),
+      summary("tamandua.evidence_session.diff.duration",
+        tags: [:platform, :status],
+        unit: {:native, :millisecond}
+      )
     ]
   end
 

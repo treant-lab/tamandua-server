@@ -28,10 +28,8 @@ defmodule TamanduaServer.Solana.HealthAttestations do
   alias TamanduaServer.Agents
   alias TamanduaServer.Agents.Agent
   alias TamanduaServer.Agents.Registry
-  alias TamanduaServer.Alerts
   alias TamanduaServer.Solana.HealthAttestation
   alias TamanduaServer.Solana.Client, as: SolanaClient
-  alias TamanduaServer.TenantScope
 
   @default_window_hours 24
 

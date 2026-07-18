@@ -24,7 +24,6 @@ defmodule TamanduaServer.Integrations.HealthMonitor do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Integrations.{Config, HealthCheck}
   alias TamanduaServer.Integrations.Schemas.{HealthMetric, UptimeRecord, Incident}
   alias Phoenix.PubSub
@@ -464,9 +463,7 @@ defmodule TamanduaServer.Integrations.HealthMonitor do
         score = score - min(error_rate * 2, 30)
 
         # Penalize for high latency
-        if m[:latency_avg] && m[:latency_avg] > 1000 do
-          score = score - 10
-        end
+        score = if m[:latency_avg] && m[:latency_avg] > 1000, do: score - 10, else: score
 
         max(score, 0)
       end)

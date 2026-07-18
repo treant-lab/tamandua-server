@@ -10,7 +10,6 @@ defmodule TamanduaServer.NotificationCenter.Channels.WebhookWorker do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.NotificationCenter.{
-    Notification,
     NotificationDelivery,
     NotificationWebhook
   }

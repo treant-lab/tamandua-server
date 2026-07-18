@@ -139,7 +139,7 @@ defmodule TamanduaServer.Hunting.QueryParser do
   end
 
   # Comments (// style)
-  defp do_tokenize(<<"//", rest::binary>>, line, col, acc) do
+  defp do_tokenize(<<"//", rest::binary>>, line, _col, acc) do
     {_, remaining} = consume_until_newline(rest)
     do_tokenize(remaining, line + 1, 1, acc)
   end
@@ -924,7 +924,7 @@ defmodule TamanduaServer.Hunting.QueryParser do
       {:ok, expr, rest} ->
         {:ok, Enum.reverse([expr | acc]), rest}
 
-      {:error, _, _, _} = error when acc == [] ->
+      {:error, _, _, _} = _error when acc == [] ->
         # Empty args
         {:ok, [], tokens}
 
@@ -1084,7 +1084,7 @@ defmodule TamanduaServer.Hunting.QueryParser do
     parse_aggregation_body(func <> "_", func, rest)
   end
 
-  defp parse_aggregation(tokens) do
+  defp parse_aggregation(_tokens) do
     {:error, "Expected aggregation function", 0, 0}
   end
 

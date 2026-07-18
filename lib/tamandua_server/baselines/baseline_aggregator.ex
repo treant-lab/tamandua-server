@@ -238,7 +238,7 @@ defmodule TamanduaServer.Baselines.BaselineAggregator do
             acc + 1
 
           {:error, reason} ->
-            Logger.warn("Failed to compute global baseline for #{type}:#{key}: #{inspect(reason)}")
+            Logger.warning("Failed to compute global baseline for #{type}:#{key}: #{inspect(reason)}")
             acc
         end
       end)
@@ -307,7 +307,7 @@ defmodule TamanduaServer.Baselines.BaselineAggregator do
     |> Enum.each(fn baseline ->
       case check_baseline_drift(baseline) do
         {:drift_detected, drift_percent} when drift_percent > 50.0 ->
-          Logger.warn("Significant drift detected in #{baseline.baseline_type}:#{baseline.baseline_key}: #{drift_percent}%")
+          Logger.warning("Significant drift detected in #{baseline.baseline_type}:#{baseline.baseline_key}: #{drift_percent}%")
 
           record_drift(baseline, drift_percent)
 
@@ -317,7 +317,7 @@ defmodule TamanduaServer.Baselines.BaselineAggregator do
     end)
   end
 
-  defp check_baseline_drift(baseline) do
+  defp check_baseline_drift(_baseline) do
     # Compare with previous version (would need historical tracking)
     # For now, return no drift
     {:ok, :no_drift}

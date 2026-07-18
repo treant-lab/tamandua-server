@@ -47,7 +47,7 @@ defmodule TamanduaServer.Workers.BatchJobWorker do
         Logger.info("[BatchJobWorker] Completed #{operation}: #{inspect(stats)}")
 
         # Send webhook notification
-        send_webhook_notification(organization_id, operation, stats)
+        send_webhook_notification(organization_id, operation, stats, job.id)
 
         :ok
 
@@ -160,22 +160,24 @@ defmodule TamanduaServer.Workers.BatchJobWorker do
     end
   end
 
-  defp execute_command_for_agent(agent, "isolate", user_id, reason) do
-    case Response.isolate_agent(agent.id, user_id: user_id, reason: reason) do
+  defp execute_command_for_agent(agent, "isolate", user_id, _reason) do
+    case Response.Executor.isolate_network(agent.id, actor: build_actor(agent, user_id)) do
       {:ok, _} -> {:ok, :isolated}
       {:error, reason} -> {:error, {agent.id, reason}}
     end
   end
 
-  defp execute_command_for_agent(agent, "scan", user_id, _reason) do
-    case Response.trigger_scan(agent.id, user_id: user_id) do
+  defp execute_command_for_agent(agent, "scan", _user_id, _reason) do
+    # Batch scans carry no per-agent path input; mirror the group batch-scan
+    # default (agent_groups_live) of scanning from the OS root.
+    case Response.Executor.trigger_scan(agent.id, default_scan_path(agent.os_type)) do
       {:ok, _} -> {:ok, :scan_triggered}
       {:error, reason} -> {:error, {agent.id, reason}}
     end
   end
 
   defp execute_command_for_agent(agent, "collect_forensics", user_id, _reason) do
-    case Response.collect_forensics(agent.id, user_id: user_id) do
+    case Response.Executor.collect_forensics(agent.id, %{actor: build_actor(agent, user_id)}) do
       {:ok, _} -> {:ok, :forensics_collected}
       {:error, reason} -> {:error, {agent.id, reason}}
     end
@@ -184,6 +186,16 @@ defmodule TamanduaServer.Workers.BatchJobWorker do
   defp execute_command_for_agent(agent, command, _user_id, _reason) do
     {:error, {agent.id, {:unknown_command, command}}}
   end
+
+  # The agent was already resolved through get_agent_for_org/2, so scoping the
+  # actor to the agent's organization matches the authorization the Executor
+  # enforces for org-scoped actors.
+  defp build_actor(agent, user_id) do
+    %{organization_id: agent.organization_id, user_id: user_id}
+  end
+
+  defp default_scan_path("windows"), do: "C:\\"
+  defp default_scan_path(_), do: "/"
 
   # ===========================================================================
   # Progress Tracking
@@ -208,7 +220,7 @@ defmodule TamanduaServer.Workers.BatchJobWorker do
       end
     rescue
       e ->
-        Logger.warn("[BatchJobWorker] Failed to update progress: #{inspect(e)}")
+        Logger.warning("[BatchJobWorker] Failed to update progress: #{inspect(e)}")
     end
   end
 
@@ -216,19 +228,21 @@ defmodule TamanduaServer.Workers.BatchJobWorker do
   # Webhook Notifications
   # ===========================================================================
 
-  defp send_webhook_notification(organization_id, operation, stats) do
+  defp send_webhook_notification(organization_id, operation, stats, job_id) do
     # Send webhook notification on completion
     # This allows external systems to be notified of batch operation completion
     Task.Supervisor.start_child(TamanduaServer.TaskSupervisor, fn ->
       try do
-        # If Webhooks module exists, use it
-        if Code.ensure_loaded?(Webhooks) do
-          Webhooks.send(organization_id, "batch_operation_completed", %{
+        Webhooks.Dispatcher.dispatch_event(
+          "batch_operation_completed",
+          to_string(job_id),
+          %{
             operation: operation,
             stats: stats,
             completed_at: DateTime.utc_now()
-          })
-        end
+          },
+          organization_id: organization_id
+        )
       rescue
         e ->
           Logger.debug("[BatchJobWorker] Webhook notification failed: #{inspect(e)}")

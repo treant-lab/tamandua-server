@@ -62,7 +62,8 @@ defmodule TamanduaServer.NDR.ProtocolAnalyzer do
   @ldap_ports [389, 636]
 
   # Suspicious HTTP patterns
-  @suspicious_user_agents [
+  defp suspicious_user_agents do
+    [
     ~r/python-requests/i,
     ~r/curl\//i,
     ~r/wget\//i,
@@ -74,9 +75,11 @@ defmodule TamanduaServer.NDR.ProtocolAnalyzer do
     ~r/sqlmap/i,
     ~r/dirbuster/i,
     ~r/gobuster/i
-  ]
+    ]
+  end
 
-  @suspicious_http_paths [
+  defp suspicious_http_paths do
+    [
     ~r/\.\.\/|\.\.\\/, # Path traversal
     ~r/\/wp-admin/i,
     ~r/\/phpmyadmin/i,
@@ -87,7 +90,8 @@ defmodule TamanduaServer.NDR.ProtocolAnalyzer do
     ~r/\/backup/i,
     ~r/cmd\.exe|powershell|bash/i,
     ~r/select.*from|union.*select|insert.*into/i  # SQL injection
-  ]
+    ]
+  end
 
   defstruct [
     :stats,
@@ -389,11 +393,11 @@ defmodule TamanduaServer.NDR.ProtocolAnalyzer do
   end
 
   defp has_suspicious_user_agent?(user_agent) do
-    Enum.any?(@suspicious_user_agents, &Regex.match?(&1, user_agent))
+    Enum.any?(suspicious_user_agents(), &Regex.match?(&1, user_agent))
   end
 
   defp has_suspicious_path?(path) do
-    Enum.any?(@suspicious_http_paths, &Regex.match?(&1, path))
+    Enum.any?(suspicious_http_paths(), &Regex.match?(&1, path))
   end
 
   # --------------------------------------------------------------------------
@@ -405,7 +409,7 @@ defmodule TamanduaServer.NDR.ProtocolAnalyzer do
 
     sni = payload[:sni] || payload["sni"] || payload[:hostname] || payload["hostname"]
     ja3 = payload[:ja3] || payload["ja3"]
-    cert_info = payload[:certificate] || payload["certificate"]
+    _cert_info = payload[:certificate] || payload["certificate"]
 
     detections = []
 

@@ -40,7 +40,6 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
   # ETS tables for anomaly storage
   @anomaly_table :behavioral_anomalies
-  @history_table :behavioral_history
   @risk_snapshot_table :behavioral_risk_snapshots
 
   @doc """
@@ -1610,7 +1609,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
 
       # Check each indicator against the IOCs database for real matches
       correlations = Enum.map(indicators, fn indicator ->
-        ioc_matches = check_indicator_against_iocs(indicator)
+        ioc_matches = check_indicator_against_iocs(indicator, org_id)
         confidence = if length(ioc_matches) > 0, do: 0.8, else: 0.0
 
         %{
@@ -1641,11 +1640,11 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
   end
   defp extract_indicators_from_anomaly(_), do: []
 
-  defp check_indicator_against_iocs(indicator) when is_binary(indicator) do
+  defp check_indicator_against_iocs(indicator, organization_id) when is_binary(indicator) do
     # Determine indicator type heuristically and look up against IOCs
     indicator_type = classify_indicator(indicator)
 
-    case IOCs.lookup(indicator_type, indicator) do
+    case IOCs.lookup_for_organization(indicator_type, indicator, organization_id) do
       {:ok, ioc} ->
         [%{
           type: ioc.type,
@@ -1663,7 +1662,7 @@ defmodule TamanduaServerWeb.API.V1.BehavioralController do
       Logger.warning("IOC lookup failed for indicator #{inspect(indicator)}: #{Exception.message(e)}")
       []
   end
-  defp check_indicator_against_iocs(_), do: []
+  defp check_indicator_against_iocs(_, _organization_id), do: []
 
   defp classify_indicator(indicator) do
     cond do

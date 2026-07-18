@@ -167,19 +167,7 @@ defmodule TamanduaServer.Cache.HTTPCache do
   Parses an HTTP date string into a DateTime.
   """
   def parse_http_date(date_string) when is_binary(date_string) do
-    # Support multiple date formats (RFC 7231, RFC 850, ANSI C)
-    formats = [
-      "{WDshort}, {0D} {Mshort} {YYYY} {h24}:{m}:{s} GMT",
-      "{WDfull}, {0D}-{Mshort}-{YY} {h24}:{m}:{s} GMT",
-      "{WDshort} {Mshort} {D} {h24}:{m}:{s} {YYYY}"
-    ]
-
-    Enum.find_value(formats, fn format ->
-      case Timex.parse(date_string, format) do
-        {:ok, datetime} -> {:ok, datetime}
-        {:error, _} -> nil
-      end
-    end) || {:error, :invalid_date}
+    TamanduaServer.DateTimeParser.parse_utc(date_string)
   end
 
   @doc """

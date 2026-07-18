@@ -9,7 +9,7 @@ defmodule TamanduaServer.NotificationCenter.Channels.PagerDutyWorker do
   require Logger
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.NotificationCenter.{Notification, NotificationDelivery}
+  alias TamanduaServer.NotificationCenter.{NotificationDelivery}
 
   @pagerduty_api_url "https://api.pagerduty.com/incidents"
 
@@ -113,23 +113,29 @@ defmodule TamanduaServer.NotificationCenter.Channels.PagerDutyWorker do
 
   defp build_alert_url(_), do: TamanduaServerWeb.Endpoint.url()
 
+  # Org-scoped settings live on Organization.settings (string-keyed map);
+  # TamanduaServer.Settings is the global ETS store and has no per-org API.
   defp get_pagerduty_config(organization_id) do
-    with {:ok, api_key} <-
-           TamanduaServer.Settings.get_setting("pagerduty_api_key", organization_id),
-         {:ok, service_id} <-
-           TamanduaServer.Settings.get_setting("pagerduty_service_id", organization_id) do
+    settings =
+      case TamanduaServer.Accounts.get_organization(organization_id) do
+        %{settings: settings} when is_map(settings) -> settings
+        _ -> %{}
+      end
+
+    api_key = non_empty_setting(settings["pagerduty_api_key"])
+    service_id = non_empty_setting(settings["pagerduty_service_id"])
+
+    if api_key && service_id do
       %{
         "api_key" => api_key,
         "service_id" => service_id,
-        "from_email" =>
-          TamanduaServer.Settings.get_setting("pagerduty_from_email", organization_id)
-          |> case do
-            {:ok, email} -> email
-            _ -> nil
-          end
+        "from_email" => non_empty_setting(settings["pagerduty_from_email"])
       }
     else
-      _ -> nil
+      nil
     end
   end
+
+  defp non_empty_setting(value) when is_binary(value) and value != "", do: value
+  defp non_empty_setting(_), do: nil
 end

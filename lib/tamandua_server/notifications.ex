@@ -99,15 +99,22 @@ defmodule TamanduaServer.Notifications do
           })
         end)
 
-      # Insert all jobs
-      case Oban.insert_all(jobs) do
-        {count, _} ->
-          Logger.info("[Notifications] Enqueued #{count} notification jobs for alert #{alert.id}")
-          {:ok, integrations}
+      # Insert all jobs. `Oban.insert_all/1` returns the list of inserted
+      # jobs and raises on failure (it never returns `{count, _}` or an
+      # `{:error, _}` tuple), so failures are rescued to preserve the
+      # `{:error, reason}` contract callers rely on.
+      try do
+        inserted = Oban.insert_all(jobs)
 
-        {:error, reason} ->
-          Logger.error("[Notifications] Failed to enqueue jobs: #{inspect(reason)}")
-          {:error, reason}
+        Logger.info(
+          "[Notifications] Enqueued #{length(inserted)} notification jobs for alert #{alert.id}"
+        )
+
+        {:ok, integrations}
+      rescue
+        error ->
+          Logger.error("[Notifications] Failed to enqueue jobs: #{inspect(error)}")
+          {:error, error}
       end
     end
   end

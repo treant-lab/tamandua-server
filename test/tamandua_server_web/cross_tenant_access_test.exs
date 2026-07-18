@@ -16,6 +16,7 @@ defmodule TamanduaServerWeb.CrossTenantAccessTest do
   alias TamanduaServer.Alerts
   alias TamanduaServer.Alerts.Alert
   alias TamanduaServer.Accounts
+  alias TamanduaServer.Investigations.CaseInvestigation
 
   describe "Agents LiveView cross-tenant access prevention" do
     setup do
@@ -211,6 +212,29 @@ defmodule TamanduaServerWeb.CrossTenantAccessTest do
       )
 
       assert result == {:ok, nil}
+    end
+
+    test "GraphQL add alerts mutation resolver rejects cross-tenant investigation", %{
+      org1_id: org1_id,
+      org2_id: org2_id
+    } do
+      {:ok, alert} = create_alert_for_org(org1_id, %{title: "Org1 investigation alert"})
+
+      other_investigation =
+        Repo.insert!(%CaseInvestigation{
+          title: "Org2 investigation",
+          organization_id: org2_id
+        })
+
+      result =
+        TamanduaServerWeb.GraphQL.Resolvers.InvestigationResolver.add_alerts_to_investigation(
+          nil,
+          %{investigation_id: other_investigation.id, alert_ids: [alert.id]},
+          %{context: %{organization_id: org1_id}}
+        )
+
+      assert {:error, [message: "Investigation not found", code: "NOT_FOUND"]} = result
+      assert Repo.get!(CaseInvestigation, other_investigation.id).alert_ids == []
     end
   end
 

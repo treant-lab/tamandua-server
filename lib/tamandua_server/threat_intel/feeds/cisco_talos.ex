@@ -30,7 +30,6 @@ defmodule TamanduaServer.ThreatIntel.Feeds.CiscoTalos do
 
   alias TamanduaServer.ThreatIntel.Aggregator
 
-  @base_url "https://talosintelligence.com/cloud_intel"
   @reputation_url "https://www.talosintelligence.com/sb"
   @default_sync_interval :timer.hours(6)
   @http_timeout 60_000

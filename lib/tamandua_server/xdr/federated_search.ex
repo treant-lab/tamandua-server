@@ -24,7 +24,6 @@ defmodule TamanduaServer.XDR.FederatedSearch do
   import Ecto.Query
 
   alias TamanduaServer.Repo
-  alias TamanduaServer.XDR.PartitionedStore
 
   @search_cache :federated_search_cache
   @search_stats :federated_search_stats
@@ -36,7 +35,6 @@ defmodule TamanduaServer.XDR.FederatedSearch do
   # Query timeout per tier (ms)
   @tier_timeout_ms 10_000
   # Progressive streaming batch size
-  @stream_batch_size 100
 
   # ------------------------------------------------------------------
   # Client API
@@ -501,7 +499,7 @@ defmodule TamanduaServer.XDR.FederatedSearch do
   end
 
   defp parse_tokens(tokens) do
-    {filters, text_parts, time_range, negate_next} =
+    {filters, text_parts, time_range, _negate_next} =
       Enum.reduce(tokens, {[], [], %{}, false}, fn token, {filters, texts, tr, negate} ->
         token_upper = String.upcase(token)
 

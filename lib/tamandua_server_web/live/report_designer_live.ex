@@ -12,7 +12,7 @@ defmodule TamanduaServerWeb.ReportDesignerLive do
 
   use TamanduaServerWeb, :live_view
 
-  alias TamanduaServer.Reports.{WidgetRegistry, TemplateManager, ReportTemplate}
+  alias TamanduaServer.Reports.{WidgetRegistry, TemplateManager}
 
   @impl true
   def mount(%{"id" => template_id}, _session, socket) do

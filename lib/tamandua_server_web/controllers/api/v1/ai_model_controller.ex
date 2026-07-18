@@ -12,8 +12,25 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
 
   alias TamanduaServer.AISecurity.AIInventory
   alias TamanduaServer.AISecurity.ScanHistory
+  alias TamanduaServer.Policies.ModelPolicy
+  alias TamanduaServer.Registries.ModelProvenance
+  alias TamanduaServer.Repo
+  alias TamanduaServer.Response.{Executor, ResponseActor}
+  import Ecto.Query
 
-  action_fallback TamanduaServerWeb.FallbackController
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :ai_investigate]
+    when action in [:index, :show, :scan, :bulk_scan, :history, :stats, :status]
+  )
+
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :response_contain]
+    when action in [:quarantine, :block, :unblock, :restore, :bulk_quarantine, :bulk_block]
+  )
+
+  action_fallback(TamanduaServerWeb.FallbackController)
 
   @doc """
   List all AI models with scan status.
@@ -36,20 +53,25 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def index(conn, params) do
-    opts = [
-      type: params["type"],
-      risk_level: params["risk_level"],
-      shadow_only: params["shadow_only"] == "true",
-      limit: parse_int(params["limit"], 500)
-    ] |> Enum.reject(fn {_k, v} -> is_nil(v) or v == false end)
+    organization_id = current_organization_id!(conn)
 
-    {:ok, models} = AIInventory.list_inventory(opts)
+    opts =
+      [
+        type: params["type"],
+        risk_level: params["risk_level"],
+        shadow_only: params["shadow_only"] == "true",
+        limit: parse_int(params["limit"], 500)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) or v == false end)
+
+    {:ok, models} = AIInventory.list_inventory(organization_id, opts)
+    models = attach_model_guard_summaries(organization_id, models)
 
     json(conn, %{
       data: models,
       meta: %{
         total: length(models),
-        stats: AIInventory.stats()
+        stats: elem(AIInventory.stats(organization_id), 1)
       }
     })
   end
@@ -67,18 +89,22 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def show(conn, %{"id" => id}) do
-    case AIInventory.assess_risk(id) do
+    organization_id = current_organization_id!(conn)
+
+    case AIInventory.assess_risk(organization_id, id) do
       {:ok, assessment} ->
-        history = ScanHistory.list_history(id, limit: 10)
+        history = ScanHistory.list_history(organization_id, id, limit: 10)
+        model_guard = model_guard_for_model(organization_id, assessment.component)
 
         json(conn, %{
-          data: assessment.component,
+          data: Map.put(assessment.component, :model_guard, model_guard),
           risk_assessment: %{
             risk_score: assessment.risk_score,
             risk_level: assessment.risk_level,
             risk_factors: assessment.risk_factors,
             policy_status: assessment.policy_status,
-            recommendations: assessment.recommendations
+            recommendations: assessment.recommendations,
+            model_guard: model_guard
           },
           scan_history: format_scan_history(history)
         })
@@ -106,12 +132,15 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def scan(conn, %{"id" => model_id}) do
-    case AIInventory.assess_risk(model_id) do
+    organization_id = current_organization_id!(conn)
+    {:ok, actor} = response_actor(conn, organization_id)
+
+    case AIInventory.assess_risk(organization_id, model_id) do
       {:ok, %{component: model}} ->
         agent_id = model[:agent_id]
         path = model[:path] || model[:install_path]
 
-        case send_scan_command(agent_id, model_id, path) do
+        case send_scan_command(actor, agent_id, model_id, path) do
           :ok ->
             # Broadcast scan started event for real-time UI updates
             Phoenix.PubSub.broadcast(
@@ -129,12 +158,8 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
 
           {:error, reason} ->
             conn
-            |> put_status(:service_unavailable)
-            |> json(%{
-              error: "Failed to send scan command",
-              reason: format_error(reason),
-              model_id: model_id
-            })
+            |> put_status(scan_error_status(reason))
+            |> json(scan_error_payload(reason, model_id))
         end
 
       {:error, :not_found} ->
@@ -145,7 +170,8 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
   end
 
   @doc """
-  Trigger scan for multiple models.
+  Bulk scan is unavailable until a durable batch reservation/outbox can
+  guarantee all-or-nothing admission before any dispatch.
 
   POST /api/v1/ai-security/models/scan
 
@@ -161,52 +187,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         "errors": 1
       }
   """
-  def bulk_scan(conn, %{"model_ids" => model_ids}) when is_list(model_ids) do
-    results = Enum.map(model_ids, fn model_id ->
-      case AIInventory.assess_risk(model_id) do
-        {:ok, %{component: model}} ->
-          agent_id = model[:agent_id]
-          path = model[:path] || model[:install_path]
+  def bulk_scan(conn, %{"model_ids" => model_ids}) when is_list(model_ids),
+    do: bulk_action_unavailable(conn)
 
-          case send_scan_command(agent_id, model_id, path) do
-            :ok ->
-              %{model_id: model_id, status: "scanning", agent_id: agent_id}
-            {:error, reason} ->
-              %{model_id: model_id, status: "error", reason: format_error(reason)}
-          end
-
-        {:error, :not_found} ->
-          %{model_id: model_id, status: "error", reason: "not_found"}
-      end
-    end)
-
-    # Broadcast bulk scan started event
-    scanning_ids = results
-    |> Enum.filter(&(&1.status == "scanning"))
-    |> Enum.map(& &1.model_id)
-
-    if length(scanning_ids) > 0 do
-      Phoenix.PubSub.broadcast(
-        TamanduaServer.PubSub,
-        "ai_security:scan_results",
-        {:bulk_scan_started, %{model_ids: scanning_ids}}
-      )
-    end
-
-    json(conn, %{
-      status: "bulk_scan_initiated",
-      results: results,
-      total: length(model_ids),
-      scanning: Enum.count(results, &(&1.status == "scanning")),
-      errors: Enum.count(results, &(&1.status == "error"))
-    })
-  end
-
-  def bulk_scan(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "model_ids array required"})
-  end
+  def bulk_scan(conn, _params), do: bulk_action_unavailable(conn)
 
   @doc """
   Get scan history for a model.
@@ -223,9 +207,11 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def history(conn, %{"id" => model_id} = params) do
+    organization_id = current_organization_id!(conn)
+    ensure_model!(conn, organization_id, model_id)
     limit = parse_int(params["limit"], 20)
-    history = ScanHistory.list_history(model_id, limit: limit)
-    stats = ScanHistory.scan_stats(model_id)
+    history = ScanHistory.list_history(organization_id, model_id, limit: limit)
+    stats = ScanHistory.scan_stats(organization_id, model_id)
 
     json(conn, %{
       data: format_scan_history(history),
@@ -247,8 +233,9 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def stats(conn, _params) do
-    global_stats = ScanHistory.global_stats()
-    by_status = ScanHistory.count_by_status(hours: 24)
+    organization_id = current_organization_id!(conn)
+    global_stats = ScanHistory.global_stats(organization_id)
+    by_status = ScanHistory.count_by_status(organization_id, hours: 24)
 
     json(conn, %{
       total_scans: global_stats.total_scans,
@@ -256,28 +243,41 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       threats_found: global_stats.threats_found,
       avg_duration_ms: global_stats.avg_duration_ms,
       by_status: by_status,
-      inventory_stats: AIInventory.stats()
+      inventory_stats: elem(AIInventory.stats(organization_id), 1)
     })
   end
 
   # Private helpers
 
-  defp send_scan_command(agent_id, model_id, path) do
-    command = %{
-      type: "scan_model",
-      payload: %{
-        model_id: model_id,
-        path: path,
-        force: true
-      }
-    }
+  defp send_scan_command(actor, agent_id, model_id, path) do
+    cond do
+      is_nil(agent_id) or agent_id == "" ->
+        {:error, :unsupported_no_agent}
 
+      is_nil(path) or path == "" ->
+        {:error, :unsupported_no_local_model_path}
+
+      true ->
+        do_send_scan_command(actor, agent_id, model_id, path)
+    end
+  end
+
+  defp do_send_scan_command(actor, agent_id, model_id, path) do
     try do
-      case TamanduaServer.Agents.send_command(agent_id, command) do
+      case Executor.execute_action(
+             agent_id,
+             "scan_model",
+             %{
+               model_id: model_id,
+               path: path,
+               force: true
+             },
+             actor: actor,
+             organization_id: actor.organization_id,
+             persist_action: true
+           ) do
         {:ok, _} -> :ok
-        :ok -> :ok
         {:error, reason} -> {:error, reason}
-        error -> {:error, error}
       end
     rescue
       e -> {:error, e}
@@ -308,13 +308,111 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
   defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_error(reason), do: inspect(reason)
 
+  defp scan_error_status(:unsupported_no_agent), do: :unprocessable_entity
+  defp scan_error_status(:unsupported_no_local_model_path), do: :unprocessable_entity
+  defp scan_error_status(_), do: :service_unavailable
+
+  defp scan_error_payload(reason, model_id)
+       when reason in [:unsupported_no_agent, :unsupported_no_local_model_path] do
+    %{
+      status: "unsupported",
+      error: "Model Guard unsupported for this model",
+      reason: format_error(reason),
+      model_id: model_id,
+      model_guard: %{
+        status: "unsupported",
+        decision: "unknown",
+        enforcement: "decision_only",
+        action: "none",
+        evidence: %{
+          error: "Model Guard on-demand scan is unsupported for this model",
+          reason: format_error(reason)
+        }
+      }
+    }
+  end
+
+  defp scan_error_payload(_reason, model_id) do
+    %{
+      error: "Failed to send scan command",
+      reason: "scan_failed",
+      model_id: model_id,
+      model_guard: %{
+        status: "failed",
+        decision: "unknown",
+        enforcement: "failed",
+        action: "none",
+        evidence: %{
+          reason: "scan_failed"
+        }
+      }
+    }
+  end
+
+  defp attach_model_guard_summaries(organization_id, models) do
+    provenances =
+      models
+      |> Enum.flat_map(&model_lookup_ids/1)
+      |> Enum.uniq()
+      |> latest_provenances_by_model_id(organization_id)
+
+    Enum.map(models, fn model ->
+      provenance =
+        model
+        |> model_lookup_ids()
+        |> Enum.find_value(&Map.get(provenances, &1))
+
+      Map.put(model, :model_guard, ModelPolicy.model_guard_summary(provenance))
+    end)
+  end
+
+  defp model_guard_for_model(organization_id, model) do
+    model
+    |> model_lookup_ids()
+    |> latest_provenances_by_model_id(organization_id)
+    |> Map.values()
+    |> List.first()
+    |> ModelPolicy.model_guard_summary()
+  end
+
+  defp latest_provenances_by_model_id([], _organization_id), do: %{}
+
+  defp latest_provenances_by_model_id(model_ids, organization_id) do
+    from(p in ModelProvenance,
+      where: p.organization_id == ^organization_id and p.model_id in ^model_ids,
+      order_by: [asc: p.model_id, desc: p.downloaded_at],
+      select: p
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn provenance, acc ->
+      Map.put_new(acc, provenance.model_id, provenance)
+    end)
+  end
+
+  defp model_lookup_ids(model) when is_map(model) do
+    [
+      model[:model_id],
+      model["model_id"],
+      model[:name],
+      model["name"],
+      model[:id],
+      model["id"]
+    ]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.map(&to_string/1)
+  end
+
+  defp model_lookup_ids(_), do: []
+
   defp parse_int(nil, default), do: default
+
   defp parse_int(str, default) when is_binary(str) do
     case Integer.parse(str) do
       {int, _} -> int
       :error -> default
     end
   end
+
   defp parse_int(int, _default) when is_integer(int), do: int
   defp parse_int(_, default), do: default
 
@@ -340,12 +438,13 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def quarantine(conn, %{"id" => model_id} = params) do
-    user_id = get_user_id(conn)
+    organization_id = current_organization_id!(conn)
+    {:ok, actor} = response_actor(conn, organization_id)
     reason = params["reason"]
 
     opts = if reason, do: [reason: reason], else: []
 
-    case ResponseActions.quarantine_model(model_id, user_id, opts) do
+    case ResponseActions.quarantine_model(model_id, actor, opts) do
       {:ok, result} ->
         json(conn, %{
           status: result.status,
@@ -363,10 +462,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         |> put_status(:service_unavailable)
         |> json(%{error: "Agent not connected", model_id: model_id})
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "Quarantine failed", reason: format_error(reason), model_id: model_id})
+        |> json(%{error: "Quarantine failed", reason: "action_failed", model_id: model_id})
     end
   end
 
@@ -387,12 +486,13 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def block(conn, %{"id" => model_id} = params) do
-    user_id = get_user_id(conn)
+    organization_id = current_organization_id!(conn)
+    {:ok, actor} = response_actor(conn, organization_id)
     reason = params["reason"]
 
     opts = if reason, do: [reason: reason], else: []
 
-    case ResponseActions.block_model(model_id, user_id, opts) do
+    case ResponseActions.block_model(model_id, actor, opts) do
       {:ok, result} ->
         json(conn, %{
           status: result.status,
@@ -419,10 +519,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         |> put_status(:service_unavailable)
         |> json(%{error: "Agent not connected", model_id: model_id})
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "Block failed", reason: format_error(reason), model_id: model_id})
+        |> json(%{error: "Block failed", reason: "action_failed", model_id: model_id})
     end
   end
 
@@ -439,9 +539,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def unblock(conn, %{"id" => model_id}) do
-    user_id = get_user_id(conn)
+    organization_id = current_organization_id!(conn)
+    {:ok, actor} = response_actor(conn, organization_id)
 
-    case ResponseActions.unblock_model(model_id, user_id) do
+    case ResponseActions.unblock_model(model_id, actor) do
       {:ok, result} ->
         json(conn, %{
           status: result.status,
@@ -459,10 +560,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         |> put_status(:service_unavailable)
         |> json(%{error: "Agent not connected", model_id: model_id})
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "Unblock failed", reason: format_error(reason), model_id: model_id})
+        |> json(%{error: "Unblock failed", reason: "action_failed", model_id: model_id})
     end
   end
 
@@ -485,13 +586,14 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def restore(conn, %{"id" => model_id} = params) do
-    user_id = get_user_id(conn)
+    organization_id = current_organization_id!(conn)
+    {:ok, actor} = response_actor(conn, organization_id)
     acknowledge_risk = params["acknowledge_risk"] == true
     force_restore = params["force_restore"] == true
 
     opts = [acknowledge_risk: acknowledge_risk, force_restore: force_restore]
 
-    case ResponseActions.restore_model(model_id, user_id, opts) do
+    case ResponseActions.restore_model(model_id, actor, opts) do
       {:ok, result} ->
         json(conn, %{
           status: result.status,
@@ -518,10 +620,10 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         |> put_status(:service_unavailable)
         |> json(%{error: "Agent not connected", model_id: model_id})
 
-      {:error, reason} ->
+      {:error, _reason} ->
         conn
         |> put_status(:internal_server_error)
-        |> json(%{error: "Restore failed", reason: format_error(reason), model_id: model_id})
+        |> json(%{error: "Restore failed", reason: "action_failed", model_id: model_id})
     end
   end
 
@@ -537,11 +639,14 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
       }
   """
   def status(conn, %{"id" => model_id}) do
-    case ResponseActions.get_model_status(model_id) do
+    organization_id = current_organization_id!(conn)
+
+    case ResponseActions.get_model_status(organization_id, model_id) do
       {:ok, result} ->
         json(conn, %{
           model_id: result.model_id,
-          status: result.status
+          status: result.status,
+          model_guard: model_guard_for_model(organization_id, %{model_id: result.model_id})
         })
 
       {:error, :not_found} ->
@@ -552,7 +657,8 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
   end
 
   @doc """
-  Bulk quarantine multiple models.
+  Bulk quarantine is unavailable until a durable batch reservation/outbox can
+  guarantee all-or-nothing admission before any mutation or dispatch.
 
   POST /api/v1/ai-security/models/quarantine
 
@@ -568,35 +674,14 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         "errors": 1
       }
   """
-  def bulk_quarantine(conn, %{"model_ids" => model_ids} = params) when is_list(model_ids) do
-    user_id = get_user_id(conn)
-    reason = params["reason"]
-    opts = if reason, do: [reason: reason], else: []
+  def bulk_quarantine(conn, %{"model_ids" => model_ids}) when is_list(model_ids),
+    do: bulk_action_unavailable(conn)
 
-    results = Enum.map(model_ids, fn model_id ->
-      case ResponseActions.quarantine_model(model_id, user_id, opts) do
-        {:ok, result} -> %{model_id: model_id, status: result.status}
-        {:error, reason} -> %{model_id: model_id, status: "error", reason: format_error(reason)}
-      end
-    end)
-
-    json(conn, %{
-      status: "bulk_quarantine_initiated",
-      results: results,
-      total: length(model_ids),
-      quarantined: Enum.count(results, &(&1.status == "quarantined")),
-      errors: Enum.count(results, &(&1.status == "error"))
-    })
-  end
-
-  def bulk_quarantine(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "model_ids array required"})
-  end
+  def bulk_quarantine(conn, _params), do: bulk_action_unavailable(conn)
 
   @doc """
-  Bulk block multiple models.
+  Bulk block is unavailable until a durable batch reservation/outbox can
+  guarantee all-or-nothing admission before any mutation or dispatch.
 
   POST /api/v1/ai-security/models/block
 
@@ -612,39 +697,39 @@ defmodule TamanduaServerWeb.API.V1.AIModelController do
         "errors": 1
       }
   """
-  def bulk_block(conn, %{"model_ids" => model_ids} = params) when is_list(model_ids) do
-    user_id = get_user_id(conn)
-    reason = params["reason"]
-    opts = if reason, do: [reason: reason], else: []
+  def bulk_block(conn, %{"model_ids" => model_ids}) when is_list(model_ids),
+    do: bulk_action_unavailable(conn)
 
-    results = Enum.map(model_ids, fn model_id ->
-      case ResponseActions.block_model(model_id, user_id, opts) do
-        {:ok, result} -> %{model_id: model_id, status: result.status}
-        {:error, :already_blocked} -> %{model_id: model_id, status: "blocked"}
-        {:error, reason} -> %{model_id: model_id, status: "error", reason: format_error(reason)}
-      end
-    end)
+  def bulk_block(conn, _params), do: bulk_action_unavailable(conn)
 
-    json(conn, %{
-      status: "bulk_block_initiated",
-      results: results,
-      total: length(model_ids),
-      blocked: Enum.count(results, &(&1.status == "blocked")),
-      errors: Enum.count(results, &(&1.status == "error"))
+  defp bulk_action_unavailable(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      error: "Bulk AI model action unavailable",
+      code: "bulk_action_unavailable",
+      retryable: false
     })
   end
 
-  def bulk_block(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "model_ids array required"})
+  defp ensure_model!(conn, organization_id, model_id) do
+    case AIInventory.assess_risk(organization_id, model_id) do
+      {:ok, _assessment} -> :ok
+      _ -> raise Phoenix.Router.NoRouteError, conn: conn, router: TamanduaServerWeb.Router
+    end
   end
 
-  # Helper to get user ID from connection
-  defp get_user_id(conn) do
-    case conn.assigns[:current_user] do
-      %{id: id} -> id
-      _ -> nil
+  defp current_organization_id!(conn) do
+    user = conn.assigns[:current_user]
+    organization_id = conn.assigns[:current_organization_id]
+
+    case ResponseActor.from_user_scope(user, organization_id) do
+      {:ok, %{organization_id: canonical}} -> canonical
+      _ -> raise Phoenix.Router.NoRouteError, conn: conn, router: TamanduaServerWeb.Router
     end
+  end
+
+  defp response_actor(conn, organization_id) do
+    ResponseActor.from_user_scope(conn.assigns[:current_user], organization_id)
   end
 end

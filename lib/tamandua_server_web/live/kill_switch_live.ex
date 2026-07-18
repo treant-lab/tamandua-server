@@ -18,7 +18,6 @@ defmodule TamanduaServerWeb.KillSwitchLive do
   use TamanduaServerWeb, :live_view
 
   alias TamanduaServer.Runtime.KillSwitch
-  alias TamanduaServer.Runtime.ModelIsolation
   alias Phoenix.PubSub
 
   @refresh_interval_ms 30_000

@@ -40,7 +40,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{agent_id: "test-agent"},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       assert execution.status == "running"
@@ -50,7 +51,7 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       Process.sleep(2000)
 
       # Check final status
-      {:ok, status} = PlaybookEngine.get_execution_status(execution.id)
+      {:ok, status} = PlaybookEngine.get_execution_status(execution.id, :system)
       assert status.execution.status in ["completed", "running"]
     end
 
@@ -64,18 +65,19 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       # Check initial progress
-      {:ok, status} = PlaybookEngine.get_execution_status(execution.id)
+      {:ok, status} = PlaybookEngine.get_execution_status(execution.id, :system)
       assert status.progress >= 0
 
       # Wait for completion
       Process.sleep(4000)
 
       # Check final progress
-      {:ok, final_status} = PlaybookEngine.get_execution_status(execution.id)
+      {:ok, final_status} = PlaybookEngine.get_execution_status(execution.id, :system)
       assert final_status.progress == 100 or final_status.execution.status == "completed"
     end
 
@@ -83,7 +85,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       result = PlaybookEngine.execute_playbook(
         Ecto.UUID.generate(),
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       assert {:error, :playbook_not_found} = result
@@ -104,7 +107,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       # Wait for execution
@@ -132,7 +136,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(3000)
@@ -155,7 +160,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(2000)
@@ -186,7 +192,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       # Wait for retries
@@ -213,7 +220,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(4000)
@@ -249,7 +257,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{test: true},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(2000)
@@ -291,7 +300,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(3000)
@@ -323,14 +333,15 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
 
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
-        %{}
+        %{},
+        scope: :system
       )
 
       assert execution.status == "pending_approval"
 
       # Verify it's not running yet
       Process.sleep(1000)
-      {:ok, status} = PlaybookEngine.get_execution_status(execution.id)
+      {:ok, status} = PlaybookEngine.get_execution_status(execution.id, :system)
       assert status.execution.status == "pending_approval"
     end
 
@@ -343,7 +354,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       assert execution.status == "running"
@@ -357,7 +369,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
 
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
-        %{}
+        %{},
+        scope: :system
       )
 
       assert execution.status == "pending_approval"
@@ -390,12 +403,13 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(500)
 
-      :ok = PlaybookEngine.cancel_execution(execution.id, "User cancelled")
+      :ok = PlaybookEngine.cancel_execution(execution.id, "User cancelled", :system)
 
       # Verify cancellation
       updated = Repo.get(Execution, execution.id)
@@ -411,19 +425,20 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
 
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
-        %{}
+        %{},
+        scope: :system
       )
 
       assert execution.status == "pending_approval"
 
-      :ok = PlaybookEngine.cancel_execution(execution.id, "Rejected")
+      :ok = PlaybookEngine.cancel_execution(execution.id, "Rejected", :system)
 
       updated = Repo.get(Execution, execution.id)
       assert updated.status == "cancelled"
     end
 
     test "returns error for non-existent execution" do
-      result = PlaybookEngine.cancel_execution(Ecto.UUID.generate(), "Test")
+      result = PlaybookEngine.cancel_execution(Ecto.UUID.generate(), "Test", :system)
       assert {:error, :not_found} = result
     end
   end
@@ -445,7 +460,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(2000)
@@ -469,7 +485,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(3000)
@@ -504,7 +521,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(4000)
@@ -540,7 +558,8 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, execution} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{agent_id: "test-123", severity: "high"},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       Process.sleep(2000)
@@ -568,22 +587,24 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       {:ok, _execution1} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
       {:ok, _execution2} = PlaybookEngine.execute_playbook(
         playbook.id,
         %{},
-        skip_approval: true
+        skip_approval: true,
+        scope: :system
       )
 
-      {:ok, active} = PlaybookEngine.list_active_executions()
+      {:ok, active} = PlaybookEngine.list_active_executions(:system)
 
       assert length(active) >= 1
     end
 
     test "returns empty list when no executions are active" do
-      {:ok, active} = PlaybookEngine.list_active_executions()
+      {:ok, active} = PlaybookEngine.list_active_executions(:system)
       assert is_list(active)
     end
   end
@@ -603,6 +624,6 @@ defmodule TamanduaServer.Response.PlaybookEngineTest do
       approval_timeout_minutes: 30
     }
 
-    Playbook.create_playbook(attrs)
+    Playbook.create_playbook(attrs, :system)
   end
 end

@@ -22,7 +22,6 @@ defmodule TamanduaServer.Integrations.SIEM do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Alerts, Events}
 
   @batch_size 100
   @batch_interval_ms 5000

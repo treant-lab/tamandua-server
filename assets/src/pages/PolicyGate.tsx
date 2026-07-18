@@ -102,7 +102,7 @@ export default function PolicyGate({ feature_name, description }: PolicyGateProp
               <p>Public audit pages for verification without exposing sensitive telemetry.</p>
             </div>
             <a
-              href="/app/security-status"
+              href="/app/dashboard"
               className="mt-6 inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm transition"
               style={{ border: '1px solid var(--border)', color: 'var(--fg-2)' }}
             >

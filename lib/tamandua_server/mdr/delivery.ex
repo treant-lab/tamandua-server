@@ -449,7 +449,7 @@ defmodule TamanduaServer.MDR.Delivery do
           |> Map.update(:timeline, [], &[timeline_entry | &1])
 
         updated = if attrs[:status] in ["resolved", "closed"] do
-          stats_key = :incidents_resolved
+          _stats_key = :incidents_resolved
           %{updated | resolved_at: DateTime.utc_now()}
         else
           updated
@@ -711,17 +711,6 @@ defmodule TamanduaServer.MDR.Delivery do
     {:noreply, state}
   end
 
-  @impl true
-  def handle_cast({:auto_queue_alert, alert}, state) do
-    # Silently queue - ignore errors
-    case queue_alert(alert) do
-      {:ok, _} -> :ok
-      {:error, _} -> :ok
-    end
-
-    {:noreply, state}
-  end
-
   # -- SLA monitoring ------------------------------------------------------
 
   @impl true
@@ -733,6 +722,17 @@ defmodule TamanduaServer.MDR.Delivery do
 
   @impl true
   def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:auto_queue_alert, alert}, state) do
+    # Silently queue - ignore errors
+    case queue_alert(alert) do
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
+    end
+
     {:noreply, state}
   end
 

@@ -389,8 +389,7 @@ defmodule TamanduaServer.Alerts.CommentManager do
     end
   end
 
-  defp generate_activity_summary(%Comment{} = comment, activity_type, %User{} = user) do
-    comment = Repo.preload(comment, :user)
+  defp generate_activity_summary(%Comment{} = _comment, activity_type, %User{} = user) do
     user_name = user.name || user.email
 
     case activity_type do

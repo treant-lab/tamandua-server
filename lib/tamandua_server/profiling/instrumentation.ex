@@ -250,17 +250,17 @@ defmodule TamanduaServer.Profiling.Instrumentation do
     end)
   end
 
-  defp get_producer_stats(broadway_name) do
+  defp get_producer_stats(_broadway_name) do
     # Get producer statistics
     []
   end
 
-  defp get_processor_stats(broadway_name) do
+  defp get_processor_stats(_broadway_name) do
     # Get processor statistics
     []
   end
 
-  defp get_batcher_stats(broadway_name) do
+  defp get_batcher_stats(_broadway_name) do
     # Get batcher statistics
     []
   end

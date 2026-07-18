@@ -646,7 +646,7 @@ defmodule TamanduaServer.Detection.Baseline do
 
   defp extract_network_features(payload) do
     port = get_field(payload, :remote_port)
-    protocol = get_field(payload, :protocol)
+    _protocol = get_field(payload, :protocol)
     dest = get_field(payload, :remote_ip)
     process_name = get_field(payload, :process_name)
 

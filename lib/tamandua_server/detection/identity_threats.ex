@@ -701,7 +701,7 @@ defmodule TamanduaServer.Detection.IdentityThreats do
     }
   end
 
-  defp compute_spray_risk(user_id, events) do
+  defp compute_spray_risk(_user_id, events) do
     # Check if this user was a target of recent sprays
     failed = Enum.count(events, fn e -> not e.success end)
     total = max(length(events), 1)

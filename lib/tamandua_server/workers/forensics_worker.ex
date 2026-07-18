@@ -26,7 +26,7 @@ defmodule TamanduaServer.Workers.ForensicsWorker do
          :ok <- validate_artifact(artifact),
          {:ok, artifact} <- mark_started(artifact),
          {:ok, command_id} <- send_collection_command(artifact),
-         {:ok, artifact} <- monitor_collection(artifact, command_id) do
+         {:ok, _artifact} <- monitor_collection(artifact, command_id) do
 
       Logger.info("[ForensicsWorker] Collection completed for artifact #{artifact_id}")
       :ok

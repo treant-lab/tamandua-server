@@ -80,10 +80,10 @@ export default function AgentMLDetections({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h1 className="text-2xl font-bold" style={{ color: 'var(--fg)' }}>
-              Agent ML Detections
+              Agent ML-Assisted Detections
             </h1>
             <p className="mt-1 text-sm" style={{ color: 'var(--muted)' }}>
-              Endpoint ML and ONNX detections normalized from alert metadata.
+              Endpoint ML and ONNX detections normalized from alert metadata. Treat these as validation signals, not production malware verdicts.
             </p>
           </div>
           <a href="/app/alerts?source=ml" className="btn-sentinel btn-sentinel-secondary">
@@ -94,7 +94,7 @@ export default function AgentMLDetections({
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <MetricCard icon={Brain} label="Total Detections" value={summary.total} />
+          <MetricCard icon={Brain} label="Total Signals" value={summary.total} />
           <MetricCard icon={AlertTriangle} label="Open" value={summary.open} tone="warning" />
           <MetricCard icon={Cpu} label="ONNX Runtime" value={summary.onnx} tone="success" />
           <MetricCard icon={ShieldCheck} label="High Confidence" value={summary.high_confidence} />

@@ -57,8 +57,12 @@ defmodule TamanduaServer.Hunting.Workflow do
     field :is_template, :boolean, default: true
     field :visibility, :string, default: "global"
 
-    belongs_to :created_by, TamanduaServer.Accounts.User
-    belongs_to :organization, TamanduaServer.Organizations.Organization
+    # The migration column is `created_by`, so keep the persisted field name
+    # and expose the association under a non-conflicting name.
+    belongs_to :created_by_user, TamanduaServer.Accounts.User,
+      foreign_key: :created_by
+
+    belongs_to :organization, TamanduaServer.Accounts.Organization
     belongs_to :parent_workflow, __MODULE__
 
     has_many :executions, TamanduaServer.Hunting.WorkflowExecution
@@ -79,7 +83,7 @@ defmodule TamanduaServer.Hunting.Workflow do
       :is_custom,
       :is_template,
       :visibility,
-      :created_by_id,
+      :created_by,
       :organization_id,
       :parent_workflow_id
     ])

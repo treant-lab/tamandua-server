@@ -29,7 +29,6 @@ defmodule TamanduaServer.Quarantine.ModelVault do
   use GenServer
   require Logger
 
-  alias TamanduaServer.Repo
   alias TamanduaServer.Response.Audit
 
   @ets_table :model_vault_receipts

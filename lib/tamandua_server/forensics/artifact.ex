@@ -10,7 +10,7 @@ defmodule TamanduaServer.Forensics.Artifact do
   import Ecto.Query
 
   alias TamanduaServer.Agents.Agent
-  alias TamanduaServer.Organizations.Organization
+  alias TamanduaServer.Accounts.Organization
   alias TamanduaServer.Accounts.User
 
   @primary_key {:id, :binary_id, autogenerate: true}

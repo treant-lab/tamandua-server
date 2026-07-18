@@ -31,10 +31,21 @@ defmodule TamanduaServer.Detection.Engine do
 
   require Logger
 
-  alias TamanduaServer.Detection.{EngineSupervisor, EngineWorker, YaraScanner, RuleLoader}
+  alias TamanduaServer.Detection.{
+    EngineSupervisor,
+    EngineWorker,
+    IOCSnapshotProvider,
+    RuleLoader,
+    YaraScanner
+  }
+
   alias TamanduaServer.Detection.Rules.Falco
 
   @num_shards 16
+  @default_max_async_queue 5_000
+  @default_drop_log_interval_ms 10_000
+  @drop_log_table :detection_async_drop_log
+  @low_priorities MapSet.new(["debug", "info", "informational", "low"])
 
   # ── Public API (backward-compatible) ───────────────────────────────
 
@@ -44,12 +55,28 @@ defmodule TamanduaServer.Detection.Engine do
   by EngineSupervisor.
   """
   def start_link(_opts \\ []) do
-    # Register ourselves so Process.whereis(TamanduaServer.Detection.Engine)
-    # still works for health checks.
-    case Agent.start_link(fn -> :running end, name: __MODULE__) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
+    # EngineSupervisor synchronously reconciles the selected provider before it
+    # starts any shard or this facade.  Requiring the published generation here
+    # preserves that ordering without issuing a second authority transaction at
+    # boot.
+    with :ok <- ensure_ioc_snapshot_published() do
+      # Register ourselves so Process.whereis(TamanduaServer.Detection.Engine)
+      # still works for health checks.
+      case Agent.start_link(fn -> :running end, name: __MODULE__) do
+        {:ok, pid} -> {:ok, pid}
+        {:error, {:already_started, pid}} -> {:ok, pid}
+      end
+    else
+      {:error, reason} = error ->
+        Logger.error("[Engine] IOC runtime preflight failed: #{inspect(reason)}")
+        error
     end
+  end
+
+  defp ensure_ioc_snapshot_published do
+    if RuleLoader.published_ioc_epoch() >= 0,
+      do: :ok,
+      else: {:error, :ioc_snapshot_unavailable}
   end
 
   @doc """
@@ -84,8 +111,11 @@ defmodule TamanduaServer.Detection.Engine do
       grouped
       |> Enum.flat_map(fn {shard, shard_events} ->
         case EngineWorker.analyze_batch(shard, shard_events) do
-          {:ok, shard_results} -> shard_results
-          {:error, _} -> Enum.map(shard_events, fn e -> %{event_id: e[:event_id], error: :shard_error} end)
+          {:ok, shard_results} ->
+            shard_results
+
+          {:error, _} ->
+            Enum.map(shard_events, fn e -> %{event_id: e[:event_id], error: :shard_error} end)
         end
       end)
 
@@ -105,7 +135,38 @@ defmodule TamanduaServer.Detection.Engine do
   @spec analyze_event_async(map()) :: :ok
   def analyze_event_async(event) do
     shard = shard_for_event(event)
-    EngineWorker.analyze_event_async(shard, event)
+
+    if shed_async_event?(shard, event) do
+      emit_async_drop(shard)
+      :ok
+    else
+      EngineWorker.analyze_event_async(shard, event)
+    end
+  end
+
+  @doc """
+  Return per-shard async worker mailbox depth.
+
+  This is intentionally read-only and uses `Process.info/2` directly so
+  ingestion hot paths never need a GenServer call to observe backpressure.
+  """
+  @spec queue_stats() :: [map()]
+  def queue_stats do
+    for shard <- 0..(@num_shards - 1) do
+      case worker_pid(shard) do
+        nil ->
+          %{shard: shard, pid: nil, running: false, message_queue_len: nil}
+
+        pid ->
+          queue_len =
+            case Process.info(pid, :message_queue_len) do
+              {:message_queue_len, value} -> value
+              nil -> nil
+            end
+
+          %{shard: shard, pid: pid, running: Process.alive?(pid), message_queue_len: queue_len}
+      end
+    end
   end
 
   @doc """
@@ -176,15 +237,29 @@ defmodule TamanduaServer.Detection.Engine do
 
   Uses double-buffering to ensure workers never see an empty IOC set.
   """
-  @spec reload_iocs() :: :ok
+  @spec reload_iocs() :: {:ok, non_neg_integer()} | {:error, term()}
   def reload_iocs do
-    iocs = load_iocs_from_db()
-    RuleLoader.reload_ioc_rules_atomic(iocs)
-    :ok
+    result =
+      if Process.whereis(TamanduaServer.Detection.IOCReconciler) do
+        TamanduaServer.Detection.IOCReconciler.reconcile_now()
+      else
+        IOCSnapshotProvider.reconcile()
+      end
+
+    case result do
+      {:ok, %{count: count}} -> {:ok, count}
+      {:ok, %{stale: true}} -> {:ok, RuleLoader.get_iocs() |> length()}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_reconcile_result, other}}
+    end
   rescue
     e ->
       Logger.error("[Engine] Failed to reload IOCs: #{Exception.message(e)}")
-      :ok
+      {:error, e}
+  catch
+    :exit, reason ->
+      Logger.error("[Engine] IOC reload exited: #{inspect(reason)}")
+      {:error, {:reload_exit, reason}}
   end
 
   @doc """
@@ -196,9 +271,15 @@ defmodule TamanduaServer.Detection.Engine do
   rescue
     _ ->
       %{
-        events_analyzed: 0, detections: 0, ml_predictions: 0,
-        alerts_created: 0, alerts_suppressed: 0, alerts_severity_reduced: 0,
-        alerts_health_suppressed: 0, alerts_health_adjusted: 0, yara_scans: 0
+        events_analyzed: 0,
+        detections: 0,
+        ml_predictions: 0,
+        alerts_created: 0,
+        alerts_suppressed: 0,
+        alerts_severity_reduced: 0,
+        alerts_health_suppressed: 0,
+        alerts_health_adjusted: 0,
+        yara_scans: 0
       }
   end
 
@@ -211,15 +292,17 @@ defmodule TamanduaServer.Detection.Engine do
     yara_available = YaraScanner.available?()
     falco_rule_count = get_falco_rule_count()
 
-    sigma_count = try do
-      :ets.info(:detection_sigma_rules, :size) || 0
-    rescue
-      _ -> 0
-    end
+    sigma_count =
+      try do
+        :ets.info(:detection_sigma_rules, :size) || 0
+      rescue
+        _ -> 0
+      end
 
     %{
       running: true,
       architecture: :sharded,
+      ioc_snapshot: ioc_reconciler_status(),
       num_shards: @num_shards,
       rules_loaded: %{
         sigma: sigma_count,
@@ -241,13 +324,14 @@ defmodule TamanduaServer.Detection.Engine do
   Load rules from the database into shared ETS tables.
   Called during EngineSupervisor init and by reload_rules/0.
   """
-  @spec load_rules_into_ets() :: :ok
-  def load_rules_into_ets do
+  @spec load_rules_into_ets(keyword()) :: :ok
+  def load_rules_into_ets(opts \\ []) do
     # Load Sigma rules
     sigma_rules = load_sigma_rules_from_db()
     # Clear and reload (atomic from readers' perspective since ETS insert
     # overwrites existing keys and new keys become visible immediately)
     :ets.delete_all_objects(:detection_sigma_rules)
+
     for {id, rule} <- sigma_rules do
       :ets.insert(:detection_sigma_rules, {id, rule})
     end
@@ -260,24 +344,41 @@ defmodule TamanduaServer.Detection.Engine do
     # Full runtime matching would require additional integration in EngineWorker.
     # For now, they're available for inspection and conversion to Sigma format.
 
-    # Load IOCs
-    iocs = load_iocs_from_db()
-    :ets.delete_all_objects(:detection_ioc_rules)
-    for {id, ioc} <- iocs do
-      :ets.insert(:detection_ioc_rules, {id, ioc})
-    end
+    # IOC loading is independently epoch-fenced. Never republish a direct DB
+    # query here because an older query could otherwise overwrite a newer
+    # snapshot completed by the reconciler.
+    ioc_count =
+      if Keyword.get(opts, :reconcile_iocs, true) do
+        case IOCSnapshotProvider.reconcile() do
+          {:ok, %{count: count}} ->
+            count
 
-    safe_reload_ruleloader(:ioc, iocs)
+          {:ok, %{stale: true}} ->
+            active_rule_count(:ioc)
+
+          {:error, reason} ->
+            Logger.error(
+              "[Engine] Keeping previous IOC snapshot after database load failure: #{inspect(reason)}"
+            )
+
+            active_rule_count(:ioc)
+        end
+      else
+        active_rule_count(:ioc)
+      end
 
     sigma_count = length(sigma_rules)
     falco_count = length(falco_rules)
-    ioc_count = length(iocs)
     yara_rule_count = get_yara_rule_count()
 
     if YaraScanner.available?() do
-      Logger.info("[Engine] Loaded #{sigma_count} Sigma rules, #{falco_count} Falco rules, #{ioc_count} IOCs, #{yara_rule_count} YARA rule files into ETS")
+      Logger.info(
+        "[Engine] Loaded #{sigma_count} Sigma rules, #{falco_count} Falco rules, #{ioc_count} IOCs, #{yara_rule_count} YARA rule files into ETS"
+      )
     else
-      Logger.warning("[Engine] Loaded #{sigma_count} Sigma rules, #{falco_count} Falco rules, #{ioc_count} IOCs into ETS (YARA scanner not available)")
+      Logger.warning(
+        "[Engine] Loaded #{sigma_count} Sigma rules, #{falco_count} Falco rules, #{ioc_count} IOCs into ETS (YARA scanner not available)"
+      )
     end
 
     :ok
@@ -292,13 +393,48 @@ defmodule TamanduaServer.Detection.Engine do
 
     case rule_type do
       :sigma -> RuleLoader.reload_sigma_rules_atomic(rules)
-      :ioc -> RuleLoader.reload_ioc_rules_atomic(rules)
+      :ioc -> {:error, :authority_epoch_required}
       :yara -> RuleLoader.reload_yara_rules_atomic(rules)
     end
   rescue
     e ->
-      Logger.warning("[Engine] RuleLoader reload failed for #{rule_type}: #{Exception.message(e)}")
+      Logger.warning(
+        "[Engine] RuleLoader reload failed for #{rule_type}: #{Exception.message(e)}"
+      )
+
       :ok
+  end
+
+  defp ioc_reconciler_status do
+    if Process.whereis(TamanduaServer.Detection.IOCReconciler) do
+      TamanduaServer.Detection.IOCReconciler.status()
+    else
+      %{
+        healthy: false,
+        pending: true,
+        published_epoch: RuleLoader.published_ioc_epoch(),
+        last_error: :reconciler_not_running
+      }
+    end
+  catch
+    :exit, reason ->
+      %{healthy: false, pending: true, last_error: {:reconciler_unavailable, reason}}
+  end
+
+  defp active_rule_count(rule_type) do
+    if rule_type == :ioc do
+      RuleLoader.with_ioc_snapshot(fn table -> :ets.info(table, :size) || 0 end)
+    else
+      rule_type
+      |> RuleLoader.get_active_table()
+      |> :ets.info(:size)
+      |> case do
+        count when is_integer(count) -> count
+        _ -> 0
+      end
+    end
+  rescue
+    ArgumentError -> 0
   end
 
   # ── Sharding ───────────────────────────────────────────────────────
@@ -311,6 +447,116 @@ defmodule TamanduaServer.Detection.Engine do
   defp agent_id_to_shard(nil), do: 0
   defp agent_id_to_shard(agent_id), do: :erlang.phash2(agent_id, @num_shards)
 
+  defp shed_async_event?(shard, event) do
+    case worker_queue_len(shard) do
+      nil ->
+        false
+
+      queue_len ->
+        queue_len >= max_async_queue() and low_priority_event?(event)
+    end
+  end
+
+  defp worker_queue_len(shard) do
+    with pid when is_pid(pid) <- worker_pid(shard),
+         {:message_queue_len, queue_len} <- Process.info(pid, :message_queue_len) do
+      queue_len
+    else
+      _ -> nil
+    end
+  end
+
+  defp worker_pid(shard) do
+    case Registry.lookup(TamanduaServer.Detection.ShardRegistry, shard) do
+      [{pid, _}] -> pid
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp low_priority_event?(event) do
+    priority =
+      event[:priority] || event["priority"] ||
+        event[:severity] || event["severity"] ||
+        get_in(event, [:payload, :priority]) || get_in(event, ["payload", "priority"]) ||
+        get_in(event, [:payload, :severity]) || get_in(event, ["payload", "severity"])
+
+    cond do
+      is_nil(priority) ->
+        true
+
+      is_atom(priority) ->
+        MapSet.member?(@low_priorities, priority |> Atom.to_string() |> String.downcase())
+
+      is_binary(priority) ->
+        MapSet.member?(@low_priorities, String.downcase(priority))
+
+      is_number(priority) ->
+        priority <= 1
+
+      true ->
+        false
+    end
+  end
+
+  defp max_async_queue do
+    :tamandua_server
+    |> Application.get_env(:detection_engine, [])
+    |> Keyword.get(:max_async_queue, @default_max_async_queue)
+  end
+
+  defp drop_log_interval_ms do
+    :tamandua_server
+    |> Application.get_env(:detection_engine, [])
+    |> Keyword.get(:async_drop_log_interval_ms, @default_drop_log_interval_ms)
+  end
+
+  defp emit_async_drop(shard) do
+    :telemetry.execute(
+      [:tamandua, :detection, :async_dropped],
+      %{count: 1},
+      %{shard: shard}
+    )
+
+    maybe_log_async_drop(shard)
+  end
+
+  defp maybe_log_async_drop(shard) do
+    table = ensure_drop_log_table()
+    now = System.monotonic_time(:millisecond)
+    interval = drop_log_interval_ms()
+
+    last_logged_at =
+      case :ets.lookup(table, shard) do
+        [{^shard, timestamp}] -> timestamp
+        _ -> nil
+      end
+
+    if is_nil(last_logged_at) or now - last_logged_at >= interval do
+      :ets.insert(table, {shard, now})
+
+      Logger.warning(
+        "[Engine] Dropping low-priority async detection events for shard #{shard}: " <>
+          "worker mailbox exceeded #{max_async_queue()} messages"
+      )
+    end
+  end
+
+  defp ensure_drop_log_table do
+    case :ets.whereis(@drop_log_table) do
+      :undefined ->
+        try do
+          :ets.new(@drop_log_table, [:named_table, :public, read_concurrency: true])
+        rescue
+          ArgumentError -> @drop_log_table
+        end
+
+      _ ->
+        @drop_log_table
+    end
+  end
+
   # ── Rule loading from database ─────────────────────────────────────
 
   defp load_sigma_rules_from_db do
@@ -318,7 +564,11 @@ defmodule TamanduaServer.Detection.Engine do
       case TamanduaServer.Repo.all(TamanduaServer.Detection.SigmaRule) do
         rules when is_list(rules) ->
           enabled = Enum.filter(rules, & &1.enabled)
-          Logger.info("[Engine] Loaded #{length(enabled)} enabled Sigma rules (#{length(rules)} total)")
+
+          Logger.info(
+            "[Engine] Loaded #{length(enabled)} enabled Sigma rules (#{length(rules)} total)"
+          )
+
           enabled
 
         other ->
@@ -335,7 +585,9 @@ defmodule TamanduaServer.Detection.Engine do
       end)
 
     if length(merged_file_rules) > 0 do
-      Logger.info("[Engine] Loaded #{length(merged_file_rules)} additional Sigma rules from priv/sigma_rules")
+      Logger.info(
+        "[Engine] Loaded #{length(merged_file_rules)} additional Sigma rules from priv/sigma_rules"
+      )
     end
 
     db_rules
@@ -356,7 +608,10 @@ defmodule TamanduaServer.Detection.Engine do
     |> Enum.flat_map(&load_sigma_rule_file/1)
   rescue
     e ->
-      Logger.warning("[Engine] Failed to load Sigma rules from priv/sigma_rules: #{Exception.message(e)}")
+      Logger.warning(
+        "[Engine] Failed to load Sigma rules from priv/sigma_rules: #{Exception.message(e)}"
+      )
+
       []
   end
 
@@ -425,17 +680,23 @@ defmodule TamanduaServer.Detection.Engine do
   end
 
   defp sigma_rule_fingerprint(rule) do
-    title = Map.get(rule, :title) || Map.get(rule, "title") || Map.get(rule, :name) || Map.get(rule, "name")
+    title =
+      Map.get(rule, :title) || Map.get(rule, "title") || Map.get(rule, :name) ||
+        Map.get(rule, "name")
+
     source = Map.get(rule, :source) || Map.get(rule, "source") || ""
 
-    {to_string(title || ""), :crypto.hash(:sha256, to_string(source)) |> Base.encode16(case: :lower)}
+    {to_string(title || ""),
+     :crypto.hash(:sha256, to_string(source)) |> Base.encode16(case: :lower)}
   end
 
   defp sigma_tags_to_tactics(tags) do
     tags
     |> List.wrap()
     |> Enum.map(&to_string/1)
-    |> Enum.filter(&(String.starts_with?(&1, "attack.") and not String.starts_with?(&1, "attack.t")))
+    |> Enum.filter(
+      &(String.starts_with?(&1, "attack.") and not String.starts_with?(&1, "attack.t"))
+    )
     |> Enum.uniq()
   end
 
@@ -445,70 +706,6 @@ defmodule TamanduaServer.Detection.Engine do
     |> Enum.map(&to_string/1)
     |> Enum.filter(&String.starts_with?(&1, "attack.t"))
     |> Enum.uniq()
-  end
-
-  defp load_iocs_from_db do
-    import Ecto.Query, only: [from: 2]
-
-    query =
-      from(i in TamanduaServer.Detection.IOC,
-        where: i.enabled == true,
-        select: %{
-          type: i.type,
-          value: i.value,
-          severity: i.severity,
-          description: i.description,
-          source: i.source
-        }
-      )
-
-    case TamanduaServer.Repo.all(query, timeout: 60_000) do
-      iocs when is_list(iocs) ->
-        iocs
-        |> Enum.with_index(fn ioc, idx ->
-          {idx, %{
-            type: normalize_ioc_type(ioc.type),
-            value: String.downcase(ioc.value),
-            confidence: severity_to_confidence(ioc.severity),
-            description: ioc.description || ioc.source || "IOC from threat feed"
-          }}
-        end)
-
-      _ -> []
-    end
-  rescue
-    e ->
-      Logger.warning("[Engine] Failed to load IOCs from database: #{Exception.message(e)}")
-      []
-  end
-
-  defp normalize_ioc_type(type) do
-    case type do
-      "hash_sha256" -> :sha256
-      "hash_sha1" -> :sha1
-      "hash_md5" -> :md5
-      "sha256" -> :sha256
-      "sha1" -> :sha1
-      "md5" -> :md5
-      "ip" -> :ip
-      "ipv4" -> :ip
-      "ipv6" -> :ip
-      "domain" -> :domain
-      "url" -> :url
-      "email" -> :email
-      "filename" -> :filename
-      _ -> :indicator
-    end
-  end
-
-  defp severity_to_confidence(severity) do
-    case severity do
-      "critical" -> 95
-      "high" -> 85
-      "medium" -> 70
-      "low" -> 50
-      _ -> 60
-    end
   end
 
   # ── Status helpers ─────────────────────────────────────────────────
@@ -538,13 +735,17 @@ defmodule TamanduaServer.Detection.Engine do
       |> Enum.filter(&String.ends_with?(&1, [".yaml", ".yml"]))
       |> Enum.flat_map(fn filename ->
         path = Path.join(falco_dir, filename)
+
         case Falco.parse_file(path) do
           {:ok, rules} ->
             Logger.info("[Engine] Loaded #{length(rules)} Falco rules from #{filename}")
             rules
 
           {:error, reason} ->
-            Logger.warning("[Engine] Failed to load Falco rules from #{filename}: #{inspect(reason)}")
+            Logger.warning(
+              "[Engine] Failed to load Falco rules from #{filename}: #{inspect(reason)}"
+            )
+
             []
         end
       end)
@@ -568,12 +769,12 @@ defmodule TamanduaServer.Detection.Engine do
     import Ecto.Query
 
     case TamanduaServer.Repo.one(
-      from(a in TamanduaServer.Alerts.Alert,
-        order_by: [desc: a.inserted_at],
-        limit: 1,
-        select: a.inserted_at
-      )
-    ) do
+           from(a in TamanduaServer.Alerts.Alert,
+             order_by: [desc: a.inserted_at],
+             limit: 1,
+             select: a.inserted_at
+           )
+         ) do
       nil -> nil
       datetime -> datetime
     end

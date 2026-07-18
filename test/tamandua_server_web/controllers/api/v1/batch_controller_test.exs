@@ -12,6 +12,21 @@ defmodule TamanduaServerWeb.API.V1.BatchControllerTest do
     org = insert(:organization)
     user = insert(:user, organization_id: org.id)
 
+    admin_role =
+      Repo.insert!(%TamanduaServer.Accounts.Role{
+        name: "Batch test admin",
+        slug: "admin",
+        builtin: true,
+        priority: 100,
+        organization_id: org.id
+      })
+
+    Repo.insert!(%TamanduaServer.Accounts.UserRole{
+      user_id: user.id,
+      role_id: admin_role.id,
+      granted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    })
+
     # Authenticate connection
     conn =
       conn

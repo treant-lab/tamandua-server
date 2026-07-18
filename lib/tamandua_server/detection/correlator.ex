@@ -58,7 +58,8 @@ defmodule TamanduaServer.Detection.Correlator do
 
   # MITRE ATT&CK mapping for process chain patterns
   # Key: {parent_pattern, child_pattern} -> %{techniques: [...], tactics: [...], description: "..."}
-  @chain_to_mitre %{
+  defp chain_to_mitre do
+    %{
     # Office macros spawning shells - Initial Access via Spearphishing + Execution
     {:office_shell, {~r/(?:WINWORD|EXCEL|POWERPNT|OUTLOOK)\.EXE$/i, ~r/(?:cmd|powershell|pwsh)\.exe$/i}} =>
       %{
@@ -224,25 +225,16 @@ defmodule TamanduaServer.Detection.Correlator do
         tactics: ["collection"],
         description: "Shell spawned archive utility (possible data staging)"
       }
-  }
-
-  # Extract just the patterns for backwards compatibility with existing chain checks
-  @suspicious_chains (
-    @chain_to_mitre
-    |> Enum.map(fn {_key, %{techniques: _, tactics: _}} = entry ->
-      {key, _mitre} = entry
-      {_name, {parent_pattern, child_pattern}} = key
-      {parent_pattern, child_pattern}
-    end)
-    |> Enum.uniq()
-  )
+    }
+  end
 
   # Multi-hop attack sequences (2+ processes in a chain)
   # These detect common attack patterns that span multiple process generations.
   # Each pattern is a list of regexes that must match consecutively in a process chain.
   # Unlike @suspicious_chains which only checks parent->child pairs, these patterns
   # can match across multiple generations (e.g., grandparent->parent->child).
-  @attack_sequences [
+  defp attack_sequences do
+    [
     # Office macro execution chain - classic malicious document attack (3-hop)
     %{
       pattern: [~r/(?:WINWORD|EXCEL|POWERPNT)\.EXE$/i, ~r/cmd\.exe$/i, ~r/powershell\.exe$/i],
@@ -334,7 +326,8 @@ defmodule TamanduaServer.Detection.Correlator do
       severity: :critical,
       description: "Script host spawned shell then download utility"
     }
-  ]
+    ]
+  end
 
   # ============================================================================
   # Command-line Argument Analysis Patterns
@@ -348,7 +341,8 @@ defmodule TamanduaServer.Detection.Correlator do
   # The boost values represent the additional risk score added when a pattern
   # matches (0.0 to 1.0 scale, where 1.0 = maximum risk).
 
-  @cmdline_suspicious_patterns [
+  defp cmdline_suspicious_patterns do
+    [
     # PowerShell Encoded Command - T1059.001/T1027
     %{
       process: ~r/powershell\.exe$/i,
@@ -517,7 +511,8 @@ defmodule TamanduaServer.Detection.Correlator do
       mitre: ["T1562.001"],
       description: "Windows Defender exclusion/disable"
     }
-  ]
+    ]
+  end
 
   defstruct [:stats, timelines: %{}]
 
@@ -1357,16 +1352,20 @@ defmodule TamanduaServer.Detection.Correlator do
     event_type = EventTypes.normalize(event[:event_type] || event["event_type"])
 
     # Check for suspicious process chains
-    if event_type == :process_create do
-      chain_detections = check_process_chain(event)
-      detections = detections ++ chain_detections
-    end
+    detections =
+      if event_type == :process_create do
+        detections ++ check_process_chain(event)
+      else
+        detections
+      end
 
     # Check for rapid file operations (potential ransomware)
-    if event_type in [:file_modify, :file_create] do
-      rapid_detections = check_rapid_file_ops(event)
-      detections = detections ++ rapid_detections
-    end
+    detections =
+      if event_type in [:file_modify, :file_create] do
+        detections ++ check_rapid_file_ops(event)
+      else
+        detections
+      end
 
     detections
   end
@@ -1397,7 +1396,7 @@ defmodule TamanduaServer.Detection.Correlator do
 
   # Check parent-child process chain patterns
   defp check_parent_child_chain(parent_path, child_path) do
-    @chain_to_mitre
+    chain_to_mitre()
     |> Enum.flat_map(fn {{_name, {parent_pattern, child_pattern}}, mitre_info} ->
       if Regex.match?(parent_pattern, parent_path) && Regex.match?(child_pattern, child_path) do
         [%{
@@ -1425,7 +1424,8 @@ defmodule TamanduaServer.Detection.Correlator do
   # Process-agnostic command-line patterns that match purely on argument content.
   # These complement @cmdline_suspicious_patterns (which require both process and
   # cmdline matches) by detecting technique indicators regardless of the binary name.
-  @cmdline_agnostic_patterns [
+  defp cmdline_agnostic_patterns do
+    [
     # Encoded PowerShell - T1059.001 / T1027
     %{
       cmdline: ~r/(?:-enc\s|-encodedcommand\s|frombase64string)/i,
@@ -1538,13 +1538,14 @@ defmodule TamanduaServer.Detection.Correlator do
       description: "Data encoding via certutil detected",
       confidence: 0.7
     }
-  ]
+    ]
+  end
 
   # Check command-line argument patterns for suspicious execution
   defp check_cmdline_patterns(process_path, cmdline) when is_binary(cmdline) and byte_size(cmdline) > 0 do
     # 1. Check process-specific patterns (require both process and cmdline match)
     process_specific =
-      @cmdline_suspicious_patterns
+      cmdline_suspicious_patterns()
       |> Enum.flat_map(fn pattern ->
         process_matches = Regex.match?(pattern.process, process_path)
         cmdline_matches = Regex.match?(pattern.cmdline, cmdline)
@@ -1566,7 +1567,7 @@ defmodule TamanduaServer.Detection.Correlator do
 
     # 2. Check process-agnostic patterns (match purely on cmdline content)
     agnostic =
-      @cmdline_agnostic_patterns
+      cmdline_agnostic_patterns()
       |> Enum.flat_map(fn pattern ->
         if Regex.match?(pattern.cmdline, cmdline) do
           [%{
@@ -1780,7 +1781,7 @@ defmodule TamanduaServer.Detection.Correlator do
     child_cmdline = child_info[:cmdline] || ""
 
     # 1. Check parent-child chain patterns
-    chain_detections = @chain_to_mitre
+    chain_detections = chain_to_mitre()
     |> Enum.flat_map(fn {{_name, {parent_pattern, child_pattern}}, mitre_info} ->
       if Regex.match?(parent_pattern, parent_path) && Regex.match?(child_pattern, child_path) do
         [%{
@@ -1862,7 +1863,7 @@ defmodule TamanduaServer.Detection.Correlator do
     end)
 
     # Try to match each attack sequence pattern
-    @attack_sequences
+    attack_sequences()
     |> Enum.flat_map(fn sequence_def ->
       pattern = sequence_def.pattern
       pattern_length = length(pattern)

@@ -7,8 +7,8 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
 
   setup do
     # Create test organization
-    org_id = Ecto.UUID.generate()
-    other_org_id = Ecto.UUID.generate()
+    org_id = insert(:organization).id
+    other_org_id = insert(:organization).id
 
     # Create test admin user for the organization
     admin_user = %User{
@@ -19,6 +19,7 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       organization_id: org_id,
       is_active: true
     }
+
     {:ok, admin} = Repo.insert(admin_user)
 
     # Create test analyst user (non-admin)
@@ -30,6 +31,7 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       organization_id: org_id,
       is_active: true
     }
+
     {:ok, analyst} = Repo.insert(analyst_user)
 
     # Create a test agent
@@ -65,7 +67,7 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       })
 
     # Issue initial token
-    {:ok, jwt, _token} = TokenManager.issue_token(agent_id)
+    {:ok, jwt, _token} = TokenManager.issue_token(agent_id, org_id)
 
     {:ok,
      agent_id: agent_id,
@@ -83,9 +85,15 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
   end
 
   describe "POST /api/v1/agents/auth/refresh" do
-    test "refreshes a valid token within refresh window", %{conn: conn, agent_id: agent_id, jwt: jwt} do
+    test "refreshes a valid token within refresh window", %{
+      conn: conn,
+      agent_id: agent_id,
+      jwt: jwt
+    } do
       # Set token to be in refresh window (60% of 30 day TTL)
-      token_record = Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+      token_record =
+        Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+
       past_issued_at = DateTime.add(DateTime.utc_now(), -19 * 24 * 3600, :second)
       expires_at = DateTime.add(past_issued_at, 720 * 3600, :second)
 
@@ -128,9 +136,14 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       assert message =~ "refresh window"
     end
 
-    test "returns 401 when token is revoked", %{conn: conn, agent_id: agent_id, jwt: jwt} do
+    test "returns 401 when token is revoked", %{
+      conn: conn,
+      agent_id: agent_id,
+      org_id: org_id,
+      jwt: jwt
+    } do
       # Revoke the token
-      TokenManager.revoke_token(agent_id)
+      TokenManager.revoke_token(agent_id, org_id)
 
       conn =
         conn
@@ -150,7 +163,8 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
 
     test "returns 401 when token has expired", %{conn: conn, agent_id: agent_id, jwt: jwt} do
       # Set token expiry to the past
-      token_record = Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+      token_record =
+        Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
 
       token_record
       |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(), -60, :second))
@@ -190,9 +204,15 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       assert percent < 10.0
     end
 
-    test "indicates refresh eligibility when in refresh window", %{conn: conn, agent_id: agent_id, jwt: jwt} do
+    test "indicates refresh eligibility when in refresh window", %{
+      conn: conn,
+      agent_id: agent_id,
+      jwt: jwt
+    } do
       # Set token to be in refresh window
-      token_record = Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+      token_record =
+        Repo.get_by!(TokenManager.AgentToken, agent_id: agent_id, token_generation: 1)
+
       past_issued_at = DateTime.add(DateTime.utc_now(), -19 * 24 * 3600, :second)
       expires_at = DateTime.add(past_issued_at, 720 * 3600, :second)
 
@@ -215,8 +235,13 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       assert percent >= 60.0
     end
 
-    test "returns invalid status for revoked token", %{conn: conn, agent_id: agent_id, jwt: jwt} do
-      TokenManager.revoke_token(agent_id)
+    test "returns invalid status for revoked token", %{
+      conn: conn,
+      agent_id: agent_id,
+      org_id: org_id,
+      jwt: jwt
+    } do
+      TokenManager.revoke_token(agent_id, org_id)
 
       conn =
         conn
@@ -245,7 +270,12 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
       assert %{"error" => "Authentication required"} = json_response(conn, 401)
     end
 
-    test "admin can revoke own tenant agent", %{conn: conn, agent_id: agent_id, jwt: jwt, admin: admin} do
+    test "admin can revoke own tenant agent", %{
+      conn: conn,
+      agent_id: agent_id,
+      jwt: jwt,
+      admin: admin
+    } do
       conn =
         conn
         |> authenticate(admin)
@@ -301,11 +331,12 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
     test "revokes all generations when all_generations is true", %{
       conn: conn,
       agent_id: agent_id,
+      org_id: org_id,
       admin: admin
     } do
       # Issue multiple tokens
-      {:ok, _jwt2, _} = TokenManager.issue_token(agent_id)
-      {:ok, _jwt3, _} = TokenManager.issue_token(agent_id)
+      {:ok, _jwt2, _} = TokenManager.issue_token(agent_id, org_id)
+      {:ok, _jwt3, _} = TokenManager.issue_token(agent_id, org_id)
 
       conn =
         conn
@@ -344,10 +375,11 @@ defmodule TamanduaServerWeb.API.V1.AuthControllerTest do
     test "authenticated user can get stats for own tenant agent", %{
       conn: conn,
       agent_id: agent_id,
+      org_id: org_id,
       admin: admin
     } do
       # Issue additional token to have multiple generations
-      {:ok, _jwt2, _} = TokenManager.issue_token(agent_id)
+      {:ok, _jwt2, _} = TokenManager.issue_token(agent_id, org_id)
 
       conn =
         conn

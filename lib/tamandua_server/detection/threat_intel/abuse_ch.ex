@@ -29,7 +29,6 @@ defmodule TamanduaServer.Detection.ThreatIntel.AbuseCh do
   @urlhaus_api "https://urlhaus-api.abuse.ch/v1/"
   @threatfox_api "https://threatfox-api.abuse.ch/api/v1/"
 
-  @http_timeout 30_000
   @recv_timeout 30_000
 
   # ============================================================================

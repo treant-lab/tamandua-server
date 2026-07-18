@@ -146,7 +146,7 @@ export default function AttackSurface({ attackSurface, recommendations: _recomme
             <div className="flex items-center justify-between p-4" style={{ borderBottom: '1px solid var(--border)' }}>
               <h2 className="text-lg font-semibold" style={{ color: 'var(--fg)' }}>AI/ML Assets</h2>
               <button
-                onClick={() => router.visit('/app/ai-security/attack-surface?view=all')}
+                onClick={() => router.visit('/app/assets')}
                 className="text-sm text-primary-400 hover:text-primary-300 flex items-center gap-1"
               >
                 View All <ExternalLink className="h-3 w-3" />

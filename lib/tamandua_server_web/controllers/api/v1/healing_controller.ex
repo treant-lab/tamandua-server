@@ -539,7 +539,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
   defp rollback_action("clear_temp_files", _agent_id, _original_params, _pre_state) do
     # Clearing temp files is a destructive action -- the deleted files
     # cannot be restored because they were removed from disk.
-    Logger.warn("Rollback requested for clear_temp_files: action is non-reversible")
+    Logger.warning("Rollback requested for clear_temp_files: action is non-reversible")
 
     {:error, :non_reversible,
      "clear_temp_files is a destructive action. " <>
@@ -579,7 +579,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
     # cannot be recovered.
     process_name = original_params["process_name"] || original_params["name"]
 
-    Logger.warn(
+    Logger.warning(
       "Rollback requested for restart_process (#{process_name}): " <>
         "original process state is lost and non-reversible"
     )
@@ -594,7 +594,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
   defp rollback_action("flush_dns", _agent_id, _original_params, _pre_state) do
     # DNS cache is an ephemeral, OS-managed resource. Once flushed,
     # entries are rebuilt automatically through normal DNS resolution.
-    Logger.warn("Rollback requested for flush_dns: action is non-reversible")
+    Logger.warning("Rollback requested for flush_dns: action is non-reversible")
 
     {:error, :non_reversible,
      "flush_dns is non-reversible. " <>
@@ -698,7 +698,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
     # in-memory state is permanently lost.
     pid = original_params["pid"]
 
-    Logger.warn("Rollback requested for kill_malicious_process (PID #{pid}): action is non-reversible")
+    Logger.warning("Rollback requested for kill_malicious_process (PID #{pid}): action is non-reversible")
 
     {:error, :non_reversible,
      "kill_malicious_process is non-reversible. " <>
@@ -709,7 +709,7 @@ defmodule TamanduaServerWeb.API.V1.HealingController do
   defp rollback_action("repair_system_files", _agent_id, _original_params, _pre_state) do
     # System file repair (e.g., sfc /scannow) modifies OS-protected files
     # and the previous state cannot be cleanly rolled back.
-    Logger.warn("Rollback requested for repair_system_files: action is non-reversible")
+    Logger.warning("Rollback requested for repair_system_files: action is non-reversible")
 
     {:error, :non_reversible,
      "repair_system_files is non-reversible. " <>

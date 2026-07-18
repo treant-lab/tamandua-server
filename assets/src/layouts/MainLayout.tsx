@@ -1,48 +1,14 @@
 import { Link, usePage, router } from '@inertiajs/react'
 import {
-  LayoutDashboard,
-  Monitor,
-  AlertTriangle,
-  FileSearch,
   Settings,
   LogOut,
   ChevronDown,
   ChevronRight,
   Bell,
   Search,
-  Activity,
-  Terminal,
-  ShieldCheck,
-  Box,
-  FileCode,
-  ClipboardList,
-  Globe,
   Building2,
   PanelLeftClose,
   PanelLeftOpen,
-  Database,
-  Brain,
-  Target,
-  Radar,
-  Crosshair,
-  Shield,
-  Zap,
-  Network,
-  Bug,
-  Layers,
-  Award,
-  Users,
-  BookOpen,
-  Cpu,
-  Eye,
-  MessageSquare,
-  Workflow,
-  Clock,
-  Download,
-  GitBranch,
-  Key,
-  Lock,
-  Smartphone,
 } from 'lucide-react'
 import { cn, safeInitial } from '@/lib/utils'
 import type { SharedProps, Tenant } from '@/types'
@@ -93,6 +59,26 @@ function NavigationProgress() {
 import { TenantSelector } from '@/components/TenantSelector'
 import { useTenant } from '@/contexts/TenantContext'
 import { Menu, MenuItem, Tooltip } from '@/components/ui/baseui'
+import {
+  NAVIGATION_GROUPS,
+  filterNavigationGroups,
+  getVisibleNavigationGroups,
+  type NavigationGroup,
+} from '@/navigation/catalog'
+
+type TenantContextSnapshot = {
+  currentTenant: Tenant | null
+  availableTenants: Tenant[]
+  isMultiTenant: boolean
+}
+
+function useOptionalTenant(): TenantContextSnapshot | null {
+  try {
+    return useTenant()
+  } catch {
+    return null
+  }
+}
 
 // --- localStorage persistence helpers ---
 
@@ -124,172 +110,6 @@ interface MainLayoutProps {
   title?: string
 }
 
-interface NavItem {
-  name: string
-  href: string
-  icon: React.ComponentType<{ className?: string }>
-  external?: boolean
-}
-
-interface NavGroup {
-  name: string
-  icon: React.ComponentType<{ className?: string }>
-  items: NavItem[]
-}
-
-// Extended NavItem with optional permission requirement
-interface ExtendedNavItem extends NavItem {
-  requireRole?: 'admin' | 'super_admin'
-}
-
-interface ExtendedNavGroup extends Omit<NavGroup, 'items'> {
-  items: ExtendedNavItem[]
-  requireRole?: 'admin' | 'super_admin'
-}
-
-const navigationGroups: ExtendedNavGroup[] = [
-  {
-    name: 'Operations',
-    icon: LayoutDashboard,
-    items: [
-      { name: 'Overview', href: '/app/dashboard', icon: LayoutDashboard },
-      { name: 'Executive', href: '/app/executive', icon: Activity },
-      { name: 'Agents', href: '/app/agents', icon: Monitor },
-      { name: 'Deploy Agent', href: '/app/deploy-agent', icon: Download },
-      { name: 'Assets', href: '/app/assets', icon: Box },
-      { name: 'Alerts', href: '/app/alerts', icon: AlertTriangle },
-      { name: 'Events', href: '/app/events', icon: Activity },
-      { name: 'Timeline', href: '/app/timeline', icon: Clock },
-    ],
-  },
-  {
-    name: 'Detection',
-    icon: Radar,
-    items: [
-      { name: 'Detection Rules', href: '/app/detection-rules', icon: Shield },
-      { name: 'Detection Builder', href: '/app/detection-builder', icon: FileCode },
-      { name: 'Dynamic Detection', href: '/app/dynamic-detection', icon: Zap },
-      { name: 'Detection Analytics', href: '/app/detection-analytics', icon: Activity },
-      { name: 'Detection Packs', href: '/app/detection-packs', icon: Layers },
-      { name: 'MITRE ATT&CK', href: '/app/mitre', icon: Target },
-      { name: 'Threat Intel', href: '/app/threat-intel', icon: Eye },
-      { name: 'Predictive Shielding', href: '/app/predictive', icon: ShieldCheck },
-      { name: 'Validation Center', href: '/app/validation', icon: ClipboardList },
-      { name: 'Benchmarks', href: '/app/validation/benchmark', icon: Activity },
-    ],
-  },
-  {
-    name: 'AI & Hunting',
-    icon: Brain,
-    items: [
-      { name: 'Hunt', href: '/app/hunt', icon: Radar },
-      { name: 'NL Hunting', href: '/app/nl-hunt', icon: MessageSquare },
-      { name: 'AI Assistant', href: '/app/ai-assistant', icon: Brain },
-      { name: 'AI SIEM', href: '/app/ai-siem', icon: Cpu },
-      { name: 'ML Dashboard', href: '/app/ml', icon: Cpu },
-      { name: 'Agent ML Detections', href: '/app/ml/detections', icon: AlertTriangle },
-      { name: 'Behavioral', href: '/app/behavioral', icon: Bug },
-      { name: 'Agentic Analyst', href: '/app/analyst', icon: FileSearch },
-    ],
-  },
-  {
-    name: 'Investigation',
-    icon: FileSearch,
-    items: [
-      { name: 'Investigations', href: '/app/investigations', icon: FileSearch },
-      { name: 'Process Tree', href: '/app/process-tree', icon: Network },
-      { name: 'Provenance Graph', href: '/app/provenance', icon: GitBranch },
-      { name: 'Forensics', href: '/app/forensics', icon: Crosshair },
-    ],
-  },
-  {
-    name: 'Response',
-    icon: Terminal,
-    items: [
-      { name: 'Response Center', href: '/app/response', icon: ShieldCheck },
-      { name: 'Live Response', href: '/app/live-response', icon: Terminal },
-      { name: 'Playbooks', href: '/app/playbooks', icon: BookOpen },
-      { name: 'Automation', href: '/app/automation', icon: Workflow },
-      { name: 'Prevention Policies', href: '/app/prevention-policies', icon: Shield },
-      { name: 'Device Control', href: '/app/device-control', icon: Box },
-      { name: 'Device Policies', href: '/app/device-control/policies', icon: ClipboardList },
-    ],
-  },
-  {
-    name: 'AI Security',
-    icon: Shield,
-    items: [
-      { name: 'AI Attack Surface', href: '/app/ai-security/attack-surface', icon: Target },
-      { name: 'Shadow AI', href: '/app/ai-security/shadow-ai', icon: Eye },
-      { name: 'AI Posture', href: '/app/ai-security/posture', icon: ShieldCheck },
-      { name: 'Agent Registry', href: '/app/ai-security/agents', icon: Users },
-      { name: 'AI Models', href: '/live/ai-security/models', icon: Brain, external: true },
-      { name: 'ML Processes', href: '/live/ml-processes', icon: Cpu, external: true },
-      { name: 'AI Runtime', href: '/live/ai/runtime', icon: Activity, external: true },
-      { name: 'Model Registries', href: '/live/registries', icon: Database, external: true },
-      { name: 'AI Artifacts', href: '/app/ai-security/artifacts', icon: Database },
-      { name: 'Dependency Graph', href: '/app/ai-security/dependency-graph', icon: GitBranch },
-      { name: 'MCP Servers', href: '/app/mcp-servers', icon: Network },
-    ],
-  },
-  {
-    name: 'Proof',
-    icon: Database,
-    items: [
-      { name: 'On-Chain Proof', href: '/app/public-proofs', icon: Database },
-      { name: 'Security Status', href: '/app/security-status', icon: ShieldCheck },
-    ],
-  },
-  {
-    name: 'Exposure',
-    icon: Network,
-    items: [
-      { name: 'Network', href: '/app/network', icon: Network },
-      { name: 'DNS', href: '/app/dns', icon: Globe },
-      { name: 'NDR', href: '/app/ndr', icon: Radar },
-      { name: 'Mobile Security', href: '/app/mobile', icon: Smartphone },
-      { name: 'Attack Surface', href: '/app/attack-surface', icon: Target },
-      { name: 'Exposure Management', href: '/app/exposure', icon: Eye },
-      { name: 'Attack Paths', href: '/app/exposure/attack-paths', icon: GitBranch },
-      { name: 'Vulnerabilities', href: '/app/vulnerabilities', icon: AlertTriangle },
-      { name: 'Identity', href: '/app/identity', icon: Users },
-      { name: 'Deception', href: '/app/deception', icon: Shield },
-    ],
-  },
-  {
-    name: 'Collaboration',
-    icon: Globe,
-    items: [
-      { name: 'Integrations', href: '/app/integrations', icon: Network },
-      { name: 'Collaboration Security', href: '/app/collaboration', icon: Users },
-      { name: 'Email Security', href: '/app/email-security', icon: MessageSquare },
-      { name: 'Phishing Triage', href: '/app/phishing-triage', icon: FileSearch },
-    ],
-  },
-  {
-    name: 'Ecosystem',
-    icon: Globe,
-    items: [
-      { name: 'Contributions', href: '/app/contributions', icon: FileCode },
-      { name: 'Contributor Leaderboard', href: '/app/contributions#leaderboard', icon: Award },
-    ],
-  },
-  {
-    name: 'Admin',
-    icon: Settings,
-    items: [
-      { name: 'Settings', href: '/app/settings', icon: Settings },
-      { name: 'Tenant Settings', href: '/app/tenant-settings', icon: Building2 },
-      { name: 'User Management', href: '/app/users', icon: Users },
-      { name: 'RBAC Roles', href: '/app/settings/roles', icon: Shield },
-      { name: 'Reports', href: '/app/reports', icon: ClipboardList },
-      { name: 'Audit Log', href: '/app/audit-log', icon: FileSearch },
-      { name: 'Tenants', href: '/app/admin/tenants', icon: Building2, requireRole: 'super_admin' },
-    ],
-    requireRole: 'admin',
-  },
-]
-
 // Extended SharedProps with tenant information
 interface ExtendedSharedProps extends SharedProps {
   current_tenant?: Tenant | null
@@ -301,6 +121,8 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   const pageProps = usePage<ExtendedSharedProps>().props
   const { auth, flash, current_tenant, available_tenants, is_super_admin } = pageProps
   const [isSearchOpen, setIsSearchOpen] = useState(false)
+  const [menuQuery, setMenuQuery] = useState('')
+  const menuSearchRef = useRef<HTMLInputElement>(null)
 
   // --- Sidebar collapsed state (icon-only mode) with localStorage persistence ---
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() =>
@@ -311,14 +133,14 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(() => {
     // Default: only the first group ("Core") is expanded, rest collapsed
     const defaults: Record<string, boolean> = {}
-    navigationGroups.forEach((g, i) => { defaults[g.name] = i === 0 })
+    NAVIGATION_GROUPS.forEach((g, i) => { defaults[g.name] = i === 0 })
     // Merge saved state on top of defaults so new groups get a sensible default
     const saved = readLocalStorage<Record<string, boolean>>(SIDEBAR_STATE_KEY, {})
     const merged = { ...defaults, ...saved }
 
     // Auto-expand the group containing the current page
     const path = typeof window !== 'undefined' ? window.location.pathname : '/'
-    navigationGroups.forEach(group => {
+    NAVIGATION_GROUPS.forEach(group => {
       if (group.items.some(item =>
         path === item.href || (item.href !== '/app/dashboard' && path.startsWith(item.href))
       )) {
@@ -330,14 +152,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   })
   const user = auth?.user
   const userRole = user?.role
-
-  // Try to use tenant context, but gracefully handle if not available
-  let tenantContext: { currentTenant: Tenant | null; availableTenants: Tenant[]; isMultiTenant: boolean } | null = null
-  try {
-    tenantContext = useTenant()
-  } catch {
-    // TenantProvider not available, use props instead
-  }
+  const tenantContext = useOptionalTenant()
 
   // Use context values if available, otherwise fall back to page props
   const currentTenant = tenantContext?.currentTenant ?? current_tenant ?? null
@@ -348,26 +163,22 @@ export function MainLayout({ children, title }: MainLayoutProps) {
   const isSuperAdmin = Boolean(is_super_admin || userRole === 'super_admin')
   const isAdmin = userRole === 'admin' || isSuperAdmin
 
-  // Filter navigation based on user role
-  const filteredNavigationGroups = navigationGroups.filter(group => {
-    if (group.requireRole === 'super_admin' && !isSuperAdmin) return false
-    if (group.requireRole === 'admin' && !isAdmin) return false
-    return true
-  }).map(group => ({
-    ...group,
-    items: group.items.filter(item => {
-      if (item.requireRole === 'super_admin' && !isSuperAdmin) return false
-      if (item.requireRole === 'admin' && !isAdmin) return false
-      return true
-    })
-  })).filter(group => group.items.length > 0)
+  const permittedNavigationGroups = useMemo(
+    () => getVisibleNavigationGroups(userRole, isSuperAdmin),
+    [userRole, isSuperAdmin]
+  )
+  const filteredNavigationGroups = useMemo(
+    () => filterNavigationGroups(permittedNavigationGroups, menuQuery),
+    [permittedNavigationGroups, menuQuery]
+  )
+  const menuResultCount = filteredNavigationGroups.reduce((count, group) => count + group.items.length, 0)
 
   // Use Inertia's page URL for reactive path tracking
   const { url: inertiaUrl } = usePage()
   const currentPath = (inertiaUrl?.split('?')[0] || (typeof window !== 'undefined' ? window.location.pathname : '/')).split('#')[0]
   const visibleNavigationHrefs = useMemo(
-    () => filteredNavigationGroups.flatMap(group => group.items.map(item => item.href.split('?')[0].split('#')[0])),
-    [filteredNavigationGroups]
+    () => permittedNavigationGroups.flatMap(group => group.items.map(item => item.href.split('?')[0].split('#')[0])),
+    [permittedNavigationGroups]
   )
 
   const isNavigationHrefActive = useCallback((href: string) => {
@@ -391,7 +202,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
     setExpandedGroups(prev => {
       let changed = false
       const next = { ...prev }
-      navigationGroups.forEach(group => {
+      NAVIGATION_GROUPS.forEach(group => {
         const isActive = group.items.some(item => isNavigationHrefActive(item.href))
         if (isActive && !next[group.name]) {
           next[group.name] = true
@@ -410,18 +221,27 @@ export function MainLayout({ children, title }: MainLayoutProps) {
     router.delete('/logout')
   }
 
-  // Global search keyboard shortcut (Cmd+K / Ctrl+K)
+  // Global command palette plus a fast sidebar feature filter.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         setIsSearchOpen(prev => !prev)
+        return
+      }
+
+      const target = e.target as HTMLElement | null
+      const isEditable = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable
+      if (e.key === '/' && !isEditable && !isSearchOpen) {
+        e.preventDefault()
+        setSidebarCollapsed(false)
+        window.setTimeout(() => menuSearchRef.current?.focus(), 0)
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [isSearchOpen])
 
   // Persist expanded groups to localStorage whenever they change
   const toggleGroup = useCallback((groupName: string) => {
@@ -445,7 +265,7 @@ export function MainLayout({ children, title }: MainLayoutProps) {
     return isNavigationHrefActive(href)
   }
 
-  const isGroupActive = (group: NavGroup) => {
+  const isGroupActive = (group: NavigationGroup) => {
     return group.items.some(item => isItemActive(item.href))
   }
 
@@ -514,18 +334,46 @@ export function MainLayout({ children, title }: MainLayoutProps) {
               </button>
             </Tooltip>
           ) : (
-            <button
-              onClick={() => setIsSearchOpen(true)}
-              className="relative w-full text-left"
-            >
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--subtle)' }} />
-              <div
-                className="input-sentinel w-full pl-10 pr-4 cursor-pointer"
-                style={{ color: 'var(--muted)' }}
-              >
-                Search... <span className="text-xs opacity-70">Ctrl+K</span>
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--subtle)' }} />
+                <label htmlFor="sidebar-feature-search" className="sr-only">Find a feature</label>
+                <input
+                  id="sidebar-feature-search"
+                  ref={menuSearchRef}
+                  value={menuQuery}
+                  onChange={(event) => setMenuQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      setMenuQuery('')
+                      event.currentTarget.blur()
+                    }
+                    if (event.key === 'Enter' && menuResultCount === 1) {
+                      const item = filteredNavigationGroups[0]?.items[0]
+                      if (item) router.visit(item.href)
+                    }
+                  }}
+                  placeholder="Find features..."
+                  className="input-sentinel input-sentinel-icon-left input-sentinel-shortcut-right w-full"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsSearchOpen(true)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1.5 py-1 text-[10px] font-mono"
+                  style={{ backgroundColor: 'var(--surface-2)', color: 'var(--muted)' }}
+                  aria-label="Search live data and features (Ctrl+K)"
+                >
+                  Ctrl K
+                </button>
               </div>
-            </button>
+              {menuQuery && (
+                <div className="flex items-center justify-between px-1 text-[11px]" style={{ color: 'var(--muted)' }} aria-live="polite">
+                  <span>{menuResultCount} {menuResultCount === 1 ? 'feature' : 'features'}</span>
+                  <button type="button" onClick={() => setMenuQuery('')} className="hover:underline">Clear</button>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -533,8 +381,8 @@ export function MainLayout({ children, title }: MainLayoutProps) {
         <nav className={cn('flex-1 overflow-y-auto pb-4', sidebarCollapsed ? 'px-2' : 'px-4')} style={{ scrollbarWidth: 'none' }}>
           <div className="space-y-2">
             {filteredNavigationGroups.map((group) => {
-              const isExpanded = expandedGroups[group.name]
-              const isActive = isGroupActive(group as NavGroup)
+              const isExpanded = Boolean(menuQuery) || expandedGroups[group.name]
+              const isActive = isGroupActive(group)
 
               // Collapsed sidebar: show only the group icon as a link to its first item
               if (sidebarCollapsed) {
@@ -643,7 +491,8 @@ export function MainLayout({ children, title }: MainLayoutProps) {
               return (
                 <div key={group.name}>
                   <button
-                    onClick={() => toggleGroup(group.name)}
+                    onClick={() => { if (!menuQuery) toggleGroup(group.name) }}
+                    aria-expanded={isExpanded}
                     className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors"
                     style={{ color: isActive ? 'var(--emerald-400)' : 'var(--subtle)' }}
                     onMouseEnter={(e) => {
@@ -720,6 +569,15 @@ export function MainLayout({ children, title }: MainLayoutProps) {
                 </div>
               )
             })}
+            {menuQuery && filteredNavigationGroups.length === 0 && (
+              <div className="px-3 py-8 text-center">
+                <Search className="mx-auto mb-2 h-5 w-5" style={{ color: 'var(--subtle)' }} />
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>No feature matches &quot;{menuQuery}&quot;.</p>
+                <button type="button" onClick={() => setIsSearchOpen(true)} className="mt-2 text-xs hover:underline" style={{ color: 'var(--emerald-400)' }}>
+                  Search live data instead
+                </button>
+              </div>
+            )}
           </div>
         </nav>
 

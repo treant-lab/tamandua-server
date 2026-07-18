@@ -1,4 +1,4 @@
-defmodule Tamandua.Repo.Migrations.CreateUpdateTables do
+defmodule TamanduaServer.Repo.Migrations.CreateUpdateTables do
   use Ecto.Migration
 
   def change do

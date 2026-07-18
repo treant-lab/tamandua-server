@@ -43,6 +43,12 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
   @max_sessions_per_agent 3
   @command_rate_limit_per_minute 60
 
+  # Global presence topic indexing all live-response sessions. Phoenix.Presence
+  # has no topic wildcards ("live_response:*" is treated as a literal topic that
+  # nothing tracks), so every session is additionally tracked here to make
+  # per-user counting possible. Same remedy as shell_channel.ex (5f167d95).
+  @live_response_sessions_topic "live_response_sessions:index"
+
   # Supervisor approval required for these command patterns
   @supervisor_approval_commands [
     "rm -rf",
@@ -278,6 +284,58 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
     end
   end
 
+  @impl true
+  def handle_info({:supervisor_decision, command_id, decision, approver_id}, socket) do
+    pending = socket.assigns.pending_approvals
+
+    case Map.get(pending, command_id) do
+      nil ->
+        {:noreply, socket}
+
+      command_data ->
+        socket =
+          if decision == :approved do
+            # Execute the command
+            socket =
+              case send_input_to_agent(socket, command_data) do
+                {:ok, socket} ->
+                  socket
+
+                {:error, reason, socket} ->
+                  push(socket, "error", %{message: reason})
+                  socket
+              end
+
+            audit_log(:supervisor_approved, socket, %{
+              command_id: command_id,
+              command: command_data,
+              approver_id: approver_id
+            })
+
+            push(socket, "supervisor_approved", %{command_id: command_id})
+            socket
+          else
+            audit_log(:supervisor_rejected, socket, %{
+              command_id: command_id,
+              command: command_data,
+              approver_id: approver_id
+            })
+
+            push(socket, "supervisor_rejected", %{
+              command_id: command_id,
+              reason: "Command rejected by supervisor"
+            })
+
+            socket
+          end
+
+        socket = update_in(socket.assigns.pending_approvals, &Map.delete(&1, command_id))
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   defp handle_agent_message(message, socket) do
     case message do
       %{"type" => "session_ended"} = payload ->
@@ -340,58 +398,6 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
 
     {:noreply, socket}
   end
-
-  @impl true
-  def handle_info({:supervisor_decision, command_id, decision, approver_id}, socket) do
-    pending = socket.assigns.pending_approvals
-
-    case Map.get(pending, command_id) do
-      nil ->
-        {:noreply, socket}
-
-      command_data ->
-        socket =
-          if decision == :approved do
-            # Execute the command
-            socket =
-              case send_input_to_agent(socket, command_data) do
-                {:ok, socket} ->
-                  socket
-
-                {:error, reason, socket} ->
-                  push(socket, "error", %{message: reason})
-                  socket
-              end
-
-            audit_log(:supervisor_approved, socket, %{
-              command_id: command_id,
-              command: command_data,
-              approver_id: approver_id
-            })
-
-            push(socket, "supervisor_approved", %{command_id: command_id})
-            socket
-          else
-            audit_log(:supervisor_rejected, socket, %{
-              command_id: command_id,
-              command: command_data,
-              approver_id: approver_id
-            })
-
-            push(socket, "supervisor_rejected", %{
-              command_id: command_id,
-              reason: "Command rejected by supervisor"
-            })
-
-            socket
-          end
-
-        socket = update_in(socket.assigns.pending_approvals, &Map.delete(&1, command_id))
-        {:noreply, socket}
-    end
-  end
-
-  def handle_info(_msg, socket), do: {:noreply, socket}
 
   # ============================================================================
   # Handle In (Client Messages)
@@ -680,7 +686,7 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
   def handle_in("export_session", %{"format" => format}, socket) do
     session_id = socket.assigns.session_id
     recording_state = socket.assigns[:recording_state]
-    recording_path = if recording_state, do: recording_state.path, else: nil
+    _recording_path = if recording_state, do: recording_state.path, else: nil
 
     case format do
       "asciinema" ->
@@ -857,16 +863,20 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
   end
 
   defp count_user_sessions(user_id) do
-    # Count across all live_response channels
-    try do
-      TamanduaServerWeb.Presence.list("live_response:*")
-      |> Enum.flat_map(fn {_key, presences} ->
-        presences.metas
-      end)
-      |> Enum.count(&(&1.user_id == user_id))
-    rescue
-      _ -> 0
-    end
+    # Count active live-response sessions for this user across all agents via
+    # the global presence index. Phoenix.Presence has no topic wildcards:
+    # list("live_response:*") queried the literal topic "live_response:*",
+    # which nothing tracks, so this always returned 0 and
+    # @max_sessions_per_user was never enforced (fail-open).
+    Presence.list(@live_response_sessions_topic)
+    |> Enum.count(fn {_session_id, %{metas: metas}} ->
+      Enum.any?(metas, &(&1.user_id == user_id))
+    end)
+  rescue
+    _ -> 0
+  catch
+    # Presence tracker is a GenServer; a dead tracker exits instead of raising.
+    :exit, _ -> 0
   end
 
   defp count_agent_sessions(agent_id) do
@@ -874,14 +884,15 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
   end
 
   defp count_agent_sessions(agent_id, user_id) do
-    try do
-      TamanduaServerWeb.Presence.list("live_response:#{agent_id}")
-      |> Enum.count(fn {_session_id, %{metas: metas}} ->
-        is_nil(user_id) or Enum.any?(metas, &(to_string(&1.user_id) == to_string(user_id)))
-      end)
-    rescue
-      _ -> 0
-    end
+    TamanduaServerWeb.Presence.list("live_response:#{agent_id}")
+    |> Enum.count(fn {_session_id, %{metas: metas}} ->
+      is_nil(user_id) or Enum.any?(metas, &(to_string(&1.user_id) == to_string(user_id)))
+    end)
+  rescue
+    _ -> 0
+  catch
+    # Presence tracker is a GenServer; a dead tracker exits instead of raising.
+    :exit, _ -> 0
   end
 
   defp close_duplicate_user_sessions(socket) do
@@ -1429,6 +1440,22 @@ defmodule TamanduaServerWeb.LiveResponseChannel do
 
       {:error, reason} ->
         Logger.warning("Live response presence tracking failed: #{inspect(reason)}")
+        :ok
+    end
+
+    # Also track on the global session index so count_user_sessions/1 can
+    # enforce @max_sessions_per_user across all agents (Presence cannot
+    # enumerate "live_response:*"). Entries are removed automatically when
+    # this channel process dies.
+    case Presence.track(self(), @live_response_sessions_topic, session_id, %{
+           user_id: user_value(user, :id),
+           agent_id: agent_id
+         }) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Live response session-index tracking failed: #{inspect(reason)}")
         :ok
     end
   rescue

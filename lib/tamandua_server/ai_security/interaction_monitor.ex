@@ -21,7 +21,6 @@ defmodule TamanduaServer.AISecurity.InteractionMonitor do
   use GenServer
   require Logger
 
-  alias TamanduaServer.{Cache, Repo}
 
   # ETS tables
   @interactions_table :ai_interaction_log
@@ -244,8 +243,8 @@ defmodule TamanduaServer.AISecurity.InteractionMonitor do
 
   @impl true
   def handle_call({:scan_response, params}, _from, state) do
-    user_id = params[:user_id] || "anonymous"
-    model_id = params[:model_id] || "unknown"
+    _user_id = params[:user_id] || "anonymous"
+    _model_id = params[:model_id] || "unknown"
     org_id = params[:organization_id] || "default"
     response_text = params[:response] || ""
 

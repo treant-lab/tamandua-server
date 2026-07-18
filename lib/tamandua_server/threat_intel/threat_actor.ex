@@ -28,6 +28,7 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
   import Ecto.Query
 
   alias TamanduaServer.Repo
+  alias TamanduaServer.Repo.MultiTenant
   alias TamanduaServer.ThreatIntel.MISPInstance
   alias TamanduaServer.Detection.IOC
 
@@ -35,48 +36,53 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
   @foreign_key_type :binary_id
 
   schema "threat_actors" do
-    field :name, :string
-    field :description, :string
-    field :aliases, {:array, :string}, default: []
+    field(:name, :string)
+    field(:description, :string)
+    field(:aliases, {:array, :string}, default: [])
 
     # Classification
-    field :motivation, :string  # financial, espionage, hacktivism, sabotage, unknown
-    field :sophistication, :string  # novice, intermediate, advanced, expert
-    field :resource_level, :string  # individual, small-group, organization, government
+    # financial, espionage, hacktivism, sabotage, unknown
+    field(:motivation, :string)
+    # novice, intermediate, advanced, expert
+    field(:sophistication, :string)
+    # individual, small-group, organization, government
+    field(:resource_level, :string)
 
     # Attribution
-    field :origin_country, :string
-    field :target_countries, {:array, :string}, default: []
-    field :target_sectors, {:array, :string}, default: []
-    field :target_regions, {:array, :string}, default: []
+    field(:origin_country, :string)
+    field(:target_countries, {:array, :string}, default: [])
+    field(:target_sectors, {:array, :string}, default: [])
+    field(:target_regions, {:array, :string}, default: [])
 
     # MITRE ATT&CK
-    field :ttps, {:array, :string}, default: []
-    field :primary_tactics, {:array, :string}, default: []
+    field(:ttps, {:array, :string}, default: [])
+    field(:primary_tactics, {:array, :string}, default: [])
 
     # Malware and tools
-    field :known_malware, {:array, :string}, default: []
-    field :known_tools, {:array, :string}, default: []
+    field(:known_malware, {:array, :string}, default: [])
+    field(:known_tools, {:array, :string}, default: [])
 
     # Activity timeline
-    field :first_seen, :utc_datetime
-    field :last_seen, :utc_datetime
-    field :active, :boolean, default: true
+    field(:first_seen, :utc_datetime)
+    field(:last_seen, :utc_datetime)
+    field(:active, :boolean, default: true)
 
     # Source tracking
-    field :source, :string, default: "manual"  # manual, misp, otx, etc.
-    field :misp_cluster_uuid, :string
-    field :galaxy_type, :string
-    field :confidence, :float, default: 0.7
+    # manual, misp, otx, etc.
+    field(:source, :string, default: "manual")
+    field(:misp_cluster_uuid, :string)
+    field(:galaxy_type, :string)
+    field(:confidence, :float, default: 0.7)
 
     # External references
-    field :external_refs, {:array, :map}, default: []
-    field :metadata, :map, default: %{}
+    field(:external_refs, {:array, :map}, default: [])
+    field(:metadata, :map, default: %{})
 
     # IOC count (denormalized for performance)
-    field :ioc_count, :integer, default: 0
+    field(:ioc_count, :integer, default: 0)
 
-    belongs_to :misp_instance, MISPInstance
+    belongs_to(:misp_instance, MISPInstance)
+    belongs_to(:organization, TamanduaServer.Accounts.Organization)
 
     timestamps()
   end
@@ -88,7 +94,7 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
     ttps primary_tactics known_malware known_tools
     first_seen last_seen active
     source misp_cluster_uuid galaxy_type confidence
-    external_refs metadata ioc_count misp_instance_id
+    external_refs metadata ioc_count misp_instance_id organization_id
   )a
 
   @valid_motivations ~w(financial espionage hacktivism sabotage vandalism unknown)
@@ -106,6 +112,7 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
     |> validate_number(:confidence, greater_than_or_equal_to: 0.0, less_than_or_equal_to: 1.0)
     |> unique_constraint(:misp_cluster_uuid)
     |> foreign_key_constraint(:misp_instance_id)
+    |> foreign_key_constraint(:organization_id)
   end
 
   # ============================================================================
@@ -173,18 +180,95 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
   def get(id), do: Repo.get(__MODULE__, id)
 
   @doc """
+  Gets a tenant-owned threat actor by ID with an explicit organization filter
+  and transaction-local RLS context.
+  """
+  def get_for_organization(organization_id, id)
+      when is_binary(organization_id) and is_binary(id) do
+    with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, id} <- Ecto.UUID.cast(id) do
+      MultiTenant.with_organization(organization_id, fn ->
+        Repo.one(
+          from(a in __MODULE__,
+            where: a.id == ^id and a.organization_id == ^organization_id
+          )
+        )
+      end)
+    else
+      :error -> nil
+    end
+  end
+
+  def get_for_organization(_organization_id, _id), do: nil
+
+  @doc """
+  Lists tenant-owned actors. The legacy `list/1` remains the deliberate global
+  catalogue surface and is not used by tenant actor profiles.
+  """
+  def list_for_organization(organization_id, opts \\ [])
+
+  def list_for_organization(organization_id, opts)
+      when is_binary(organization_id) and is_list(opts) do
+    case Ecto.UUID.cast(organization_id) do
+      {:ok, organization_id} ->
+        limit = Keyword.get(opts, :limit, 50)
+        order_by = Keyword.get(opts, :order_by, :name)
+
+        query =
+          from(a in __MODULE__,
+            where: a.organization_id == ^organization_id,
+            order_by: [asc: ^order_by],
+            limit: ^limit
+          )
+          |> apply_filters(opts)
+
+        MultiTenant.with_organization(organization_id, fn -> Repo.all(query) end)
+
+      :error ->
+        []
+    end
+  end
+
+  def list_for_organization(_organization_id, _opts), do: []
+
+  @doc """
   Get a threat actor by name or alias.
   """
   def get_by_name(name) do
     name_lower = String.downcase(name)
 
     from(a in __MODULE__,
-      where: fragment("LOWER(?) = ?", a.name, ^name_lower) or
-             fragment("LOWER(?) = ANY(SELECT LOWER(unnest(?)))", ^name_lower, a.aliases),
+      where:
+        fragment("LOWER(?) = ?", a.name, ^name_lower) or
+          fragment("LOWER(?) = ANY(SELECT LOWER(unnest(?)))", ^name_lower, a.aliases),
       limit: 1
     )
     |> Repo.one()
   end
+
+  @doc "Gets a tenant-owned threat actor by canonical name or alias."
+  def get_by_name_for_organization(organization_id, name)
+      when is_binary(organization_id) and is_binary(name) do
+    with {:ok, organization_id} <- Ecto.UUID.cast(organization_id) do
+      name_lower = String.downcase(name)
+
+      MultiTenant.with_organization(organization_id, fn ->
+        Repo.one(
+          from(a in __MODULE__,
+            where: a.organization_id == ^organization_id,
+            where:
+              fragment("LOWER(?) = ?", a.name, ^name_lower) or
+                fragment("LOWER(?) = ANY(SELECT LOWER(unnest(?)))", ^name_lower, a.aliases),
+            limit: 1
+          )
+        )
+      end)
+    else
+      :error -> nil
+    end
+  end
+
+  def get_by_name_for_organization(_organization_id, _name), do: nil
 
   @doc """
   Get threat actors by TTP.
@@ -235,11 +319,12 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
       where: i.id in ^ioc_ids,
       update: [
         set: [
-          metadata: fragment(
-            "COALESCE(?, '{}'::jsonb) || ?",
-            i.metadata,
-            ^%{"threat_actor_id" => actor_id, "threat_actor_name" => name}
-          )
+          metadata:
+            fragment(
+              "COALESCE(?, '{}'::jsonb) || ?",
+              i.metadata,
+              ^%{"threat_actor_id" => actor_id, "threat_actor_name" => name}
+            )
         ]
       ]
     )
@@ -262,6 +347,40 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
     )
     |> Repo.all()
   end
+
+  @doc """
+  Gets IOCs linked to an actor only when both records belong to the requested
+  organization.
+  """
+  def get_linked_iocs_for_organization(organization_id, actor, opts \\ [])
+
+  def get_linked_iocs_for_organization(
+        organization_id,
+        %__MODULE__{id: actor_id, organization_id: actor_organization_id},
+        opts
+      )
+      when is_binary(organization_id) and organization_id == actor_organization_id and
+             is_list(opts) do
+    case Ecto.UUID.cast(organization_id) do
+      {:ok, organization_id} ->
+        limit = Keyword.get(opts, :limit, 100)
+
+        query =
+          from(i in IOC,
+            where: i.organization_id == ^organization_id,
+            where: fragment("?->>'threat_actor_id' = ?", i.metadata, ^actor_id),
+            order_by: [desc: i.inserted_at],
+            limit: ^limit
+          )
+
+        MultiTenant.with_organization(organization_id, fn -> Repo.all(query) end)
+
+      :error ->
+        []
+    end
+  end
+
+  def get_linked_iocs_for_organization(_organization_id, _actor, _opts), do: []
 
   defp update_ioc_count(actor_id) do
     count =
@@ -327,9 +446,12 @@ defmodule TamanduaServer.ThreatIntel.ThreatActor do
     # Recency bonus (up to 10 points)
     recency_score =
       case actor.last_seen do
-        nil -> 0
+        nil ->
+          0
+
         last_seen ->
           days_ago = DateTime.diff(DateTime.utc_now(), last_seen, :day)
+
           cond do
             days_ago < 30 -> 10
             days_ago < 90 -> 5

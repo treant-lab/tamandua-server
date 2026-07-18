@@ -5,11 +5,10 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
 
   require Logger
 
-  alias TamanduaServer.{Agents, Accounts, Repo}
+  alias TamanduaServer.{Agents, Alerts, Investigations, Repo, Response}
+  alias TamanduaServer.Accounts.User
   alias TamanduaServer.Response.Executor
-  alias TamanduaServer.Response.Audit
   alias TamanduaServer.Alerts.Alert
-  import Ecto.Query
 
   # Field resolvers
 
@@ -27,17 +26,25 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     end
   end
 
-  def requested_by(action, _args, _resolution) do
-    if action.requested_by_id do
-      {:ok, Accounts.get_user(action.requested_by_id)}
+  def requested_by(action, _args, %{context: context}) do
+    if action.executed_by_id && context[:organization_id] do
+      {:ok,
+       Repo.get_by(User,
+         id: action.executed_by_id,
+         organization_id: context[:organization_id]
+       )}
     else
       {:ok, nil}
     end
   end
 
-  def alert(action, _args, _resolution) do
-    if action.alert_id do
-      {:ok, Repo.get(Alert, action.alert_id)}
+  def alert(action, _args, %{context: context}) do
+    if action.alert_id && context[:organization_id] do
+      {:ok,
+       Repo.get_by(Alert,
+         id: action.alert_id,
+         organization_id: context[:organization_id]
+       )}
     else
       {:ok, nil}
     end
@@ -49,19 +56,20 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     filter = Map.get(args, :filter, %{})
     pagination = Map.get(args, :pagination, %{})
 
-    opts = [
-      limit: pagination[:limit] || 50,
-      offset: pagination[:offset] || 0,
-      action_type: filter[:action_type],
-      status: filter[:status],
-      agent_id: filter[:agent_id],
-      requested_by_id: filter[:requested_by_id],
-      alert_id: filter[:alert_id],
-      since: filter[:since],
-      until: filter[:until]
-    ]
+    entries =
+      Response.list_actions(%{
+        organization_id: context[:organization_id],
+        limit: pagination[:limit] || 50,
+        offset: pagination[:offset] || 0,
+        action_type: filter[:action_type],
+        status: filter[:status],
+        agent_id: filter[:agent_id],
+        requested_by_id: filter[:requested_by_id],
+        alert_id: filter[:alert_id],
+        since: filter[:since],
+        until: filter[:until]
+      })
 
-    entries = Audit.list_actions(opts)
     {:ok, entries}
   rescue
     error ->
@@ -74,14 +82,13 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
   def kill_process(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
     pid = input.pid
-    user_id = context[:current_user_id]
 
     # SECURITY: org-scoped actor is required; the Response Executor rejects
     # cross-organization targets with :unauthorized (fail closed).
-    with {:ok, actor} <- actor_from_context(context) do
+    with {:ok, actor} <- actor_from_context(context),
+         {:ok, alert_id} <- alert_id_for_org(input[:alert_id], actor.organization_id) do
       opts = [
-        requested_by: user_id,
-        alert_id: input[:alert_id],
+        alert_id: alert_id,
         force: input[:force] || false,
         reason: input[:reason],
         actor: actor
@@ -95,7 +102,8 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
             pid: pid,
             process_name: result[:process_name],
             message: "Process terminated successfully",
-            action_id: result[:action_id]
+            action_id: result[:action_id],
+            audit_status: result[:audit_status]
           }}
 
         {:error, :unauthorized} ->
@@ -125,16 +133,17 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
   def quarantine_file(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
     path = input.path
-    user_id = context[:current_user_id]
 
     # SECURITY: org-scoped actor is required; the Response Executor rejects
     # cross-organization targets with :unauthorized (fail closed).
-    with {:ok, actor} <- actor_from_context(context) do
+    with {:ok, actor} <- actor_from_context(context),
+         {:ok, alert_id} <- alert_id_for_org(input[:alert_id], actor.organization_id) do
       opts = [
-        requested_by: user_id,
-        alert_id: input[:alert_id],
+        alert_id: alert_id,
         reason: input[:reason],
-        delete_original: input[:delete_original] || false,
+        # The Executor's quarantine option key is `:delete_after` (not
+        # `:delete_original`) — map the GraphQL input onto the real API.
+        delete_after: input[:delete_original] || false,
         actor: actor
       ]
 
@@ -147,7 +156,8 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
             sha256: result[:sha256],
             quarantine_path: result[:quarantine_path],
             message: "File quarantined successfully",
-            action_id: result[:action_id]
+            action_id: result[:action_id],
+            audit_status: result[:audit_status]
           }}
 
         {:error, :unauthorized} ->
@@ -178,194 +188,224 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
 
   def isolate_host(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
-    user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      alert_id: input[:alert_id],
-      reason: input[:reason],
-      allow_dns: input[:allow_dns] || false,
-      allow_edr: input[:allow_edr] || true
-    ]
+    # Real API: `Executor.isolate_host/1` is a zero-option alias for
+    # `Executor.isolate_network/2`, which is the actual isolation entry point
+    # and supports the `:actor` option for org-scoped authorization (fail
+    # closed). The GraphQL inputs `allow_dns`/`allow_edr`/`reason` are NOT
+    # supported by the Executor and are intentionally ignored.
+    with {:ok, actor} <- actor_from_context(context) do
+      case Executor.isolate_network(agent_id, actor: actor) do
+        {:ok, result} ->
+          {:ok, %{
+            success: true,
+            agent_id: agent_id,
+            hostname: result[:hostname],
+            previous_status: result[:previous_status],
+            message: "Host isolated successfully",
+            action_id: result[:action_id]
+          }}
 
-    case Executor.isolate_host(agent_id, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          hostname: result[:hostname],
-          previous_status: result[:previous_status],
-          message: "Host isolated successfully",
-          action_id: result[:action_id]
-        }}
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            hostname: nil,
+            previous_status: nil,
+            message: "Agent not found",
+            action_id: nil
+          }}
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          hostname: nil,
-          previous_status: nil,
-          message: "Failed to isolate host: #{inspect(reason)}",
-          action_id: nil
-        }}
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            hostname: nil,
+            previous_status: nil,
+            message: "Failed to isolate host: #{inspect(reason)}",
+            action_id: nil
+          }}
+      end
     end
   end
 
   def unisolate_host(_parent, %{agent_id: agent_id}, %{context: context}) do
-    user_id = context[:current_user_id]
+    # Real API: there is no `Executor.unisolate_host/2` — de-isolation is
+    # `Executor.unisolate_network/2` (supports `:actor` for org scoping,
+    # fail closed).
+    with {:ok, actor} <- actor_from_context(context) do
+      case Executor.unisolate_network(agent_id, actor: actor) do
+        {:ok, result} ->
+          {:ok, %{
+            success: true,
+            agent_id: agent_id,
+            hostname: result[:hostname],
+            previous_status: "isolated",
+            message: "Host unisolated successfully",
+            action_id: result[:action_id]
+          }}
 
-    opts = [requested_by: user_id]
+        {:error, :unauthorized} ->
+          # Do not leak whether the agent exists in another organization.
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            hostname: nil,
+            previous_status: nil,
+            message: "Agent not found",
+            action_id: nil
+          }}
 
-    case Executor.unisolate_host(agent_id, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          hostname: result[:hostname],
-          previous_status: "isolated",
-          message: "Host unisolated successfully",
-          action_id: result[:action_id]
-        }}
-
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          hostname: nil,
-          previous_status: nil,
-          message: "Failed to unisolate host: #{inspect(reason)}",
-          action_id: nil
-        }}
+        {:error, reason} ->
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            hostname: nil,
+            previous_status: nil,
+            message: "Failed to unisolate host: #{inspect(reason)}",
+            action_id: nil
+          }}
+      end
     end
   end
 
   def block_ip(_parent, %{input: input}, %{context: context}) do
     ip = input.ip
-    user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      agent_id: input[:agent_id],
-      direction: input[:direction] || "both",
-      reason: input[:reason],
-      duration_hours: input[:duration_hours]
-    ]
+    # Real API: there is no `Executor.block_ip/2`. Blocking is performed per
+    # agent via `Executor.execute_action(agent_id, "block_ip", payload)` (same
+    # path the REST ResponseController uses), so a target agent is required —
+    # fleet-wide blocking has no backend implementation. `duration_hours` is
+    # not supported by the agent command payload and is intentionally ignored.
+    case input[:agent_id] do
+      nil ->
+        {:error, "not implemented: fleet-wide IP block requires agent_id (no fleet dispatcher exists)"}
 
-    case Executor.block_ip(ip, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          value: ip,
-          type: "ip",
-          agents_affected: result[:agents_affected] || 1,
-          message: "IP blocked successfully"
-        }}
+      agent_id ->
+        with {:ok, actor} <- actor_from_context(context) do
+          payload = %{
+            ip: ip,
+            direction: input[:direction] || "both",
+            reason: input[:reason] || "manual_block"
+          }
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          value: ip,
-          type: "ip",
-          agents_affected: 0,
-          message: "Failed to block IP: #{inspect(reason)}"
-        }}
+          case Executor.execute_action(agent_id, "block_ip", payload, actor: actor) do
+            {:ok, _result} ->
+              {:ok, %{
+                success: true,
+                value: ip,
+                type: "ip",
+                agents_affected: 1,
+                message: "IP blocked successfully"
+              }}
+
+            {:error, reason} ->
+              {:ok, %{
+                success: false,
+                value: ip,
+                type: "ip",
+                agents_affected: 0,
+                message: "Failed to block IP: #{inspect(reason)}"
+              }}
+          end
+        end
     end
   end
 
   def block_domain(_parent, %{input: input}, %{context: context}) do
     domain = input.domain
-    user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      agent_id: input[:agent_id],
-      reason: input[:reason],
-      add_to_ioc: input[:add_to_ioc] || true
-    ]
+    # Real API: there is no `Executor.block_domain/2`. Blocking is performed
+    # per agent via `Executor.execute_action(agent_id, "block_domain", payload)`
+    # (same path the REST ResponseController uses), so a target agent is
+    # required. `add_to_ioc` is not implemented here (the REST endpoint adds
+    # the domain to the DNSAnalyzer blocklist separately) and is ignored.
+    case input[:agent_id] do
+      nil ->
+        {:error, "not implemented: fleet-wide domain block requires agent_id (no fleet dispatcher exists)"}
 
-    case Executor.block_domain(domain, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          value: domain,
-          type: "domain",
-          agents_affected: result[:agents_affected] || 1,
-          message: "Domain blocked successfully"
-        }}
+      agent_id ->
+        with {:ok, actor} <- actor_from_context(context) do
+          payload = %{
+            domain: domain,
+            reason: input[:reason] || "manual_block"
+          }
 
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          value: domain,
-          type: "domain",
-          agents_affected: 0,
-          message: "Failed to block domain: #{inspect(reason)}"
-        }}
+          case Executor.execute_action(agent_id, "block_domain", payload, actor: actor) do
+            {:ok, _result} ->
+              {:ok, %{
+                success: true,
+                value: domain,
+                type: "domain",
+                agents_affected: 1,
+                message: "Domain blocked successfully"
+              }}
+
+            {:error, reason} ->
+              {:ok, %{
+                success: false,
+                value: domain,
+                type: "domain",
+                agents_affected: 0,
+                message: "Failed to block domain: #{inspect(reason)}"
+              }}
+          end
+        end
     end
   end
 
   def scan_path(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
     path = input.path
-    user_id = context[:current_user_id]
 
-    opts = [
-      requested_by: user_id,
-      recursive: input[:recursive] || true,
-      quick_scan: input[:quick_scan] || false,
-      auto_quarantine: input[:auto_quarantine] || false
-    ]
+    # Real API: `Executor.trigger_scan/2` takes no options — the configurable
+    # entry point is `Executor.scan_path/3`. Propagate the organization-scoped
+    # actor so cross-tenant targets fail closed. `Map.get/3` intentionally
+    # preserves an explicit `recursive: false` (using `|| true` silently
+    # changed it back to true).
+    with {:ok, actor} <- actor_from_context(context) do
+      opts = [recursive: Map.get(input, :recursive, true), actor: actor]
 
-    case Executor.trigger_scan(agent_id, path, opts) do
-      {:ok, result} ->
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          path: path,
-          files_scanned: result[:files_scanned] || 0,
-          threats_found: result[:threats_found] || 0,
-          threats: result[:threats] || [],
-          action_id: result[:action_id]
-        }}
+      case Executor.scan_path(agent_id, path, opts) do
+        {:ok, result} ->
+          {:ok, %{
+            success: true,
+            agent_id: agent_id,
+            path: path,
+            files_scanned: result[:files_scanned] || 0,
+            threats_found: result[:threats_found] || 0,
+            threats: result[:threats] || [],
+            action_id: result[:action_id]
+          }}
 
-      :ok ->
-        # Simple success without result details
-        {:ok, %{
-          success: true,
-          agent_id: agent_id,
-          path: path,
-          files_scanned: 0,
-          threats_found: 0,
-          threats: [],
-          action_id: nil
-        }}
-
-      {:error, reason} ->
-        {:ok, %{
-          success: false,
-          agent_id: agent_id,
-          path: path,
-          files_scanned: 0,
-          threats_found: 0,
-          threats: [],
-          action_id: nil
-        }}
+        {:error, _reason} ->
+          {:ok, %{
+            success: false,
+            agent_id: agent_id,
+            path: path,
+            files_scanned: 0,
+            threats_found: 0,
+            threats: [],
+            action_id: nil
+          }}
+      end
     end
   end
 
   def collect_forensics(_parent, %{input: input}, %{context: context}) do
     agent_id = input.agent_id
-    user_id = context[:current_user_id]
 
     # SECURITY: org-scoped actor is required; the Response Executor rejects
     # cross-organization targets with :unauthorized (fail closed).
-    with {:ok, actor} <- actor_from_context(context) do
+    with {:ok, actor} <- actor_from_context(context),
+         :ok <- supported_forensic_paths(input[:paths]),
+         {:ok, investigation_id} <-
+           investigation_id_for_org(input[:investigation_id], actor.organization_id) do
       opts = [
-        requested_by: user_id,
         type: input[:collection_type] || "full",
-        paths: input[:paths] || [],
-        include_memory: input[:include_memory] || false,
-        investigation_id: input[:investigation_id],
+        memory_dump: input[:include_memory] || false,
+        investigation_id: investigation_id,
         actor: actor
       ]
 
@@ -394,6 +434,8 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
           }}
 
         {:error, reason} ->
+          Logger.warning("Forensic collection could not start: #{inspect(reason)}")
+
           {:ok, %{
             success: false,
             collection_id: nil,
@@ -401,10 +443,57 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
             status: "failed",
             artifacts_count: 0,
             size_bytes: 0,
-            message: "Failed to start collection: #{inspect(reason)}"
+            message: "Failed to start collection"
           }}
       end
+    else
+      {:error, :not_found} ->
+        {:ok, %{
+          success: false,
+          collection_id: nil,
+          agent_id: agent_id,
+          status: "failed",
+          artifacts_count: 0,
+          size_bytes: 0,
+          message: "Resource not found"
+        }}
+
+      {:error, :unsupported_paths} ->
+        {:ok, %{
+          success: false,
+          collection_id: nil,
+          agent_id: agent_id,
+          status: "failed",
+          artifacts_count: 0,
+          size_bytes: 0,
+          message: "Custom forensic paths are not supported"
+        }}
+
+      error ->
+        error
     end
+  end
+
+  defp supported_forensic_paths(nil), do: :ok
+  defp supported_forensic_paths([]), do: :ok
+  defp supported_forensic_paths(_paths), do: {:error, :unsupported_paths}
+
+  defp investigation_id_for_org(nil, _organization_id), do: {:ok, nil}
+
+  defp investigation_id_for_org(investigation_id, organization_id) do
+    with {:ok, canonical_organization_id} <- Ecto.UUID.cast(organization_id),
+         {:ok, canonical_investigation_id} <- Ecto.UUID.cast(investigation_id),
+         {:ok, _investigation} <-
+           Investigations.get_investigation_for_org(
+             canonical_organization_id,
+             canonical_investigation_id
+           ) do
+      {:ok, canonical_investigation_id}
+    else
+      _ -> {:error, :not_found}
+    end
+  rescue
+    _ -> {:error, :not_found}
   end
 
   # Build a response-executor actor from the Absinthe context. Fails closed
@@ -414,6 +503,15 @@ defmodule TamanduaServerWeb.GraphQL.Resolvers.ResponseResolver do
     case context[:organization_id] do
       nil -> {:error, "Not authorized: missing organization context"}
       org_id -> {:ok, %{organization_id: org_id, user_id: context[:current_user_id]}}
+    end
+  end
+
+  defp alert_id_for_org(nil, _organization_id), do: {:ok, nil}
+
+  defp alert_id_for_org(alert_id, organization_id) do
+    case Alerts.get_alert_for_org(organization_id, alert_id) do
+      {:ok, _alert} -> {:ok, alert_id}
+      {:error, :not_found} -> {:error, "Alert not found"}
     end
   end
 end

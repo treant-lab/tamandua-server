@@ -15,7 +15,9 @@ defmodule TamanduaServer.Agents.TokenManagerConfigTest do
 
   setup do
     grace = Application.fetch_env(:tamandua_server, :agent_token_refresh_grace_seconds)
-    threshold = Application.fetch_env(:tamandua_server, :agent_token_refresh_count_warning_threshold)
+
+    threshold =
+      Application.fetch_env(:tamandua_server, :agent_token_refresh_count_warning_threshold)
 
     on_exit(fn ->
       restore_env(:agent_token_refresh_grace_seconds, grace)
@@ -39,6 +41,35 @@ defmodule TamanduaServer.Agents.TokenManagerConfigTest do
       Application.put_env(:tamandua_server, :agent_token_refresh_grace_seconds, 3600)
 
       assert TokenManager.refresh_grace_seconds() == 3600
+    end
+
+    test "caps grace at 30 days and invalid values fail safe to zero" do
+      Application.put_env(
+        :tamandua_server,
+        :agent_token_refresh_grace_seconds,
+        365 * 24 * 3600
+      )
+
+      assert TokenManager.refresh_grace_seconds() == 30 * 24 * 3600
+
+      for invalid <- [-1, "604800", nil] do
+        Application.put_env(:tamandua_server, :agent_token_refresh_grace_seconds, invalid)
+        assert TokenManager.refresh_grace_seconds() == 0
+      end
+    end
+
+    test "refresh persists the current JWT issuance time and legacy extension fails closed" do
+      token_manager =
+        Path.expand("../../../lib/tamandua_server/agents/token_manager.ex", __DIR__)
+        |> File.read!()
+
+      credentials =
+        Path.expand("../../../lib/tamandua_server/agents/credentials.ex", __DIR__)
+        |> File.read!()
+
+      assert token_manager =~ "token_hash: hash_token(new_jwt),\n      issued_at: now,"
+      assert credentials =~ "do: {:error, :unsupported_legacy_expiry_extension}"
+      refute credentials =~ "Ecto.Changeset.change(expires_at: expires_at)"
     end
   end
 

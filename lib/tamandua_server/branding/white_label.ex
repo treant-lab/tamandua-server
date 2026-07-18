@@ -31,7 +31,6 @@ defmodule TamanduaServer.Branding.WhiteLabel do
 
   alias TamanduaServer.Repo
   alias TamanduaServer.Branding.{BrandingConfig, EmailTemplate}
-  alias TamanduaServer.Accounts.Organization
 
   import Ecto.Query
 

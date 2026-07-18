@@ -343,13 +343,13 @@ defmodule TamanduaServer.UBA.BehaviorTracker do
     |> Repo.one()
 
     if count >= 5 do
-      Logger.warn("Failed auth spike detected for user #{user_id}: #{count} attempts")
+      Logger.warning("Failed auth spike detected for user #{user_id}: #{count} attempts")
       # Trigger alert (to be implemented with AnomalyDetector)
     end
   end
 
   defp trigger_off_hours_alert(behavior) do
-    Logger.warn("Off-hours admin access by user #{behavior.user_id} at #{behavior.timestamp}")
+    Logger.warning("Off-hours admin access by user #{behavior.user_id} at #{behavior.timestamp}")
     # Trigger alert (to be implemented with AnomalyDetector)
   end
 

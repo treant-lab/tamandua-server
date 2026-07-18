@@ -18,7 +18,8 @@ defmodule TamanduaServer.PatchManagement.Engine do
   ## Integration
 
   - Reads CVE/EPSS/KEV data from `TamanduaServer.Vulnerability.*`
-  - Sends patch commands to agents via `Phoenix.PubSub`
+  - Sends patch commands to agents via `Agents.CommandManager` (persistent
+    queue -> agent worker -> channel push, same path as breadcrumb deploys)
   - Alerts generated through `TamanduaServer.Alerts`
   - Multi-tenant: all operations scoped to `org_id`
 
@@ -36,6 +37,7 @@ defmodule TamanduaServer.PatchManagement.Engine do
   use GenServer
   require Logger
 
+  alias TamanduaServer.Agents.CommandManager
   alias TamanduaServer.Repo
   alias TamanduaServer.Vulnerability.{CVE, EPSS}
 
@@ -57,7 +59,6 @@ defmodule TamanduaServer.PatchManagement.Engine do
   @scan_interval :timer.hours(4)
 
   # Maximum history entries per org
-  @max_history 500
 
   # ============================================================================
   # Type Definitions
@@ -623,17 +624,24 @@ defmodule TamanduaServer.PatchManagement.Engine do
   end
 
   defp get_max_asset_criticality(agent_ids, _org_id) do
-    # Default criticality; in production this would query Assets.Criticality
+    # `Assets.Criticality` assessments carry a 0-100 `score`; 50 is that
+    # module's "unknown agent" neutral default, reused here when the batch is
+    # empty or the criticality service is unavailable. GenServer.call failure
+    # is an exit, not a raise, so we catch :exit in addition to rescue.
     try do
       case TamanduaServer.Assets.Criticality.get_criticality_for_agents(agent_ids) do
-        scores when is_list(scores) ->
-          Enum.max(scores, fn -> 50 end)
+        assessments when is_list(assessments) ->
+          assessments
+          |> Enum.map(& &1.score)
+          |> Enum.max(fn -> 50 end)
 
         _ ->
           50
       end
     rescue
       _ -> 50
+    catch
+      :exit, _ -> 50
     end
   end
 
@@ -775,8 +783,16 @@ defmodule TamanduaServer.PatchManagement.Engine do
   end
 
   defp dispatch_patches(agent_ids, deployment) do
+    # Dispatch via CommandManager (Postgres queue -> Agents.Worker ->
+    # channel push). The previous Phoenix.PubSub broadcast of a raw
+    # {:command, ...} tuple on "agent:<id>" was a runtime no-op: no
+    # handle_info({:command, ...}) exists anywhere in the server, so the
+    # message fell into AgentChannel's silent catch-all.
+    #
+    # Payload shape matches the Rust agent contract for install_patches
+    # (apps/tamandua_agent/src/response/patch_manager.rs, handle_install_patches):
+    # deployment_id, patches[].kb_id, reboot_policy.
     patch_command = %{
-      type: "install_patches",
       deployment_id: deployment.id,
       patches: Enum.map(deployment.patches, fn p ->
         %{
@@ -790,16 +806,16 @@ defmodule TamanduaServer.PatchManagement.Engine do
     }
 
     Enum.each(agent_ids, fn agent_id ->
-      Phoenix.PubSub.broadcast(
-        TamanduaServer.PubSub,
-        "agent:#{agent_id}",
-        {:command, %{
-          command_id: Ecto.UUID.generate(),
-          command_type: "install_patches",
-          timestamp: System.system_time(:second),
-          payload: patch_command
-        }}
-      )
+      case CommandManager.queue_command(agent_id, :install_patches, patch_command, priority: 3) do
+        {:ok, _command} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "[PatchManagement] Failed to queue install_patches for agent #{agent_id} " <>
+              "(deployment #{deployment.id}): #{inspect(reason)}"
+          )
+      end
     end)
   end
 
@@ -885,7 +901,7 @@ defmodule TamanduaServer.PatchManagement.Engine do
       if done >= total do
         Logger.info("[PatchManagement] Deployment #{deployment.id} complete: #{length(updated.completed_agents)} succeeded, #{length(updated.failed_agents)} failed")
 
-        new_stats_completed = %{new_stats | deployments_completed: new_stats.deployments_completed + 1}
+        _new_stats_completed = %{new_stats | deployments_completed: new_stats.deployments_completed + 1}
 
         # Check if failure threshold exceeded and rollback is enabled
         failure_rate = length(updated.failed_agents) / max(total, 1)
@@ -927,23 +943,31 @@ defmodule TamanduaServer.PatchManagement.Engine do
     :ets.insert(@ets_deployments, {deployment.id, updated})
     persist_deployment(updated)
 
-    # Send rollback command to agents that received patches
+    # Send rollback command to agents that received patches, via
+    # CommandManager (the raw PubSub {:command, ...} broadcast this replaced
+    # was silently dropped by AgentChannel's handle_info catch-all).
+    # Payload matches the Rust agent contract for rollback_patches
+    # (apps/tamandua_agent/src/response/mod.rs, CommandType::RollbackPatches):
+    # patches is a flat list of kb_id strings.
     rollback_agents = deployment.completed_agents ++ deployment.canary_agents
+
     Enum.each(rollback_agents, fn agent_id ->
-      Phoenix.PubSub.broadcast(
-        TamanduaServer.PubSub,
-        "agent:#{agent_id}",
-        {:command, %{
-          command_id: Ecto.UUID.generate(),
-          command_type: "rollback_patches",
-          timestamp: System.system_time(:second),
-          payload: %{
-            deployment_id: deployment.id,
-            patches: Enum.map(deployment.patches, & &1.kb_id),
-            reason: reason
-          }
-        }}
-      )
+      rollback_payload = %{
+        deployment_id: deployment.id,
+        patches: Enum.map(deployment.patches, & &1.kb_id),
+        reason: reason
+      }
+
+      case CommandManager.queue_command(agent_id, :rollback_patches, rollback_payload, priority: 5) do
+        {:ok, _command} ->
+          :ok
+
+        {:error, queue_error} ->
+          Logger.warning(
+            "[PatchManagement] Failed to queue rollback_patches for agent #{agent_id} " <>
+              "(deployment #{deployment.id}): #{inspect(queue_error)}"
+          )
+      end
     end)
 
     # Generate alert

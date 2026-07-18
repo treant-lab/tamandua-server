@@ -194,7 +194,7 @@ defmodule TamanduaServerWeb.CostAnalysisLive do
   end
   defp format_date(_), do: "N/A"
 
-  defp generate_csv_export(socket) do
+  defp generate_csv_export(_socket) do
     # Generate CSV based on current view
     "Cost Analysis Export - #{Date.utc_today()}\n"
   end

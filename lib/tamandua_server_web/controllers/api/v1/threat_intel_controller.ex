@@ -20,12 +20,80 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   alias TamanduaServer.Alerts
   alias TamanduaServer.Detection.{ThreatIntelFeeds, ThreatIntelEnrichment, IOCs}
   alias TamanduaServer.Detection.ThreatIntel.Feeds, as: ExternalFeeds
-  alias TamanduaServer.ThreatIntel.{MISP, MISPPublisher, MISPInstance, MISPEvent, ThreatActor, IOCScoring}
+
+  alias TamanduaServer.ThreatIntel.{
+    MISP,
+    MISPPublisher,
+    MISPInstance,
+    MISPEvent,
+    ThreatActor,
+    IOCScoring
+  }
+
   alias TamanduaServer.Repo
+  alias TamanduaServer.Repo.MultiTenant
 
   import Ecto.Query
 
-  action_fallback TamanduaServerWeb.FallbackController
+  action_fallback(TamanduaServerWeb.FallbackController)
+
+  @global_mutation_actions [
+    :sync_all,
+    :sync_feed,
+    :configure_api_key,
+    :add_custom_feed,
+    :refresh_external_feeds,
+    :refresh_external_feed,
+    :create_misp_instance,
+    :update_misp_instance,
+    :delete_misp_instance,
+    :test_misp_connection,
+    :sync_misp_instance,
+    :publish_to_misp,
+    :batch_publish_to_misp,
+    :add_misp_sighting,
+    :publish_iocs_to_misp,
+    :enqueue_misp_publish,
+    :flush_misp_queue,
+    :create_db_actor,
+    :update_db_actor,
+    :attribute_to_actor,
+    :calculate_ioc_score,
+    :record_ioc_sighting,
+    :record_ioc_fp,
+    :recalculate_all_scores,
+    :attribute_alert,
+    :upsert_attribution_campaign,
+    :correlate_iocs,
+    :graph_enrich
+  ]
+
+  @misp_read_actions [
+    :list_misp_instances,
+    :show_misp_instance,
+    :misp_sync_status,
+    :list_misp_events,
+    :show_misp_event,
+    :list_sharing_groups,
+    :misp_publisher_stats
+  ]
+
+  @global_actor_catalog_actions [:list_db_actors, :show_db_actor, :actor_stats, :actors_by_ttp]
+
+  @system_operator_actions @global_mutation_actions ++
+                             @misp_read_actions ++ @global_actor_catalog_actions
+
+  plug(TamanduaServerWeb.Plugs.RBAC, permission: :threat_intel_read)
+
+  plug(
+    TamanduaServerWeb.Plugs.RBAC,
+    [permission: :threat_intel_manage] when action in @global_mutation_actions
+  )
+
+  # MISP storage is not tenant-safe yet: events inherit ownership only through
+  # their instance and legacy reads are unscoped. Keep the entire MISP surface
+  # behind the fail-closed platform boundary until scoped joins land.
+  plug(TamanduaServerWeb.Plugs.SystemOperator when action in @system_operator_actions)
 
   @default_dns_feed_names [
     "abusech_feodo",
@@ -73,6 +141,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error getting feed status: #{inspect(e)}")
+
       json(conn, %{
         data: %{
           enabled: false,
@@ -118,36 +187,41 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     feed_config = status[:feed_config] || %{}
 
     # Build per-feed status entries
-    feeds = Enum.map(sync_status, fn {name, info} ->
-      %{
-        name: name,
-        enabled: true,
-        last_sync_at: format_datetime(info[:last_sync]),
-        ioc_count: info[:count] || Map.get(iocs_by_source, to_string(name), 0),
-        inserted: info[:inserted] || 0,
-        health: info[:health] || "unknown",
-        error: info[:error],
-        description: get_in(feed_config, [name, :description])
-      }
-    end)
-
-    # Include configured feeds that haven't synced yet
-    configured_not_synced = Enum.reduce(feed_config, [], fn {name, cfg}, acc ->
-      if is_map(cfg) and Map.get(cfg, :enabled, false) and not Map.has_key?(sync_status, name) do
-        [%{
+    feeds =
+      Enum.map(sync_status, fn {name, info} ->
+        %{
           name: name,
           enabled: true,
-          last_sync_at: nil,
-          ioc_count: 0,
-          inserted: 0,
-          health: "pending",
-          error: nil,
-          description: Map.get(cfg, :description)
-        } | acc]
-      else
-        acc
-      end
-    end)
+          last_sync_at: format_datetime(info[:last_sync]),
+          ioc_count: info[:count] || Map.get(iocs_by_source, to_string(name), 0),
+          inserted: info[:inserted] || 0,
+          health: info[:health] || "unknown",
+          error: info[:error],
+          description: get_in(feed_config, [name, :description])
+        }
+      end)
+
+    # Include configured feeds that haven't synced yet
+    configured_not_synced =
+      Enum.reduce(feed_config, [], fn {name, cfg}, acc ->
+        if is_map(cfg) and Map.get(cfg, :enabled, false) and not Map.has_key?(sync_status, name) do
+          [
+            %{
+              name: name,
+              enabled: true,
+              last_sync_at: nil,
+              ioc_count: 0,
+              inserted: 0,
+              health: "pending",
+              error: nil,
+              description: Map.get(cfg, :description)
+            }
+            | acc
+          ]
+        else
+          acc
+        end
+      end)
 
     all_feeds =
       case feeds ++ configured_not_synced do
@@ -169,6 +243,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error getting per-feed status: #{inspect(e)}")
+
       json(conn, %{
         data: %{
           enabled: false,
@@ -203,7 +278,13 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
     case safe_threat_intel_sync(fn -> ThreatIntelFeeds.sync_all() end) do
       :ok ->
-        AuditLog.log_config_change(user, "threat_intel", %{action: "sync_all_feeds"}, request_metadata(conn))
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{action: "sync_all_feeds"},
+          request_metadata(conn)
+        )
+
         json(conn, %{message: "Sync started"})
 
       {:error, reason} ->
@@ -220,15 +301,23 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "POST /api/v1/threat-intel/sync/:feed_name - Sync a specific feed"
   def sync_feed(conn, %{"feed_name" => feed_name}) do
     user = conn.assigns[:current_user]
-    feed_atom = try do
-      String.to_existing_atom(feed_name)
-    rescue
-      ArgumentError -> nil
-    end
+
+    feed_atom =
+      try do
+        String.to_existing_atom(feed_name)
+      rescue
+        ArgumentError -> nil
+      end
 
     case feed_atom && safe_threat_intel_sync(fn -> ThreatIntelFeeds.sync_feed(feed_atom) end) do
       :ok ->
-        AuditLog.log_config_change(user, "threat_intel", %{action: "sync_feed", feed: feed_name}, request_metadata(conn))
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{action: "sync_feed", feed: feed_name},
+          request_metadata(conn)
+        )
+
         json(conn, %{message: "Feed sync started", feed: feed_name})
 
       nil ->
@@ -259,10 +348,16 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case ThreatIntelFeeds.configure_api_key(provider_atom, api_key) do
       :ok ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "configure_api_key",
-          provider: provider
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "configure_api_key",
+            provider: provider
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{message: "API key configured", provider: provider})
 
@@ -287,15 +382,16 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     status = ThreatIntelFeeds.get_status()
 
     json(conn, %{
-      data: Enum.map(status.custom_feeds, fn feed ->
-        %{
-          name: feed.name,
-          url: feed.url,
-          format: feed[:format] || "txt",
-          ioc_type: feed[:ioc_type] || "ip",
-          enabled: feed[:enabled] != false
-        }
-      end)
+      data:
+        Enum.map(status.custom_feeds, fn feed ->
+          %{
+            name: feed.name,
+            url: feed.url,
+            format: feed[:format] || "txt",
+            ioc_type: feed[:ioc_type] || "ip",
+            enabled: feed[:enabled] != false
+          }
+        end)
     })
   rescue
     e ->
@@ -306,18 +402,24 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   @doc "POST /api/v1/threat-intel/feeds - Add a custom feed"
   def add_custom_feed(conn, params) do
     case ThreatIntelFeeds.add_custom_feed(
-      params["name"],
-      params["url"],
-      format: params["format"] || "txt",
-      ioc_type: params["ioc_type"] || "ip"
-    ) do
+           params["name"],
+           params["url"],
+           format: params["format"] || "txt",
+           ioc_type: params["ioc_type"] || "ip"
+         ) do
       :ok ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "add_custom_feed",
-          feed_name: params["name"],
-          feed_url: params["url"]
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "add_custom_feed",
+            feed_name: params["name"],
+            feed_url: params["url"]
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(:created)
@@ -396,11 +498,14 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       case Map.get(sync_status, feed_name) do
         %{status: :ok, last_sync: last_sync, count: count} ->
           {"online", format_datetime(last_sync), count}
+
         %{status: :error} ->
           {"degraded", nil, Map.get(iocs_by_source, to_string(feed_name), 0)}
+
         _ ->
           if status.enabled do
-            {"online", format_datetime(status.last_sync), Map.get(iocs_by_source, to_string(feed_name), 0)}
+            {"online", format_datetime(status.last_sync),
+             Map.get(iocs_by_source, to_string(feed_name), 0)}
           else
             {"offline", nil, 0}
           end
@@ -408,15 +513,29 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     end
 
     # Build sources from both configured feeds and actual sync status
-    abuse_ch_feeds = [:malware_bazaar_recent, :feodo_ip_blocklist, :urlhaus_urls, :threatfox_iocs, :ssl_blacklist]
-    abuse_ch_count = Enum.sum(Enum.map(abuse_ch_feeds, fn f ->
-      Map.get(iocs_by_source, to_string(f), 0)
-    end))
+    abuse_ch_feeds = [
+      :malware_bazaar_recent,
+      :feodo_ip_blocklist,
+      :urlhaus_urls,
+      :threatfox_iocs,
+      :ssl_blacklist
+    ]
+
+    abuse_ch_count =
+      Enum.sum(
+        Enum.map(abuse_ch_feeds, fn f ->
+          Map.get(iocs_by_source, to_string(f), 0)
+        end)
+      )
 
     external_feeds = [:et_compromised_ips, :spamhaus_drop, :tor_exit_nodes, :openphish]
-    external_count = Enum.sum(Enum.map(external_feeds, fn f ->
-      Map.get(iocs_by_source, to_string(f), 0)
-    end))
+
+    external_count =
+      Enum.sum(
+        Enum.map(external_feeds, fn f ->
+          Map.get(iocs_by_source, to_string(f), 0)
+        end)
+      )
 
     sources = [
       %{
@@ -455,7 +574,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
         id: "virustotal",
         name: "VirusTotal",
         type: "commercial",
-        status: if(get_in(status, [:api_keys, :virustotal, :key]), do: "configured", else: "offline"),
+        status:
+          if(get_in(status, [:api_keys, :virustotal, :key]), do: "configured", else: "offline"),
         last_sync: nil,
         ioc_count: 0
       }
@@ -463,31 +583,53 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
     # Add custom feeds
     custom_feeds = status[:custom_feeds] || []
-    custom_sources = Enum.map(custom_feeds, fn feed ->
-      feed_name_atom = try do
-        String.to_existing_atom(feed.name)
-      rescue
-        ArgumentError -> String.to_atom(feed.name)
-      end
-      {feed_status, last_sync, count} = get_feed_status.(feed_name_atom)
-      %{
-        id: "custom_#{feed.name}",
-        name: feed.name,
-        type: "internal",
-        status: feed_status,
-        last_sync: last_sync,
-        ioc_count: count
-      }
-    end)
+
+    custom_sources =
+      Enum.map(custom_feeds, fn feed ->
+        feed_name_atom =
+          try do
+            String.to_existing_atom(feed.name)
+          rescue
+            ArgumentError -> String.to_atom(feed.name)
+          end
+
+        {feed_status, last_sync, count} = get_feed_status.(feed_name_atom)
+
+        %{
+          id: "custom_#{feed.name}",
+          name: feed.name,
+          type: "internal",
+          status: feed_status,
+          last_sync: last_sync,
+          ioc_count: count
+        }
+      end)
 
     json(conn, %{data: sources ++ custom_sources})
   rescue
     e ->
       Logger.warning("Error listing sources: #{inspect(e)}")
-      json(conn, %{data: [
-        %{id: "abusech", name: "Abuse.ch", type: "feed", status: "offline", last_sync: nil, ioc_count: 0},
-        %{id: "external", name: "External Free Feeds", type: "feed", status: "offline", last_sync: nil, ioc_count: 0}
-      ]})
+
+      json(conn, %{
+        data: [
+          %{
+            id: "abusech",
+            name: "Abuse.ch",
+            type: "feed",
+            status: "offline",
+            last_sync: nil,
+            ioc_count: 0
+          },
+          %{
+            id: "external",
+            name: "External Free Feeds",
+            type: "feed",
+            status: "offline",
+            last_sync: nil,
+            ioc_count: 0
+          }
+        ]
+      })
   end
 
   # ============================================================================
@@ -505,10 +647,11 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     range = params["range"] || "7d"
     organization_id = conn.assigns[:organization_id]
 
-    attackers_data = TamanduaServer.Alerts.get_top_attackers(
-      organization_id: organization_id,
-      range: range
-    )
+    attackers_data =
+      TamanduaServer.Alerts.get_top_attackers(
+        organization_id: organization_id,
+        range: range
+      )
 
     json(conn, %{data: attackers_data})
   end
@@ -525,22 +668,26 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     recent = IOCs.list_recent(10)
 
     # Feed sync health overview
-    feed_status = try do
-      status = ThreatIntelFeeds.get_status()
-      sync_status = status[:sync_status] || %{}
+    feed_status =
+      try do
+        status = ThreatIntelFeeds.get_status()
+        sync_status = status[:sync_status] || %{}
 
-      %{
-        enabled: status.enabled,
-        last_sync: format_datetime(status.last_sync),
-        total_feeds: map_size(sync_status),
-        healthy_feeds: Enum.count(sync_status, fn {_, info} -> info[:status] == :ok end),
-        error_feeds: Enum.count(sync_status, fn {_, info} -> info[:status] == :error end)
-      }
-    rescue
-      e ->
-        Logger.warning("[ThreatIntelController] feed_status lookup in summary failed: #{Exception.message(e)}")
-        %{enabled: false, last_sync: nil, total_feeds: 0, healthy_feeds: 0, error_feeds: 0}
-    end
+        %{
+          enabled: status.enabled,
+          last_sync: format_datetime(status.last_sync),
+          total_feeds: map_size(sync_status),
+          healthy_feeds: Enum.count(sync_status, fn {_, info} -> info[:status] == :ok end),
+          error_feeds: Enum.count(sync_status, fn {_, info} -> info[:status] == :error end)
+        }
+      rescue
+        e ->
+          Logger.warning(
+            "[ThreatIntelController] feed_status lookup in summary failed: #{Exception.message(e)}"
+          )
+
+          %{enabled: false, last_sync: nil, total_feeds: 0, healthy_feeds: 0, error_feeds: 0}
+      end
 
     json(conn, %{
       data: %{
@@ -554,12 +701,19 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] summary failed: #{Exception.message(e)}")
+
       json(conn, %{
         data: %{
           total_iocs: 0,
           by_type: %{},
           by_source: %{},
-          feed_health: %{enabled: false, last_sync: nil, total_feeds: 0, healthy_feeds: 0, error_feeds: 0},
+          feed_health: %{
+            enabled: false,
+            last_sync: nil,
+            total_feeds: 0,
+            healthy_feeds: 0,
+            error_feeds: 0
+          },
           recent_iocs: []
         }
       })
@@ -658,22 +812,24 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "POST /api/v1/threat-intel/enrich/batch - Batch enrich multiple IOCs"
   def enrich_batch(conn, %{"iocs" => iocs}) when is_list(iocs) do
-    parsed_iocs = Enum.map(iocs, fn ioc ->
-      %{
-        type: String.to_existing_atom(ioc["type"] || "unknown"),
-        value: ioc["value"]
-      }
-    end)
+    parsed_iocs =
+      Enum.map(iocs, fn ioc ->
+        %{
+          type: String.to_existing_atom(ioc["type"] || "unknown"),
+          value: ioc["value"]
+        }
+      end)
 
     case ThreatIntelEnrichment.batch_enrich(parsed_iocs) do
       {:ok, results} ->
         json(conn, %{
-          data: Enum.map(results, fn
-            {{:ok, enrichment}, _} -> %{status: "ok", enrichment: enrichment}
-            {{:error, reason}, _} -> %{status: "error", reason: to_string(reason)}
-            {:ok, enrichment} -> %{status: "ok", enrichment: enrichment}
-            {:error, reason} -> %{status: "error", reason: to_string(reason)}
-          end)
+          data:
+            Enum.map(results, fn
+              {{:ok, enrichment}, _} -> %{status: "ok", enrichment: enrichment}
+              {{:error, reason}, _} -> %{status: "error", reason: to_string(reason)}
+              {:ok, enrichment} -> %{status: "ok", enrichment: enrichment}
+              {:error, reason} -> %{status: "error", reason: to_string(reason)}
+            end)
         })
 
       {:error, reason} ->
@@ -702,6 +858,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] enrich_status failed: #{Exception.message(e)}")
+
       json(conn, %{
         data: %{
           enabled: false,
@@ -717,14 +874,23 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/lookup/:type/:value - Lookup an IOC by type and value"
   def lookup(conn, %{"type" => type, "value" => value}) do
-    result = case type do
-      "hash" -> ExternalFeeds.check_hash(value)
-      "ip" -> ExternalFeeds.check_ip(value)
-      "domain" -> ExternalFeeds.check_domain(value)
-      "url" -> ExternalFeeds.check_url(value)
-      _ ->
-        {:error, :invalid_type}
-    end
+    result =
+      case type do
+        "hash" ->
+          ExternalFeeds.check_hash(value)
+
+        "ip" ->
+          ExternalFeeds.check_ip(value)
+
+        "domain" ->
+          ExternalFeeds.check_domain(value)
+
+        "url" ->
+          ExternalFeeds.check_url(value)
+
+        _ ->
+          {:error, :invalid_type}
+      end
 
     case result do
       {:ok, %{found: true} = data} ->
@@ -780,6 +946,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     rescue
       e ->
         Logger.warning("Error getting external feed status: #{inspect(e)}")
+
         json(conn, %{
           data: %{
             enabled: false,
@@ -825,7 +992,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       })
     rescue
       e ->
-        Logger.warning("[ThreatIntelController] external_feeds_stats failed: #{Exception.message(e)}")
+        Logger.warning(
+          "[ThreatIntelController] external_feeds_stats failed: #{Exception.message(e)}"
+        )
+
         json(conn, %{
           data: %{
             ets_cache_size: 0,
@@ -850,7 +1020,9 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   defp format_datetime(nil), do: nil
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
-  defp format_datetime(ts) when is_integer(ts), do: DateTime.from_unix!(ts) |> DateTime.to_iso8601()
+
+  defp format_datetime(ts) when is_integer(ts),
+    do: DateTime.from_unix!(ts) |> DateTime.to_iso8601()
 
   defp serialize_feed_status(status_map) when is_map(status_map) do
     Enum.map(status_map, fn {name, info} ->
@@ -863,6 +1035,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       }
     end)
   end
+
   defp serialize_feed_status(_), do: []
 
   defp default_dns_threat_feeds(health) do
@@ -883,15 +1056,23 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   defp default_dns_feed_description("abusech_feodo"), do: "Abuse.ch Feodo Tracker indicators"
   defp default_dns_feed_description("abusech_urlhaus"), do: "Abuse.ch URLhaus malware URLs"
   defp default_dns_feed_description("abusech_threatfox"), do: "Abuse.ch ThreatFox IOCs"
-  defp default_dns_feed_description("abusech_malware_bazaar"), do: "Abuse.ch MalwareBazaar sample intelligence"
-  defp default_dns_feed_description("abusech_ssl_blacklist"), do: "Abuse.ch SSL certificate blacklist"
+
+  defp default_dns_feed_description("abusech_malware_bazaar"),
+    do: "Abuse.ch MalwareBazaar sample intelligence"
+
+  defp default_dns_feed_description("abusech_ssl_blacklist"),
+    do: "Abuse.ch SSL certificate blacklist"
+
   defp default_dns_feed_description("emergingthreats"), do: "Emerging Threats open indicators"
   defp default_dns_feed_description("tor_exit_nodes"), do: "Tor exit node feed"
   defp default_dns_feed_description("phishtank"), do: "PhishTank phishing URL feed"
   defp default_dns_feed_description("openphish"), do: "OpenPhish phishing feed"
   defp default_dns_feed_description("spamhaus_drop"), do: "Spamhaus DROP blocklist"
   defp default_dns_feed_description("firehol_level1"), do: "FireHOL level 1 blocklist"
-  defp default_dns_feed_description("c2_intel_feeds"), do: "Command-and-control intelligence feeds"
+
+  defp default_dns_feed_description("c2_intel_feeds"),
+    do: "Command-and-control intelligence feeds"
+
   defp default_dns_feed_description(_name), do: "Threat intelligence feed"
 
   defp serialize_ioc(ioc) do
@@ -968,7 +1149,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
           start_date: "2020-03",
           end_date: "2021-01",
           target_regions: ["North America", "Europe"],
-          description: "Sophisticated supply chain attack targeting SolarWinds Orion software to compromise government and enterprise networks.",
+          description:
+            "Sophisticated supply chain attack targeting SolarWinds Orion software to compromise government and enterprise networks.",
           _demo: true
         },
         %{
@@ -979,7 +1161,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
           start_date: "2020-12",
           end_date: "2022-05",
           target_regions: ["Worldwide"],
-          description: "Ransomware-as-a-Service operation with double extortion tactics targeting critical infrastructure and healthcare.",
+          description:
+            "Ransomware-as-a-Service operation with double extortion tactics targeting critical infrastructure and healthcare.",
           _demo: true
         },
         %{
@@ -990,7 +1173,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
           start_date: "2021-01",
           end_date: nil,
           target_regions: ["Asia", "North America", "Europe"],
-          description: "Ongoing campaign targeting cryptocurrency exchanges and DeFi platforms for financial theft.",
+          description:
+            "Ongoing campaign targeting cryptocurrency exchanges and DeFi platforms for financial theft.",
           _demo: true
         }
       ]
@@ -1031,6 +1215,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.error("Error getting MISP instance: #{inspect(e)}")
+
       conn
       |> put_status(:internal_server_error)
       |> json(%{error: "Failed to get MISP instance"})
@@ -1056,11 +1241,17 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case MISP.add_instance(attrs) do
       {:ok, instance} ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "create_misp_instance",
-          instance_id: instance.id,
-          instance_name: instance.name
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "create_misp_instance",
+            instance_id: instance.id,
+            instance_name: instance.name
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(:created)
@@ -1080,11 +1271,17 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case MISP.update_instance(id, attrs) do
       {:ok, instance} ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "update_misp_instance",
-          instance_id: id,
-          changes: Map.drop(attrs, ["api_key"])
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "update_misp_instance",
+            instance_id: id,
+            changes: Map.drop(attrs, ["api_key"])
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{data: serialize_misp_instance(instance)})
 
@@ -1105,19 +1302,31 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case MISP.remove_instance(id) do
       :ok ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "delete_misp_instance",
-          instance_id: id
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "delete_misp_instance",
+            instance_id: id
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{message: "Instance deleted"})
 
       {:ok, _} ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "delete_misp_instance",
-          instance_id: id
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "delete_misp_instance",
+            instance_id: id
+          },
+          request_metadata(conn)
+        )
 
         json(conn, %{message: "Instance deleted"})
 
@@ -1174,16 +1383,17 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     status = MISP.get_sync_status()
 
     json(conn, %{
-      data: Enum.map(status, fn {instance_id, info} ->
-        %{
-          instance_id: instance_id,
-          status: info[:status],
-          last_sync: format_datetime(info[:last_sync]),
-          events_synced: info[:events_synced] || 0,
-          iocs_imported: info[:iocs_imported] || 0,
-          error: info[:error]
-        }
-      end)
+      data:
+        Enum.map(status, fn {instance_id, info} ->
+          %{
+            instance_id: instance_id,
+            status: info[:status],
+            last_sync: format_datetime(info[:last_sync]),
+            events_synced: info[:events_synced] || 0,
+            iocs_imported: info[:iocs_imported] || 0,
+            error: info[:error]
+          }
+        end)
     })
   rescue
     e ->
@@ -1243,12 +1453,18 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case MISPPublisher.publish_alert(alert_id, instance_id, opts) do
       {:ok, event_id} ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "publish_to_misp",
-          alert_id: alert_id,
-          instance_id: instance_id,
-          misp_event_id: event_id
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "publish_to_misp",
+            alert_id: alert_id,
+            instance_id: instance_id,
+            misp_event_id: event_id
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(:created)
@@ -1282,7 +1498,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   end
 
   @doc "POST /api/v1/threat-intel/misp/publish/batch - Batch publish alerts to MISP"
-  def batch_publish_to_misp(conn, %{"alert_ids" => alert_ids, "instance_id" => instance_id} = params) do
+  def batch_publish_to_misp(
+        conn,
+        %{"alert_ids" => alert_ids, "instance_id" => instance_id} = params
+      ) do
     opts = [
       tlp: params["tlp"] || "AMBER",
       sharing_group_id: params["sharing_group_id"],
@@ -1383,7 +1602,11 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
     MISPPublisher.enqueue_alert(alert_id, instance_id, opts)
 
-    json(conn, %{message: "Alert queued for MISP publishing", alert_id: alert_id, instance_id: instance_id})
+    json(conn, %{
+      message: "Alert queued for MISP publishing",
+      alert_id: alert_id,
+      instance_id: instance_id
+    })
   end
 
   @doc "GET /api/v1/threat-intel/misp/publisher/stats - Get MISP publisher queue and publish stats"
@@ -1409,8 +1632,16 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       active: params["active"] != "false"
     ]
 
-    opts = if params["motivation"], do: Keyword.put(opts, :motivation, params["motivation"]), else: opts
-    opts = if params["origin_country"], do: Keyword.put(opts, :origin_country, params["origin_country"]), else: opts
+    opts =
+      if params["motivation"],
+        do: Keyword.put(opts, :motivation, params["motivation"]),
+        else: opts
+
+    opts =
+      if params["origin_country"],
+        do: Keyword.put(opts, :origin_country, params["origin_country"]),
+        else: opts
+
     opts = if params["search"], do: Keyword.put(opts, :search, params["search"]), else: opts
 
     actors = ThreatActor.list(opts)
@@ -1437,9 +1668,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
         iocs = ThreatActor.get_linked_iocs(actor, limit: 20)
 
         json(conn, %{
-          data: Map.merge(serialize_threat_actor(actor), %{
-            linked_iocs: Enum.map(iocs, &serialize_ioc/1)
-          })
+          data:
+            Map.merge(serialize_threat_actor(actor), %{
+              linked_iocs: Enum.map(iocs, &serialize_ioc/1)
+            })
         })
     end
   end
@@ -1466,11 +1698,17 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     case ThreatActor.create(attrs) do
       {:ok, actor} ->
         user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "create_threat_actor",
-          actor_id: actor.id,
-          actor_name: actor.name
-        }, request_metadata(conn))
+
+        AuditLog.log_config_change(
+          user,
+          "threat_intel",
+          %{
+            action: "create_threat_actor",
+            actor_id: actor.id,
+            actor_name: actor.name
+          },
+          request_metadata(conn)
+        )
 
         conn
         |> put_status(:created)
@@ -1493,14 +1731,21 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
       actor ->
         attrs = Map.drop(params, ["id"])
+
         case ThreatActor.update(actor, attrs) do
           {:ok, updated} ->
             user = conn.assigns[:current_user]
-            AuditLog.log_config_change(user, "threat_intel", %{
-              action: "update_threat_actor",
-              actor_id: id,
-              actor_name: updated.name
-            }, request_metadata(conn))
+
+            AuditLog.log_config_change(
+              user,
+              "threat_intel",
+              %{
+                action: "update_threat_actor",
+                actor_id: id,
+                actor_name: updated.name
+              },
+              request_metadata(conn)
+            )
 
             json(conn, %{data: serialize_threat_actor(updated)})
 
@@ -1527,6 +1772,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] actor_stats failed: #{Exception.message(e)}")
+
       json(conn, %{
         data: %{total: 0, active: 0, by_motivation: %{}, by_country: %{}}
       })
@@ -1551,14 +1797,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
             json(conn, %{
               data: %{
                 actor: serialize_threat_actor(actor),
-                attributions: Enum.map(attributions, fn attr ->
-                  %{
-                    actor: serialize_threat_actor(attr.actor),
-                    confidence: attr.confidence,
-                    matching_ttps: attr.matching_ttps,
-                    matching_malware: attr.matching_malware
-                  }
-                end)
+                attributions:
+                  Enum.map(attributions, fn attr ->
+                    %{
+                      actor: serialize_threat_actor(attr.actor),
+                      confidence: attr.confidence,
+                      matching_ttps: attr.matching_ttps,
+                      matching_malware: attr.matching_malware
+                    }
+                  end)
               }
             })
 
@@ -1597,6 +1844,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] ioc_scoring_config failed: #{Exception.message(e)}")
+
       json(conn, %{
         data: %{
           half_life_days: 90,
@@ -1625,6 +1873,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.error("Error calculating IOC score: #{inspect(e)}")
+
       conn
       |> put_status(:internal_server_error)
       |> json(%{error: "Failed to calculate score"})
@@ -1696,6 +1945,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] ioc_scoring_stats failed: #{Exception.message(e)}")
+
       json(conn, %{
         data: %{iocs_scored: 0, sightings_recorded: 0, fps_recorded: 0}
       })
@@ -1714,7 +1964,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     json(conn, %{data: iocs})
   rescue
     e ->
-      Logger.warning("[ThreatIntelController] high_confidence_iocs failed: #{Exception.message(e)}")
+      Logger.warning(
+        "[ThreatIntelController] high_confidence_iocs failed: #{Exception.message(e)}"
+      )
+
       json(conn, %{data: []})
   end
 
@@ -1818,12 +2071,14 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   end
 
   defp parse_datetime(nil), do: nil
+
   defp parse_datetime(str) when is_binary(str) do
     case DateTime.from_iso8601(str) do
       {:ok, dt, _} -> dt
       _ -> nil
     end
   end
+
   defp parse_datetime(_), do: nil
 
   defp get_current_user_id(conn) do
@@ -1844,9 +2099,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
     if org_id do
       Repo.one(
-        from i in TamanduaServer.Detection.IOC,
+        from(i in TamanduaServer.Detection.IOC,
           where: i.id == ^ioc_id and i.organization_id == ^org_id,
           limit: 1
+        )
       )
     end
   end
@@ -1877,12 +2133,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("[ThreatIntelController] aggregator_stats failed: #{Exception.message(e)}")
-      json(conn, %{data: %{
-        total_ingested: 0,
-        total_deduplicated: 0,
-        hot_cache_size: 0,
-        cache_hit_rate: 0.0
-      }})
+
+      json(conn, %{
+        data: %{
+          total_ingested: 0,
+          total_deduplicated: 0,
+          hot_cache_size: 0,
+          cache_hit_rate: 0.0
+        }
+      })
   end
 
   @doc "GET /api/v1/threat-intel/aggregator/health - Get feed health status"
@@ -1890,14 +2149,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     health = TamanduaServer.ThreatIntel.Aggregator.get_feed_health()
 
     json(conn, %{
-      data: Enum.map(health, fn {source, h} ->
-        %{
-          source: source,
-          status: h.status,
-          last_seen: format_datetime(h.last_seen),
-          iocs_last_batch: h.iocs_last_batch
-        }
-      end)
+      data:
+        Enum.map(health, fn {source, h} ->
+          %{
+            source: source,
+            status: h.status,
+            last_seen: format_datetime(h.last_seen),
+            iocs_last_batch: h.iocs_last_batch
+          }
+        end)
     })
   rescue
     e ->
@@ -1915,19 +2175,20 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     iocs = TamanduaServer.ThreatIntel.Aggregator.get_multi_source_iocs(opts)
 
     json(conn, %{
-      data: Enum.map(iocs, fn ioc ->
-        %{
-          type: ioc.type,
-          value: ioc.value,
-          confidence: ioc.confidence,
-          severity: ioc.severity,
-          sources: ioc.sources,
-          source_count: ioc.source_count,
-          tags: ioc.tags,
-          first_seen: format_datetime(ioc.first_seen),
-          last_seen: format_datetime(ioc.last_seen)
-        }
-      end)
+      data:
+        Enum.map(iocs, fn ioc ->
+          %{
+            type: ioc.type,
+            value: ioc.value,
+            confidence: ioc.confidence,
+            severity: ioc.severity,
+            sources: ioc.sources,
+            source_count: ioc.source_count,
+            tags: ioc.tags,
+            first_seen: format_datetime(ioc.first_seen),
+            last_seen: format_datetime(ioc.last_seen)
+          }
+        end)
     })
   rescue
     e ->
@@ -1965,108 +2226,149 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "POST /api/v1/threat-intel/attribution/alert - Attribute an alert to threat actors"
   def attribute_alert(conn, %{"alert" => alert_params}) do
-    case TamanduaServer.ThreatIntel.Attribution.attribute_alert(alert_params) do
-      {:ok, attributions} ->
-        json(conn, %{
-          data: %{
-            attributions: Enum.map(attributions, fn attr ->
-              %{
-                actor_id: attr.actor_id,
-                actor_name: attr.actor_name,
-                aliases: attr.aliases,
-                motivation: attr.motivation,
-                confidence: attr.confidence,
-                matching_iocs: attr.matching_iocs,
-                matching_ttps: attr.matching_ttps,
-                matching_malware: attr.matching_malware,
-                evidence: attr.evidence,
-                metadata: attr.metadata
-              }
-            end)
-          }
-        })
+    organization_id = current_organization_id(conn)
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.attribute_alert(organization_id, alert_params) do
+        {:ok, attributions} ->
+          json(conn, %{
+            data: %{
+              attributions:
+                Enum.map(attributions, fn attr ->
+                  %{
+                    actor_id: attr.actor_id,
+                    actor_name: attr.actor_name,
+                    aliases: attr.aliases,
+                    motivation: attr.motivation,
+                    confidence: attr.confidence,
+                    matching_iocs: attr.matching_iocs,
+                    matching_ttps: attr.matching_ttps,
+                    matching_malware: attr.matching_malware,
+                    evidence: attr.evidence,
+                    metadata: attr.metadata
+                  }
+                end)
+            }
+          })
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
   @doc "GET /api/v1/threat-intel/attribution/campaigns - List tracked campaigns"
   def list_attribution_campaigns(conn, params) do
-    opts = [
-      limit: bounded_limit(params["limit"], 50, 500),
-      status: params["status"]
-    ]
+    organization_id = current_organization_id(conn)
 
-    campaigns = TamanduaServer.ThreatIntel.Attribution.list_campaigns(opts)
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      opts = [
+        limit: bounded_limit(params["limit"], 50, 500),
+        status: params["status"]
+      ]
 
-    json(conn, %{
-      data: Enum.map(campaigns, fn c ->
-        %{
-          id: c.id,
-          name: c.name,
-          description: c.description,
-          status: c.status,
-          actors: c.actors,
-          malware: c.malware,
-          ttps: c.ttps,
-          targets: c.targets,
-          start_date: format_datetime(c.start_date),
-          end_date: format_datetime(c.end_date),
-          last_activity: format_datetime(c.last_activity),
-          confidence: c.confidence,
-          ioc_count: length(c.iocs || [])
-        }
-      end)
-    })
+      campaigns = TamanduaServer.ThreatIntel.Attribution.list_campaigns(organization_id, opts)
+
+      json(conn, %{
+        data:
+          Enum.map(campaigns, fn c ->
+            %{
+              id: c.id,
+              name: c.name,
+              description: c.description,
+              status: c.status,
+              actors: c.actors,
+              malware: c.malware,
+              ttps: c.ttps,
+              targets: c.targets,
+              start_date: format_datetime(c.start_date),
+              end_date: format_datetime(c.end_date),
+              last_activity: format_datetime(c.last_activity),
+              confidence: c.confidence,
+              ioc_count: length(c.iocs || [])
+            }
+          end)
+      })
+    end
   end
 
   @doc "GET /api/v1/threat-intel/attribution/campaigns/:id - Get campaign details"
   def get_attribution_campaign(conn, %{"id" => campaign_id}) do
-    case TamanduaServer.ThreatIntel.Attribution.get_campaign(campaign_id) do
-      {:ok, campaign} ->
-        json(conn, %{data: campaign})
+    organization_id = current_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Campaign not found"})
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.get_campaign(organization_id, campaign_id) do
+        {:ok, campaign} ->
+          json(conn, %{data: campaign})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Campaign not found"})
+      end
     end
   end
 
   @doc "POST /api/v1/threat-intel/attribution/campaigns - Create or update a campaign"
   def upsert_attribution_campaign(conn, %{"campaign" => campaign_params}) do
-    case TamanduaServer.ThreatIntel.Attribution.upsert_campaign(campaign_params) do
-      {:ok, campaign} ->
-        user = conn.assigns[:current_user]
-        AuditLog.log_config_change(user, "threat_intel", %{
-          action: "upsert_campaign",
-          campaign_name: campaign_params["name"]
-        }, request_metadata(conn))
+    organization_id = current_organization_id(conn)
 
-        conn
-        |> put_status(:created)
-        |> json(%{data: campaign})
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.upsert_campaign(
+             organization_id,
+             campaign_params
+           ) do
+        {:ok, campaign} ->
+          user = conn.assigns[:current_user]
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+          AuditLog.log_config_change(
+            user,
+            "threat_intel",
+            %{
+              action: "upsert_campaign",
+              campaign_name: campaign_params["name"]
+            },
+            request_metadata(conn)
+          )
+
+          conn
+          |> put_status(:created)
+          |> json(%{data: campaign})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
   @doc "GET /api/v1/threat-intel/attribution/actors/:id/profile - Get detailed actor profile"
   def actor_profile(conn, %{"id" => actor_id}) do
-    case TamanduaServer.ThreatIntel.Attribution.get_actor_profile(actor_id) do
-      {:ok, profile} ->
-        json(conn, %{data: profile})
+    organization_id = current_organization_id(conn)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Actor not found"})
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.get_actor_profile(organization_id, actor_id) do
+        {:ok, profile} ->
+          json(conn, %{data: profile})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Actor not found"})
+      end
     end
   end
 
@@ -2078,25 +2380,40 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "POST /api/v1/threat-intel/attribution/correlate - Correlate IOCs to campaigns"
   def correlate_iocs(conn, %{"iocs" => iocs}) do
-    case TamanduaServer.ThreatIntel.Attribution.correlate_iocs(iocs) do
-      {:ok, result} ->
-        json(conn, %{data: result})
+    organization_id = current_organization_id(conn)
 
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: to_string(reason)})
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.correlate_iocs(organization_id, iocs) do
+        {:ok, result} ->
+          json(conn, %{data: result})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: to_string(reason)})
+      end
     end
   end
 
   @doc "GET /api/v1/threat-intel/attribution/stats - Get attribution statistics"
   def attribution_stats(conn, _params) do
-    stats = TamanduaServer.ThreatIntel.Attribution.get_stats()
-    json(conn, %{data: stats})
+    organization_id = current_organization_id(conn)
+
+    if valid_campaign_org?(organization_id) do
+      stats = TamanduaServer.ThreatIntel.Attribution.get_stats(organization_id)
+      json(conn, %{data: stats})
+    else
+      campaign_organization_required(conn)
+    end
   rescue
     e ->
       Logger.warning("[ThreatIntelController] attribution_stats failed: #{Exception.message(e)}")
-      json(conn, %{data: %{attributions_made: 0, campaigns_tracked: 0, iocs_linked: 0}})
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "attribution_store_unavailable"})
   end
 
   # ============================================================================
@@ -2105,56 +2422,67 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/attributions - List recent alert attributions"
   def list_attributions(conn, params) do
-    limit = bounded_limit(params["limit"], 50, 500)
-    offset = bounded_offset(params["offset"])
+    organization_id = current_organization_id(conn)
 
-    query =
-      from(a in TamanduaServer.Alerts.Alert,
-        where: not is_nil(a.attribution_confidence),
-        where: a.attribution_confidence > 0.0,
-        where: fragment("cardinality(?) > 0", a.attributed_actors),
-        order_by: [desc: a.inserted_at],
-        limit: ^limit,
-        offset: ^offset,
-        select: %{
-          alert_id: a.id,
-          title: a.title,
-          severity: a.severity,
-          attributed_actors: a.attributed_actors,
-          campaign_id: a.campaign_id,
-          attribution_confidence: a.attribution_confidence,
-          attribution_details: a.attribution_details,
-          mitre_techniques: a.mitre_techniques,
-          threat_score: a.threat_score,
-          agent_id: a.agent_id,
-          inserted_at: a.inserted_at
-        }
-      )
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      limit = bounded_limit(params["limit"], 50, 500)
+      offset = bounded_offset(params["offset"])
 
-    attributions = Repo.all(query)
+      query =
+        from(a in TamanduaServer.Alerts.Alert,
+          where: a.organization_id == ^organization_id,
+          where: not is_nil(a.attribution_confidence),
+          where: a.attribution_confidence > 0.0,
+          where: fragment("cardinality(?) > 0", a.attributed_actors),
+          order_by: [desc: a.inserted_at],
+          limit: ^limit,
+          offset: ^offset,
+          select: %{
+            alert_id: a.id,
+            title: a.title,
+            severity: a.severity,
+            attributed_actors: a.attributed_actors,
+            campaign_id: a.campaign_id,
+            attribution_confidence: a.attribution_confidence,
+            attribution_details: a.attribution_details,
+            mitre_techniques: a.mitre_techniques,
+            threat_score: a.threat_score,
+            agent_id: a.agent_id,
+            inserted_at: a.inserted_at
+          }
+        )
 
-    json(conn, %{
-      data: Enum.map(attributions, fn a ->
-        %{
-          alert_id: a.alert_id,
-          title: a.title,
-          severity: a.severity,
-          attributed_actors: a.attributed_actors,
-          campaign_id: a.campaign_id,
-          attribution_confidence: a.attribution_confidence,
-          attribution_details: a.attribution_details,
-          mitre_techniques: a.mitre_techniques,
-          threat_score: a.threat_score,
-          agent_id: a.agent_id,
-          attributed_at: format_datetime(a.inserted_at)
-        }
-      end),
-      meta: %{limit: limit, offset: offset, count: length(attributions)}
-    })
+      attributions = MultiTenant.with_organization(organization_id, fn -> Repo.all(query) end)
+
+      json(conn, %{
+        data:
+          Enum.map(attributions, fn a ->
+            %{
+              alert_id: a.alert_id,
+              title: a.title,
+              severity: a.severity,
+              attributed_actors: a.attributed_actors,
+              campaign_id: a.campaign_id,
+              attribution_confidence: a.attribution_confidence,
+              attribution_details: a.attribution_details,
+              mitre_techniques: a.mitre_techniques,
+              threat_score: a.threat_score,
+              agent_id: a.agent_id,
+              attributed_at: format_datetime(a.inserted_at)
+            }
+          end),
+        meta: %{limit: limit, offset: offset, count: length(attributions)}
+      })
+    end
   rescue
     e ->
       Logger.warning("Failed to list attributions: #{inspect(e)}")
-      json(conn, %{data: [], meta: %{limit: 50, offset: 0, count: 0}})
+
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{error: "attribution_store_unavailable"})
   end
 
   # ============================================================================
@@ -2163,33 +2491,40 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/campaigns/tracked - List auto-detected campaigns"
   def list_tracked_campaigns(conn, params) do
-    opts = [
-      limit: bounded_limit(params["limit"], 50, 500),
-      status: params["status"]
-    ]
+    organization_id = current_organization_id(conn)
 
-    campaigns = TamanduaServer.ThreatIntel.CampaignTracker.list_campaigns(opts)
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      opts = [
+        limit: bounded_limit(params["limit"], 50, 500),
+        status: params["status"]
+      ]
 
-    json(conn, %{
-      data: Enum.map(campaigns, fn c ->
-        %{
-          id: c.id,
-          name: c.name,
-          actor: c.actor,
-          start_time: format_datetime(c.start_time),
-          end_time: format_datetime(c.end_time),
-          alert_count: length(c.alert_ids || []),
-          alert_ids: c.alert_ids,
-          affected_agents: c.affected_agents,
-          ioc_count: c.ioc_count,
-          status: c.status,
-          confidence: c.confidence,
-          mitre_techniques: c[:mitre_techniques] || [],
-          created_at: format_datetime(c[:created_at]),
-          updated_at: format_datetime(c[:updated_at])
-        }
-      end)
-    })
+      campaigns = TamanduaServer.ThreatIntel.CampaignTracker.list_campaigns(organization_id, opts)
+
+      json(conn, %{
+        data:
+          Enum.map(campaigns, fn c ->
+            %{
+              id: c.id,
+              name: c.name,
+              actor: c.actor,
+              start_time: format_datetime(c.start_time),
+              end_time: format_datetime(c.end_time),
+              alert_count: length(c.alert_ids || []),
+              alert_ids: c.alert_ids,
+              affected_agents: c.affected_agents,
+              ioc_count: c.ioc_count,
+              status: c.status,
+              confidence: c.confidence,
+              mitre_techniques: c[:mitre_techniques] || [],
+              created_at: format_datetime(c[:created_at]),
+              updated_at: format_datetime(c[:updated_at])
+            }
+          end)
+      })
+    end
   rescue
     e ->
       Logger.warning("Failed to list tracked campaigns: #{inspect(e)}")
@@ -2198,67 +2533,76 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/campaigns/tracked/:id - Get tracked campaign details"
   def get_tracked_campaign(conn, %{"id" => campaign_id}) do
-    case TamanduaServer.ThreatIntel.CampaignTracker.get_campaign(campaign_id) do
-      {:ok, campaign} ->
-        # Fetch the actual alerts for the timeline
-        alert_ids = campaign.alert_ids || []
+    organization_id = current_organization_id(conn)
 
-        alerts = if length(alert_ids) > 0 do
-          from(a in TamanduaServer.Alerts.Alert,
-            where: a.id in ^alert_ids,
-            order_by: [asc: a.inserted_at],
-            select: %{
-              id: a.id,
-              title: a.title,
-              severity: a.severity,
-              threat_score: a.threat_score,
-              mitre_techniques: a.mitre_techniques,
-              agent_id: a.agent_id,
-              inserted_at: a.inserted_at
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.CampaignTracker.get_campaign(organization_id, campaign_id) do
+        {:ok, campaign} ->
+          # Fetch the actual alerts for the timeline
+          alert_ids = campaign.alert_ids || []
+
+          alerts =
+            if length(alert_ids) > 0 do
+              from(a in TamanduaServer.Alerts.Alert,
+                where: a.id in ^alert_ids and a.organization_id == ^organization_id,
+                order_by: [asc: a.inserted_at],
+                select: %{
+                  id: a.id,
+                  title: a.title,
+                  severity: a.severity,
+                  threat_score: a.threat_score,
+                  mitre_techniques: a.mitre_techniques,
+                  agent_id: a.agent_id,
+                  inserted_at: a.inserted_at
+                }
+              )
+              |> Repo.all()
+            else
+              []
+            end
+
+          json(conn, %{
+            data: %{
+              id: campaign.id,
+              name: campaign.name,
+              actor: campaign.actor,
+              start_time: format_datetime(campaign.start_time),
+              end_time: format_datetime(campaign.end_time),
+              alert_count: length(campaign.alert_ids || []),
+              affected_agents: campaign.affected_agents,
+              ioc_count: campaign.ioc_count,
+              status: campaign.status,
+              confidence: campaign.confidence,
+              mitre_techniques: campaign[:mitre_techniques] || [],
+              created_at: format_datetime(campaign[:created_at]),
+              updated_at: format_datetime(campaign[:updated_at]),
+              timeline:
+                Enum.map(alerts, fn a ->
+                  %{
+                    alert_id: a.id,
+                    title: a.title,
+                    severity: a.severity,
+                    threat_score: a.threat_score,
+                    mitre_techniques: a.mitre_techniques,
+                    agent_id: a.agent_id,
+                    timestamp: format_datetime(a.inserted_at)
+                  }
+                end)
             }
-          )
-          |> Repo.all()
-        else
-          []
-        end
+          })
 
-        json(conn, %{
-          data: %{
-            id: campaign.id,
-            name: campaign.name,
-            actor: campaign.actor,
-            start_time: format_datetime(campaign.start_time),
-            end_time: format_datetime(campaign.end_time),
-            alert_count: length(campaign.alert_ids || []),
-            affected_agents: campaign.affected_agents,
-            ioc_count: campaign.ioc_count,
-            status: campaign.status,
-            confidence: campaign.confidence,
-            mitre_techniques: campaign[:mitre_techniques] || [],
-            created_at: format_datetime(campaign[:created_at]),
-            updated_at: format_datetime(campaign[:updated_at]),
-            timeline: Enum.map(alerts, fn a ->
-              %{
-                alert_id: a.id,
-                title: a.title,
-                severity: a.severity,
-                threat_score: a.threat_score,
-                mitre_techniques: a.mitre_techniques,
-                agent_id: a.agent_id,
-                timestamp: format_datetime(a.inserted_at)
-              }
-            end)
-          }
-        })
-
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Campaign not found"})
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Campaign not found"})
+      end
     end
   rescue
     e ->
       Logger.warning("Failed to get tracked campaign: #{inspect(e)}")
+
       conn
       |> put_status(:internal_server_error)
       |> json(%{error: "Failed to retrieve campaign"})
@@ -2266,79 +2610,97 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   @doc "GET /api/v1/threat-intel/campaigns/tracked/stats - Campaign tracker stats"
   def tracked_campaign_stats(conn, _params) do
-    stats = TamanduaServer.ThreatIntel.CampaignTracker.get_stats()
-    json(conn, %{data: stats})
+    organization_id = current_organization_id(conn)
+
+    if valid_campaign_org?(organization_id) do
+      stats = TamanduaServer.ThreatIntel.CampaignTracker.get_stats(organization_id)
+      json(conn, %{data: stats})
+    else
+      campaign_organization_required(conn)
+    end
   rescue
     e ->
-      Logger.warning("[ThreatIntelController] tracked_campaign_stats failed: #{Exception.message(e)}")
-      json(conn, %{data: %{
-        active_campaigns: 0,
-        resolved_campaigns: 0,
-        total_campaigns: 0,
-        auto_detect_runs: 0,
-        attributions_recorded: 0
-      }})
+      Logger.warning(
+        "[ThreatIntelController] tracked_campaign_stats failed: #{Exception.message(e)}"
+      )
+
+      json(conn, %{
+        data: %{
+          active_campaigns: 0,
+          resolved_campaigns: 0,
+          total_campaigns: 0,
+          auto_detect_runs: 0,
+          attributions_recorded: 0
+        }
+      })
   end
 
   @doc "GET /api/v1/threat-intel/actors/:id/profile - Full actor profile with IOCs, techniques, campaigns"
   def full_actor_profile(conn, %{"id" => actor_id}) do
-    case TamanduaServer.ThreatIntel.Attribution.get_actor_profile(actor_id) do
-      {:ok, profile} ->
-        # Enrich with campaign tracker data
-        tracked_campaigns = try do
-          TamanduaServer.ThreatIntel.CampaignTracker.list_campaigns(status: "active")
-          |> Enum.filter(fn c -> c.actor == get_in(profile, [:actor, :name]) end)
-          |> Enum.map(fn c ->
-            %{
-              id: c.id,
-              name: c.name,
-              status: c.status,
-              alert_count: length(c.alert_ids || []),
-              start_time: format_datetime(c.start_time),
-              end_time: format_datetime(c.end_time)
-            }
-          end)
-        rescue
-          _ -> []
-        end
+    organization_id = current_organization_id(conn)
 
-        # Count recent attributions for this actor
-        actor_name = get_in(profile, [:actor, :name])
-        recent_attributions = if actor_name do
-          try do
-            from(a in TamanduaServer.Alerts.Alert,
-              where: ^actor_name in a.attributed_actors,
-              where: a.inserted_at >= ^DateTime.add(DateTime.utc_now(), -30, :day),
-              select: count(a.id)
+    if not valid_campaign_org?(organization_id) do
+      campaign_organization_required(conn)
+    else
+      case TamanduaServer.ThreatIntel.Attribution.get_actor_profile(organization_id, actor_id) do
+        {:ok, profile} ->
+          # Enrich with campaign tracker data
+          tracked_campaigns =
+            TamanduaServer.ThreatIntel.CampaignTracker.list_campaigns(organization_id,
+              status: "active"
             )
-            |> Repo.one()
-          rescue
-            _ -> 0
-          end
-        else
-          0
-        end
+            |> Enum.filter(fn c -> c.actor == get_in(profile, [:actor, :name]) end)
+            |> Enum.map(fn c ->
+              %{
+                id: c.id,
+                name: c.name,
+                status: c.status,
+                alert_count: length(c.alert_ids || []),
+                start_time: format_datetime(c.start_time),
+                end_time: format_datetime(c.end_time)
+              }
+            end)
 
-        json(conn, %{
-          data: %{
-            actor: profile.actor,
-            iocs: profile.iocs,
-            ioc_count: profile.ioc_count,
-            campaigns: profile.campaigns,
-            tracked_campaigns: tracked_campaigns,
-            related_actors: profile.related_actors,
-            recent_attribution_count: recent_attributions || 0
-          }
-        })
+          # Count recent attributions for this actor
+          actor_name = get_in(profile, [:actor, :name])
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Actor not found"})
+          recent_attributions =
+            if actor_name do
+              query =
+                from(a in TamanduaServer.Alerts.Alert,
+                  where: ^actor_name in a.attributed_actors,
+                  where: a.organization_id == ^organization_id,
+                  where: a.inserted_at >= ^DateTime.add(DateTime.utc_now(), -30, :day),
+                  select: count(a.id)
+                )
+
+              MultiTenant.with_organization(organization_id, fn -> Repo.one(query) end)
+            else
+              0
+            end
+
+          json(conn, %{
+            data: %{
+              actor: profile.actor,
+              iocs: profile.iocs,
+              ioc_count: profile.ioc_count,
+              campaigns: profile.campaigns,
+              tracked_campaigns: tracked_campaigns,
+              related_actors: profile.related_actors,
+              recent_attribution_count: recent_attributions || 0
+            }
+          })
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "Actor not found"})
+      end
     end
   rescue
     e ->
       Logger.warning("Failed to get actor profile: #{inspect(e)}")
+
       conn
       |> put_status(:internal_server_error)
       |> json(%{error: "Failed to retrieve actor profile"})
@@ -2423,6 +2785,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error getting graph node: #{inspect(e)}")
+
       conn
       |> put_status(:internal_server_error)
       |> json(%{error: "Failed to retrieve graph node"})
@@ -2444,14 +2807,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       data: %{
         center: ioc_value,
         depth: depth,
-        neighbors: Enum.map(neighbors, fn n ->
-          %{
-            node: serialize_graph_node(n[:node]),
-            edge_type: n.edge_type,
-            direction: n.direction,
-            edge_confidence: n.edge_confidence
-          }
-        end),
+        neighbors:
+          Enum.map(neighbors, fn n ->
+            %{
+              node: serialize_graph_node(n[:node]),
+              edge_type: n.edge_type,
+              direction: n.direction,
+              edge_confidence: n.edge_confidence
+            }
+          end),
         count: length(neighbors)
       }
     })
@@ -2473,22 +2837,26 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
         source: source_id,
         target: target_id,
         max_depth: max_depth,
-        paths: Enum.map(paths, fn path ->
-          Enum.map(path, fn step ->
-            %{
-              node_id: step.node_id,
-              from: step.from,
-              edge_type: step.edge_type
-            }
-          end)
-        end),
+        paths:
+          Enum.map(paths, fn path ->
+            Enum.map(path, fn step ->
+              %{
+                node_id: step.node_id,
+                from: step.from,
+                edge_type: step.edge_type
+              }
+            end)
+          end),
         path_count: length(paths)
       }
     })
   rescue
     e ->
       Logger.warning("Error finding graph paths: #{inspect(e)}")
-      json(conn, %{data: %{source: params["source"], target: params["target"], paths: [], path_count: 0}})
+
+      json(conn, %{
+        data: %{source: params["source"], target: params["target"], paths: [], path_count: 0}
+      })
   end
 
   def graph_paths(conn, _params) do
@@ -2508,14 +2876,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       data: %{
         center: subgraph.center,
         nodes: Enum.map(subgraph.nodes, &serialize_graph_node/1),
-        edges: Enum.map(subgraph.edges, fn e ->
-          %{
-            source_id: e.source_id,
-            target_id: e.target_id,
-            edge_type: e.edge_type,
-            confidence: e.confidence
-          }
-        end),
+        edges:
+          Enum.map(subgraph.edges, fn e ->
+            %{
+              source_id: e.source_id,
+              target_id: e.target_id,
+              edge_type: e.edge_type,
+              confidence: e.confidence
+            }
+          end),
         node_count: subgraph.node_count,
         edge_count: subgraph.edge_count
       }
@@ -2523,7 +2892,10 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error getting graph subgraph: #{inspect(e)}")
-      json(conn, %{data: %{center: ioc_value, nodes: [], edges: [], node_count: 0, edge_count: 0}})
+
+      json(conn, %{
+        data: %{center: ioc_value, nodes: [], edges: [], node_count: 0, edge_count: 0}
+      })
   end
 
   @doc "GET /api/v1/threat-intel/graph/stats - Get graph statistics"
@@ -2542,7 +2914,16 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error getting graph stats: #{inspect(e)}")
-      json(conn, %{data: %{node_count: 0, edge_count: 0, source_entries: 0, node_types: %{}, edge_types: %{}}})
+
+      json(conn, %{
+        data: %{
+          node_count: 0,
+          edge_count: 0,
+          source_entries: 0,
+          node_types: %{},
+          edge_types: %{}
+        }
+      })
   end
 
   @doc "POST /api/v1/threat-intel/graph/enrich - Enrich an alert with graph context"
@@ -2552,14 +2933,15 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     json(conn, %{
       data: %{
         alert_iocs: enrichment.alert_iocs,
-        related_iocs: Enum.map(enrichment.related_iocs, fn ioc ->
-          %{
-            id: ioc.id,
-            type: ioc.type,
-            confidence: ioc.confidence,
-            distance: ioc.distance
-          }
-        end),
+        related_iocs:
+          Enum.map(enrichment.related_iocs, fn ioc ->
+            %{
+              id: ioc.id,
+              type: ioc.type,
+              confidence: ioc.confidence,
+              distance: ioc.distance
+            }
+          end),
         threat_actors: enrichment.threat_actors,
         campaigns: enrichment.campaigns,
         malware_families: enrichment.malware_families,
@@ -2570,6 +2952,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   rescue
     e ->
       Logger.warning("Error enriching alert from graph: #{inspect(e)}")
+
       json(conn, %{
         data: %{
           alert_iocs: [],
@@ -2592,6 +2975,7 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
   # Graph serialization helpers
 
   defp serialize_graph_node(nil), do: nil
+
   defp serialize_graph_node(node) do
     %{
       id: node[:id] || node.id,
@@ -2610,7 +2994,8 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
 
   defp bounded_score(value, default), do: value |> parse_int(default) |> max(0) |> min(100)
 
-  defp bounded_min_sources(value, default), do: value |> parse_int(default) |> max(1) |> min(25)
+  defp bounded_min_sources(value, default),
+    do: value |> parse_int(default) |> max(1) |> min(25)
 
   defp safe_threat_intel_sync(fun) when is_function(fun, 0) do
     case fun.() do
@@ -2626,17 +3011,29 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
     kind, reason -> {:error, {kind, reason}}
   end
 
+  defp valid_campaign_org?(organization_id),
+    do: is_binary(organization_id) and match?({:ok, _}, Ecto.UUID.cast(organization_id))
+
+  defp campaign_organization_required(conn) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "organization_required"})
+  end
+
   defp parse_int(nil, default), do: default
+
   defp parse_int(val, default) when is_binary(val) do
     case Integer.parse(val) do
       {n, _} -> n
       :error -> default
     end
   end
+
   defp parse_int(val, _default) when is_integer(val), do: val
   defp parse_int(_, default), do: default
 
   defp parse_edge_types(nil), do: nil
+
   defp parse_edge_types(types) when is_binary(types) do
     types
     |> String.split(",")
@@ -2654,5 +3051,6 @@ defmodule TamanduaServerWeb.API.V1.ThreatIntelController do
       list -> list
     end
   end
+
   defp parse_edge_types(_), do: nil
 end

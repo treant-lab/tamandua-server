@@ -62,7 +62,7 @@ defmodule TamanduaServer.Collaboration.ConflictResolver do
   Detect conflicts between two changesets.
   """
   def detect_conflicts(current, changeset) do
-    current_changes = extract_changes(current)
+    _current_changes = extract_changes(current)
     new_changes = Changeset.get_field(changeset, :__struct__)
 
     conflicts =
@@ -225,7 +225,7 @@ defmodule TamanduaServer.Collaboration.ConflictResolver do
     case strategy do
       :last_write_wins ->
         # Override conflict, update anyway
-        Logger.warn("Conflict resolved with last-write-wins for user #{user.id}")
+        Logger.warning("Conflict resolved with last-write-wins for user #{user.id}")
         perform_update(current, Map.delete(attrs, :lock_version), user, :lock_version)
 
       :first_write_wins ->

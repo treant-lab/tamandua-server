@@ -1099,7 +1099,7 @@ defmodule TamanduaServer.Telemetry.ClickHouse do
     end
   end
 
-  defp to_integer(v, default) when is_float(v), do: trunc(v)
+  defp to_integer(v, _default) when is_float(v), do: trunc(v)
   defp to_integer(_, default), do: default
 
   defp safe_json_encode(data) when is_map(data) do

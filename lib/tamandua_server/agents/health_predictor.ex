@@ -23,7 +23,7 @@ defmodule TamanduaServer.Agents.HealthPredictor do
   """
 
   require Logger
-  alias TamanduaServer.Agents.{HealthMetrics, HealthScorer}
+  alias TamanduaServer.Agents.{HealthMetrics}
   alias TamanduaServer.Repo
 
   import Ecto.Query

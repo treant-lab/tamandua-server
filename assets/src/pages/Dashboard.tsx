@@ -43,6 +43,7 @@ import {
   Legend,
 } from 'recharts'
 import { cn, formatRelativeTime, safeCapitalize } from '@/lib/utils'
+import AIEvidenceSummary from '@/components/AIEvidenceSummary'
 import { useDashboardChannel } from '@/hooks/useSocket'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
 import { GeoThreatMap, useGeoThreatMap } from '@/components/charts/GeoThreatMap'
@@ -1092,6 +1093,10 @@ function AlertRow({ alert, isNew = false }: { alert: Alert; isNew?: boolean }) {
           </span>
         </div>
         <p className="text-xs truncate mt-0.5" style={{ color: 'var(--subtle)' }}>{alert.description}</p>
+        <AIEvidenceSummary
+          compact
+          sources={[alert.rawEvent, alert.raw_event, alert.evidence, alert.detectionMetadata]}
+        />
       </div>
       <div className="flex-shrink-0 flex items-center gap-1 text-[11px]" style={{ color: 'var(--subtle)' }}>
         <Clock className="h-3 w-3" />

@@ -127,7 +127,7 @@ defmodule TamanduaServer.Workers.ReportWorker do
   defp generate_report(template_id, date_from, date_to, format, params) do
     # Check if it's a custom template or built-in template
     case TemplateManager.get_template(template_id) do
-      {:ok, custom_template} ->
+      {:ok, _custom_template} ->
         # Generate from custom template
         case TemplateManager.generate_from_template(template_id, date_from, date_to, []) do
           {:ok, report_data} ->

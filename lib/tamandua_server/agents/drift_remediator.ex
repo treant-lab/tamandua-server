@@ -83,7 +83,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
   Remediates all drifts for an agent by pushing full baseline configuration.
   """
   def remediate_agent(agent_id, opts \\ []) do
-    approved_by_id = Keyword.get(opts, :approved_by_id)
+    _approved_by_id = Keyword.get(opts, :approved_by_id)
 
     with {:ok, agent} <- get_agent(agent_id),
          {:ok, baseline} <- get_active_baseline(agent_id),
@@ -289,7 +289,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
     end
   end
 
-  defp remediate_response_drift(agent, baseline, drift) do
+  defp remediate_response_drift(agent, baseline, _drift) do
     config_update = %{
       "response" => baseline.response_permissions
     }
@@ -297,7 +297,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
     push_config_update(agent, config_update)
   end
 
-  defp remediate_network_drift(agent, baseline, drift) do
+  defp remediate_network_drift(agent, baseline, _drift) do
     config_update = %{
       "network" => baseline.network_settings
     }
@@ -305,7 +305,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
     push_config_update(agent, config_update)
   end
 
-  defp remediate_path_drift(agent, baseline, drift) do
+  defp remediate_path_drift(agent, baseline, _drift) do
     config_update = %{
       "paths" => baseline.file_paths
     }
@@ -313,7 +313,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
     push_config_update(agent, config_update)
   end
 
-  defp remediate_resource_drift(agent, baseline, drift) do
+  defp remediate_resource_drift(agent, baseline, _drift) do
     config_update = %{
       "resource_limits" => baseline.resource_limits
     }
@@ -321,7 +321,7 @@ defmodule TamanduaServer.Agents.DriftRemediator do
     push_config_update(agent, config_update)
   end
 
-  defp remediate_feature_drift(agent, baseline, drift) do
+  defp remediate_feature_drift(agent, baseline, _drift) do
     config_update = %{
       "detection" => %{
         "yara_enabled" => baseline.enabled_features["yara_enabled"],

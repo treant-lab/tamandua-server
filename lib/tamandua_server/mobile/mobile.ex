@@ -55,8 +55,7 @@ defmodule TamanduaServer.Mobile do
     "automation_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"},
     "network_exfiltration_suspected" =>
       {"T1446", "Fetch or Obtain Alternate Network Communications", "Command and Control"},
-    "commercial_spyware_suspected" =>
-      {"T1639", "Exfiltrate Data", "Collection"},
+    "commercial_spyware_suspected" => {"T1639", "Exfiltrate Data", "Collection"},
     "integrity_snapshot_changed" =>
       {"T1398", "Modify OS Kernel or Boot Partition", "Defense Evasion"},
     "behavior_anomaly_detected" => {"T1622", "Debugger Evasion", "Defense Evasion"}
@@ -932,6 +931,7 @@ defmodule TamanduaServer.Mobile do
       |> MobileEvent.latest_first()
       |> limit(^limit)
       |> offset(^offset)
+      |> preload(:device)
 
     query = if severity, do: MobileEvent.by_severity(query, severity), else: query
 
@@ -975,7 +975,7 @@ defmodule TamanduaServer.Mobile do
   end
 
   defp maybe_create_alert({:ok, event} = result) do
-    if event.severity in ["high", "critical"] do
+    if event.severity in ["high", "critical"] and not synthetic_mobile_validation_event?(event) do
       create_alert_from_mobile_event(event)
     end
 
@@ -990,6 +990,46 @@ defmodule TamanduaServer.Mobile do
   end
 
   defp maybe_broadcast_event(result), do: result
+
+  defp synthetic_mobile_validation_event?(%MobileEvent{} = event) do
+    payload = app_guard_payload(event)
+    evidence = app_guard_payload_evidence(payload)
+
+    explicit_synthetic? =
+      truthy?(payload["synthetic"]) or truthy?(payload["test_event"]) or
+        truthy?(payload["validation_event"]) or truthy?(evidence["synthetic"]) or
+        truthy?(evidence["test_event"])
+
+    parity_markers = [
+      event.rule_id,
+      event.device_id,
+      payload["event_id"],
+      payload["parity_run_id"],
+      payload["validation_run_id"],
+      evidence["parity_run_id"],
+      evidence["validation_run_id"],
+      app_guard_get(payload, ["device", "device_id"]),
+      app_guard_get(payload, ["device", "serial_number"]),
+      app_guard_get(evidence, ["source"])
+    ]
+
+    explicit_synthetic? or Enum.any?(parity_markers, &parity_marker?/1)
+  end
+
+  defp truthy?(value) when value in [true, "true", "yes", "1", 1], do: true
+  defp truthy?(_value), do: false
+
+  defp parity_marker?(value) when is_binary(value) do
+    normalized = String.downcase(value)
+
+    String.starts_with?(normalized, "mobile-endpoint-parity-") or
+      String.starts_with?(normalized, "agent-mobile-endpoint-parity-") or
+      String.starts_with?(normalized, "parity-") or
+      String.contains?(normalized, "_parity_") or
+      String.contains?(normalized, "-parity-")
+  end
+
+  defp parity_marker?(_value), do: false
 
   defp broadcast_mobile_event(%MobileEvent{} = event) do
     payload = mobile_event_broadcast_payload(event)
@@ -1106,21 +1146,42 @@ defmodule TamanduaServer.Mobile do
       description: build_alert_description(event, device),
       organization_id: event.organization_id,
       agent_id: agent_id,
+      source_event_id: event.id,
+      event_ids: [event.id],
       mitre_techniques: if(mitre_technique, do: [mitre_technique], else: []),
       mitre_tactics: if(mitre_tactic, do: [mitre_tactic], else: []),
       # calculate_mobile_risk_score returns a 0-100 value; canonical threat_score is 0.0-1.0
       threat_score: risk_score / 100,
       status: "new",
       evidence: build_mobile_evidence(event, device),
+      recommended_response: recommended_mobile_response(event),
       detection_metadata: %{
         "source" => alert_source(event),
+        "category" => app_guard_alert_category(event),
         "event_type" => event.event_type,
+        "rule_id" => event.rule_id,
+        "rule_name" => mobile_detection_rule_name(event),
+        "detection_type" => mobile_detection_type(event),
+        "rule_type" => alert_source(event),
+        "type" => mobile_detection_type(event),
         "mitre_technique_name" => mitre_name,
+        "policy_id" => app_guard_policy_metadata(event)["id"],
+        "mode" => app_guard_policy_metadata(event)["mode"],
         "device_id" => event.device_id,
+        "mobile_device_id" => device && device.device_id,
         "platform" => device && device.platform,
         "os_version" => device && device.os_version,
+        "device_model" => device && device.model,
+        "device_manufacturer" => device && device.manufacturer,
         "app_name" => event.app_name,
-        "app_bundle_id" => event.app_bundle_id
+        "app_bundle_id" => event.app_bundle_id,
+        "policy" => app_guard_policy_metadata(event),
+        "decision" => app_guard_decision(event),
+        "thresholds" => app_guard_policy_metadata(event)["thresholds"],
+        "risk_score" => app_guard_policy_metadata(event)["score"],
+        "risk_reasons" => app_guard_risk_reasons(event),
+        "confidence" => app_guard_confidence(event),
+        "claim_boundary" => app_guard_claim_boundary(event)
       },
       raw_event: %{
         "mobile_event_id" => event.id,
@@ -1198,6 +1259,34 @@ defmodule TamanduaServer.Mobile do
     case alert_source(event) do
       "app_guard" -> "App Guard"
       _ -> "Mobile"
+    end
+  end
+
+  defp mobile_detection_rule_name(%MobileEvent{} = event) do
+    case alert_source(event) do
+      "app_guard" -> "App Guard #{event.event_type}"
+      _ -> "Mobile #{event.event_type}"
+    end
+  end
+
+  defp mobile_detection_type(%MobileEvent{} = event) do
+    case alert_source(event) do
+      "app_guard" -> "mobile_app_guard"
+      _ -> "mobile_security_event"
+    end
+  end
+
+  defp app_guard_alert_category(%MobileEvent{
+         payload: %{"schema" => "tamandua.app_guard.event/v1"}
+       }),
+       do: "app_guard"
+
+  defp app_guard_alert_category(_event), do: "mobile"
+
+  defp app_guard_mitre_technique(event_type) do
+    case mitre_for_event(event_type) do
+      {technique, _name, _tactic} -> technique
+      _ -> nil
     end
   end
 
@@ -1295,42 +1384,122 @@ defmodule TamanduaServer.Mobile do
     base <> extra
   end
 
+  defp recommended_mobile_response(%MobileEvent{event_type: "commercial_spyware_suspected"}) do
+    "Quarantine protected app session, collect mobile diagnostics, sync app inventory, review MDM posture, and escalate to mobile forensic workflow. Do not claim family attribution without external forensic evidence."
+  end
+
+  defp recommended_mobile_response(%MobileEvent{event_type: "network_exfiltration_suspected"}) do
+    "Collect diagnostics, inspect protected-app network evidence, block suspicious domain if present, refresh DNS/network policy, and verify affected session."
+  end
+
+  defp recommended_mobile_response(%MobileEvent{event_type: event_type})
+       when event_type in [
+              "root_detected",
+              "jailbreak_detected",
+              "hook_framework_detected",
+              "tampering_detected",
+              "app_integrity_violation"
+            ] do
+    "Collect diagnostics, sync app inventory, require step-up authentication, and consider MDM lock or app/session containment based on business impact."
+  end
+
+  defp recommended_mobile_response(%MobileEvent{}) do
+    "Collect diagnostics, review mobile posture and App Guard evidence, then apply MDM-safe response if risk is confirmed."
+  end
+
   # Builds the structured evidence map for the alert.
   defp build_mobile_evidence(event, device) do
-    evidence = %{
-      "source" => alert_source(event),
-      "event_type" => event.event_type,
-      "device" => %{
-        "device_id" => event.device_id,
-        "platform" => device && device.platform,
-        "model" => device && device.model,
-        "os_version" => device && device.os_version,
-        "mdm_enrolled" => device && device.mdm_enrolled,
-        "mdm_compliance_status" => device && device.mdm_compliance_status,
-        "risk_score" => device && device.risk_score,
-        "is_jailbroken" => device && device.is_jailbroken,
-        "is_rooted" => device && device.is_rooted
+    app_guard_payload = app_guard_payload(event)
+    app_guard_evidence = app_guard_payload_evidence(app_guard_payload)
+    rule_name = mobile_detection_rule_name(event)
+    detection_type = mobile_detection_type(event)
+
+    evidence =
+      %{
+        "source" => alert_source(event),
+        "event_type" => event.event_type,
+        "detection" => %{
+          "rule_id" => event.rule_id,
+          "rule_name" => rule_name,
+          "name" => rule_name,
+          "detection_type" => detection_type,
+          "rule_type" => alert_source(event),
+          "category" => app_guard_alert_category(event),
+          "event_type" => event.event_type,
+          "severity" => event.severity,
+          "mitre_attack_id" => app_guard_mitre_technique(event.event_type),
+          "confidence" => app_guard_confidence(event) || app_guard_risk_score(app_guard_payload)
+        },
+        "device" => %{
+          "device_id" => event.device_id,
+          "mobile_device_id" => device && device.device_id,
+          "platform" => device && device.platform,
+          "model" => device && device.model,
+          "manufacturer" => device && device.manufacturer,
+          "os_version" => device && device.os_version,
+          "serial_number" => device && device.serial_number,
+          "mdm_enrolled" => device && device.mdm_enrolled,
+          "mdm_provider" => device && device.mdm_provider,
+          "mdm_device_id" => device && device.mdm_device_id,
+          "mdm_compliance_status" => device && device.mdm_compliance_status,
+          "risk_score" => device && device.risk_score,
+          "is_jailbroken" => device && device.is_jailbroken,
+          "is_rooted" => device && device.is_rooted
+        }
       }
-    }
+      |> put_if_present(
+        "app_guard",
+        app_guard_context(event, app_guard_payload, app_guard_evidence)
+      )
+      |> put_if_present("policy", app_guard_policy_metadata(event))
+      |> put_if_present("decision_trace", app_guard_decision_trace(event, app_guard_payload))
+      |> put_if_present("iocs", app_guard_iocs(event, app_guard_payload, app_guard_evidence))
+      |> Map.put(
+        "evidence_gaps",
+        app_guard_evidence_gaps(event, app_guard_payload, app_guard_evidence)
+      )
+      |> put_if_present("risk", app_guard_payload["risk"])
+      |> put_if_present("session", app_guard_payload["session"])
+      |> put_if_present("active_signals", app_guard_payload["active_signals"])
+      |> put_if_present("privacy_mode", app_guard_evidence["privacy_mode"])
+      |> put_if_present("collector", app_guard_evidence["collector"])
+      |> put_if_present("spyware_taxonomy", app_guard_evidence["spyware_taxonomy"])
+      |> put_if_present("limitations", spyware_limitations(app_guard_evidence))
+      |> put_if_present("claim_boundary", app_guard_claim_boundary(event))
 
     # Add app context if present
     evidence =
       if event.app_bundle_id || event.app_name do
         Map.put(evidence, "app", %{
           "bundle_id" => event.app_bundle_id,
-          "name" => event.app_name
+          "package_or_bundle_id" => app_guard_package_or_bundle_id(event, app_guard_payload),
+          "protected_app_id" => app_guard_protected_app_id(app_guard_payload),
+          "name" => event.app_name,
+          "version" => app_guard_get(app_guard_payload, ["app", "version"]),
+          "url" => app_guard_url(app_guard_payload, app_guard_evidence),
+          "domain" => app_guard_domain(event, app_guard_payload, app_guard_evidence)
         })
       else
         evidence
       end
 
+    evidence =
+      put_if_present(
+        evidence,
+        "evidence_snapshot",
+        app_guard_evidence_snapshot(event, device, app_guard_payload, app_guard_evidence)
+      )
+
     # Add network context if present
     evidence =
-      if event.domain || event.remote_address do
+      if app_guard_domain(event, app_guard_payload, app_guard_evidence) ||
+           app_guard_remote_address(event, app_guard_payload, app_guard_evidence) do
         Map.put(evidence, "network", %{
-          "domain" => event.domain,
-          "remote_address" => event.remote_address,
-          "remote_port" => event.remote_port
+          "domain" => app_guard_domain(event, app_guard_payload, app_guard_evidence),
+          "url" => app_guard_url(app_guard_payload, app_guard_evidence),
+          "remote_address" =>
+            app_guard_remote_address(event, app_guard_payload, app_guard_evidence),
+          "remote_port" => app_guard_remote_port(event, app_guard_payload, app_guard_evidence)
         })
       else
         evidence
@@ -1349,6 +1518,479 @@ defmodule TamanduaServer.Mobile do
 
     evidence
   end
+
+  defp app_guard_payload(%MobileEvent{payload: payload}) when is_map(payload), do: payload
+  defp app_guard_payload(_event), do: %{}
+
+  defp app_guard_payload_evidence(%{"evidence" => evidence}) when is_map(evidence), do: evidence
+  defp app_guard_payload_evidence(_payload), do: %{}
+
+  defp app_guard_evidence_snapshot(%MobileEvent{} = event, device, payload, evidence) do
+    %{
+      "schema" => "tamandua.app_guard.evidence_snapshot/v1",
+      "event_id" => payload["event_id"],
+      "event_type" => event.event_type,
+      "policy_decision" => app_guard_decision_trace(event, payload),
+      "thresholds" => app_guard_thresholds(event, payload),
+      "signals" => app_guard_signal_list(event, payload, evidence),
+      "device_identity" => app_guard_device_identity(event, device, payload),
+      "app_identity" => app_guard_app_identity(event, payload, evidence),
+      "integrity" => app_guard_integrity_snapshot(payload, evidence),
+      "input_provenance" => app_guard_input_provenance(evidence),
+      "network" => app_guard_network_snapshot(event, payload, evidence),
+      "iocs" => app_guard_iocs(event, payload, evidence),
+      "claim_boundary" => app_guard_claim_boundary(event)
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_context(%MobileEvent{} = event, payload, evidence) do
+    %{
+      "schema" => payload["schema"],
+      "event_id" => payload["event_id"],
+      "event_type" => event.event_type,
+      "protected_app" => app_guard_protected_app(event, payload),
+      "url" => app_guard_url(payload, evidence),
+      "domain" => app_guard_domain(event, payload, evidence),
+      "policy" => app_guard_policy_metadata(event),
+      "decision" => app_guard_decision_trace(event, payload),
+      "runtime" => app_guard_runtime(payload, evidence),
+      "input_provenance" => app_guard_input_provenance(evidence),
+      "ingestion" => payload["server_ingestion"],
+      "collector" => evidence["collector"],
+      "privacy_mode" => evidence["privacy_mode"],
+      "active_signals" => payload["active_signals"],
+      "claim_boundary" => app_guard_claim_boundary(event)
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_protected_app(%MobileEvent{} = event, payload) do
+    app = app_guard_map(payload["app"] || payload["protected_app"])
+    package_or_bundle_id = app_guard_package_or_bundle_id(event, payload)
+
+    %{
+      "id" => app_guard_protected_app_id(payload),
+      "name" => event.app_name || app["name"],
+      "bundle_id" => package_or_bundle_id,
+      "package_or_bundle_id" => package_or_bundle_id,
+      "package_name" => app["package_name"] || app["package"],
+      "version" => app["version"] || app["version_name"],
+      "build" => app["build"] || app["build_number"]
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_runtime(payload, evidence) do
+    runtime =
+      app_guard_map(
+        payload["runtime"] || evidence["runtime"] || evidence["browser"] || evidence["webview"]
+      )
+
+    %{
+      "type" => runtime["type"] || evidence["runtime_type"] || evidence["collector"],
+      "browser" => runtime["browser"] || evidence["browser_name"],
+      "webview_provider" => runtime["webview_provider"] || evidence["webview_provider"],
+      "integrity_state" => runtime["integrity_state"] || evidence["integrity_state"],
+      "tamper_class" => runtime["tamper_class"] || evidence["tamper_class"]
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_input_provenance(%{"input_provenance" => input_provenance})
+       when is_map(input_provenance) do
+    if input_provenance["schema"] == "tamandua.input_provenance.aggregate/v1" and
+         input_provenance["platform"] == "android" and
+         input_provenance["evidence_type"] == "metadata_only" and
+         input_provenance["privacy_mode"] == "aggregate_no_content" and
+         input_provenance["policy_mode"] == "observe_only" and
+         input_provenance["external_claim_allowed"] == false do
+      %{
+        "schema" => input_provenance["schema"],
+        "platform" => input_provenance["platform"],
+        "collector" => input_provenance["collector"],
+        "collector_state" => input_provenance["collector_state"],
+        "evidence_type" => input_provenance["evidence_type"],
+        "privacy_mode" => input_provenance["privacy_mode"],
+        "policy_mode" => input_provenance["policy_mode"],
+        "external_claim_allowed" => input_provenance["external_claim_allowed"],
+        "workflow_class" => input_provenance["workflow_class"],
+        "sample_count_bucket" => input_provenance["sample_count_bucket"],
+        "source_classes_observed" => input_provenance["source_classes_observed"],
+        "tool_types_observed" => input_provenance["tool_types_observed"],
+        "assistive_technology_context" => input_provenance["assistive_technology_context"],
+        "obscured" => input_provenance["obscured"],
+        "cadence" => input_provenance["cadence"],
+        "completeness" => input_provenance["completeness"],
+        "claim_boundary" =>
+          "Android aggregate input metadata only; observe-only context, not enforcement or device-wide EDR proof"
+      }
+      |> compact_map()
+    end
+  end
+
+  defp app_guard_input_provenance(_evidence), do: nil
+
+  defp app_guard_policy_metadata(%MobileEvent{} = event) do
+    payload = app_guard_payload(event)
+    risk = app_guard_map(payload["risk"])
+    policy = app_guard_map(payload["policy"] || payload["app_guard_policy"])
+
+    %{
+      "name" => policy["name"] || policy["policy_name"],
+      "id" => policy["id"] || policy["policy_id"] || payload["policy_id"] || risk["policy_id"],
+      "mode" => policy["mode"] || policy["enforcement_mode"] || payload["mode"] || risk["mode"],
+      "decision" => risk["decision"] || policy["decision"],
+      "thresholds" => risk["thresholds"] || policy["thresholds"],
+      "score" => risk["score"],
+      "reasons" => risk["reasons"] || risk["reason"]
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_decision_trace(%MobileEvent{} = event, payload) do
+    risk = app_guard_map(payload["risk"])
+    policy = app_guard_policy_metadata(event)
+
+    %{
+      "decision" => risk["decision"] || policy["decision"],
+      "mode" => risk["mode"] || policy["mode"],
+      "score" => risk["score"],
+      "thresholds" => risk["thresholds"] || policy["thresholds"],
+      "reasons" => risk["reasons"] || risk["reason"] || payload["active_signals"],
+      "source" => "app_guard_sdk"
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_decision(%MobileEvent{} = event) do
+    event
+    |> app_guard_payload()
+    |> app_guard_get(["risk", "decision"])
+  end
+
+  defp app_guard_risk_reasons(%MobileEvent{} = event) do
+    risk =
+      event
+      |> app_guard_payload()
+      |> Map.get("risk", %{})
+      |> app_guard_map()
+
+    risk["reasons"] || risk["reason"]
+  end
+
+  defp app_guard_risk_score(payload) when is_map(payload),
+    do: app_guard_get(payload, ["risk", "score"])
+
+  defp app_guard_risk_score(_payload), do: nil
+
+  defp app_guard_iocs(%MobileEvent{} = event, payload, evidence) do
+    embedded_iocs =
+      [payload["iocs"], evidence["iocs"], app_guard_get(evidence, ["network", "iocs"])]
+      |> Enum.flat_map(&app_guard_ioc_list/1)
+
+    (embedded_iocs ++
+       [
+         ioc("domain", app_guard_domain(event, payload, evidence)),
+         ioc("ip", app_guard_remote_address(event, payload, evidence)),
+         ioc("url", app_guard_url(payload, evidence)),
+         ioc("package", app_guard_package_or_bundle_id(event, payload)),
+         ioc("app", event.app_name || app_guard_get(payload, ["app", "name"]))
+       ])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(&{&1["type"], &1["value"]})
+  end
+
+  defp ioc(_type, value) when value in [nil, "", []], do: nil
+  defp ioc(type, value), do: %{"type" => type, "value" => value, "source" => "app_guard"}
+
+  defp app_guard_ioc_list(values) when is_list(values) do
+    values
+    |> Enum.map(fn
+      %{"type" => type, "value" => value} -> ioc(type, value)
+      %{"kind" => type, "value" => value} -> ioc(type, value)
+      %{"indicator_type" => type, "indicator" => value} -> ioc(type, value)
+      value when is_binary(value) -> ioc("indicator", value)
+      _ -> nil
+    end)
+  end
+
+  defp app_guard_ioc_list(_values), do: []
+
+  defp app_guard_evidence_gaps(%MobileEvent{} = event, payload, evidence) do
+    iocs = app_guard_iocs(event, payload, evidence)
+    policy = app_guard_policy_metadata(event)
+
+    [
+      evidence_gap(
+        policy["id"],
+        "policy_id_not_captured",
+        "Policy ID was not present in the App Guard payload."
+      ),
+      evidence_gap(
+        policy["mode"],
+        "policy_mode_not_captured",
+        "Policy enforcement mode was not present in the App Guard payload."
+      ),
+      evidence_gap(
+        policy["thresholds"],
+        "policy_thresholds_not_captured",
+        "Policy or risk thresholds were not present in the App Guard payload."
+      ),
+      evidence_gap(
+        app_guard_domain(event, payload, evidence) ||
+          app_guard_remote_address(event, payload, evidence) || evidence["network"],
+        "network_endpoint_not_captured",
+        "No raw remote IP/domain was present in the App Guard event."
+      ),
+      evidence_gap(
+        event.app_bundle_id || event.app_name || payload["app"],
+        "protected_app_not_identified",
+        "Protected app name/package was not present in the App Guard event."
+      ),
+      evidence_gap(
+        evidence["runtime"] || evidence["browser"] || evidence["webview"] ||
+          evidence["collector"],
+        "runtime_detail_not_captured",
+        "Browser/WebView runtime details were not present in the App Guard evidence."
+      ),
+      evidence_gap(
+        payload["risk"],
+        "decision_trace_not_captured",
+        "Risk decision, score or reasons were not present in the App Guard payload."
+      ),
+      evidence_gap(
+        iocs,
+        "iocs_not_extracted",
+        "No domain, URL, IP, package or app IOC was present in the App Guard event."
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp app_guard_protected_app_id(payload) when is_map(payload) do
+    app_guard_get(payload, ["app", "app_id"]) ||
+      app_guard_get(payload, ["protected_app", "app_id"]) ||
+      payload["app_id"]
+  end
+
+  defp app_guard_package_or_bundle_id(%MobileEvent{} = event, payload) do
+    event.app_bundle_id || app_guard_get(payload, ["app", "package_or_bundle_id"]) ||
+      app_guard_get(payload, ["app", "bundle_id"]) ||
+      app_guard_get(payload, ["app", "package_name"]) ||
+      app_guard_get(payload, ["protected_app", "package_or_bundle_id"]) ||
+      app_guard_get(payload, ["protected_app", "bundle_id"])
+  end
+
+  defp app_guard_thresholds(%MobileEvent{} = event, payload) do
+    risk = app_guard_map(payload["risk"])
+    policy = app_guard_map(payload["policy"])
+    policy_metadata = app_guard_policy_metadata(event)
+
+    risk["thresholds"] || policy["thresholds"] || policy_metadata["thresholds"] ||
+      payload["thresholds"] ||
+      app_guard_get(payload, ["policy", "thresholds"])
+  end
+
+  defp app_guard_signal_list(%MobileEvent{} = event, payload, evidence) do
+    risk = app_guard_map(payload["risk"])
+
+    [
+      payload["active_signals"],
+      payload["signals"],
+      risk["reasons"],
+      evidence["signals"],
+      evidence["detected_signals"],
+      event.event_type
+    ]
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.map(&app_guard_signal_name/1)
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.uniq()
+  end
+
+  defp app_guard_signal_name(%{"name" => name}), do: name
+  defp app_guard_signal_name(%{"signal" => signal}), do: signal
+  defp app_guard_signal_name(value) when is_binary(value), do: value
+  defp app_guard_signal_name(value) when is_atom(value), do: Atom.to_string(value)
+  defp app_guard_signal_name(_value), do: nil
+
+  defp app_guard_device_identity(%MobileEvent{} = event, device, payload) do
+    payload_device = app_guard_map(payload["device"])
+
+    %{
+      "device_id" => payload_device["device_id"] || (device && device.device_id),
+      "mobile_event_device_id" => event.device_id,
+      "platform" => payload["platform"] || (device && device.platform),
+      "model" => payload_device["model"] || (device && device.model),
+      "manufacturer" => payload_device["manufacturer"] || (device && device.manufacturer),
+      "os_version" => payload_device["os_version"] || (device && device.os_version),
+      "serial_number" => payload_device["serial_number"] || (device && device.serial_number),
+      "managed" => payload_device["managed"] || (device && device.mdm_enrolled),
+      "mdm_provider" => payload_device["mdm_provider"] || (device && device.mdm_provider),
+      "mdm_compliance_status" => device && device.mdm_compliance_status
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_app_identity(%MobileEvent{} = event, payload, evidence) do
+    app = app_guard_map(payload["app"] || payload["protected_app"])
+
+    %{
+      "app_id" => app_guard_protected_app_id(payload),
+      "name" => event.app_name || app["display_name"] || app["name"],
+      "package_or_bundle_id" => app_guard_package_or_bundle_id(event, payload),
+      "version" => app["version"] || app["version_name"],
+      "build" => app["build"] || app["build_number"],
+      "domain" => app_guard_domain(event, payload, evidence),
+      "url" => app_guard_url(payload, evidence)
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_integrity_snapshot(payload, evidence) do
+    runtime = app_guard_runtime(payload, evidence)
+
+    integrity =
+      app_guard_map(
+        payload["integrity"] || evidence["integrity"] || evidence["integrity_snapshot"]
+      )
+
+    %{
+      "state" =>
+        integrity["state"] || integrity["status"] || runtime["integrity_state"] ||
+          evidence["integrity_state"],
+      "tamper_class" =>
+        integrity["tamper_class"] || runtime["tamper_class"] || evidence["tamper_class"],
+      "verdict" => integrity["verdict"] || evidence["integrity_verdict"],
+      "build_id" =>
+        integrity["build_id"] || payload["build_id"] ||
+          app_guard_get(payload, ["app", "build_id"]),
+      "artifact_sha256" => integrity["artifact_sha256"],
+      "certificate_sha256" => integrity["certificate_sha256"],
+      "config_sha256" => integrity["config_sha256"],
+      "runtime" => runtime
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_network_snapshot(%MobileEvent{} = event, payload, evidence) do
+    %{
+      "domain" => app_guard_domain(event, payload, evidence),
+      "url" => app_guard_url(payload, evidence),
+      "remote_address" => app_guard_remote_address(event, payload, evidence),
+      "remote_port" => app_guard_remote_port(event, payload, evidence),
+      "protocol" =>
+        app_guard_get(payload, ["network", "protocol"]) ||
+          app_guard_get(evidence, ["network", "protocol"]) ||
+          evidence["protocol"]
+    }
+    |> compact_map()
+  end
+
+  defp app_guard_domain(%MobileEvent{} = event, payload, evidence) do
+    event.domain || evidence["domain"] || app_guard_get(evidence, ["network", "domain"]) ||
+      app_guard_get(payload, ["network", "domain"]) || payload["domain"] ||
+      evidence["host"] || evidence["hostname"] || app_guard_get(evidence, ["network", "host"]) ||
+      app_guard_get(evidence, ["network", "hostname"]) ||
+      app_guard_get(payload, ["network", "host"]) ||
+      app_guard_get(payload, ["network", "hostname"]) || payload["host"] || payload["hostname"]
+  end
+
+  defp app_guard_remote_address(%MobileEvent{} = event, payload, evidence) do
+    event.remote_address ||
+      app_guard_get(payload, ["network", "remote_address"]) ||
+      app_guard_get(payload, ["network", "remote_ip"]) ||
+      app_guard_get(payload, ["network", "destination_ip"]) ||
+      app_guard_get(payload, ["network", "dst_ip"]) ||
+      app_guard_get(evidence, ["network", "remote_address"]) ||
+      app_guard_get(evidence, ["network", "remote_ip"]) ||
+      app_guard_get(evidence, ["network", "destination_ip"]) ||
+      app_guard_get(evidence, ["network", "dst_ip"]) ||
+      evidence["remote_address"] ||
+      evidence["remote_ip"] ||
+      evidence["destination_ip"] ||
+      evidence["dst_ip"]
+  end
+
+  defp app_guard_remote_port(%MobileEvent{} = event, payload, evidence) do
+    event.remote_port ||
+      app_guard_get(payload, ["network", "remote_port"]) ||
+      app_guard_get(payload, ["network", "destination_port"]) ||
+      app_guard_get(payload, ["network", "dst_port"]) ||
+      app_guard_get(payload, ["network", "port"]) ||
+      app_guard_get(evidence, ["network", "remote_port"]) ||
+      app_guard_get(evidence, ["network", "destination_port"]) ||
+      app_guard_get(evidence, ["network", "dst_port"]) ||
+      app_guard_get(evidence, ["network", "port"]) ||
+      evidence["remote_port"] ||
+      evidence["destination_port"] ||
+      evidence["dst_port"] ||
+      evidence["port"]
+  end
+
+  defp app_guard_url(payload, evidence) do
+    evidence["url"] || app_guard_get(evidence, ["network", "url"]) || payload["url"] ||
+      app_guard_get(payload, ["network", "url"])
+  end
+
+  defp evidence_gap(value, code, message) do
+    if empty_evidence_value?(value) do
+      %{"code" => code, "message" => message}
+    else
+      nil
+    end
+  end
+
+  defp empty_evidence_value?(value), do: value in [nil, "", []] or value == %{}
+
+  defp app_guard_map(value) when is_map(value), do: value
+  defp app_guard_map(_value), do: %{}
+
+  defp app_guard_get(value, path) when is_list(path) do
+    Enum.reduce_while(path, value, fn key, current ->
+      case current do
+        map when is_map(map) -> {:cont, Map.get(map, key)}
+        _ -> {:halt, nil}
+      end
+    end)
+  end
+
+  defp compact_map(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> value in [nil, "", [], %{}] end)
+    |> Map.new()
+  end
+
+  defp compact_map(_), do: %{}
+
+  defp spyware_limitations(%{"spyware_taxonomy" => %{"limitations" => limitations}})
+       when is_list(limitations),
+       do: limitations
+
+  defp spyware_limitations(_evidence), do: nil
+
+  defp app_guard_confidence(%MobileEvent{} = event) do
+    event
+    |> app_guard_payload()
+    |> app_guard_payload_evidence()
+    |> app_guard_get(["spyware_taxonomy", "confidence"])
+  end
+
+  defp app_guard_claim_boundary(%MobileEvent{event_type: "commercial_spyware_suspected"}) do
+    "metadata-only protected-app triage signal; not device-wide forensic evidence or spyware family attribution"
+  end
+
+  defp app_guard_claim_boundary(%MobileEvent{
+         payload: %{"schema" => "tamandua.app_guard.event/v1"}
+       }) do
+    "protected-app App Guard telemetry; not full mobile EDR device-wide visibility"
+  end
+
+  defp app_guard_claim_boundary(_event), do: nil
+
+  defp put_if_present(map, _key, value) when value in [nil, "", []], do: map
+  defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
   @doc """
   Gets event statistics for an organization.

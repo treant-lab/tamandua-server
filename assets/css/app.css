@@ -2044,6 +2044,16 @@ body.sentinel-theme {
   color: var(--subtle);
 }
 
+/* The base input padding is declared after Tailwind's utilities, so icon inputs
+   need explicit modifiers to keep their text out of absolutely positioned UI. */
+.input-sentinel.input-sentinel-icon-left {
+  padding-left: 2.5rem;
+}
+
+.input-sentinel.input-sentinel-shortcut-right {
+  padding-right: 3.5rem;
+}
+
 .input-sentinel:focus {
   outline: none;
   border-color: var(--emerald-500);

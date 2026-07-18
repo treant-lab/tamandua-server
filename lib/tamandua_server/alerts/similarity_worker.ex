@@ -226,7 +226,7 @@ defmodule TamanduaServer.Alerts.SimilarityWorker do
   end
 
   defp is_duplicate?(idx, exact_duplicates, near_duplicates) do
-    idx_str = to_string(idx)
+    _idx_str = to_string(idx)
 
     # Check if this index is in any duplicate list
     Enum.any?(Map.values(exact_duplicates), fn dups -> idx in dups end) or

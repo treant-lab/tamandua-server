@@ -172,8 +172,9 @@ defmodule TamanduaServer.Detection.EngineTest do
   end
 
   describe "reload_iocs/0" do
-    test "returns :ok" do
-      assert Engine.reload_iocs() == :ok
+    test "returns the loaded snapshot count" do
+      assert {:ok, count} = Engine.reload_iocs()
+      assert is_integer(count) and count >= 0
     end
   end
 
@@ -310,6 +311,92 @@ defmodule TamanduaServer.Detection.EngineTest do
       }
 
       assert Engine.analyze_event_async(event) == :ok
+    end
+
+    test "queue_stats/0 reports one entry per shard" do
+      stats = Engine.queue_stats()
+
+      assert length(stats) == 16
+      assert Enum.all?(stats, &Map.has_key?(&1, :shard))
+      assert Enum.all?(stats, &Map.has_key?(&1, :message_queue_len))
+      assert Enum.all?(stats, &Map.has_key?(&1, :running))
+    end
+
+    test "drops low-priority async events when shard mailbox is over threshold" do
+      previous = Application.get_env(:tamandua_server, :detection_engine, [])
+
+      Application.put_env(:tamandua_server, :detection_engine,
+        max_async_queue: 0,
+        async_drop_log_interval_ms: 0
+      )
+
+      ref = make_ref()
+
+      :telemetry.attach(
+        "engine-async-drop-#{inspect(ref)}",
+        [:tamandua, :detection, :async_dropped],
+        fn _event, measurements, metadata, test_pid ->
+          send(test_pid, {:async_dropped, measurements, metadata})
+        end,
+        self()
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("engine-async-drop-#{inspect(ref)}")
+        Application.put_env(:tamandua_server, :detection_engine, previous)
+      end)
+
+      event = %{
+        event_id: Ecto.UUID.generate(),
+        agent_id: "async-drop-low-priority",
+        event_type: :heartbeat,
+        priority: "low",
+        payload: %{}
+      }
+
+      assert Engine.analyze_event_async(event) == :ok
+      assert_receive {:async_dropped, %{count: 1}, %{shard: shard}}
+      assert shard in 0..15
+    end
+
+    test "preserves high-priority async events even when shard mailbox is over threshold" do
+      previous = Application.get_env(:tamandua_server, :detection_engine, [])
+
+      Application.put_env(:tamandua_server, :detection_engine,
+        max_async_queue: 0,
+        async_drop_log_interval_ms: 0
+      )
+
+      ref = make_ref()
+
+      :telemetry.attach(
+        "engine-async-preserve-#{inspect(ref)}",
+        [:tamandua, :detection, :async_dropped],
+        fn _event, measurements, metadata, test_pid ->
+          send(test_pid, {:async_dropped, measurements, metadata})
+        end,
+        self()
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("engine-async-preserve-#{inspect(ref)}")
+        Application.put_env(:tamandua_server, :detection_engine, previous)
+      end)
+
+      event = %{
+        event_id: Ecto.UUID.generate(),
+        agent_id: "async-preserve-high-priority",
+        event_type: "behavioral_risk_score",
+        severity: "high",
+        payload: %{
+          "process_key" => "test.exe",
+          "score" => 0.9,
+          "factors" => []
+        }
+      }
+
+      assert Engine.analyze_event_async(event) == :ok
+      refute_receive {:async_dropped, _, _}, 100
     end
   end
 

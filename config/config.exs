@@ -6,6 +6,21 @@ import Config
 config :tamandua_server,
   ecto_repos: [TamanduaServer.Repo]
 
+# Concurrent index migrations run outside a DDL transaction, but they must
+# still serialize with every other migrator. PostgreSQL advisory locks are
+# session-scoped and therefore cover both transactional and non-transactional
+# migrations.
+config :tamandua_server, TamanduaServer.Repo, migration_lock: :pg_advisory_lock
+
+config :tamandua_server, :authority_repo_enabled, false
+config :tamandua_server, :agentic_restore_authority_repo_enabled, false
+config :tamandua_server, :decision_engine_authority_repo_enabled, false
+config :tamandua_server, :remediation_approval_authority_repo_enabled, false
+config :tamandua_server, :enrollment_locator_repo_enabled, false
+config :tamandua_server, :ioc_snapshot_provider, :legacy
+config :tamandua_server, :ioc_snapshot_authority_repo_enabled, false
+config :tamandua_server, :decision_engine_autonomous_response_enabled, false
+
 # OCSP agent-certificate revocation checking.
 # Disabled by default so dev/test (no live OCSP responder) are unaffected.
 # When enabled, the agent socket performs an OCSP check after CN match and
@@ -86,19 +101,23 @@ config :tamandua_server, Oban,
   repo: TamanduaServer.Repo,
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
-    {Oban.Plugins.Cron, crontab: [
-      {"0 * * * *", TamanduaServer.Workers.CleanupWorker},
-      # Daily recording retention cleanup at 3:00 AM UTC
-      {"0 3 * * *", TamanduaServer.Workers.RecordingRetentionWorker},
-      # Daily event archival and sampling at 4:00 AM UTC (staggered 1 hour after recordings)
-      {"0 4 * * *", TamanduaServer.Workers.ArchiveEventsWorker},
-      # Threat intel feed sync every 4 hours (at minute 15 to stagger with other jobs)
-      {"15 */4 * * *", TamanduaServer.Workers.ThreatIntelSyncWorker},
-      # Check for expired network isolations every 5 minutes
-      {"*/5 * * * *", TamanduaServer.Jobs.IsolationExpiryJob},
-      # Clean up expired and old agent commands every 30 minutes
-      {"*/30 * * * *", TamanduaServer.Workers.CleanupCommandsWorker}
-    ]}
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"0 * * * *", TamanduaServer.Workers.CleanupWorker},
+       # Daily recording retention cleanup at 3:00 AM UTC
+       {"0 3 * * *", TamanduaServer.Workers.RecordingRetentionWorker},
+       # Daily event archival and sampling at 4:00 AM UTC (staggered 1 hour after recordings)
+       {"0 4 * * *", TamanduaServer.Workers.ArchiveEventsWorker},
+       # Threat intel feed sync every 4 hours (at minute 15 to stagger with other jobs)
+       {"15 */4 * * *", TamanduaServer.Workers.ThreatIntelSyncWorker},
+       # Check for expired network isolations every 5 minutes
+       {"*/5 * * * *", TamanduaServer.Jobs.IsolationExpiryJob},
+       # Clean up expired and old agent commands every 30 minutes
+       {"*/30 * * * *", TamanduaServer.Workers.CleanupCommandsWorker},
+       # Erase expired screen-capture bytes and one-time credentials every 5 minutes
+       {"*/5 * * * *", TamanduaServer.Workers.ScreenCaptureRetentionWorker},
+       {"*/5 * * * *", TamanduaServer.Workers.EvidenceSessionRetentionWorker}
+     ]}
   ],
   queues: [
     default: 10,
@@ -112,7 +131,8 @@ config :tamandua_server, Oban,
     archival: 2,
     notifications: 10,
     remediation: 5,
-    blockchain: 3
+    blockchain: 3,
+    ai_investigations: 2
   ]
 
 # Live Response Session Recording configuration
@@ -133,9 +153,7 @@ config :tamandua_server, TamanduaServer.Cache,
 
 # Hammer rate limiting configuration
 config :hammer,
-  backend: {Hammer.Backend.ETS,
-            [expiry_ms: 60_000 * 60 * 4,
-             cleanup_interval_ms: 60_000 * 10]}
+  backend: {Hammer.Backend.ETS, [expiry_ms: 60_000 * 60 * 4, cleanup_interval_ms: 60_000 * 10]}
 
 # Cloud provider configuration (credentials from environment)
 # AWS: Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars
@@ -171,11 +189,16 @@ config :tamandua_server, TamanduaServer.Cloud.GCP,
 # Supports CLI mode (calls trivy binary) or server mode (Trivy server API)
 config :tamandua_server, :trivy,
   enabled: true,
-  mode: :cli,                                    # :cli or :server
-  server_url: "http://localhost:4954",           # Only used in server mode
-  timeout: 120_000,                              # Scan timeout in ms
-  severity: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",  # Severity levels to include
-  ignore_unfixed: false                          # Only show vulns with fixes
+  # :cli or :server
+  mode: :cli,
+  # Only used in server mode
+  server_url: "http://localhost:4954",
+  # Scan timeout in ms
+  timeout: 120_000,
+  # Severity levels to include
+  severity: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",
+  # Only show vulns with fixes
+  ignore_unfixed: false
 
 # Threat Intelligence Feed Synchronization
 # Free feeds (no API key required) are enabled by default.
@@ -189,10 +212,19 @@ config :tamandua_server, TamanduaServer.Detection.ThreatIntelFeeds,
     abusech_feodo: %{enabled: true, description: "Abuse.ch Feodo Tracker - Banking trojan C2 IPs"},
     abusech_urlhaus: %{enabled: true, description: "Abuse.ch URLhaus - Malware distribution URLs"},
     abusech_threatfox: %{enabled: true, description: "Abuse.ch ThreatFox - IOC sharing"},
-    abusech_malware_bazaar: %{enabled: true, description: "Abuse.ch Malware Bazaar - Malware sample hashes"},
-    abusech_ssl_blacklist: %{enabled: true, description: "Abuse.ch SSL Blacklist - Malicious SSL certs"},
+    abusech_malware_bazaar: %{
+      enabled: true,
+      description: "Abuse.ch Malware Bazaar - Malware sample hashes"
+    },
+    abusech_ssl_blacklist: %{
+      enabled: true,
+      description: "Abuse.ch SSL Blacklist - Malicious SSL certs"
+    },
     emergingthreats: %{enabled: true, description: "EmergingThreats - Compromised IPs"},
-    tor_exit_nodes: %{enabled: true, description: "Tor exit node list (anomaly detection, not blocking)"},
+    tor_exit_nodes: %{
+      enabled: true,
+      description: "Tor exit node list (anomaly detection, not blocking)"
+    },
     phishtank: %{enabled: true, description: "PhishTank - Verified phishing URLs"},
     openphish: %{enabled: true, description: "OpenPhish - Phishing URLs"},
     spamhaus_drop: %{enabled: true, description: "Spamhaus DROP - Do Not Route Or Peer"},
@@ -266,15 +298,20 @@ config :tamandua_server, TamanduaServer.Billing,
 # NL Hunter configuration (Natural Language Threat Hunting)
 # LLM translation is enabled by default if an API key is present
 config :tamandua_server, TamanduaServer.Hunting.NLHunter,
-  llm_enabled: true  # Set to false to force pattern-based translation only
+  # Set to false to force pattern-based translation only
+  llm_enabled: true
 
 # LLM Client configuration (GPT/Claude for NL processing)
 # Uses OPENAI_API_KEY or ANTHROPIC_API_KEY environment variables
 config :tamandua_server, TamanduaServer.AI.LLMClient,
-  provider: :openai,                # :openai or :anthropic
-  model: "gpt-4o-mini",             # Default model for translations
-  timeout: 60_000,                  # Request timeout in ms
-  max_retries: 3                    # Retry count for rate limits
+  # :openai or :anthropic
+  provider: :openai,
+  # Default model for translations
+  model: "gpt-4o-mini",
+  # Request timeout in ms
+  timeout: 60_000,
+  # Retry count for rate limits
+  max_retries: 3
 
 # Response safety enforcement
 # When false (default), the response-safety guard is REPORT-ONLY: it logs a
@@ -282,12 +319,52 @@ config :tamandua_server, TamanduaServer.AI.LLMClient,
 # Set to true to ENFORCE (block) responses on protected targets.
 config :tamandua_server, :response_safety_enforce, false
 
+# Alert-created AI investigations are explicitly opt-in and observation-only.
+# The only accepted enabled value is :shadow; recommendation/autonomous modes
+# are rejected by the admission boundary. At runtime, set
+# TAMANDUA_SHADOW_ALERT_TRIGGER=shadow to enable this lane.
+config :tamandua_server, TamanduaServer.Investigations.ShadowOrchestrator,
+  alert_creation_trigger: :off,
+  eligible_severities: ["critical", "high"],
+  max_active_per_tenant: 2,
+  max_admissions_per_minute: 10,
+  worker_timeout_ms: 30_000
+
+# Detector observations are admission-time telemetry, not timeless claims.
+# Bounds remain deliberately conservative even when overridden.
+config :tamandua_server, TamanduaServer.Investigations.DetectorObservationConsensusV1,
+  max_age_seconds: 86_400,
+  max_future_skew_seconds: 300
+
 # Disaster Recovery FailoverManager
 # When false (default), the DR FailoverManager is NOT started, avoiding
 # health-check probes against DR peers (Redis/PostgreSQL replicas) that are
 # absent in dev/test. Set to true in multi-site deployments to enable
 # automatic failover orchestration.
 config :tamandua_server, :dr_failover_enabled, false
+
+# The IOC runtime uses separate uniqueness boundaries for the shared global
+# catalog and tenant-private overrides. This must ship with migration
+# 20260716002000; the application must not start the new IOC write lane against
+# the legacy broad UNIQUE(type, value) index.
+config :tamandua_server, :ioc_partial_global_unique_index, true
+
+# Android Key Attestation is elevated only against explicitly governed roots.
+# Empty roots preserve the existing evidence-only state until an operator
+# provisions the authoritative Google/OEM certificate bundle for the fleet.
+config :tamandua_server, TamanduaServer.Mobile.MobileDeviceIdentityAndroidAttestation,
+  trust_roots_pem: [],
+  revoked_certificate_sha256: [],
+  governance_public_keys: %{},
+  freshness_receipt: nil,
+  unverified_evidence_policy: :preserve
+
+# Apple App Attest elevation is profile-bound and fail-closed. Operators must
+# provision a team/bundle/environment profile and its authoritative roots.
+config :tamandua_server, TamanduaServer.Mobile.MobileDeviceIdentityAppleAppAttest,
+  app_profiles: %{},
+  default_profile_id: nil,
+  unverified_evidence_policy: :preserve
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

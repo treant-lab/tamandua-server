@@ -219,7 +219,7 @@ defmodule TamanduaServer.XDR.Parsers.CiscoASA do
     now = DateTime.utc_now()
     year = now.year
 
-    case Timex.parse(timestamp_str <> " #{year}", "{Mshort} {D} {h24}:{m}:{s} {YYYY}") do
+    case TamanduaServer.DateTimeParser.parse_syslog(timestamp_str, year) do
       {:ok, datetime} -> datetime
       _ -> DateTime.utc_now()
     end

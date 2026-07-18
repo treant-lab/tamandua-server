@@ -377,14 +377,14 @@ defmodule TamanduaServer.NetworkDiscovery.ScanPolicy do
   defp split_subnet_ranges(subnet, num_agents) do
     # Split the subnet into N roughly equal ranges
     case parse_cidr(subnet) do
-      {:ok, base_ip, prefix_len} ->
+      {:ok, _base_ip, prefix_len} ->
         host_bits = 32 - prefix_len
         total_hosts = :math.pow(2, host_bits) |> round()
         hosts_per_agent = max(div(total_hosts, num_agents), 1)
 
         0..(num_agents - 1)
         |> Enum.map(fn i ->
-          start_offset = i * hosts_per_agent
+          _start_offset = i * hosts_per_agent
           # For simplicity, return the original subnet with metadata
           # The agent uses its index to scan every Nth host
           "#{subnet}#agent_slice=#{i}/#{num_agents}"

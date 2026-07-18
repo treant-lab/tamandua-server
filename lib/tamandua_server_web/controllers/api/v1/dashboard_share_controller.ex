@@ -5,7 +5,7 @@ defmodule TamanduaServerWeb.API.V1.DashboardShareController do
 
   use TamanduaServerWeb, :controller
 
-  alias TamanduaServer.{Dashboard, Dashboards}
+  alias TamanduaServer.{Dashboard}
   alias TamanduaServer.Dashboard.Share
 
   action_fallback TamanduaServerWeb.FallbackController
